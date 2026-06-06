@@ -45,8 +45,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use codegraph::analysis_bridge::{
+    BridgeOptions,
     BridgeResult,
     build_analysis_graph_cached,
+    build_analysis_graph_cached_with_options,
     compute_index_fingerprint,
     load_auto_base_snapshot,
     load_explicit_base_snapshot,
@@ -752,6 +754,13 @@ enum Commands {
             default_value = "classic"
         )]
         strategy: String,
+        /// Carry field/property metadata through the analysis bridge so big
+        /// structs render as field-level partial views (only the fields the
+        /// selected symbols touch). Analysis strategy only; equivalent to
+        /// CODEGRAPH_ANALYSIS_FIELDS=1. The analysis snapshot cache is keyed
+        /// by this flag, so flipping it rebuilds the bridged graph.
+        #[arg(long)]
+        fields: bool,
         /// Output as JSON
         #[arg(short = 'j', long)]
         json: bool,
@@ -910,6 +919,11 @@ annotate the graph before the query runs (see `analyze coverage`).")]
         /// offsets in the index; re-index pre-v5 projects to enable)
         #[arg(long = "value-level")]
         value_level: bool,
+        /// Compact source-annotated report (one "name (file:line)" entry per
+        /// line) plus the direct data-dependency set, rendered by the
+        /// analysis engine's CPG facade. Fixed engine depth; --depth ignored.
+        #[arg(long = "source")]
+        source_annotated: bool,
         /// Rebuild the analysis graph from the index, ignoring the cached snapshot
         #[arg(long = "no-cache")]
         no_cache: bool,
@@ -962,6 +976,11 @@ annotate the graph before the query runs (see `analyze coverage`).")]
         /// offsets in the index; re-index pre-v5 projects to enable)
         #[arg(long = "value-level")]
         value_level: bool,
+        /// Compact source-annotated flow report (each flow rendered hop by
+        /// hop as "name (file:line)" with sanitizer status), rendered by the
+        /// analysis engine's CPG facade
+        #[arg(long = "source")]
+        source_annotated: bool,
         /// Project path
         #[arg(short = 'p', long, value_name = "path")]
         path: Option<String>,
@@ -1398,6 +1417,7 @@ fn main() {
             path,
             budget,
             strategy,
+            fields,
             json,
             verbose,
         } => cmd_context(
@@ -1405,6 +1425,7 @@ fn main() {
             path.as_deref(),
             budget.as_deref(),
             &strategy,
+            fields,
             json,
             verbose,
         ),
@@ -1945,10 +1966,19 @@ fn cmd_query(
         } else {
             println!("{}", bold(&format!("\nSearch Results for \"{search}\":\n")));
 
+            // Human display only: relevance relative to the best hit (top = 100%).
+            // Raw scores stack FTS bm25 + name/kind/path bonuses and routinely
+            // exceed 1.0, so an absolute percent reads as nonsense like "(11012%)".
+            // JSON output keeps the raw parity-faithful score.
+            let max_score = results.iter().map(|r| r.score).fold(f64::EPSILON, f64::max);
+
             for result in &results {
                 let node = &result.node;
                 let location = format!("{}:{}", node.file_path, node.start_line);
-                let score = dim(&format!("({}%)", js_to_fixed(result.score * 100.0, 0)));
+                let score = dim(&format!(
+                    "({}%)",
+                    js_to_fixed((result.score / max_score) * 100.0, 0)
+                ));
 
                 println!(
                     "{}{} {score}",
@@ -2880,18 +2910,22 @@ fn cmd_affected(
 // context command
 // =============================================================================
 
-/// codegraph context <task> [--budget tokens] [--strategy classic|analysis]
+/// codegraph context <task> [--budget tokens] [--strategy classic|analysis] [--fields]
 ///
 /// `classic` (default) is the existing `ContextBuilder` pipeline (FTS entry
 /// points + graph expansion) — its output is unchanged. `analysis` routes
 /// through the analysis engine's context modules over the bridged index:
 /// dataflow-seeded entry points, retrieval-gated expansion, clustered
 /// per-file source, rendered to markdown and trimmed to the token budget.
+/// `--fields` (analysis only) bridges with field/property carrying so the
+/// engine's partial-struct views render — same effect as
+/// `CODEGRAPH_ANALYSIS_FIELDS=1`, scoped to this invocation.
 fn cmd_context(
     task: &str,
     path_arg: Option<&str>,
     budget_arg: Option<&str>,
     strategy: &str,
+    fields: bool,
     json: bool,
     verbose: bool,
 ) {
@@ -2912,8 +2946,17 @@ fn cmd_context(
 
     let body = || -> Result<(), String> {
         match strategy {
-            "classic" => cmd_context_classic(task, &project_path, budget_tokens, json, verbose),
-            "analysis" => cmd_context_analysis(task, &project_path, budget_tokens, json, verbose),
+            "classic" => {
+                if fields {
+                    eprintln!(
+                        "warning: --fields requires --strategy analysis (ignored for classic)"
+                    );
+                }
+                cmd_context_classic(task, &project_path, budget_tokens, json, verbose)
+            }
+            "analysis" => {
+                cmd_context_analysis(task, &project_path, budget_tokens, fields, json, verbose)
+            }
             other => {
                 error_msg(&format!(
                     "Invalid --strategy \"{other}\" — expected \"classic\" or \"analysis\""
@@ -2988,14 +3031,21 @@ fn cmd_context_classic(
 /// pipeline (`codegraph::context_analysis`), print markdown (or the full
 /// JSON report). Capability notes go to stderr under `--verbose` and are
 /// always present in the JSON report.
+///
+/// `fields` ORs into the environment's bridge options
+/// (`CODEGRAPH_ANALYSIS_FIELDS=1`) — the flag can only ADD field carrying,
+/// never strip it from an env-enabled run.
 fn cmd_context_analysis(
     task: &str,
     project_path: &Path,
     budget_tokens: Option<usize>,
+    fields: bool,
     json: bool,
     verbose: bool,
 ) -> Result<(), String> {
-    let bridged = bridge_project(project_path, false, json)?;
+    let mut options = BridgeOptions::from_env();
+    options.include_fields = options.include_fields || fields;
+    let bridged = bridge_project_with_options(project_path, false, json, &options)?;
     let report = context_analysis::build_analysis_context(
         &bridged.graph,
         project_path,
@@ -3047,10 +3097,35 @@ fn cmd_context_analysis(
 // output only — `--json` stays pure JSON.
 // =============================================================================
 
+/// Entry cap for the `analyze slice --source` annotated lists (slice +
+/// data dependencies). The engine summarizes anything beyond the cap.
+const SOURCE_REPORT_MAX_ENTRIES: usize = 50;
+
+/// Rendered-flow cap for `analyze taint --source` — same cap the default
+/// taint path rendering uses; the engine summarizes flows beyond it.
+const SOURCE_TAINT_MAX_PATHS: usize = 25;
+
 /// Bridge the project's index into the analysis engine, via the snapshot
 /// cache unless `no_cache`. Exits (status 1) when the project is not
 /// initialized — same contract as the other read commands.
+///
+/// Bridge options come from the process environment
+/// (`CODEGRAPH_ANALYSIS_FIELDS=1` turns on field carrying for every
+/// analyze command); [`bridge_project_with_options`] is the explicit-flag
+/// variant `context --fields` uses.
 fn bridge_project(project_path: &Path, no_cache: bool, json: bool) -> Result<BridgeResult, String> {
+    bridge_project_with_options(project_path, no_cache, json, &BridgeOptions::from_env())
+}
+
+/// [`bridge_project`] with explicit [`BridgeOptions`]. The snapshot cache
+/// is keyed by the options, so a graph bridged under one flag state is
+/// never served to the other.
+fn bridge_project_with_options(
+    project_path: &Path,
+    no_cache: bool,
+    json: bool,
+    options: &BridgeOptions,
+) -> Result<BridgeResult, String> {
     if !is_initialized(project_path) {
         error_msg(&format!(
             "CodeGraph not initialized in {}",
@@ -3062,8 +3137,9 @@ fn bridge_project(project_path: &Path, no_cache: bool, json: bool) -> Result<Bri
     let conn =
         DatabaseConnection::open(get_database_path(project_path)).map_err(|e| e.to_string())?;
     let queries = QueryBuilder::new(conn.get_db().map_err(|e| e.to_string())?);
-    let cached = build_analysis_graph_cached(&queries, project_path, !no_cache)
-        .map_err(|e| e.to_string())?;
+    let cached =
+        build_analysis_graph_cached_with_options(&queries, project_path, !no_cache, options)
+            .map_err(|e| e.to_string())?;
     if cached.from_cache && !json {
         println!("{}", dim("(cached graph)"));
     }
@@ -3189,6 +3265,7 @@ fn cmd_analyze(command: AnalyzeCommands) {
             path,
             depth,
             value_level,
+            source_annotated,
             no_cache,
             json,
         } => cmd_analyze_slice(
@@ -3197,6 +3274,7 @@ fn cmd_analyze(command: AnalyzeCommands) {
             path.as_deref(),
             &depth,
             value_level,
+            source_annotated,
             no_cache,
             json,
         ),
@@ -3223,6 +3301,7 @@ fn cmd_analyze(command: AnalyzeCommands) {
             sink,
             suggest,
             value_level,
+            source_annotated,
             path,
             max_nodes,
             top,
@@ -3233,6 +3312,7 @@ fn cmd_analyze(command: AnalyzeCommands) {
             sink.as_deref(),
             suggest,
             value_level,
+            source_annotated,
             path.as_deref(),
             &max_nodes,
             &top,
@@ -3411,7 +3491,13 @@ fn cmd_analyze_query(
             analyze::annotate_coverage(&mut bridged.graph, Path::new(lcov_path), &project_path)?;
         }
         let max_nodes = parse_int_js(max_nodes_arg).unwrap_or(50).max(1) as usize;
-        let report = analyze::query_report(&bridged.graph, query, max_nodes, why)?;
+        let report = analyze::query_report_with_sources(
+            &bridged.graph,
+            query,
+            max_nodes,
+            why,
+            Some(&project_path),
+        )?;
 
         if json {
             return print_report_json("query", &report);
@@ -3501,6 +3587,24 @@ fn cmd_analyze_query(
                 println!("{}", dim(line));
             }
             println!();
+        }
+
+        if let Some(pre) = &report.preconditions {
+            if !pre.guards.is_empty() {
+                println!("{}", bold("Guarding conditions (source-level):"));
+                for guard in &pre.guards {
+                    println!(
+                        "  {} {} {} {}",
+                        white(&guard.caller.name),
+                        dim("->"),
+                        white(&guard.callee),
+                        dim(&format!("({}:{})", guard.file, guard.line))
+                    );
+                    println!("    {}", cyan(&guard.conditions.join(" -> ")));
+                }
+                println!();
+            }
+            info(&pre.note);
         }
 
         if why {
@@ -3753,12 +3857,14 @@ fn cmd_analyze_dominators(
 }
 
 /// codegraph analyze slice <symbol> [--direction fwd|bwd]
+#[allow(clippy::too_many_arguments)]
 fn cmd_analyze_slice(
     symbol: &str,
     direction_arg: &str,
     path_arg: Option<&str>,
     depth_arg: &str,
     value_level: bool,
+    source_annotated: bool,
     no_cache: bool,
     json: bool,
 ) {
@@ -3774,6 +3880,41 @@ fn cmd_analyze_slice(
             process::exit(1);
         }
     };
+    if source_annotated && value_level {
+        error_msg(
+            "--source and --value-level are mutually exclusive: the --source report already \
+             rides the engine's value-level oracle when the index carries byte offsets.",
+        );
+        process::exit(1);
+    }
+
+    if source_annotated {
+        let body = || -> Result<(), String> {
+            let bridged = bridge_project(&project_path, no_cache, json)?;
+            let report = analyze::source_slice_report(
+                &bridged.graph,
+                &project_path,
+                symbol,
+                direction,
+                SOURCE_REPORT_MAX_ENTRIES,
+            );
+            if json {
+                return print_report_json("sliceSource", &report);
+            }
+            println!();
+            println!("{}", report.report.trim_end());
+            println!();
+            println!("{}", report.data_dependencies.trim_end());
+            println!();
+            warn(&report.note);
+            Ok(())
+        };
+        if let Err(msg) = body() {
+            error_msg(&format!("analyze slice failed: {msg}"));
+            process::exit(1);
+        }
+        return;
+    }
 
     let body = || -> Result<(), String> {
         let bridged = bridge_project(&project_path, no_cache, json)?;
@@ -4010,6 +4151,7 @@ fn cmd_analyze_taint(
     sink: Option<&str>,
     suggest: bool,
     value_level: bool,
+    source_annotated: bool,
     path_arg: Option<&str>,
     max_nodes_arg: &str,
     top_arg: &str,
@@ -4018,11 +4160,26 @@ fn cmd_analyze_taint(
 ) {
     let project_path = resolve_project_path(path_arg);
 
+    if source_annotated && value_level {
+        error_msg(
+            "--source and --value-level are mutually exclusive: the --source report already \
+             rides the engine's value-level oracle when the index carries byte offsets.",
+        );
+        process::exit(1);
+    }
+
     if suggest || (source.is_none() && sink.is_none()) {
         if value_level {
             error_msg(
                 "--value-level applies to source\u{2192}sink tracing; give both \
                  <source-symbol> and <sink-symbol> (it has no effect on --suggest).",
+            );
+            process::exit(1);
+        }
+        if source_annotated {
+            error_msg(
+                "--source applies to source\u{2192}sink tracing; give both <source-symbol> \
+                 and <sink-symbol> (it has no effect on --suggest).",
             );
             process::exit(1);
         }
@@ -4111,6 +4268,32 @@ fn cmd_analyze_taint(
         );
         process::exit(1);
     };
+
+    if source_annotated {
+        let body = || -> Result<(), String> {
+            let bridged = bridge_project(&project_path, no_cache, json)?;
+            let report = analyze::source_taint_report(
+                &bridged.graph,
+                &project_path,
+                source,
+                sink,
+                SOURCE_TAINT_MAX_PATHS,
+            );
+            if json {
+                return print_report_json("taintSource", &report);
+            }
+            println!();
+            println!("{}", report.report.trim_end());
+            println!();
+            warn(&report.note);
+            Ok(())
+        };
+        if let Err(msg) = body() {
+            error_msg(&format!("analyze taint failed: {msg}"));
+            process::exit(1);
+        }
+        return;
+    }
 
     let body = || -> Result<(), String> {
         let bridged = bridge_project(&project_path, no_cache, json)?;

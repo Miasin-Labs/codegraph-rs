@@ -41,6 +41,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use codegraph_analysis::capabilities::{Capability, CapabilityTree};
 use codegraph_analysis::context::budget::ExploreBudget;
 use codegraph_analysis::context::{
     ContextOptions as EngineContextOptions,
@@ -52,7 +53,8 @@ use codegraph_analysis::context::{
 };
 use codegraph_analysis::edges::EdgeKind as AEdgeKind;
 use codegraph_analysis::graph::CodeGraph as AnalysisGraph;
-use codegraph_analysis::nodes::NodeId as ANodeId;
+use codegraph_analysis::nodes::{NodeId as ANodeId, NodeKind as ANodeKind};
+use codegraph_analysis::partial::{self, PartialStructError};
 use serde::Serialize;
 
 use crate::analysis_bridge::UNRESOLVED_FILE;
@@ -161,6 +163,12 @@ pub struct AnalysisContextReport {
     pub related_count: usize,
     /// Files with source slices included in the markdown.
     pub file_count: usize,
+    /// Structs rendered as field-level partial views ("Partial struct
+    /// views" markdown section). 0 when the bridged graph carries no field
+    /// metadata (the default bridge — see `CODEGRAPH_ANALYSIS_FIELDS`) or
+    /// when no selected function touches a strict subset of a struct's
+    /// fields.
+    pub partial_struct_views: usize,
     pub seeding: SeedingMode,
     /// The Repoformer retrieval gate abstained from related-node expansion
     /// (the entry points were self-contained).
@@ -259,6 +267,15 @@ pub fn build_analysis_context(
         &budget,
     );
 
+    // --- Field-level partial struct views (engine partial-struct contract) ---
+    let (partial_md, partial_struct_views, partial_notes) =
+        build_partial_struct_sections(graph, &ctx.entry_points, &ctx.related);
+    notes.extend(partial_notes);
+    if !partial_md.is_empty() {
+        markdown.push_str("\n\n");
+        markdown.push_str(&partial_md);
+    }
+
     let (blocks, additional) = build_source_blocks(
         graph,
         project_root,
@@ -310,6 +327,7 @@ pub fn build_analysis_context(
         entry_point_count: ctx.entry_points.len(),
         related_count: ctx.related.len(),
         file_count,
+        partial_struct_views,
         seeding,
         gate_abstained: gate.gate_abstained,
         expansion_work_saved: gate.work_saved(),
@@ -366,6 +384,172 @@ fn distinct_file_count(graph: &AnalysisGraph) -> usize {
         }
     }
     files.len()
+}
+
+// =============================================================================
+// Partial struct views (field-level granularity)
+// =============================================================================
+
+/// Render field-level views of the selected structs: only the fields the
+/// selected (focal-flow) functions touch, marked with the engine's
+/// accessed-field markers. Returns `(markdown_section, view_count, notes)` —
+/// the section is empty when nothing qualifies.
+///
+/// Field data is the engine's partial-struct metadata contract
+/// ([`partial::STRUCT_FIELDS_KEY`] / [`partial::ACCESSED_FIELDS_KEY`]),
+/// which the bridge registers only under
+/// [`crate::analysis_bridge::BridgeOptions::include_fields`]
+/// (`CODEGRAPH_ANALYSIS_FIELDS=1`). Honest notes over silent emptiness:
+/// missing field data and the engine's `PartialStruct` capability
+/// kill-switch each produce an explanatory note instead of a quietly
+/// absent section.
+fn build_partial_struct_sections(
+    graph: &AnalysisGraph,
+    entry_points: &[ANodeId],
+    related: &[ANodeId],
+) -> (String, usize, Vec<String>) {
+    // Selection split, deduped, in selection order (entries first).
+    let mut seen: HashSet<&ANodeId> = HashSet::new();
+    let mut structs: Vec<&ANodeId> = Vec::new();
+    let mut functions: Vec<&ANodeId> = Vec::new();
+    for id in entry_points.iter().chain(related.iter()) {
+        if !seen.insert(id) {
+            continue;
+        }
+        match graph.get_node(id).map(|n| n.kind) {
+            Some(ANodeKind::Struct) => structs.push(id),
+            Some(ANodeKind::Function) => functions.push(id),
+            _ => {}
+        }
+    }
+    if structs.is_empty() || functions.is_empty() {
+        return (String::new(), 0, Vec::new());
+    }
+
+    // Honor the engine's kill-switch exactly like its session surface does
+    // (the graph-level reads below are not gated, so gate here — the render
+    // layer is where the capability is meant to apply).
+    if !CapabilityTree::from_env().is_enabled(Capability::PartialStruct) {
+        return (
+            String::new(),
+            0,
+            vec![format!(
+                "Partial struct views skipped: {}.",
+                PartialStructError::Disabled
+            )],
+        );
+    }
+
+    let mut notes: Vec<String> = Vec::new();
+    let mut sections: Vec<String> = Vec::new();
+    let mut missing_field_data = 0usize;
+
+    for sid in structs {
+        let Some(snode) = graph.get_node(sid) else {
+            continue;
+        };
+        // Engine-typed field data only: the default (fieldless) bridge folds
+        // a legacy JSON name-array under the same `fields` key, which the
+        // engine decoder yields nothing for — that counts as "no field
+        // data", same as an absent key.
+        let has_engine_fields = snode
+            .metadata
+            .get(partial::STRUCT_FIELDS_KEY)
+            .map(|raw| !partial::parse_fields_metadata(raw).is_empty())
+            .unwrap_or(false);
+        if !has_engine_fields {
+            missing_field_data += 1;
+            continue;
+        }
+
+        // Merge the engine's per-function views: which of this struct's
+        // fields does each selected function touch?
+        let mut accessed_by: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut merged_view: Option<partial::PartialView> = None;
+        for fid in &functions {
+            let view = match partial::try_get_partial_struct(graph, sid, fid) {
+                Ok(view) => view,
+                Err(err) => {
+                    // Verbatim per the engine's guidance — every variant is
+                    // a one-line honest capability note.
+                    notes.push(format!("Partial struct view unavailable: {err}."));
+                    continue;
+                }
+            };
+            let fn_name = graph
+                .get_node(fid)
+                .map(|n| n.name.clone())
+                .unwrap_or_default();
+            for field in view.visible_fields() {
+                let who = accessed_by.entry(field.name.clone()).or_default();
+                if !who.contains(&fn_name) {
+                    who.push(fn_name.clone());
+                }
+            }
+            merged_view = Some(view);
+        }
+        let Some(view) = merged_view else {
+            continue;
+        };
+
+        let total = view.all_fields.len();
+        let touched = accessed_by.len();
+        // Only a strict subset earns a partial view: untouched structs add
+        // nothing, fully-touched structs are not partial.
+        if touched == 0 || touched >= total {
+            continue;
+        }
+
+        let mut lines: Vec<String> = vec![
+            format!(
+                "#### `{}` — {} ({touched} of {total} fields accessed)",
+                view.struct_name,
+                snode.file_path.display(),
+            ),
+            String::new(),
+        ];
+        // Declaration order via the engine's marker API; a field is marked
+        // when any selected function accesses it.
+        for (field, _marker) in view.all_fields_with_markers() {
+            let Some(who) = accessed_by.get(&field.name) else {
+                continue;
+            };
+            let shown: Vec<String> = who.iter().take(3).map(|n| format!("`{n}`")).collect();
+            let mut line = format!("- ✓ `{}`", field.name);
+            if !field.type_str.is_empty() {
+                line.push_str(&format!(": {}", field.type_str));
+            }
+            line.push_str(if field.is_public { " (pub)" } else { " (priv)" });
+            line.push_str(&format!(" — accessed by {}", shown.join(", ")));
+            if who.len() > 3 {
+                line.push_str(&format!(" and {} more", who.len() - 3));
+            }
+            lines.push(line);
+        }
+        lines.push(format!(
+            "- … {} more fields not touched by the selected symbols",
+            total - touched
+        ));
+        sections.push(lines.join("\n"));
+    }
+
+    if missing_field_data > 0 {
+        notes.push(format!(
+            "Field-level partial struct views unavailable for {missing_field_data} selected \
+             struct(s): the bridged graph carries no field metadata for them. Re-run with \
+             `context --fields` (or set CODEGRAPH_ANALYSIS_FIELDS=1) to carry field/property \
+             metadata (the analysis snapshot cache rebuilds automatically)."
+        ));
+    }
+    if sections.is_empty() {
+        return (String::new(), 0, notes);
+    }
+    let mut md = String::from(
+        "### Partial struct views\n\nOnly the fields the selected symbols touch are shown \
+         (✓ = accessed, from the index's field metadata).\n\n",
+    );
+    md.push_str(&sections.join("\n\n"));
+    (md, sections.len(), notes)
 }
 
 // =============================================================================
@@ -698,6 +882,139 @@ mod tests {
         assert_eq!(report.entry_point_count, 0);
         assert!(report.notes.iter().any(|n| n.contains("resolved")));
         assert_eq!(report.file_count, 0);
+    }
+
+    // --- partial struct views ---------------------------------------------------
+
+    /// 10 fields, `host`/`port` first — the canonical partial-view fixture.
+    fn ten_fields() -> Vec<partial::FieldInfo> {
+        let mut fields = vec![
+            partial::FieldInfo {
+                name: "host".to_string(),
+                type_str: "string".to_string(),
+                is_public: true,
+            },
+            partial::FieldInfo {
+                name: "port".to_string(),
+                type_str: "number".to_string(),
+                is_public: false,
+            },
+        ];
+        for i in 3..=10 {
+            fields.push(partial::FieldInfo {
+                name: format!("extra{i:02}"),
+                type_str: "string".to_string(),
+                is_public: true,
+            });
+        }
+        fields
+    }
+
+    /// A function touching 2 of a 10-field struct renders the partial view:
+    /// only the touched fields, marked, with an omitted-count line.
+    #[test]
+    fn partial_struct_view_renders_flow_touched_fields() {
+        let mut g = AnalysisGraph::new();
+        let f = g.add_node(node_in(
+            "loadConfig",
+            ANodeKind::Function,
+            "src/load.ts",
+            1,
+            5,
+        ));
+        let s = g.add_node(node_in("BigConfig", ANodeKind::Struct, "src/cfg.ts", 1, 12));
+        g.add_edge(&f, &s, edge(AEdgeKind::UsesType)).unwrap();
+        partial::set_struct_fields(&mut g, &s, &ten_fields()).unwrap();
+        partial::set_accessed_fields(&mut g, &f, &["host".to_string(), "port".to_string()])
+            .unwrap();
+
+        let report = build_analysis_context(
+            &g,
+            Path::new("/nonexistent/codegraph_ctx"),
+            "how does loadConfig use BigConfig",
+            &AnalysisContextOptions::default(),
+        );
+        assert_eq!(report.partial_struct_views, 1, "notes: {:?}", report.notes);
+        assert!(report.markdown.contains("### Partial struct views"));
+        assert!(
+            report
+                .markdown
+                .contains("`BigConfig` — src/cfg.ts (2 of 10 fields accessed)"),
+            "got: {}",
+            report.markdown
+        );
+        assert!(report.markdown.contains("- ✓ `host`: string (pub)"));
+        assert!(report.markdown.contains("- ✓ `port`: number (priv)"));
+        assert!(report.markdown.contains("accessed by `loadConfig`"));
+        assert!(
+            report
+                .markdown
+                .contains("- … 8 more fields not touched by the selected symbols")
+        );
+        // Untouched fields are not expanded in the partial section.
+        assert!(!report.markdown.contains("- ✓ `extra03`"));
+    }
+
+    /// A function touching every field is not a partial view — nothing to
+    /// trim, no section.
+    #[test]
+    fn fully_touched_struct_renders_no_partial_view() {
+        let mut g = AnalysisGraph::new();
+        let f = g.add_node(node_in(
+            "loadConfig",
+            ANodeKind::Function,
+            "src/load.ts",
+            1,
+            5,
+        ));
+        let s = g.add_node(node_in("BigConfig", ANodeKind::Struct, "src/cfg.ts", 1, 12));
+        g.add_edge(&f, &s, edge(AEdgeKind::UsesType)).unwrap();
+        partial::set_struct_fields(&mut g, &s, &ten_fields()).unwrap();
+        let all: Vec<String> = ten_fields().into_iter().map(|fi| fi.name).collect();
+        partial::set_accessed_fields(&mut g, &f, &all).unwrap();
+
+        let report = build_analysis_context(
+            &g,
+            Path::new("/nonexistent/codegraph_ctx"),
+            "how does loadConfig use BigConfig",
+            &AnalysisContextOptions::default(),
+        );
+        assert_eq!(report.partial_struct_views, 0);
+        assert!(!report.markdown.contains("Partial struct views"));
+    }
+
+    /// Default bridge (no field carrying): a selected struct without field
+    /// metadata produces an honest note naming the gate — never a silently
+    /// absent section.
+    #[test]
+    fn struct_without_field_data_notes_honestly() {
+        let mut g = AnalysisGraph::new();
+        let f = g.add_node(node_in(
+            "loadConfig",
+            ANodeKind::Function,
+            "src/load.ts",
+            1,
+            5,
+        ));
+        let s = g.add_node(node_in("BigConfig", ANodeKind::Struct, "src/cfg.ts", 1, 12));
+        g.add_edge(&f, &s, edge(AEdgeKind::UsesType)).unwrap();
+
+        let report = build_analysis_context(
+            &g,
+            Path::new("/nonexistent/codegraph_ctx"),
+            "how does loadConfig use BigConfig",
+            &AnalysisContextOptions::default(),
+        );
+        assert_eq!(report.partial_struct_views, 0);
+        assert!(!report.markdown.contains("Partial struct views"));
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.contains("CODEGRAPH_ANALYSIS_FIELDS")),
+            "expected the field-gate note, got: {:?}",
+            report.notes
+        );
     }
 
     // --- clustered source blocks ----------------------------------------------

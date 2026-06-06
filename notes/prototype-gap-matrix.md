@@ -19,18 +19,23 @@ make codegraph the right way."*
 - **Bridge** = `src/analysis_bridge.rs`: SQLite → analysis graph. Projects
   22 host node kinds onto the prototype's 5 (Function/Struct/Enum/Module/
   Trait); **drops** Field/Property/EnumMember/TypeAlias/Constant/Parameter/
-  Import/Export/Route/Component nodes; carries Calls/Contains/Implements/
-  UsesType/References edges + `signature` in metadata; spans carry
-  line/column plus tree-sitter byte offsets (schema v5; pre-v5 rows
-  degrade to `byte_range: 0..0`).
+  Import/Export/Route/Component nodes (Field/Property rows are folded into
+  parent metadata — name-array by default, typed engine `FieldInfo` under
+  `BridgeOptions::include_fields`, see the `partial.rs` row); carries
+  Calls/Contains/Implements/UsesType/References edges + `signature` in
+  metadata; spans carry line/column plus tree-sitter byte offsets (schema
+  v5; pre-v5 rows degrade to `byte_range: 0..0`).
 - **Exposed today** (`src/analyze.rs` + `src/analyze_ir.rs` +
   `src/bin/codegraph.rs`; updated 2026-06-06 after the close-list
   execution): `codegraph analyze {query, complexity, communities,
   dominators, slice, cycles, impact, taint, co-change, coverage, validate,
   traits, centrality, critical, export, types, generics, boundaries,
   capabilities, schema, stats, cfg, dataflow, diff}` plus
-  `context --budget --strategy analysis`. The close list below is executed
-  except items 16, 18, and 20 (see their entries).
+  `context --budget --strategy analysis [--fields]`. The close list below
+  is executed except item 20 (see its entry; 16 closed 2026-06-06 via
+  `analyze slice|taint --source` + the source-level `preconditions`
+  enrichment; 18 closed 2026-06-06 via `context --fields` /
+  `CODEGRAPH_ANALYSIS_FIELDS=1` — fields ride node *metadata*, not nodes).
 - **LANDED (formerly in-flight)**: (a) the `JFC_*` →
   `CODEGRAPH_ANALYSIS_*` rebrand (env vars, cache dirs, fingerprint
   domains); (b) the analysis-graph snapshot cache under
@@ -109,7 +114,7 @@ landed.)
 | Event-sourced persistence (`persistence.rs`) | Base snapshot + ordered `GraphEvent`s, undo via replay, versioned on-disk schema | Host SQLite is state-based; the landed snapshot cache covers fast reload | UNEXPOSED | Recommend **leave internal / do not expose**: SQLite + the snapshot cache make event-sourcing redundant for codegraph's read-mostly use. Revisit only if undo/edit tooling appears. |
 | Query history (`history.rs`) | Recent-query ring buffer for inspection | None | UNEXPOSED | Low priority; only meaningful in a daemon/TUI. If the daemon hosts a session, surface as a debug log, not a tool. |
 | Base+branch-diff overlay (`overlay.rs`) | Shared base snapshot + per-branch diff (postcard/bincode), `diff_against_base`/`apply_diff_to_graph` | `codegraph analyze diff [--base <snapshot\|auto>]`: working-tree vs base over the snapshot cache — the cache keeps one rotated `.prev` generation as the auto base; explicit `--base` loads any snapshot file/cache dir (engine entry: `overlay::{save,load}_snapshot_bincode`) | EXPOSED — `analyze diff` | Shipped (close list 21). The team/monorepo shared-base distribution story (CI-published base snapshots) remains future work on top. |
-| Partial struct views (`partial.rs`) | Field-level granularity for context windows (`get_partial_struct`, accessed-field markers) | None — and **blocked**: bridge drops Field/Property nodes (host SQLite *has* them) | UNEXPOSED | Extend `map_node_kind` to optionally carry Field nodes (flag-gated to avoid node explosion), then surface in `context --strategy analysis` output for big structs/classes. Entry: `partial::get_partial_struct`. |
+| Partial struct views (`partial.rs`) | Field-level granularity for context windows (`get_partial_struct`, accessed-field markers) | `codegraph context "<task>" --strategy analysis --fields` (or `CODEGRAPH_ANALYSIS_FIELDS=1`, which also covers every `analyze` command): the bridge registers each Field/Property row contained in a Struct as typed `FieldInfo` **metadata** via `partial::set_struct_fields` (no Field nodes — node count unchanged, which beats the originally-planned node carrying), and function→field `references`/`type_of` edges as `partial::set_accessed_fields`; `context --strategy analysis` then renders a "Partial struct views" section (only flow-touched fields, ✓-marked, with visibility + accessor names) when a selected function touches a strict subset of a selected struct's fields. Snapshot cache is keyed by the flag (no cross-state leaks). Honest notes otherwise: fieldless structs and the `CODEGRAPH_ANALYSIS_CAP_PARTIAL_STRUCT=0` kill-switch each name the gate. Data reality: C#/Java/Scala extractors emit field/property rows; **no host extractor emits function→field access edges yet** (validated on Java member access), so real-world views need that extraction follow-up — registered-data rendering is pinned by `tests/analyze_fields_test.rs` | EXPOSED — `context --strategy analysis --fields` | Done (close list 18) via metadata, not bridged Field nodes. Extraction-side follow-up: emit function→field `references` edges so views light up without planted data. |
 | Worktree mismatch detection (`worktree.rs`) | Refuses to silently borrow a parent checkout's cached index | Host `src/sync/worktree.rs`: `detect_worktree_index_mismatch` + user-facing warnings, already wired into CLI (verified) | SUPERSEDED | Host version is canonical; analysis copy only needs to guard the snapshot cache — reuse the host check, delete the duplicate when convenient. |
 | Pass framework (`pass.rs`) | Pre/postcondition `GraphFlag`s + `PassManager` ordering | `PassManager` runs `PossibleTypesPass` inside `analyze types`; `CoveragePass` semantics ride `--lcov` annotation | EXPOSED (substrate) | Internal orchestration only; no user surface. |
 
@@ -134,7 +139,7 @@ landed.)
 | Control-flow graphs (`cfg.rs`, `cfg_rules.rs`) | Per-function basic blocks + typed edges; rules for rust/ts/js/python/go/java/c/cpp/php (+ more) — but only the Rust *adapter* populates `node.cfg` upstream (ADAPTER_PARITY) | `codegraph analyze cfg <symbol>`: re-parse anchor pattern → `cfg::build_cfg`; rule-covered languages only, honest capability note otherwise. DSL `cfg` operator still returns empty over the bridge (IR not persisted on nodes) | EXPOSED — `analyze cfg` (×2) | Shipped per the close list (Tier 2, item 14). |
 | Per-function dataflow (`dataflow.rs`, `dataflow_rules.rs`) | Param flows, returns, assignments, arg flows, mutation detection (Rust-extraction-only upstream) | `codegraph analyze dataflow <symbol>`: re-parse anchor pattern → `dataflow::extract_dataflow`, gated by `dataflow_rules` coverage. DSL `dataflow` operator still empty over the bridge | EXPOSED — `analyze dataflow` (×2) | Shipped per the close list (Tier 2, item 15). |
 | Complexity metrics (`complexity.rs`, `complexity_rules.rs`) | Cyclomatic/cognitive/nesting/Halstead/LOC/MI, 12+ language rule tables | `analyze complexity [--top N]` (re-parse pattern, skipped-language breakdown) | EXPOSED (×2) | As-is — this is the reference implementation of the re-parse pattern. |
-| Precondition predicates (`predicates.rs`) | Backward control-flow predicate extraction (`extract_predicates` needs source + byte_pos) powering the DSL `preconditions` renderer | The call-graph flavor is live (`analyze query '... | preconditions'`); the source-level `extract_predicates` enrichment is only used by the engine's own renderer, which the host query path does not drive | UNEXPOSED (source-level; call-graph flavor EXPOSED via `analyze query`) | Node byte ranges are real on v5 indexes now; wiring `extract_predicates` into the host `analyze query` rendering remains open. |
+| Precondition predicates (`predicates.rs`) | Backward control-flow predicate extraction (`extract_predicates` needs source + byte_pos) powering the DSL `preconditions` renderer | `analyze query '... | preconditions'` now renders both flavors: the call-graph caller walk **and** the source-level guards — `query_report_with_sources` detects the operator, and for every Calls edge between result nodes re-reads the call site under the project root and runs `extract_predicates` (call-site line/col → byte position; anchoring honesty-gated on v5 node byte offsets). Guards render outermost-first in human + `--json` output (`preconditions` section on the query report); pre-v5 rows, non-Rust call sites, unreadable files, and stale positions each get a counted note instead of fabricated or silently-missing guards | EXPOSED — `analyze query '... \| preconditions'` (source-level) | Done for Rust (the engine extractor is tree-sitter-Rust-specific); per-language predicate analogues remain engine-side future work. |
 
 ### 7. Interprocedural analysis — 11 modules
 
@@ -169,7 +174,7 @@ landed.)
 
 | capability (modules) | what the prototype does | codegraph equivalent today | gap status | right-way placement |
 |---|---|---|---|---|
-| CPG report façade (`analysis_tools.rs`) | `program_slice`/`data_dependencies`/`taint_flow` as compact source-annotated, path-capped text reports | `analyze slice`/`taint` emit their own report shapes without source annotation | UNEXPOSED (close list 16 — open) | Add `--source` to `analyze slice`/`taint` rendering via these functions (line-span-based annotation works today; value-level fidelity available via the landed IR path). |
+| CPG report façade (`analysis_tools.rs`) | `program_slice`/`data_dependencies`/`taint_flow` as compact source-annotated, path-capped text reports | `analyze slice --source` (annotated slice + the data-dependency companion) and `analyze taint <src> <snk> --source` (annotated flows, capped with the engine's "raise max_paths" trailer) render these functions verbatim; `--json` wraps them in the standard envelope (`sliceSource`/`taintSource`) with a byte-offset coverage block. Line-span annotation works on any index; value-level fidelity rides v5 byte offsets — the host note states which ran, the pre-v5 re-index fix, and warns when the cwd is not the project root (the façade resolves the graph's relative paths against the cwd). Mutually exclusive with `--value-level` (same oracle, different renderer) | EXPOSED — `analyze slice\|taint --source` | Done (close list 16). |
 | Token-budgeted formatting (`formatting.rs`) | `format_query_result` under a token budget; `FormattedOutput` | The landed `analyze query` renders its own host-side report shapes (`QueryReport`) directly over the graph; `format_query_result` is not on the path | UNEXPOSED (engine-internal) | Stays internal unless the host ever adopts the engine's token-budgeted renderer. |
 | Stable JSON schemas + envelopes (`schema.rs`) | JSON Schemas for QueryResult/EntrypointSummary/ContextResult/FormattedOutput; `Envelope` with payload-kind tagging; `json_schema_for` | `codegraph analyze schema <kind>` prints `json_schema_for(kind)`; every `analyze ... --json` is wrapped in the host `ReportEnvelope` (mirrors the engine's `Envelope` wire shape — the engine type's closed `PayloadKind` can't carry host report kinds, see `notes/close-tier1-needs.md`) | EXPOSED — `analyze schema` + the `--json` envelope | Shipped (item 12). |
 | High-level facade (`session.rs`) | `GraphSession`: query memoization, edit invalidation, co_changes, context, search/callers/callees/impact/node/explore/grep/outline, overlay open/save | Library facade only: `BridgeResult::into_session` exists, but the landed `analyze query`/`context --strategy analysis` drive the bridged graph directly. Its `explore/search/node/grep/outline` duplicate host MCP tools | UNEXPOSED (library facade) | Keep as a library convenience. Its agent-shaped methods (explore/search/node) are SUPERSEDED by host MCP tools — never expose them as a second agent surface. |
@@ -178,7 +183,7 @@ landed.)
 
 ## CLOSE LIST — prioritized UNEXPOSED items worth exposing
 
-Status update 2026-06-06: every item below is **CLOSED** except 16, 18, and
+Status update 2026-06-06 (rev 3: items 16 and 18 closed): every item below is **CLOSED** except
 20 (marked OPEN with rationale).
 
 Tier 1 — works today over the bridge, zero extraction changes:
@@ -201,12 +206,12 @@ Tier 2 — needs the complexity-style source re-parse anchor (host grammars, lin
 
 14. **CLOSED — `codegraph analyze cfg <symbol>`**: `cfg::build_cfg` + `cfg_rules::CfgRules::for_language`, honesty-gated with skip notes.
 15. **CLOSED — `codegraph analyze dataflow <symbol>`**: `dataflow::extract_dataflow` + `dataflow_rules`, same gating.
-16. **OPEN — source-annotated slice/taint reports**: `analyze slice|taint --source` → `analysis_tools::{program_slice, data_dependencies, taint_flow}`. Not yet exposed.
+16. **CLOSED — source-annotated slice/taint reports**: `analyze slice|taint --source` → `analysis_tools::{program_slice, data_dependencies, taint_flow}` rendered verbatim (`--json` kinds `sliceSource`/`taintSource` under the standard envelope, with byte-offset coverage + honesty notes; mutually exclusive with `--value-level`). The same change wired the source-level `predicates.rs` row: `analyze query '… | preconditions'` now shows the actual guarding conditions (Rust; pre-v5 indexes get the re-index note). Tests: `tests/analyze_source_reports_test.rs`.
 
 Tier 3 — blocked on schema/architecture work (do these to unblock, don't expose half-bridged):
 
 17. **CLOSED — byte ranges in the SQLite schema (v5)**: unlocked `analyze slice|taint --value-level` (`src/analyze_ir.rs`: host-grammar IR lowering → `slicing::PointsToOracle` over `points_to`, `taint_v2::analyze`); reports' `granularity` flips honestly, pre-v5 indexes degrade with a re-index note.
-18. **OPEN — carry Field nodes through the bridge (flag-gated)** → `partial::get_partial_struct` field-level views in `context --strategy analysis` output. The bridge folds field *names* into parent metadata but does not carry Field nodes.
+18. **CLOSED — field metadata through the bridge (flag-gated)** → `codegraph context "<task>" --strategy analysis --fields` (CLI flag, ORs with `CODEGRAPH_ANALYSIS_FIELDS=1`). Implemented as node **metadata**, not bridged Field nodes: `BridgeOptions::include_fields` registers Struct-contained Field/Property rows via `partial::set_struct_fields` (typed name/type/visibility, signature-derived) and function→field access edges via `partial::set_accessed_fields`, then `context --strategy analysis` renders flow-touched partial views via `partial::try_get_partial_struct` (every `Err` variant becomes a one-line honest note, per the engine guidance). Zero node-count delta, snapshot cache keyed by the flag state, invalid names counted in `BridgeStats::fields_skipped_invalid`. Tests: `tests/analyze_fields_test.rs` (bridge contract, renderer, cache isolation, CLI end-to-end). Remaining extraction-side gap (tracked in the §4 row): no host extractor emits function→field access edges yet.
 19. **CLOSED — label-constrained reachability in the DSL**: the `reachable via "<pattern>" [incoming]` operator (`label_reachability::{parse_pattern, reachable_targets}`) ships in `analyze query`.
 20. **OPEN — daemon-resident GraphSession**: hold the bridged session in the MCP daemon, invalidate on sync events via `reactive::ReactiveDb` *or* `incremental` (pick one). Future: a perf optimization, not a missing capability — every analysis already runs correctly via the snapshot cache; a resident session would only shave the per-invocation snapshot load.
 21. **CLOSED — `codegraph analyze diff [--base <snapshot|auto>]`** (working-tree vs base over the snapshot cache): nodes/edges added/removed/changed, complexity deltas for changed functions (the diff run writes a `complexity.json` sidecar so the next diff has before-metrics), newly-introduced cycles, and the impact set of the delta. The cache keeps one rotated `.prev` generation (`auto` = the last cached snapshot before the current fingerprint); explicit `--base` loads a snapshot file or cache dir via `overlay::load_snapshot_bincode`. No base → honest note, exit 0.
@@ -234,7 +239,7 @@ N/A (jfc-host-specific):
 
 | status | count | modules |
 |---|---|---|
-| EXPOSED | 55 | lib, graph, nodes, edges, index, csr, frontier, traversal, bfs_directed, dominators, analysis, communities, complexity, complexity_rules, slicing, cascade, polyglot, overlay, pass, hll, label_reachability, ir, ir_map, cfg, cfg_rules, dataflow, dataflow_rules, points_to, possible_types, monomorphize, taint_v2, taint_naming, traits_hierarchy, co_change, coverage, validation, schema, fingerprint, cache, data_dir, capabilities, dsl/{mod, aggregate, plan, provenance, stream}, context/{mod, budget, clustering, dataflow_seed, expansion, heuristics, render, resolver, retrieval_gate} |
-| UNEXPOSED | 12 | incremental, reactive, persistence, partial, history, strata, predicates (source-level), analysis_tools, context/measure, kind_specific, formatting, session |
+| EXPOSED | 58 | lib, graph, nodes, edges, index, csr, frontier, traversal, bfs_directed, dominators, analysis, communities, complexity, complexity_rules, slicing, cascade, polyglot, overlay, pass, hll, label_reachability, ir, ir_map, cfg, cfg_rules, dataflow, dataflow_rules, points_to, possible_types, monomorphize, taint_v2, taint_naming, traits_hierarchy, co_change, coverage, validation, schema, fingerprint, cache, data_dir, capabilities, predicates, analysis_tools, partial, dsl/{mod, aggregate, plan, provenance, stream}, context/{mod, budget, clustering, dataflow_seed, expansion, heuristics, render, resolver, retrieval_gate} |
+| UNEXPOSED | 9 | incremental, reactive, persistence, history, strata, context/measure, kind_specific, formatting, session |
 | SUPERSEDED | 21 | adapter/{mod + 12 languages}, builder, call_site, resolver, content_index, framework_routes, worktree, symbols, closure |
 | N/A | 1 | enrichment |

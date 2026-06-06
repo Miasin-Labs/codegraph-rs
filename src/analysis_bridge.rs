@@ -43,6 +43,44 @@
 //! `Function` node under the [`UNRESOLVED_FILE`] pseudo-path — the same
 //! shape the analysis crate's own adapters and LSP-enrichment layer use.
 //!
+//! ## Field carrying (flag-gated, off by default)
+//!
+//! [`BridgeOptions::include_fields`] (env: [`ANALYSIS_FIELDS_ENV`] —
+//! `CODEGRAPH_ANALYSIS_FIELDS=1`) additionally carries the index's
+//! `field`/`property` nodes through the bridge using the analysis engine's
+//! **typed partial-struct metadata contract**
+//! ([`codegraph_analysis::partial::set_struct_fields`] /
+//! [`codegraph_analysis::partial::set_accessed_fields`]):
+//!
+//! - every `field`/`property` child of a mapped `Struct` (via `contains`
+//!   edges) is registered as a typed `FieldInfo` (name, best-effort type
+//!   from the row's signature, visibility) under the engine's
+//!   `fields` key — replacing the legacy JSON name-array fold for that
+//!   struct;
+//! - every `references`/`type_of` edge from a mapped `Function` to a
+//!   skipped `field`/`property` registers the engine's comma-separated
+//!   `accessed_fields` annotation — replacing the JSON-array fold for
+//!   that function.
+//!
+//! That is what lights up `partial::get_partial_struct` (field-level
+//! struct views in `context --strategy analysis`) over bridged data.
+//!
+//! **Node-count tradeoff** (why this is off by default): fields ride node
+//! *metadata*, never nodes — the analysis graph's node count is identical
+//! with the flag on or off, deliberately avoiding the node explosion that
+//! per-field nodes would cause (field rows commonly outnumber
+//! struct/class rows 5:1+ on real codebases). The cost is metadata
+//! payload: per-field type strings on every struct and accessed-field
+//! lists on every function grow the in-memory graph, the on-disk snapshot,
+//! and the graph fingerprint surface. Most analyses never read field data,
+//! so the default stays lean. Field names that would corrupt the engine's
+//! encoding (containing `;`/`:`/`,`) are skipped and counted
+//! ([`BridgeStats::fields_skipped_invalid`]) — never registered mangled.
+//!
+//! The snapshot-cache envelope records the flag: a cached graph built
+//! without fields is **never** served to a with-fields request (or vice
+//! versa) — the mismatch is a cache miss and the graph is re-bridged.
+//!
 //! Every row that cannot be represented under the analysis graph's edge
 //! invariants is **skipped, counted, and logged** ([`BridgeStats`]) — never
 //! inserted in a shape the engine rejects, and never a panic.
@@ -105,6 +143,7 @@ use codegraph_analysis::nodes::{
     Visibility as AVisibility,
 };
 use codegraph_analysis::overlay::{load_snapshot_bincode, save_snapshot_bincode};
+use codegraph_analysis::partial::{self, FieldInfo as AFieldInfo};
 use codegraph_analysis::session::GraphSession;
 use serde::{Deserialize, Serialize};
 
@@ -117,6 +156,47 @@ use crate::types::{EdgeKind, Node, NodeKind, Visibility};
 /// `UnresolvedCall` edges. Deterministic by construction so rebuilds
 /// produce identical placeholder `NodeId`s.
 pub const UNRESOLVED_FILE: &str = "<unresolved>";
+
+/// Environment variable that turns on field carrying for the CLI bridge
+/// path ([`build_analysis_graph_cached`]): `CODEGRAPH_ANALYSIS_FIELDS=1`
+/// (or `true`). See the module docs for what it does and what it costs.
+pub const ANALYSIS_FIELDS_ENV: &str = "CODEGRAPH_ANALYSIS_FIELDS";
+
+// =============================================================================
+// Options
+// =============================================================================
+
+/// Behavior switches for the bridge. Off-by-default flags keep the default
+/// graph byte-identical to what pre-options builds produced.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BridgeOptions {
+    /// Carry `field`/`property` rows through the bridge as the analysis
+    /// engine's typed partial-struct metadata (see module docs: "Field
+    /// carrying"). Off by default — adds metadata weight most analyses
+    /// never read. Node count is unchanged either way.
+    pub include_fields: bool,
+}
+
+impl BridgeOptions {
+    /// Read the flag gate from the process environment
+    /// ([`ANALYSIS_FIELDS_ENV`]). Anything other than `1`/`true`
+    /// (case-insensitive) — including unset — is off.
+    pub fn from_env() -> Self {
+        Self::from_env_value(std::env::var_os(ANALYSIS_FIELDS_ENV))
+    }
+
+    /// Env-free core of [`Self::from_env`] so tests can exercise the gate
+    /// without process-global env mutation.
+    fn from_env_value(value: Option<OsString>) -> Self {
+        let include_fields = value
+            .map(|v| {
+                let v = v.to_string_lossy().trim().to_ascii_lowercase();
+                v == "1" || v == "true"
+            })
+            .unwrap_or(false);
+        Self { include_fields }
+    }
+}
 
 // =============================================================================
 // Stats
@@ -167,6 +247,20 @@ pub struct BridgeStats {
     /// carry the degraded `byte_range: 0..0`, so IR-backed analyses skip
     /// them; a re-index with a v5+ binary backfills tree-sitter offsets.
     pub nodes_missing_byte_range: usize,
+    /// Typed field entries registered onto `Struct` nodes via the engine's
+    /// partial-struct contract. Always 0 unless
+    /// [`BridgeOptions::include_fields`] is on. `serde(default)` keeps
+    /// pre-fields cache envelopes readable (their correct value is 0).
+    #[serde(default)]
+    pub struct_fields_registered: usize,
+    /// `Function` nodes annotated with the engine's `accessed_fields`
+    /// metadata. Always 0 unless [`BridgeOptions::include_fields`] is on.
+    #[serde(default)]
+    pub accessed_fields_registered: usize,
+    /// Field/accessed-field names skipped because they would corrupt the
+    /// engine's metadata encoding (empty, or containing `;`/`:`/`,`).
+    #[serde(default)]
+    pub fields_skipped_invalid: usize,
     /// Skipped node counts keyed by codegraph node kind.
     pub skipped_node_kinds: BTreeMap<String, usize>,
     /// Skipped edge counts keyed by reason.
@@ -286,6 +380,46 @@ fn map_visibility(v: Option<Visibility>) -> AVisibility {
     }
 }
 
+/// A name the engine's partial-struct metadata encoding can carry verbatim
+/// (its separators are `;` between entries, `:` inside an entry, `,` in
+/// accessed-field lists).
+fn engine_safe_field_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains([';', ':', ','])
+}
+
+/// Best-effort field type from a `field`/`property` row's stored signature.
+///
+/// Host extractors write field signatures in two shapes: annotation-style
+/// `name: Type` (TS/Swift/Rust) and declaration-style `Type name` /
+/// `Type $name` (Java/C#/PHP). Anything else — including a missing
+/// signature — degrades to an empty type string, which the engine encoding
+/// round-trips fine (the partial view simply shows no type).
+fn field_type_from(node: &Node) -> String {
+    let Some(sig) = node.signature.as_deref() else {
+        return String::new();
+    };
+    let sig = sig.trim();
+    let name = node.name.as_str();
+    // "name: Type"
+    if let Some(rest) = sig.strip_prefix(name) {
+        if let Some(ty) = rest.trim_start().strip_prefix(':') {
+            return sanitize_field_type(ty.trim());
+        }
+    }
+    // "Type name" / "Type $name" — the leading text is the type.
+    if let Some(prefix) = sig.strip_suffix(name) {
+        let prefix = prefix.trim_end().trim_end_matches('$').trim_end();
+        return sanitize_field_type(prefix);
+    }
+    String::new()
+}
+
+/// The engine reserves `;` as its entry separator; a (pathological) type
+/// containing it is carried with the separator blanked, never dropped.
+fn sanitize_field_type(ty: &str) -> String {
+    ty.replace(';', " ").trim().to_string()
+}
+
 fn node_span(node: &Node) -> ASpan {
     ASpan {
         file: PathBuf::from(&node.file_path),
@@ -338,12 +472,21 @@ fn read_all_edges(queries: &QueryBuilder) -> Result<Vec<EdgeRow>> {
 // Bridge
 // =============================================================================
 
-/// Build a `codegraph-analysis` graph from an indexed codegraph database.
+/// Build a `codegraph-analysis` graph from an indexed codegraph database
+/// with default [`BridgeOptions`] (no field carrying).
 ///
 /// Pure read — the database is never mutated. See the module docs for the
 /// kind mappings and the skip/fold rules; see [`BridgeStats`] for what was
 /// counted along the way.
 pub fn build_analysis_graph(queries: &QueryBuilder) -> Result<BridgeResult> {
+    build_analysis_graph_with_options(queries, &BridgeOptions::default())
+}
+
+/// [`build_analysis_graph`] with explicit [`BridgeOptions`].
+pub fn build_analysis_graph_with_options(
+    queries: &QueryBuilder,
+    options: &BridgeOptions,
+) -> Result<BridgeResult> {
     let mut stats = BridgeStats::default();
     let mut graph = AnalysisGraph::new();
 
@@ -383,6 +526,12 @@ pub fn build_analysis_graph(queries: &QueryBuilder) -> Result<BridgeResult> {
     let mut fields: HashMap<ANodeId, BTreeSet<String>> = HashMap::new();
     let mut variants: HashMap<ANodeId, BTreeSet<String>> = HashMap::new();
     let mut accessed_fields: HashMap<ANodeId, BTreeSet<String>> = HashMap::new();
+
+    // Typed field carrying (include_fields only): full `FieldInfo` per
+    // Struct, keyed by field name for dedup. BTreeMaps keep the post-insert
+    // registration pass in a deterministic order (each registration stamps
+    // a graph revision, so order affects the fingerprint).
+    let mut engine_fields: BTreeMap<ANodeId, BTreeMap<String, AFieldInfo>> = BTreeMap::new();
 
     let mut pending_edges: Vec<(ANodeId, ANodeId, AEdgeData)> = Vec::new();
 
@@ -457,6 +606,27 @@ pub fn build_analysis_graph(queries: &QueryBuilder) -> Result<BridgeResult> {
                         .entry(src_aid.clone())
                         .or_default()
                         .insert(tgt_node.name.clone());
+                    // Typed carrying: only Struct nodes — the engine's
+                    // partial-struct contract is Struct-only (Enum/Trait
+                    // parents keep the JSON name fold).
+                    if options.include_fields && *src_akind == ANodeKind::Struct {
+                        if engine_safe_field_name(&tgt_node.name) {
+                            engine_fields
+                                .entry(src_aid.clone())
+                                .or_default()
+                                .entry(tgt_node.name.clone())
+                                .or_insert_with(|| AFieldInfo {
+                                    name: tgt_node.name.clone(),
+                                    type_str: field_type_from(tgt_node),
+                                    is_public: matches!(
+                                        map_visibility(tgt_node.visibility),
+                                        AVisibility::Public
+                                    ),
+                                });
+                        } else {
+                            stats.fields_skipped_invalid += 1;
+                        }
+                    }
                     stats.edges_enriched += 1;
                 }
                 EdgeKind::Contains
@@ -481,6 +651,25 @@ pub fn build_analysis_graph(queries: &QueryBuilder) -> Result<BridgeResult> {
                 _ => skip_edge(&mut stats, "target_not_mapped"),
             },
             _ => skip_edge(&mut stats, "source_not_mapped"),
+        }
+    }
+
+    // Engine-valid accessed-field name lists per Function (include_fields
+    // only): names the engine's comma-separated encoding cannot carry are
+    // skipped + counted; functions whose every accessed name is invalid
+    // keep the JSON fold instead.
+    let mut engine_accessed: BTreeMap<ANodeId, Vec<String>> = BTreeMap::new();
+    if options.include_fields {
+        for (aid, names) in &accessed_fields {
+            let valid: Vec<String> = names
+                .iter()
+                .filter(|n| engine_safe_field_name(n))
+                .cloned()
+                .collect();
+            stats.fields_skipped_invalid += names.len() - valid.len();
+            if !valid.is_empty() {
+                engine_accessed.insert(aid.clone(), valid);
+            }
         }
     }
 
@@ -509,18 +698,24 @@ pub fn build_analysis_graph(queries: &QueryBuilder) -> Result<BridgeResult> {
             metadata.insert("signature".to_string(), sig.clone());
         }
         // BTreeSet iteration is sorted → deterministic JSON arrays →
-        // deterministic graph fingerprints.
+        // deterministic graph fingerprints. Nodes the typed registration
+        // pass (4b) will cover skip the legacy JSON fold — one metadata
+        // key must never hold two formats.
         if let Some(set) = fields.get(aid) {
-            let arr: Vec<&String> = set.iter().collect();
-            metadata.insert("fields".to_string(), serde_json::to_string(&arr)?);
+            if !engine_fields.contains_key(aid) {
+                let arr: Vec<&String> = set.iter().collect();
+                metadata.insert("fields".to_string(), serde_json::to_string(&arr)?);
+            }
         }
         if let Some(set) = variants.get(aid) {
             let arr: Vec<&String> = set.iter().collect();
             metadata.insert("variants".to_string(), serde_json::to_string(&arr)?);
         }
         if let Some(set) = accessed_fields.get(aid) {
-            let arr: Vec<&String> = set.iter().collect();
-            metadata.insert("accessed_fields".to_string(), serde_json::to_string(&arr)?);
+            if !engine_accessed.contains_key(aid) {
+                let arr: Vec<&String> = set.iter().collect();
+                metadata.insert("accessed_fields".to_string(), serde_json::to_string(&arr)?);
+            }
         }
 
         if node.byte_range().is_none() {
@@ -542,6 +737,31 @@ pub fn build_analysis_graph(queries: &QueryBuilder) -> Result<BridgeResult> {
             dataflow: None,
         });
         stats.nodes_mapped += 1;
+    }
+
+    // --- 4b. Typed field registration (include_fields only) -----------------
+    // Routed through the engine's partial-struct API so encoding + kind
+    // validation live in one place (`codegraph_analysis::partial`). Inputs
+    // are pre-validated, so an Err here is a bridge bug — logged + visible
+    // as a missing registration, never a panic.
+    for (aid, field_map) in &engine_fields {
+        let infos: Vec<AFieldInfo> = field_map.values().cloned().collect();
+        match partial::set_struct_fields(&mut graph, aid, &infos) {
+            Ok(()) => stats.struct_fields_registered += infos.len(),
+            Err(e) => log_debug(
+                "analysis bridge: struct-field registration rejected",
+                Some(&serde_json::json!({ "error": e.to_string() })),
+            ),
+        }
+    }
+    for (aid, names) in &engine_accessed {
+        match partial::set_accessed_fields(&mut graph, aid, names) {
+            Ok(()) => stats.accessed_fields_registered += 1,
+            Err(e) => log_debug(
+                "analysis bridge: accessed-field registration rejected",
+                Some(&serde_json::json!({ "error": e.to_string() })),
+            ),
+        }
     }
 
     // --- 5. Insert edges -----------------------------------------------------
@@ -668,6 +888,10 @@ pub fn build_analysis_graph(queries: &QueryBuilder) -> Result<BridgeResult> {
             "unresolvedMapped": stats.unresolved_mapped,
             "placeholderNodes": stats.placeholder_nodes,
             "nodesMissingByteRange": stats.nodes_missing_byte_range,
+            "includeFields": options.include_fields,
+            "structFieldsRegistered": stats.struct_fields_registered,
+            "accessedFieldsRegistered": stats.accessed_fields_registered,
+            "fieldsSkippedInvalid": stats.fields_skipped_invalid,
             "skippedNodeKinds": stats.skipped_node_kinds,
             "skippedEdgeReasons": stats.skipped_edge_reasons,
         })),
@@ -732,6 +956,13 @@ struct CacheMeta {
     schema_version: u32,
     host_version: String,
     index_fingerprint: u64,
+    /// [`BridgeOptions::include_fields`] the snapshot was bridged with.
+    /// Checked on load so with-fields and without-fields graphs never
+    /// cross-contaminate through the cache. `serde(default)` (= false)
+    /// keeps pre-fields envelopes valid — those snapshots really were
+    /// built without fields.
+    #[serde(default)]
+    include_fields: bool,
     /// Sorted by codegraph id for deterministic bytes on disk.
     id_map: Vec<(String, ANodeId)>,
     stats: BridgeStats,
@@ -842,11 +1073,18 @@ fn read_cache_meta(path: &Path) -> Option<CacheMeta> {
 }
 
 /// Try to serve a [`BridgeResult`] from the on-disk snapshot. Any failure —
-/// missing files, decode errors, schema/host-version/fingerprint mismatch —
-/// returns `None` (cache miss), never an error.
-fn load_cache(cache_dir: &Path, expected_fingerprint: u64) -> Option<BridgeResult> {
+/// missing files, decode errors, schema/host-version/fingerprint mismatch,
+/// or a snapshot bridged under a different `include_fields` flag — returns
+/// `None` (cache miss), never an error.
+fn load_cache(
+    cache_dir: &Path,
+    expected_fingerprint: u64,
+    options: &BridgeOptions,
+) -> Option<BridgeResult> {
     let meta = read_cache_meta(&cache_dir.join(CACHE_META_FILE))?;
-    if meta.index_fingerprint != expected_fingerprint {
+    if meta.index_fingerprint != expected_fingerprint
+        || meta.include_fields != options.include_fields
+    {
         return None;
     }
     let loaded = load_snapshot_bincode(&cache_dir.join(GRAPH_SNAPSHOT_FILE)).ok()?;
@@ -909,6 +1147,7 @@ fn store_cache(
     cache_dir: &Path,
     project_root: &Path,
     index_fingerprint: u64,
+    options: &BridgeOptions,
     result: &BridgeResult,
 ) -> Result<()> {
     fs::create_dir_all(cache_dir)?;
@@ -933,6 +1172,7 @@ fn store_cache(
         schema_version: SNAPSHOT_CACHE_SCHEMA_VERSION,
         host_version: env!("CARGO_PKG_VERSION").to_string(),
         index_fingerprint,
+        include_fields: options.include_fields,
         id_map,
         stats: result.stats.clone(),
     };
@@ -1139,21 +1379,48 @@ pub fn load_explicit_base_snapshot(path: &Path) -> Result<BaseSnapshot> {
 /// — the graph is rebuilt from SQL and the cache is refreshed best-effort
 /// (a store failure is logged and ignored; the fresh result is returned
 /// regardless).
+///
+/// This is the CLI bridge path, so [`BridgeOptions`] come from the process
+/// environment ([`BridgeOptions::from_env`]) — `CODEGRAPH_ANALYSIS_FIELDS=1`
+/// turns on field carrying for every `analyze`/`context --strategy analysis`
+/// invocation without per-command plumbing.
 pub fn build_analysis_graph_cached(
     queries: &QueryBuilder,
     project_root: &Path,
     use_cache: bool,
 ) -> Result<CachedBridge> {
+    build_analysis_graph_cached_with_options(
+        queries,
+        project_root,
+        use_cache,
+        &BridgeOptions::from_env(),
+    )
+}
+
+/// [`build_analysis_graph_cached`] with explicit [`BridgeOptions`].
+///
+/// The cache key incorporates the options (via the meta envelope), so a
+/// snapshot bridged under one flag state is never served to the other —
+/// the mismatch rebuilds and overwrites in place (same fingerprint → no
+/// `.prev` rotation, so the `analyze diff --base auto` generation is not
+/// clobbered by flag flips).
+pub fn build_analysis_graph_cached_with_options(
+    queries: &QueryBuilder,
+    project_root: &Path,
+    use_cache: bool,
+    options: &BridgeOptions,
+) -> Result<CachedBridge> {
     let fingerprint = compute_index_fingerprint(queries)?;
     let cache_dir = analysis_cache_dir(project_root);
 
     if use_cache {
-        if let Some(result) = load_cache(&cache_dir, fingerprint) {
+        if let Some(result) = load_cache(&cache_dir, fingerprint, options) {
             log_debug(
                 "analysis cache: snapshot hit",
                 Some(&serde_json::json!({
                     "cacheDir": cache_dir.display().to_string(),
                     "indexFingerprint": format!("{fingerprint:016x}"),
+                    "includeFields": options.include_fields,
                 })),
             );
             return Ok(CachedBridge {
@@ -1163,8 +1430,8 @@ pub fn build_analysis_graph_cached(
         }
     }
 
-    let result = build_analysis_graph(queries)?;
-    if let Err(err) = store_cache(&cache_dir, project_root, fingerprint, &result) {
+    let result = build_analysis_graph_with_options(queries, options)?;
+    if let Err(err) = store_cache(&cache_dir, project_root, fingerprint, options, &result) {
         log_debug(
             "analysis cache: store failed (continuing without cache)",
             Some(&serde_json::json!({
@@ -1304,6 +1571,109 @@ mod tests {
     }
 
     #[test]
+    fn bridge_options_env_gate_parsing() {
+        let on = |v: &str| BridgeOptions::from_env_value(Some(OsString::from(v))).include_fields;
+        assert!(!BridgeOptions::from_env_value(None).include_fields);
+        assert!(on("1"));
+        assert!(on("true"));
+        assert!(on("TRUE"));
+        assert!(on(" 1 "));
+        assert!(!on("0"));
+        assert!(!on(""));
+        assert!(!on("yes"));
+        assert!(!BridgeOptions::default().include_fields);
+    }
+
+    #[test]
+    fn field_type_heuristic_covers_both_signature_shapes() {
+        let mk = |name: &str, sig: Option<&str>| {
+            let mut n = Node::new(
+                "field:x",
+                NodeKind::Field,
+                name,
+                format!("S::{name}"),
+                "src/s.ts",
+                crate::types::Language::Typescript,
+                1,
+                1,
+            );
+            n.signature = sig.map(String::from);
+            n
+        };
+        // Annotation style ("name: Type").
+        assert_eq!(field_type_from(&mk("host", Some("host: string"))), "string");
+        assert_eq!(
+            field_type_from(&mk("p", Some("p: std::path::PathBuf"))),
+            "std::path::PathBuf"
+        );
+        // Declaration style ("Type name" / "Type $name").
+        assert_eq!(field_type_from(&mk("count", Some("int count"))), "int");
+        assert_eq!(field_type_from(&mk("name", Some("string $name"))), "string");
+        // No type info degrades to empty, never garbage.
+        assert_eq!(field_type_from(&mk("x", None)), "");
+        assert_eq!(field_type_from(&mk("x", Some("$x"))), "");
+        assert_eq!(field_type_from(&mk("x", Some("unrelated"))), "");
+        // Engine separator is blanked, not carried.
+        assert_eq!(field_type_from(&mk("x", Some("a;b x"))), "a b");
+
+        assert!(engine_safe_field_name("ok_name"));
+        assert!(!engine_safe_field_name(""));
+        assert!(!engine_safe_field_name("a;b"));
+        assert!(!engine_safe_field_name("a:b"));
+        assert!(!engine_safe_field_name("a,b"));
+    }
+
+    #[test]
+    fn snapshot_cache_misses_on_include_fields_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let result = sample_bridge_result();
+        let with_fields = BridgeOptions {
+            include_fields: true,
+        };
+
+        // Stored without fields: served only to a without-fields request.
+        store_cache(
+            &cache_dir,
+            tmp.path(),
+            0xfeed,
+            &BridgeOptions::default(),
+            &result,
+        )
+        .expect("store");
+        assert!(load_cache(&cache_dir, 0xfeed, &BridgeOptions::default()).is_some());
+        assert!(
+            load_cache(&cache_dir, 0xfeed, &with_fields).is_none(),
+            "a fieldless snapshot must never serve a with-fields request"
+        );
+
+        // Re-stored with fields (same fingerprint → in-place overwrite, no
+        // rotation): the polarity flips.
+        store_cache(&cache_dir, tmp.path(), 0xfeed, &with_fields, &result).expect("re-store");
+        assert!(load_cache(&cache_dir, 0xfeed, &with_fields).is_some());
+        assert!(
+            load_cache(&cache_dir, 0xfeed, &BridgeOptions::default()).is_none(),
+            "a with-fields snapshot must never serve a fieldless request"
+        );
+        assert!(
+            !cache_dir
+                .join(format!("{CACHE_META_FILE}{PREV_SUFFIX}"))
+                .exists(),
+            "flag flips at a stable fingerprint must not rotate the diff base"
+        );
+
+        // A pre-fields meta envelope (no include_fields key) is a valid
+        // fieldless snapshot — serde(default) keeps it readable.
+        let meta_path = cache_dir.join(CACHE_META_FILE);
+        let mut meta: serde_json::Value =
+            serde_json::from_slice(&fs::read(&meta_path).unwrap()).unwrap();
+        meta.as_object_mut().unwrap().remove("include_fields");
+        fs::write(&meta_path, serde_json::to_vec(&meta).unwrap()).unwrap();
+        assert!(load_cache(&cache_dir, 0xfeed, &BridgeOptions::default()).is_some());
+        assert!(load_cache(&cache_dir, 0xfeed, &with_fields).is_none());
+    }
+
+    #[test]
     fn workspace_cache_key_is_stable_and_distinct() {
         let a = workspace_cache_key(Path::new("/projects/a"));
         assert_eq!(a, workspace_cache_key(Path::new("/projects/a")));
@@ -1338,11 +1708,19 @@ mod tests {
         let cache_dir = tmp.path().join("cache");
         let result = sample_bridge_result();
 
-        store_cache(&cache_dir, tmp.path(), 0xfeed, &result).expect("store");
+        store_cache(
+            &cache_dir,
+            tmp.path(),
+            0xfeed,
+            &BridgeOptions::default(),
+            &result,
+        )
+        .expect("store");
         assert!(cache_dir.join(GRAPH_SNAPSHOT_FILE).exists());
         assert!(cache_dir.join(CACHE_META_FILE).exists());
 
-        let loaded = load_cache(&cache_dir, 0xfeed).expect("fingerprint matches");
+        let loaded =
+            load_cache(&cache_dir, 0xfeed, &BridgeOptions::default()).expect("fingerprint matches");
         assert_eq!(loaded.graph.node_count(), 1);
         assert_eq!(loaded.id_map.len(), 1);
         assert_eq!(loaded.stats.nodes_mapped, 1);
@@ -1355,10 +1733,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cache_dir = tmp.path().join("cache");
         let result = sample_bridge_result();
-        store_cache(&cache_dir, tmp.path(), 0xfeed, &result).expect("store");
+        store_cache(
+            &cache_dir,
+            tmp.path(),
+            0xfeed,
+            &BridgeOptions::default(),
+            &result,
+        )
+        .expect("store");
 
         // Different index fingerprint → miss.
-        assert!(load_cache(&cache_dir, 0xdead).is_none());
+        assert!(load_cache(&cache_dir, 0xdead, &BridgeOptions::default()).is_none());
 
         // Corrupt graph snapshot → miss, not a panic.
         fs::write(
@@ -1366,15 +1751,29 @@ mod tests {
             b"not a postcard snapshot",
         )
         .unwrap();
-        assert!(load_cache(&cache_dir, 0xfeed).is_none());
+        assert!(load_cache(&cache_dir, 0xfeed, &BridgeOptions::default()).is_none());
 
         // Corrupt meta → miss.
-        store_cache(&cache_dir, tmp.path(), 0xfeed, &result).expect("re-store");
+        store_cache(
+            &cache_dir,
+            tmp.path(),
+            0xfeed,
+            &BridgeOptions::default(),
+            &result,
+        )
+        .expect("re-store");
         fs::write(cache_dir.join(CACHE_META_FILE), b"{ not json").unwrap();
-        assert!(load_cache(&cache_dir, 0xfeed).is_none());
+        assert!(load_cache(&cache_dir, 0xfeed, &BridgeOptions::default()).is_none());
 
         // Missing dir → miss.
-        assert!(load_cache(&tmp.path().join("absent"), 0xfeed).is_none());
+        assert!(
+            load_cache(
+                &tmp.path().join("absent"),
+                0xfeed,
+                &BridgeOptions::default()
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -1382,7 +1781,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cache_dir = tmp.path().join("cache");
         let result = sample_bridge_result();
-        store_cache(&cache_dir, tmp.path(), 0xfeed, &result).expect("store");
+        store_cache(
+            &cache_dir,
+            tmp.path(),
+            0xfeed,
+            &BridgeOptions::default(),
+            &result,
+        )
+        .expect("store");
 
         let meta_path = cache_dir.join(CACHE_META_FILE);
         let mut meta: serde_json::Value =
@@ -1390,13 +1796,16 @@ mod tests {
 
         meta["schema_version"] = serde_json::json!(SNAPSHOT_CACHE_SCHEMA_VERSION + 1);
         fs::write(&meta_path, serde_json::to_vec(&meta).unwrap()).unwrap();
-        assert!(load_cache(&cache_dir, 0xfeed).is_none(), "future schema");
+        assert!(
+            load_cache(&cache_dir, 0xfeed, &BridgeOptions::default()).is_none(),
+            "future schema"
+        );
 
         meta["schema_version"] = serde_json::json!(SNAPSHOT_CACHE_SCHEMA_VERSION);
         meta["host_version"] = serde_json::json!("0.0.0-other");
         fs::write(&meta_path, serde_json::to_vec(&meta).unwrap()).unwrap();
         assert!(
-            load_cache(&cache_dir, 0xfeed).is_none(),
+            load_cache(&cache_dir, 0xfeed, &BridgeOptions::default()).is_none(),
             "other host version"
         );
     }
@@ -1408,7 +1817,14 @@ mod tests {
         let result = sample_bridge_result();
 
         // Generation A, plus its complexity sidecar.
-        store_cache(&cache_dir, tmp.path(), 0xaaaa, &result).expect("store A");
+        store_cache(
+            &cache_dir,
+            tmp.path(),
+            0xaaaa,
+            &BridgeOptions::default(),
+            &result,
+        )
+        .expect("store A");
         let sidecar = ComplexitySidecar {
             schema_version: SNAPSHOT_CACHE_SCHEMA_VERSION,
             index_fingerprint: 0xaaaa,
@@ -1421,7 +1837,14 @@ mod tests {
         .unwrap();
 
         // Same fingerprint: in-place refresh, NO rotation.
-        store_cache(&cache_dir, tmp.path(), 0xaaaa, &result).expect("refresh A");
+        store_cache(
+            &cache_dir,
+            tmp.path(),
+            0xaaaa,
+            &BridgeOptions::default(),
+            &result,
+        )
+        .expect("refresh A");
         assert!(
             !cache_dir
                 .join(format!("{CACHE_META_FILE}{PREV_SUFFIX}"))
@@ -1434,7 +1857,14 @@ mod tests {
         );
 
         // New fingerprint: A (incl. sidecar) rotates to .prev, B is current.
-        store_cache(&cache_dir, tmp.path(), 0xbbbb, &result).expect("store B");
+        store_cache(
+            &cache_dir,
+            tmp.path(),
+            0xbbbb,
+            &BridgeOptions::default(),
+            &result,
+        )
+        .expect("store B");
         let prev_meta = read_cache_meta(&cache_dir.join(format!("{CACHE_META_FILE}{PREV_SUFFIX}")))
             .expect("rotated meta is valid");
         assert_eq!(prev_meta.index_fingerprint, 0xaaaa);
@@ -1452,10 +1882,20 @@ mod tests {
             !cache_dir.join(COMPLEXITY_SIDECAR_FILE).exists(),
             "the new generation starts without a sidecar"
         );
-        assert!(load_cache(&cache_dir, 0xbbbb).is_some(), "B is current");
+        assert!(
+            load_cache(&cache_dir, 0xbbbb, &BridgeOptions::default()).is_some(),
+            "B is current"
+        );
 
         // A third fingerprint keeps exactly one previous generation (B).
-        store_cache(&cache_dir, tmp.path(), 0xcccc, &result).expect("store C");
+        store_cache(
+            &cache_dir,
+            tmp.path(),
+            0xcccc,
+            &BridgeOptions::default(),
+            &result,
+        )
+        .expect("store C");
         let prev_meta = read_cache_meta(&cache_dir.join(format!("{CACHE_META_FILE}{PREV_SUFFIX}")))
             .expect("rotated meta is valid");
         assert_eq!(
@@ -1501,7 +1941,14 @@ mod tests {
         assert!(load_auto_base_snapshot(tmp.path(), 0xbbbb).is_none());
 
         // Current generation A; working tree already at B → A is the base.
-        store_cache(&cache_dir, tmp.path(), 0xaaaa, &result).expect("store A");
+        store_cache(
+            &cache_dir,
+            tmp.path(),
+            0xaaaa,
+            &BridgeOptions::default(),
+            &result,
+        )
+        .expect("store A");
         let base = load_auto_base_snapshot(tmp.path(), 0xbbbb).expect("stale current is the base");
         assert_eq!(base.generation, BaseGeneration::Current);
         assert_eq!(base.index_fingerprint, Some(0xaaaa));
@@ -1509,7 +1956,14 @@ mod tests {
         assert!(base.complexity.is_empty(), "no sidecar was written");
 
         // Refresh to B (rotates A → .prev): base flips to the .prev gen.
-        store_cache(&cache_dir, tmp.path(), 0xbbbb, &result).expect("store B");
+        store_cache(
+            &cache_dir,
+            tmp.path(),
+            0xbbbb,
+            &BridgeOptions::default(),
+            &result,
+        )
+        .expect("store B");
         let base = load_auto_base_snapshot(tmp.path(), 0xbbbb).expect(".prev is the base");
         assert_eq!(base.generation, BaseGeneration::Previous);
         assert_eq!(base.index_fingerprint, Some(0xaaaa));
@@ -1528,7 +1982,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cache_dir = tmp.path().join("cache");
         let result = sample_bridge_result();
-        store_cache(&cache_dir, tmp.path(), 0xfeed, &result).expect("store");
+        store_cache(
+            &cache_dir,
+            tmp.path(),
+            0xfeed,
+            &BridgeOptions::default(),
+            &result,
+        )
+        .expect("store");
 
         // Directory form: fingerprint comes from meta.json.
         let base = load_explicit_base_snapshot(&cache_dir).expect("dir base");

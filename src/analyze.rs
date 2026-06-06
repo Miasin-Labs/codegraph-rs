@@ -55,9 +55,8 @@
 //! `notes/close-tier1-needs.md`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use codegraph_analysis::analysis;
 use codegraph_analysis::capabilities::{Capability, CapabilityTree};
 use codegraph_analysis::cascade::generate_cascade;
 use codegraph_analysis::co_change::{CommitInfo, co_changes_for_nodes, compute_co_changes};
@@ -69,6 +68,7 @@ use codegraph_analysis::dsl::aggregate::{AggExpr, parse_aggregate};
 use codegraph_analysis::dsl::plan::{ScheduleStrategy, optimise_expr, pick_schedule_for_pipe};
 use codegraph_analysis::dsl::provenance::trace_query;
 use codegraph_analysis::dsl::{
+    DslOp,
     Expr,
     QueryConfig as DslQueryConfig,
     QueryError as DslQueryError,
@@ -89,11 +89,13 @@ use codegraph_analysis::polyglot::{
     resolve_cross_language_calls,
 };
 use codegraph_analysis::possible_types::PossibleTypesPass;
+use codegraph_analysis::predicates::{Predicate, extract_predicates};
 use codegraph_analysis::schema::{PayloadKind, json_schema_for};
 use codegraph_analysis::slicing::{DataflowOracle, backward_slice, forward_slice};
 use codegraph_analysis::taint_naming::{classify_name, flow_priority};
 use codegraph_analysis::traversal::{TraversalConfig, TraversalDirection, traverse};
 use codegraph_analysis::validation::VirtualValidator;
+use codegraph_analysis::{analysis, analysis_tools};
 use serde::Serialize;
 use tree_sitter::{Node as TsNode, Point, Tree};
 
@@ -953,6 +955,206 @@ pub fn taint_report(
 }
 
 // =============================================================================
+// analyze slice|taint --source (engine CPG report façade)
+// =============================================================================
+
+/// Byte-offset presence over the bridged graph's non-placeholder `Function`
+/// nodes — the cheap scan behind the `--source` honesty notes (no file IO,
+/// no parsing). Returns `(total, missing_byte_range)`; `0..0` is the
+/// bridge's documented "unknown" value for pre-v5 index rows.
+fn function_byte_presence(graph: &AnalysisGraph) -> (usize, usize) {
+    let mut total = 0usize;
+    let mut missing = 0usize;
+    for node in graph.nodes_by_kind(ANodeKind::Function) {
+        if is_placeholder(node) {
+            continue;
+        }
+        total += 1;
+        let range = &node.span.byte_range;
+        if range.start == 0 && range.end == 0 {
+            missing += 1;
+        }
+    }
+    (total, missing)
+}
+
+/// True when the process runs from `workspace_root` (the engine façade reads
+/// the bridged graph's project-relative paths against the cwd). Unknowable
+/// states (canonicalize failures) report `true` so no spurious warning is
+/// emitted.
+fn runs_from_workspace_root(workspace_root: &Path) -> bool {
+    let cwd = std::env::current_dir().and_then(|d| d.canonicalize());
+    let root = workspace_root.canonicalize();
+    match (cwd, root) {
+        (Ok(cwd), Ok(root)) => cwd == root,
+        _ => true,
+    }
+}
+
+/// Byte-offset coverage embedded in `--source` reports so consumers can
+/// judge how much value-level fidelity backed the annotated text.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceReportCoverage {
+    /// Non-placeholder `Function` nodes in the bridged graph.
+    pub functions_total: usize,
+    /// Functions whose index rows carry no byte offsets (indexed before
+    /// schema v5) — they contribute no value-level dataflow hops.
+    pub functions_missing_byte_range: usize,
+}
+
+/// Shared honesty note for the `--source` reports: states what the
+/// annotations are, whether value-level fidelity is available (and how to
+/// get it back when it is not), and warns when the process cwd is not the
+/// project root (the engine façade resolves the graph's project-relative
+/// paths against the cwd).
+fn source_report_note(
+    workspace_root: &Path,
+    lead: &str,
+    coverage: &SourceReportCoverage,
+) -> String {
+    let mut note = format!(
+        "{lead} Annotations are `name (file:line)` from the indexed spans and work on any index."
+    );
+    if coverage.functions_total > 0
+        && coverage.functions_missing_byte_range == coverage.functions_total
+    {
+        note.push_str(
+            " Value-level fidelity is unavailable: no indexed function carries byte offsets \
+             (indexed before schema v5), so the underlying points-to oracle sees no dataflow \
+             — re-index (\"codegraph index\") to enable it.",
+        );
+    } else if coverage.functions_missing_byte_range > 0 {
+        note.push_str(&format!(
+            " {} of {} functions lack byte offsets (indexed before schema v5) and contribute \
+             no value-level hops — re-index (\"codegraph index\") to include them.",
+            coverage.functions_missing_byte_range, coverage.functions_total
+        ));
+    } else {
+        note.push_str(" Value-level fidelity rides the index's byte offsets (schema v5).");
+    }
+    if !runs_from_workspace_root(workspace_root) {
+        note.push_str(
+            " Source files are resolved relative to the current working directory; run from \
+             the project root for value-level fidelity (line annotations are unaffected).",
+        );
+    }
+    note
+}
+
+/// Result of [`source_slice_report`] — `analyze slice --source`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceSliceReport {
+    /// The symbol as given (the engine façade resolves it by name,
+    /// qualified-suffix aware).
+    pub symbol: String,
+    pub direction: String,
+    /// Entry cap applied to both annotated lists.
+    pub max_entries: usize,
+    /// The engine's compact source-annotated slice report (one
+    /// `name (file:line)` entry per line, capped at `max_entries`).
+    pub report: String,
+    /// The engine's one-hop incoming data-dependency report, same
+    /// annotation and cap.
+    pub data_dependencies: String,
+    pub coverage: SourceReportCoverage,
+    pub note: String,
+}
+
+/// Source-annotated program slice via the engine's CPG report façade
+/// (engine entry points: `analysis_tools::program_slice` +
+/// `analysis_tools::data_dependencies`). The façade resolves `symbol` by
+/// name, builds the interprocedural IR map + points-to oracle itself, and
+/// renders every slice node as `name (file:line)` — value-level fidelity
+/// when the index carries byte offsets (schema v5), honest degradation
+/// notes otherwise. The slice depth is the engine's fixed default
+/// (currently 6 hops); `max_entries` caps the rendered lists.
+pub fn source_slice_report(
+    graph: &AnalysisGraph,
+    workspace_root: &Path,
+    symbol: &str,
+    direction: SliceDirection,
+    max_entries: usize,
+) -> SourceSliceReport {
+    let backward = matches!(direction, SliceDirection::Backward);
+    let report = analysis_tools::program_slice(graph, symbol, backward, max_entries);
+    let data_dependencies = analysis_tools::data_dependencies(graph, symbol, max_entries);
+    let (functions_total, functions_missing_byte_range) = function_byte_presence(graph);
+    let coverage = SourceReportCoverage {
+        functions_total,
+        functions_missing_byte_range,
+    };
+    let lead = format!(
+        "Slice depth is the engine's fixed default (6 hops); both lists cap at {max_entries} \
+         entries."
+    );
+    let note = source_report_note(workspace_root, &lead, &coverage);
+    SourceSliceReport {
+        symbol: symbol.to_string(),
+        direction: direction.as_str().to_string(),
+        max_entries,
+        report,
+        data_dependencies,
+        coverage,
+        note,
+    }
+}
+
+/// Result of [`source_taint_report`] — `analyze taint --source`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceTaintReport {
+    pub source: String,
+    pub sink: String,
+    /// Rendered-flow cap (the engine appends a "… and N more flow(s)"
+    /// trailer when more flows exist).
+    pub max_paths: usize,
+    /// The engine's source-annotated taint-flow report: each flow's full
+    /// path rendered hop by hop with sanitizer status.
+    pub report: String,
+    pub coverage: SourceReportCoverage,
+    pub note: String,
+}
+
+/// Source-annotated source→sink taint flow via the engine's CPG report
+/// façade (engine entry point: `analysis_tools::taint_flow`). The façade
+/// resolves both symbols by name, runs the engine's sanitizer-aware
+/// value-level taint over the points-to oracle, and caps the rendered
+/// flows at `max_paths` — flows beyond the cap are summarized, never
+/// silently dropped.
+pub fn source_taint_report(
+    graph: &AnalysisGraph,
+    workspace_root: &Path,
+    source: &str,
+    sink: &str,
+    max_paths: usize,
+) -> SourceTaintReport {
+    let report = analysis_tools::taint_flow(
+        graph,
+        &[source.to_string()],
+        &[sink.to_string()],
+        &[],
+        max_paths,
+    );
+    let (functions_total, functions_missing_byte_range) = function_byte_presence(graph);
+    let coverage = SourceReportCoverage {
+        functions_total,
+        functions_missing_byte_range,
+    };
+    let lead = format!("Rendered flows cap at {max_paths} paths.");
+    let note = source_report_note(workspace_root, &lead, &coverage);
+    SourceTaintReport {
+        source: source.to_string(),
+        sink: sink.to_string(),
+        max_paths,
+        report,
+        coverage,
+        note,
+    }
+}
+
+// =============================================================================
 // analyze query (pipe-based DSL)
 // =============================================================================
 
@@ -1009,6 +1211,41 @@ pub struct QueryReport {
     /// traceable (aggregation queries are not; see [`query_report`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<Vec<WhyEntry>>,
+    /// Source-level guarding conditions — present only when the query
+    /// contains the `preconditions` operator and a workspace root was
+    /// supplied (see [`query_report_with_sources`]). Never silently empty:
+    /// the section's `note` explains absent or partial extraction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preconditions: Option<PreconditionsSection>,
+}
+
+/// Source-level enrichment of the DSL `preconditions` operator: the actual
+/// guarding conditions (`if` / `match` / `while` / `for` / `loop`) wrapped
+/// around each call site between result nodes, extracted by re-parsing the
+/// on-disk sources (engine entry point: `predicates::extract_predicates`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreconditionsSection {
+    /// Number of guarded call sites found (== `guards.len()`).
+    pub guarded_call_count: usize,
+    pub guards: Vec<PreconditionGuard>,
+    /// Honesty note: reading order of the conditions, plus any extraction
+    /// gaps (pre-v5 byte offsets, non-Rust call sites, unreadable files).
+    pub note: String,
+}
+
+/// One guarded call site between two result nodes.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreconditionGuard {
+    pub caller: SymbolRef,
+    pub callee: String,
+    /// Call-site location (the caller's file).
+    pub file: String,
+    pub line: u32,
+    /// Guarding conditions, outermost first (evaluation order: the first
+    /// entry is the outermost gate control flow passed through).
+    pub conditions: Vec<String>,
 }
 
 /// Render a [`DslQueryError`] without the redundant outer `parse error:`
@@ -1061,16 +1298,237 @@ fn build_why(graph: &AnalysisGraph, query: &str, config: &DslQueryConfig) -> Opt
     Some(entries)
 }
 
+/// Does the parsed query contain the `preconditions` pipe operator
+/// anywhere in its expression tree?
+fn expr_contains_preconditions(expr: &Expr) -> bool {
+    let ops_have = |ops: &[DslOp]| ops.iter().any(|op| matches!(op, DslOp::Preconditions));
+    match expr {
+        Expr::Pipe(ops) => ops_have(ops),
+        Expr::PipeFrom { base, ops } => expr_contains_preconditions(base) || ops_have(ops),
+        Expr::SetOp { left, right, .. } => {
+            expr_contains_preconditions(left) || expr_contains_preconditions(right)
+        }
+        Expr::PathQuery(pq) => {
+            expr_contains_preconditions(&pq.from) || expr_contains_preconditions(&pq.to)
+        }
+        Expr::DominatorsOf(inner) | Expr::DominatesOf(inner) | Expr::TraitImplsOf(inner) => {
+            expr_contains_preconditions(inner)
+        }
+        Expr::MultiPath { sources, to, .. } => {
+            sources.iter().any(expr_contains_preconditions) || expr_contains_preconditions(to)
+        }
+        Expr::Entrypoints(_) => false,
+    }
+}
+
+/// Mirror `run_query_expr`'s parse dispatch (the aggregation grammar first,
+/// then the extended expression grammar) to decide whether `query` asks for
+/// `preconditions`. Aggregations return scalars — there are no node rows to
+/// enrich, so they report `false`.
+fn query_requests_preconditions(query: &str) -> bool {
+    match parse_aggregate(query) {
+        Ok(AggExpr::Plain(expr)) => expr_contains_preconditions(&expr),
+        Ok(_) => false,
+        Err(_) => parse_expr(query)
+            .map(|expr| expr_contains_preconditions(&expr))
+            .unwrap_or(false),
+    }
+}
+
+/// Byte offset of (1-based `line`, 0-based `col`) within `source`, clamped
+/// into the line (and the file) so a stale column can never index past the
+/// parsed text. `None` when the line is 0 (the bridge's "unknown" value) or
+/// beyond the file.
+fn byte_pos_of(source: &str, line: u32, col: u32) -> Option<usize> {
+    let line_idx = line.checked_sub(1)? as usize;
+    let mut offset = 0usize;
+    for (i, l) in source.split_inclusive('\n').enumerate() {
+        if i == line_idx {
+            let within = (col as usize).min(l.len().saturating_sub(1));
+            return Some((offset + within).min(source.len().saturating_sub(1)));
+        }
+        offset += l.len();
+    }
+    None
+}
+
+/// Render one engine predicate for display: bare `if` conditions get their
+/// keyword back; `match`/`while`/`for`/`loop` texts already carry theirs.
+fn predicate_text(p: &Predicate) -> String {
+    if p.kind == "if_expression" {
+        format!("if {}", p.text)
+    } else {
+        p.text.clone()
+    }
+}
+
+/// Build the source-level preconditions section for a `… | preconditions`
+/// query result: for every Calls/UnresolvedCall edge between two result
+/// nodes, re-read the call site's source file under `workspace_root` and
+/// extract the enclosing branch conditions (engine entry point:
+/// `predicates::extract_predicates`, which needs source + a byte position —
+/// real on v5 indexes). Extraction gaps are counted and surfaced in the
+/// section note instead of being silently dropped.
+fn build_preconditions_section(
+    graph: &AnalysisGraph,
+    workspace_root: &Path,
+    result_nodes: &[ANodeId],
+) -> PreconditionsSection {
+    let in_set: HashSet<&ANodeId> = result_nodes.iter().collect();
+    let mut guards: Vec<PreconditionGuard> = Vec::new();
+    let mut missing_byte_anchor = 0usize;
+    let mut non_rust = 0usize;
+    let mut unreadable = 0usize;
+    let mut stale_position = 0usize;
+    let mut unconditional = 0usize;
+    let mut sources: HashMap<PathBuf, Option<String>> = HashMap::new();
+
+    for id in result_nodes {
+        let Some(caller) = graph.get_node(id) else {
+            continue;
+        };
+        if is_placeholder(caller) {
+            continue;
+        }
+        for (target, edge) in graph.get_edges_from(id) {
+            if !matches!(edge.kind, AEdgeKind::Calls | AEdgeKind::UnresolvedCall(_)) {
+                continue;
+            }
+            if !in_set.contains(target) {
+                continue;
+            }
+            let callee = graph
+                .get_node(target)
+                .map(|n| n.name.clone())
+                .unwrap_or_else(|| "?".to_string());
+            // v5 honesty gate: source-level anchoring rides the index's byte
+            // offsets. The bridge degrades pre-v5 rows to `0..0` — extracting
+            // at a guessed position would be a fabricated answer.
+            let caller_range = &caller.span.byte_range;
+            if caller_range.start == 0 && caller_range.end == 0 {
+                missing_byte_anchor += 1;
+                continue;
+            }
+            let file = &edge.source_span.file;
+            if file.extension().and_then(|e| e.to_str()) != Some("rs") {
+                non_rust += 1;
+                continue;
+            }
+            let cached = sources
+                .entry(file.clone())
+                .or_insert_with(|| std::fs::read_to_string(workspace_root.join(file)).ok());
+            let Some(source) = cached.as_ref() else {
+                unreadable += 1;
+                continue;
+            };
+            let Some(byte_pos) = byte_pos_of(
+                source,
+                edge.source_span.start_line,
+                edge.source_span.start_col,
+            ) else {
+                stale_position += 1;
+                continue;
+            };
+            let preds = extract_predicates(source, byte_pos);
+            if preds.is_empty() {
+                unconditional += 1;
+                continue;
+            }
+            // The engine returns innermost-first; report evaluation order.
+            let conditions: Vec<String> = preds.iter().rev().map(predicate_text).collect();
+            guards.push(PreconditionGuard {
+                caller: symbol_ref(caller),
+                callee,
+                file: file.display().to_string(),
+                line: edge.source_span.start_line,
+                conditions,
+            });
+        }
+    }
+    guards.sort_by(|a, b| {
+        (&a.file, a.line, &a.caller.name, &a.callee).cmp(&(
+            &b.file,
+            b.line,
+            &b.caller.name,
+            &b.callee,
+        ))
+    });
+
+    let mut note = if guards.is_empty() {
+        "No source-level guarding conditions were found on the call sites between the result \
+         nodes."
+            .to_string()
+    } else {
+        "Conditions are listed outermost first (evaluation order), extracted from the on-disk \
+         sources at each call site — they reflect the working tree as of this run."
+            .to_string()
+    };
+    if unconditional > 0 {
+        note.push_str(&format!(
+            " {unconditional} call site(s) have no enclosing branch — those calls are \
+             unconditional."
+        ));
+    }
+    if missing_byte_anchor > 0 {
+        note.push_str(&format!(
+            " {missing_byte_anchor} call site(s) could not be anchored: the index carries no \
+             byte offsets there (indexed before schema v5) — re-index (\"codegraph index\") to \
+             enable source-level precondition extraction."
+        ));
+    }
+    if non_rust > 0 {
+        note.push_str(&format!(
+            " Source-level predicate extraction currently covers Rust; {non_rust} call site(s) \
+             in other languages were skipped."
+        ));
+    }
+    if unreadable > 0 {
+        note.push_str(&format!(
+            " {unreadable} call-site file(s) could not be read under the project root — the \
+             index may be stale (re-run \"codegraph sync\")."
+        ));
+    }
+    if stale_position > 0 {
+        note.push_str(&format!(
+            " {stale_position} call-site position(s) lie outside the current file contents — \
+             the file changed since indexing (re-run \"codegraph sync\")."
+        ));
+    }
+
+    PreconditionsSection {
+        guarded_call_count: guards.len(),
+        guards,
+        note,
+    }
+}
+
 /// Run a DSL query over the bridged graph through the engine's unified
 /// entry point (`run_query_expr`: pipe chains, set algebra, path patterns,
 /// entrypoint/dominator selectors, and aggregations), including the plan
 /// optimiser. Parse errors come back as the parser's own message (position
 /// + offending token) so the CLI can show them verbatim.
+///
+/// Equivalent to [`query_report_with_sources`] without source-level
+/// enrichment (no workspace root to read files under).
 pub fn query_report(
     graph: &AnalysisGraph,
     query: &str,
     max_nodes: usize,
     include_why: bool,
+) -> Result<QueryReport, String> {
+    query_report_with_sources(graph, query, max_nodes, include_why, None)
+}
+
+/// [`query_report`] plus source-level enrichment: when `source_root` is
+/// given and the query contains the `preconditions` operator, the report
+/// gains a [`PreconditionsSection`] with the actual guarding conditions
+/// extracted from the on-disk sources.
+pub fn query_report_with_sources(
+    graph: &AnalysisGraph,
+    query: &str,
+    max_nodes: usize,
+    include_why: bool,
+    source_root: Option<&Path>,
 ) -> Result<QueryReport, String> {
     let config = DslQueryConfig {
         max_nodes,
@@ -1115,6 +1573,13 @@ pub fn query_report(
         None
     };
 
+    let preconditions = match source_root {
+        Some(root) if query_requests_preconditions(query) => {
+            Some(build_preconditions_section(graph, root, &result.nodes))
+        }
+        _ => None,
+    };
+
     Ok(QueryReport {
         query: query.to_string(),
         node_count: nodes.len(),
@@ -1125,6 +1590,7 @@ pub fn query_report(
         metadata: result.metadata,
         cycles_detected: cycles,
         why,
+        preconditions,
     })
 }
 
