@@ -237,7 +237,12 @@ impl Fingerprintable for CodeGraph {
             .collect();
         node_refs.sort_by(|a, b| a.0.cmp(b.0));
 
-        hasher.update(&"jfc-graph::CodeGraph::nodes");
+        // Domain-separation prefixes. Renamed from "jfc-graph::CodeGraph::*"
+        // in the 2026-06 codegraph-native rebrand (see
+        // notes/jfc-graph-migration.md) — a deliberate one-time fingerprint
+        // break: every digest changes, invalidating any pre-rebrand on-disk
+        // caches/snapshots by design.
+        hasher.update(&"codegraph-analysis::CodeGraph::nodes");
         hasher.update(&node_refs.len());
         for (id, data) in &node_refs {
             hasher.update(*id);
@@ -272,7 +277,7 @@ impl Fingerprintable for CodeGraph {
             })
         });
 
-        hasher.update(&"jfc-graph::CodeGraph::edges");
+        hasher.update(&"codegraph-analysis::CodeGraph::edges");
         hasher.update(&edges.len());
         for (from, to, data) in edges {
             hasher.update(from);

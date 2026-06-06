@@ -92,7 +92,7 @@ impl LanguageAdapter for RustAdapter {
             } = err
             {
                 warn!(
-                    target: "jfc::graph::parser",
+                    target: "codegraph::analysis::parser",
                     path = %path.display(),
                     byte_range = ?(*start..*end),
                     summary = %summary,

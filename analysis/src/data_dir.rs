@@ -1,6 +1,6 @@
 //! Per-workspace data directory resolution.
 //!
-//! Codegraph #304: keeping `.codegraph/` (or `.jfc-graph/`) inside the
+//! Codegraph #304: keeping `.codegraph/` (or `.codegraph-analysis/`) inside the
 //! project root pollutes every workspace, forces every contributor to add
 //! the directory to `.gitignore`, and makes read-only mounts unusable.
 //! This module resolves a writable per-workspace data dir using the
@@ -9,13 +9,13 @@
 //!
 //! ## Resolution order
 //!
-//! 1. **`JFC_GRAPH_DATA_DIR`** — explicit override. Wins absolutely.
-//! 2. **`$XDG_CACHE_HOME/jfc-graph/<workspace-hash>/`** — XDG-compliant
+//! 1. **`CODEGRAPH_ANALYSIS_DATA_DIR`** — explicit override. Wins absolutely.
+//! 2. **`$XDG_CACHE_HOME/codegraph-analysis/<workspace-hash>/`** — XDG-compliant
 //!    user-cache layout; the per-workspace hash keeps multiple checkouts
 //!    on the same machine isolated.
-//! 3. **`$HOME/.cache/jfc-graph/<workspace-hash>/`** — XDG default when
+//! 3. **`$HOME/.cache/codegraph-analysis/<workspace-hash>/`** — XDG default when
 //!    the env var isn't set.
-//! 4. **`<workspace_root>/.jfc-graph/`** — legacy in-workspace fallback,
+//! 4. **`<workspace_root>/.codegraph-analysis/`** — legacy in-workspace fallback,
 //!    used only when no home dir is detectable (CI sandboxes, exotic
 //!    bare-bones environments).
 //!
@@ -26,7 +26,7 @@
 use std::path::{Path, PathBuf};
 
 /// Environment variable users set to pin the data dir.
-pub const ENV_OVERRIDE: &str = "JFC_GRAPH_DATA_DIR";
+pub const ENV_OVERRIDE: &str = "CODEGRAPH_ANALYSIS_DATA_DIR";
 
 /// Resolve the per-workspace data directory.
 ///
@@ -38,12 +38,12 @@ pub fn resolve_data_dir(workspace_root: &Path) -> PathBuf {
     }
     let hash = workspace_hash(workspace_root);
     if let Some(home) = xdg_cache_home() {
-        return home.join("jfc-graph").join(&hash);
+        return home.join("codegraph-analysis").join(&hash);
     }
-    workspace_root.join(".jfc-graph")
+    workspace_root.join(".codegraph-analysis")
 }
 
-/// Honor `$JFC_GRAPH_DATA_DIR` if set and non-empty.
+/// Honor `$CODEGRAPH_ANALYSIS_DATA_DIR` if set and non-empty.
 fn override_path() -> Option<PathBuf> {
     let raw = std::env::var(ENV_OVERRIDE).ok()?;
     let trimmed = raw.trim();
@@ -168,7 +168,7 @@ mod tests {
             || {
                 let resolved = resolve_data_dir(Path::new("/tmp/some-workspace"));
                 assert!(
-                    resolved.starts_with("/tmp/xdg-cache-test/jfc-graph"),
+                    resolved.starts_with("/tmp/xdg-cache-test/codegraph-analysis"),
                     "expected XDG_CACHE_HOME prefix, got {}",
                     resolved.display()
                 );

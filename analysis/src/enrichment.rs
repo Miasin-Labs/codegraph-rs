@@ -1,7 +1,7 @@
 //! LSP enrichment layer — resolves UnresolvedCall edges using LSP data.
 //!
 //! The `LspDataProvider` trait is defined here (in codegraph-analysis) and implemented
-//! by jfc's LspClient. This avoids circular dependencies.
+//! by the host application's LSP client. This avoids circular dependencies.
 
 use std::path::{Path, PathBuf};
 
@@ -16,7 +16,7 @@ pub struct LspLocation {
     pub col: u32,
 }
 
-/// Trait for providing LSP data. Implemented by jfc's LspClient.
+/// Trait for providing LSP data. Implemented by the host application's LSP client.
 pub trait LspDataProvider: Send + Sync {
     /// Get definition location for symbol at position.
     fn goto_definition(&self, file: &Path, line: u32, col: u32) -> Option<LspLocation>;

@@ -109,7 +109,7 @@
 //! ## P15: LSP Server Backed by Graph
 //!
 //! ### Design
-//! Standalone binary `jfc-lsp` in the workspace:
+//! Standalone binary `codegraph-lsp` in the workspace:
 //! - Implements LSP `textDocument/definition`, `references`, `hover`.
 //! - On init: builds `GraphSession` from workspace root.
 //! - On `didChange`: calls `session.file_changed(...)`.

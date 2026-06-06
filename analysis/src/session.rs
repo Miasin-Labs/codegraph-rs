@@ -1,4 +1,4 @@
-//! High-level session facade — the single entry point for jfc.
+//! High-level session facade — the single entry point for the host application.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -64,7 +64,7 @@ impl GraphSession {
         // when the caller doesn't inspect `parse_errors` directly.
         if !result.parse_errors.is_empty() {
             warn!(
-                target: "jfc::graph::session",
+                target: "codegraph::analysis::session",
                 count = result.parse_errors.len(),
                 "files with tree-sitter syntax errors — partial graph indexed"
             );
@@ -79,7 +79,7 @@ impl GraphSession {
             .and_then(|cwd| worktree::detect_worktree_index_mismatch(&cwd, workspace_root));
         if let Some(ref m) = worktree_mismatch {
             warn!(
-                target: "jfc::graph::session",
+                target: "codegraph::analysis::session",
                 caller_worktree = %m.caller_worktree.display(),
                 index_worktree = %m.index_worktree.display(),
                 "graph index belongs to a different git worktree"

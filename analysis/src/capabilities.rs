@@ -35,12 +35,12 @@ pub struct CapabilityTree {
 impl Capability {
     pub fn env_name(self) -> &'static str {
         match self {
-            Self::CallGraph => "JFC_GRAPH_CAP_CALL_GRAPH",
-            Self::TypeUsage => "JFC_GRAPH_CAP_TYPE_USAGE",
-            Self::PartialStruct => "JFC_GRAPH_CAP_PARTIAL_STRUCT",
-            Self::VirtualValidation => "JFC_GRAPH_CAP_VIRTUAL_VALIDATION",
-            Self::Persistence => "JFC_GRAPH_CAP_PERSISTENCE",
-            Self::SymbolEditing => "JFC_GRAPH_CAP_SYMBOL_EDITING",
+            Self::CallGraph => "CODEGRAPH_ANALYSIS_CAP_CALL_GRAPH",
+            Self::TypeUsage => "CODEGRAPH_ANALYSIS_CAP_TYPE_USAGE",
+            Self::PartialStruct => "CODEGRAPH_ANALYSIS_CAP_PARTIAL_STRUCT",
+            Self::VirtualValidation => "CODEGRAPH_ANALYSIS_CAP_VIRTUAL_VALIDATION",
+            Self::Persistence => "CODEGRAPH_ANALYSIS_CAP_PERSISTENCE",
+            Self::SymbolEditing => "CODEGRAPH_ANALYSIS_CAP_SYMBOL_EDITING",
         }
     }
 }
@@ -67,7 +67,7 @@ impl CapabilityTree {
         tree
     }
 
-    /// Build the default tree and apply `JFC_GRAPH_CAP_*=0/false/off/no`
+    /// Build the default tree and apply `CODEGRAPH_ANALYSIS_CAP_*=0/false/off/no`
     /// overrides. Disabling a dependency cascades to dependent capabilities.
     pub fn from_env() -> Self {
         let mut tree = Self::new();

@@ -12,7 +12,7 @@
 //! about the query site, decide whether a graph fetch is worth it. The signals
 //! come from the caller (the resolver/IR already knows how many cross-module
 //! references and unresolved types are at the cursor); the *decision rule* is
-//! here and fully tested. It directly attacks jfc's per-turn-latency budget.
+//! here and fully tested. It directly attacks the host agent's per-turn-latency budget.
 
 /// Signals about a query/cursor site that predict whether graph retrieval will
 /// help. All are cheap to compute from the local IR + symbol table.

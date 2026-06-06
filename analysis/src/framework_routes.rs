@@ -505,7 +505,7 @@ let v = items.get("key");    // map lookup with a string — acceptable edge
     // node's metadata with the route fields.
     #[test]
     fn annotates_handler_node_metadata_normal() {
-        let dir = std::env::temp_dir().join(format!("jfc_routes_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("codegraph_routes_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("api.py");
         std::fs::write(

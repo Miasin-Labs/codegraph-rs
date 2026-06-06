@@ -85,7 +85,7 @@ impl<'g> ReferenceResolver<'g> {
             }
         }
         info!(
-            target: "jfc::graph::resolver",
+            target: "codegraph::analysis::resolver",
             sites_seen = report.sites_seen,
             resolved = report.resolved,
             unresolved = report.unresolved,
@@ -286,16 +286,16 @@ mod tests {
 
     #[test]
     fn directory_proximity_caps_at_80() {
-        let a = std::path::Path::new("crates/jfc/src/tools/dispatch.rs");
-        let b = std::path::Path::new("crates/jfc/src/tools/dispatch_heavy.rs");
-        // 4 shared segments (`crates`, `jfc`, `src`, `tools`) — score
+        let a = std::path::Path::new("crates/app/src/tools/dispatch.rs");
+        let b = std::path::Path::new("crates/app/src/tools/dispatch_heavy.rs");
+        // 4 shared segments (`crates`, `app`, `src`, `tools`) — score
         // 60, under the cap.
         assert_eq!(directory_proximity(a, b), 60);
     }
 
     #[test]
     fn directory_proximity_zero_for_different_roots() {
-        let a = std::path::Path::new("crates/jfc/src/x.rs");
+        let a = std::path::Path::new("crates/app/src/x.rs");
         let b = std::path::Path::new("other/y.rs");
         assert_eq!(directory_proximity(a, b), 0);
     }

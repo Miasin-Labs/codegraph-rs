@@ -115,6 +115,13 @@ pub fn last_part(symbol: &str) -> &str {
 ///   1. `MatchQuality::Simple` (bare-name hit)
 ///   2. `MatchQuality::QualifiedSuffix` (qualified-name hit)
 ///   3. `MatchQuality::FilePathContainment` (path-derived module hit)
+///
+/// When an **unqualified** symbol produces zero exact hits, a relaxed
+/// fallback runs over the same candidate set so natural-language tasks can
+/// still anchor ("daemon" → `Daemon`): first case-insensitive exact-name
+/// matches, then case-insensitive name-prefix matches ("handshake" →
+/// `HandshakeState`). Exact-hit behavior is unchanged — the fallback never
+/// fires once any exact match exists, and qualified symbols never relax.
 pub fn resolve_symbol(graph: &CodeGraph, symbol: &str) -> Vec<NodeId> {
     let qualified = has_qualifier(symbol);
     let mut hits: Vec<(NodeId, MatchQuality)> = Vec::new();
@@ -133,13 +140,17 @@ pub fn resolve_symbol(graph: &CodeGraph, symbol: &str) -> Vec<NodeId> {
             .collect()
     };
 
-    for id in candidates {
-        if let Some(node) = graph.get_node(&id) {
+    for id in &candidates {
+        if let Some(node) = graph.get_node(id) {
             let q = matches_symbol(node, symbol);
             if q.is_match() {
-                hits.push((id, q));
+                hits.push((id.clone(), q));
             }
         }
+    }
+
+    if hits.is_empty() && !qualified {
+        return resolve_relaxed(graph, symbol, &candidates);
     }
 
     hits.sort_by_key(|(_, q)| match q {
@@ -150,6 +161,37 @@ pub fn resolve_symbol(graph: &CodeGraph, symbol: &str) -> Vec<NodeId> {
     });
 
     hits.into_iter().map(|(id, _)| id).collect()
+}
+
+/// Zero-exact-hit fallback for unqualified symbols: case-insensitive exact
+/// name matches first; if none, case-insensitive name-prefix matches.
+/// Results are sorted by `(name, file_path)` for deterministic output.
+fn resolve_relaxed(graph: &CodeGraph, symbol: &str, candidates: &[NodeId]) -> Vec<NodeId> {
+    let mut ci_exact: Vec<(String, String, NodeId)> = Vec::new();
+    let mut ci_prefix: Vec<(String, String, NodeId)> = Vec::new();
+    for id in candidates {
+        let Some(node) = graph.get_node(id) else {
+            continue;
+        };
+        let file = node.file_path.to_string_lossy().into_owned();
+        if node.name.eq_ignore_ascii_case(symbol) {
+            ci_exact.push((node.name.clone(), file, id.clone()));
+        } else if node.name.len() > symbol.len()
+            && node
+                .name
+                .get(..symbol.len())
+                .is_some_and(|p| p.eq_ignore_ascii_case(symbol))
+        {
+            ci_prefix.push((node.name.clone(), file, id.clone()));
+        }
+    }
+    let mut tier = if ci_exact.is_empty() {
+        ci_prefix
+    } else {
+        ci_exact
+    };
+    tier.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    tier.into_iter().map(|(_, _, id)| id).collect()
 }
 
 #[cfg(test)]
@@ -268,5 +310,54 @@ mod tests {
         assert!(has_qualifier("a.b"));
         assert!(has_qualifier("a/b"));
         assert!(!has_qualifier("plain"));
+    }
+
+    fn graph_with(names: &[&str]) -> CodeGraph {
+        let mut g = CodeGraph::new();
+        for name in names {
+            g.add_node(make_node(name, &format!("crate::m::{name}"), "src/m.rs"));
+        }
+        g
+    }
+
+    #[test]
+    fn zero_hit_unqualified_falls_back_to_case_insensitive_exact() {
+        let g = graph_with(&["Daemon", "DaemonHello"]);
+        let hits = resolve_symbol(&g, "daemon");
+        assert_eq!(hits.len(), 1, "ci-exact tier must win over ci-prefix");
+        assert_eq!(g.get_node(&hits[0]).unwrap().name, "Daemon");
+    }
+
+    #[test]
+    fn zero_hit_unqualified_falls_back_to_case_insensitive_prefix() {
+        let g = graph_with(&["HandshakeState", "unrelated"]);
+        let hits = resolve_symbol(&g, "handshake");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(g.get_node(&hits[0]).unwrap().name, "HandshakeState");
+    }
+
+    #[test]
+    fn exact_hit_suppresses_relaxed_fallback() {
+        let g = graph_with(&["daemon", "Daemon", "DaemonHello"]);
+        let hits = resolve_symbol(&g, "daemon");
+        assert_eq!(hits.len(), 1, "exact match must suppress the fallback");
+        assert_eq!(g.get_node(&hits[0]).unwrap().name, "daemon");
+    }
+
+    #[test]
+    fn qualified_symbols_never_relax() {
+        let g = graph_with(&["Daemon"]);
+        assert!(resolve_symbol(&g, "mcp::daemon").is_empty());
+    }
+
+    #[test]
+    fn relaxed_fallback_is_deterministic_and_sorted() {
+        let g = graph_with(&["HandshakeState", "HandshakeAck"]);
+        let hits = resolve_symbol(&g, "handshake");
+        let names: Vec<&str> = hits
+            .iter()
+            .map(|id| g.get_node(id).unwrap().name.as_str())
+            .collect();
+        assert_eq!(names, vec!["HandshakeAck", "HandshakeState"]);
     }
 }

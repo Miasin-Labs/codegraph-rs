@@ -5,7 +5,7 @@
 //! gets far more leverage from a **backward slice** ("everything that can
 //! affect this value", ≈ −90% of the code it would otherwise read) or a
 //! **taint path** ("does untrusted input reach this sink?") than from raw
-//! file reads. jfc already has the analyses ([`crate::slicing`],
+//! file reads. codegraph-analysis already has the analyses ([`crate::slicing`],
 //! [`crate::taint_v2`], [`crate::points_to`]) but no production driver wired
 //! them to the live graph — they ran only over test-fixture IR maps.
 //!
@@ -293,7 +293,8 @@ mod tests {
     use crate::nodes::{NodeData, NodeKind, Span, Visibility};
 
     fn write_temp(name: &str, content: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("jfc_analysistools_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("codegraph_analysistools_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
         let mut f = std::fs::File::create(&path).unwrap();

@@ -163,7 +163,7 @@ mod tests {
     use crate::nodes::{NodeData, Span, Visibility};
 
     fn write_temp(name: &str, content: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("jfc_irmap_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("codegraph_irmap_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
         let mut f = std::fs::File::create(&path).unwrap();
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn missing_file_is_skipped_robust() {
         let mut g = CodeGraph::new();
-        let phantom = Path::new("/nonexistent/jfc_irmap/ghost.rs");
+        let phantom = Path::new("/nonexistent/codegraph_irmap/ghost.rs");
         let id = g.add_node(fn_node(phantom, "ghost", "fn ghost() {}", "fn ghost"));
         let ir_map = build_ir_map(&g);
         assert!(!ir_map.contains_key(&id));

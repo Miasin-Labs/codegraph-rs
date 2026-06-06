@@ -18,8 +18,10 @@
 //!   codegraph callees <symbol>   Find what a function/method calls
 //!   codegraph impact <symbol>    Analyze what code is affected by changing a symbol
 //!   codegraph affected [files]   Find test files affected by changes
+//!   codegraph context <task>     Build ready-to-inject context for a task
+//!                                (--budget <tokens>, --strategy classic|analysis)
 //!   codegraph analyze <cmd>      Analysis engine over the bridged index
-//!                                (complexity, communities, dominators,
+//!                                (query, complexity, communities, dominators,
 //!                                slice, cycles, impact, taint)
 //!   codegraph serve --mcp        Run as an MCP server over stdio
 //!   codegraph unlock [path]      Remove a stale lock file
@@ -38,8 +40,9 @@ use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
-use codegraph::analysis_bridge::{BridgeResult, build_analysis_graph};
+use codegraph::analysis_bridge::{BridgeResult, build_analysis_graph_cached};
 use codegraph::analyze::{self, SliceDirection};
+use codegraph::context_analysis::{self, AnalysisContextOptions};
 use codegraph::db::{DatabaseConnection, QueryBuilder, get_database_path};
 use codegraph::directory::{get_codegraph_dir, is_initialized};
 use codegraph::extraction::is_generated_file;
@@ -61,7 +64,9 @@ use codegraph::sync::{
 use codegraph::ui::{IndexProgress as UiIndexProgress, create_shimmer_progress, get_glyphs};
 use codegraph::utils::lexical_resolve;
 use codegraph::{
+    BuildContextOptions,
     CodeGraph,
+    ContextFormat,
     ExtractionError,
     FileRecord,
     IndexOptions,
@@ -73,6 +78,7 @@ use codegraph::{
     OpenOptions,
     SearchOptions,
     Severity,
+    TaskInput,
 };
 use codegraph_analysis::nodes::NodeId as ANodeId;
 
@@ -715,6 +721,32 @@ enum Commands {
         #[arg(short = 'q', long)]
         quiet: bool,
     },
+    /// Build ready-to-inject context for a task description
+    Context {
+        #[arg(value_name = "task")]
+        task: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Trim output to roughly this many tokens (~4 chars/token)
+        #[arg(short = 'b', long, value_name = "tokens")]
+        budget: Option<String>,
+        /// Selection strategy: "classic" (FTS + graph expansion) or
+        /// "analysis" (token-budgeted, dataflow-seeded engine)
+        #[arg(
+            short = 's',
+            long,
+            value_name = "classic|analysis",
+            default_value = "classic"
+        )]
+        strategy: String,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+        /// Print capability notes (seeding mode, gate decisions, trims) to stderr
+        #[arg(short = 'v', long)]
+        verbose: bool,
+    },
     /// Run analysis-engine queries over the indexed project graph
     Analyze {
         #[command(subcommand)]
@@ -753,9 +785,49 @@ enum Commands {
 }
 
 /// `codegraph analyze` — the analysis engine (`codegraph-analysis`) running
-/// over the bridged SQLite index. Pure reads; the index is never mutated.
+/// over the bridged SQLite index. Pure reads of the index itself; the
+/// bridged graph is snapshotted under `.codegraph/analysis/` and reused
+/// until the index changes (`--no-cache` forces a rebuild).
 #[derive(Subcommand)]
 enum AnalyzeCommands {
+    /// Run a pipe-based DSL query over the project graph
+    #[command(after_help = "Examples (taken from the engine's test suite):
+  codegraph analyze query 'fn(\"main\") | callees | depth 3'
+      Everything main() reaches within 3 call hops.
+  codegraph analyze query 'path fn(\"main\") -> fn(\"helper\")'
+      Shortest call path between two functions (hops listed in path order).
+  codegraph analyze query 'scc'
+      Strongly-connected components: every mutual-recursion cluster.
+
+Grammar: seed with fn(\"name\"), type(\"Name\"), entrypoints, scc, or hot N;
+pipe through callers, callees, depth N, filter kind=K, since N, ...; combine
+with set algebra (union / intersect / \\), path patterns (path A -> B,
+paths A -> B via Calls), and aggregations (count, exists, group_by, ...).
+Use --explain to print the optimised plan without executing, --why to
+include per-row provenance (which operators produced each result).")]
+    Query {
+        /// The DSL query, e.g. 'fn("main") | callees | depth 3'
+        #[arg(value_name = "dsl")]
+        query: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Maximum result nodes
+        #[arg(long = "max-nodes", value_name = "number", default_value = "50")]
+        max_nodes: String,
+        /// Include why-provenance: which operators/predecessors produced each row
+        #[arg(long)]
+        why: bool,
+        /// Print the optimised query plan without executing it
+        #[arg(long)]
+        explain: bool,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
     /// Per-function complexity metrics (cyclomatic, cognitive, nesting, maintainability)
     Complexity {
         /// Project path
@@ -764,6 +836,9 @@ enum AnalyzeCommands {
         /// Show the N most complex functions
         #[arg(short = 't', long, value_name = "number", default_value = "20")]
         top: String,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
         /// Output as JSON
         #[arg(short = 'j', long)]
         json: bool,
@@ -776,6 +851,9 @@ enum AnalyzeCommands {
         /// Maximum members listed per community
         #[arg(long, value_name = "number", default_value = "8")]
         sample: String,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
         /// Output as JSON
         #[arg(short = 'j', long)]
         json: bool,
@@ -790,6 +868,9 @@ enum AnalyzeCommands {
         /// Maximum reachable nodes analyzed
         #[arg(short = 't', long, value_name = "number", default_value = "50")]
         top: String,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
         /// Output as JSON
         #[arg(short = 'j', long)]
         json: bool,
@@ -807,6 +888,9 @@ enum AnalyzeCommands {
         /// Maximum slice depth (call hops)
         #[arg(long, value_name = "number", default_value = "10")]
         depth: String,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
         /// Output as JSON
         #[arg(short = 'j', long)]
         json: bool,
@@ -816,6 +900,9 @@ enum AnalyzeCommands {
         /// Project path
         #[arg(short = 'p', long, value_name = "path")]
         path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
         /// Output as JSON
         #[arg(short = 'j', long)]
         json: bool,
@@ -830,6 +917,9 @@ enum AnalyzeCommands {
         /// Project path
         #[arg(short = 'p', long, value_name = "path")]
         path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
         /// Output as JSON
         #[arg(short = 'j', long)]
         json: bool,
@@ -846,6 +936,9 @@ enum AnalyzeCommands {
         /// Maximum intermediate nodes per path
         #[arg(long = "max-nodes", value_name = "number", default_value = "6")]
         max_nodes: String,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
         /// Output as JSON
         #[arg(short = 'j', long)]
         json: bool,
@@ -979,6 +1072,21 @@ fn main() {
             filter.as_deref(),
             json,
             quiet,
+        ),
+        Commands::Context {
+            task,
+            path,
+            budget,
+            strategy,
+            json,
+            verbose,
+        } => cmd_context(
+            &task,
+            path.as_deref(),
+            budget.as_deref(),
+            &strategy,
+            json,
+            verbose,
         ),
         Commands::Analyze { command } => cmd_analyze(command),
         Commands::Install {
@@ -2449,18 +2557,180 @@ fn cmd_affected(
 }
 
 // =============================================================================
-// analyze command family
-//
-// The jfc-graph analysis engine (`codegraph-analysis`) running over the
-// project's bridged SQLite index (`analysis_bridge::build_analysis_graph`).
-// All commands are pure reads. Report shapes live in `codegraph::analyze`;
-// this file only resolves symbols and renders.
+// context command
 // =============================================================================
 
-/// Bridge the project's index into the analysis engine. Exits (status 1)
-/// when the project is not initialized — same contract as the other read
-/// commands.
-fn bridge_project(project_path: &Path) -> Result<BridgeResult, String> {
+/// codegraph context <task> [--budget tokens] [--strategy classic|analysis]
+///
+/// `classic` (default) is the existing `ContextBuilder` pipeline (FTS entry
+/// points + graph expansion) — its output is unchanged. `analysis` routes
+/// through the analysis engine's context modules over the bridged index:
+/// dataflow-seeded entry points, retrieval-gated expansion, clustered
+/// per-file source, rendered to markdown and trimmed to the token budget.
+fn cmd_context(
+    task: &str,
+    path_arg: Option<&str>,
+    budget_arg: Option<&str>,
+    strategy: &str,
+    json: bool,
+    verbose: bool,
+) {
+    let project_path = resolve_project_path(path_arg);
+
+    let budget_tokens = match budget_arg {
+        Some(raw) => match parse_int_js(raw) {
+            Some(n) if n > 0 => Some(n as usize),
+            _ => {
+                error_msg(&format!(
+                    "Invalid --budget \"{raw}\" — expected a positive token count"
+                ));
+                process::exit(1);
+            }
+        },
+        None => None,
+    };
+
+    let body = || -> Result<(), String> {
+        match strategy {
+            "classic" => cmd_context_classic(task, &project_path, budget_tokens, json, verbose),
+            "analysis" => cmd_context_analysis(task, &project_path, budget_tokens, json, verbose),
+            other => {
+                error_msg(&format!(
+                    "Invalid --strategy \"{other}\" — expected \"classic\" or \"analysis\""
+                ));
+                process::exit(1);
+            }
+        }
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("Context build failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// The pre-existing `ContextBuilder` path. Without `--budget` the printed
+/// output is exactly what `CodeGraph::build_context` returns (regression-
+/// pinned); `--budget` applies a plain output trim on top (markdown only —
+/// trimming would corrupt the JSON shape).
+fn cmd_context_classic(
+    task: &str,
+    project_path: &Path,
+    budget_tokens: Option<usize>,
+    json: bool,
+    verbose: bool,
+) -> Result<(), String> {
+    if !is_initialized(project_path) {
+        error_msg(&format!(
+            "CodeGraph not initialized in {}",
+            project_path.display()
+        ));
+        info("Run \"codegraph init\" first");
+        process::exit(1);
+    }
+
+    let cg = CodeGraph::open(project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
+    let options = BuildContextOptions {
+        format: Some(if json {
+            ContextFormat::Json
+        } else {
+            ContextFormat::Markdown
+        }),
+        ..Default::default()
+    };
+    let output = cg
+        .build_context(&TaskInput::Text(task.to_string()), Some(&options))
+        .map_err(|e| e.to_string())?;
+    cg.close();
+
+    let output = match (budget_tokens, json) {
+        (Some(tokens), false) => {
+            let (trimmed, truncated) = context_analysis::trim_to_token_budget(&output, tokens);
+            if verbose && truncated {
+                eprintln!(
+                    "note: classic output trimmed to ~{tokens} tokens (use --strategy analysis \
+                     for budget-aware selection)"
+                );
+            }
+            trimmed
+        }
+        (Some(_), true) => {
+            eprintln!("warning: --budget is ignored for classic JSON output");
+            output
+        }
+        (None, _) => output,
+    };
+    println!("{output}");
+    Ok(())
+}
+
+/// The analysis-engine path: bridge the index, run the engine's context
+/// pipeline (`codegraph::context_analysis`), print markdown (or the full
+/// JSON report). Capability notes go to stderr under `--verbose` and are
+/// always present in the JSON report.
+fn cmd_context_analysis(
+    task: &str,
+    project_path: &Path,
+    budget_tokens: Option<usize>,
+    json: bool,
+    verbose: bool,
+) -> Result<(), String> {
+    let bridged = bridge_project(project_path, false, json)?;
+    let report = context_analysis::build_analysis_context(
+        &bridged.graph,
+        project_path,
+        task,
+        &AnalysisContextOptions {
+            budget_tokens,
+            ..Default::default()
+        },
+    );
+
+    if verbose {
+        for note in &report.notes {
+            eprintln!("note: {note}");
+        }
+        eprintln!(
+            "note: strategy=analysis seeding={} measured-tokens={}{}",
+            match report.seeding {
+                context_analysis::SeedingMode::Dataflow => "dataflow",
+                context_analysis::SeedingMode::CallGraph => "call-graph",
+            },
+            report.measured_tokens,
+            report
+                .budget_tokens
+                .map(|t| format!(" budget-tokens={t}"))
+                .unwrap_or_default(),
+        );
+    }
+
+    if json {
+        print_json(&report)
+    } else {
+        println!("{}", report.markdown);
+        Ok(())
+    }
+}
+
+// =============================================================================
+// analyze command family
+//
+// The analysis engine (`codegraph-analysis`) running over the
+// project's bridged SQLite index (`analysis_bridge::build_analysis_graph`).
+// All commands are pure reads of the index. Report shapes live in
+// `codegraph::analyze`; this file only resolves symbols and renders.
+//
+// The bridged graph is snapshotted under `.codegraph/analysis/` keyed by an
+// index fingerprint, so repeat invocations skip the full SQL re-read
+// (`analysis_bridge::build_analysis_graph_cached`). `--no-cache` forces a
+// rebuild; cache hits print a one-line "(cached graph)" notice in human
+// output only — `--json` stays pure JSON.
+// =============================================================================
+
+/// Bridge the project's index into the analysis engine, via the snapshot
+/// cache unless `no_cache`. Exits (status 1) when the project is not
+/// initialized — same contract as the other read commands.
+fn bridge_project(project_path: &Path, no_cache: bool, json: bool) -> Result<BridgeResult, String> {
     if !is_initialized(project_path) {
         error_msg(&format!(
             "CodeGraph not initialized in {}",
@@ -2472,7 +2742,12 @@ fn bridge_project(project_path: &Path) -> Result<BridgeResult, String> {
     let conn =
         DatabaseConnection::open(get_database_path(project_path)).map_err(|e| e.to_string())?;
     let queries = QueryBuilder::new(conn.get_db().map_err(|e| e.to_string())?);
-    build_analysis_graph(&queries).map_err(|e| e.to_string())
+    let cached = build_analysis_graph_cached(&queries, project_path, !no_cache)
+        .map_err(|e| e.to_string())?;
+    if cached.from_cache && !json {
+        println!("{}", dim("(cached graph)"));
+    }
+    Ok(cached.result)
 }
 
 /// Resolve a user-supplied symbol to its analysis-graph node via the index
@@ -2543,48 +2818,262 @@ fn print_symbol_line(kind: &str, name: &str, file: &str, line: u32) {
 /// codegraph analyze <subcommand>
 fn cmd_analyze(command: AnalyzeCommands) {
     match command {
-        AnalyzeCommands::Complexity { path, top, json } => {
-            cmd_analyze_complexity(path.as_deref(), &top, json)
-        }
-        AnalyzeCommands::Communities { path, sample, json } => {
-            cmd_analyze_communities(path.as_deref(), &sample, json)
-        }
+        AnalyzeCommands::Query {
+            query,
+            path,
+            max_nodes,
+            why,
+            explain,
+            no_cache,
+            json,
+        } => cmd_analyze_query(
+            &query,
+            path.as_deref(),
+            &max_nodes,
+            why,
+            explain,
+            no_cache,
+            json,
+        ),
+        AnalyzeCommands::Complexity {
+            path,
+            top,
+            no_cache,
+            json,
+        } => cmd_analyze_complexity(path.as_deref(), &top, no_cache, json),
+        AnalyzeCommands::Communities {
+            path,
+            sample,
+            no_cache,
+            json,
+        } => cmd_analyze_communities(path.as_deref(), &sample, no_cache, json),
         AnalyzeCommands::Dominators {
             symbol,
             path,
             top,
+            no_cache,
             json,
-        } => cmd_analyze_dominators(&symbol, path.as_deref(), &top, json),
+        } => cmd_analyze_dominators(&symbol, path.as_deref(), &top, no_cache, json),
         AnalyzeCommands::Slice {
             symbol,
             direction,
             path,
             depth,
+            no_cache,
             json,
-        } => cmd_analyze_slice(&symbol, &direction, path.as_deref(), &depth, json),
-        AnalyzeCommands::Cycles { path, json } => cmd_analyze_cycles(path.as_deref(), json),
+        } => cmd_analyze_slice(&symbol, &direction, path.as_deref(), &depth, no_cache, json),
+        AnalyzeCommands::Cycles {
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_cycles(path.as_deref(), no_cache, json),
         AnalyzeCommands::Impact {
             symbol,
             signature,
             path,
+            no_cache,
             json,
-        } => cmd_analyze_impact(&symbol, signature.as_deref(), path.as_deref(), json),
+        } => cmd_analyze_impact(
+            &symbol,
+            signature.as_deref(),
+            path.as_deref(),
+            no_cache,
+            json,
+        ),
         AnalyzeCommands::Taint {
             source,
             sink,
             path,
             max_nodes,
+            no_cache,
             json,
-        } => cmd_analyze_taint(&source, &sink, path.as_deref(), &max_nodes, json),
+        } => cmd_analyze_taint(&source, &sink, path.as_deref(), &max_nodes, no_cache, json),
+    }
+}
+
+/// codegraph analyze query "<dsl>" [--why] [--explain]
+///
+/// Runs the analysis engine's pipe-based query DSL over the bridged graph.
+/// `--explain` parses + optimises only (never touches the index, so it works
+/// without an initialized project); `--why` adds per-row provenance.
+#[allow(clippy::too_many_arguments)]
+fn cmd_analyze_query(
+    query: &str,
+    path_arg: Option<&str>,
+    max_nodes_arg: &str,
+    why: bool,
+    explain: bool,
+    no_cache: bool,
+    json: bool,
+) {
+    let body = || -> Result<(), String> {
+        if explain {
+            let report = analyze::explain_report(query)?;
+            if json {
+                return print_json(&report);
+            }
+            println!(
+                "{}",
+                bold(&format!(
+                    "\nOptimised plan ({} query, not executed):\n",
+                    report.kind
+                ))
+            );
+            for (i, step) in report.steps.iter().enumerate() {
+                println!("  {} {}", dim(&format!("{}.", i + 1)), white(step));
+            }
+            println!();
+            info(&format!(
+                "BFS schedule hint: {}{}",
+                report.strategy,
+                if report.parallel { " (parallel)" } else { "" }
+            ));
+            return Ok(());
+        }
+
+        let project_path = resolve_project_path(path_arg);
+        let bridged = bridge_project(&project_path, no_cache, json)?;
+        let max_nodes = parse_int_js(max_nodes_arg).unwrap_or(50).max(1) as usize;
+        let report = analyze::query_report(&bridged.graph, query, max_nodes, why)?;
+
+        if json {
+            return print_json(&report);
+        }
+
+        if report.nodes.is_empty() && report.metadata.is_empty() {
+            info("Query matched no nodes");
+            return Ok(());
+        }
+
+        if !report.nodes.is_empty() {
+            println!(
+                "{}",
+                bold(&format!(
+                    "\nQuery results ({} node{}{}):\n",
+                    report.node_count,
+                    if report.node_count == 1 { "" } else { "s" },
+                    if report.truncated {
+                        format!(" of {}", report.total_before_truncation)
+                    } else {
+                        String::new()
+                    }
+                ))
+            );
+            let kind_w = report
+                .nodes
+                .iter()
+                .map(|n| n.kind.len())
+                .chain(["KIND".len()])
+                .max()
+                .unwrap_or(4);
+            let name_w = report
+                .nodes
+                .iter()
+                .map(|n| n.name.len())
+                .chain(["NAME".len()])
+                .max()
+                .unwrap_or(4);
+            println!(
+                "  {}  {}  {}",
+                dim(&format!("{:<kind_w$}", "KIND")),
+                dim(&format!("{:<name_w$}", "NAME")),
+                dim("LOCATION")
+            );
+            for row in &report.nodes {
+                let loc = if row.line != 0 {
+                    format!("{}:{}", row.file, row.line)
+                } else {
+                    row.file.clone()
+                };
+                println!(
+                    "  {}  {}  {}",
+                    cyan(&format!("{:<kind_w$}", row.kind)),
+                    white(&format!("{:<name_w$}", row.name)),
+                    dim(&loc)
+                );
+            }
+            println!();
+        }
+
+        if !report.edges.is_empty() {
+            const EDGE_CAP: usize = 25;
+            println!("{}", bold("Edges:"));
+            for edge in report.edges.iter().take(EDGE_CAP) {
+                println!(
+                    "  {} {} {} {}",
+                    white(&edge.from),
+                    dim("->"),
+                    white(&edge.to),
+                    dim(&format!("({})", edge.kind))
+                );
+            }
+            if report.edges.len() > EDGE_CAP {
+                println!(
+                    "{}",
+                    dim(&format!(
+                        "  ... {} more (use --json for all)",
+                        report.edges.len() - EDGE_CAP
+                    ))
+                );
+            }
+            println!();
+        }
+
+        if !report.metadata.is_empty() {
+            for line in &report.metadata {
+                println!("{}", dim(line));
+            }
+            println!();
+        }
+
+        if why {
+            match &report.why {
+                Some(entries) if !entries.is_empty() => {
+                    println!("{}", bold("Why (provenance):"));
+                    for entry in entries {
+                        for step in &entry.steps {
+                            let origin = if step.predecessors.is_empty() {
+                                "seed".to_string()
+                            } else {
+                                format!("from {}", step.predecessors.join(", "))
+                            };
+                            println!(
+                                "  {} {}",
+                                white(&entry.symbol.name),
+                                dim(&format!("<- {} ({origin}, stage {})", step.op, step.stage))
+                            );
+                        }
+                    }
+                    println!();
+                }
+                Some(_) => {}
+                None => info("why-provenance is not available for aggregation queries"),
+            }
+        }
+
+        if report.truncated {
+            info(&format!(
+                "Result truncated to {} nodes {} raise --max-nodes for more",
+                report.node_count,
+                get_glyphs().dash
+            ));
+        }
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze query failed: {msg}"));
+        process::exit(1);
     }
 }
 
 /// codegraph analyze complexity [--top N]
-fn cmd_analyze_complexity(path_arg: Option<&str>, top_arg: &str, json: bool) {
+fn cmd_analyze_complexity(path_arg: Option<&str>, top_arg: &str, no_cache: bool, json: bool) {
     let project_path = resolve_project_path(path_arg);
 
     let body = || -> Result<(), String> {
-        let bridged = bridge_project(&project_path)?;
+        let bridged = bridge_project(&project_path, no_cache, json)?;
         let top = parse_int_js(top_arg).unwrap_or(20).max(1) as usize;
         let report = analyze::complexity_report(&bridged.graph, &project_path, top);
 
@@ -2650,11 +3139,11 @@ fn cmd_analyze_complexity(path_arg: Option<&str>, top_arg: &str, json: bool) {
 }
 
 /// codegraph analyze communities
-fn cmd_analyze_communities(path_arg: Option<&str>, sample_arg: &str, json: bool) {
+fn cmd_analyze_communities(path_arg: Option<&str>, sample_arg: &str, no_cache: bool, json: bool) {
     let project_path = resolve_project_path(path_arg);
 
     let body = || -> Result<(), String> {
-        let bridged = bridge_project(&project_path)?;
+        let bridged = bridge_project(&project_path, no_cache, json)?;
         let sample = parse_int_js(sample_arg).unwrap_or(8).max(1) as usize;
         let report = analyze::communities_report(&bridged.graph, sample);
 
@@ -2711,11 +3200,17 @@ fn cmd_analyze_communities(path_arg: Option<&str>, sample_arg: &str, json: bool)
 }
 
 /// codegraph analyze dominators <symbol>
-fn cmd_analyze_dominators(symbol: &str, path_arg: Option<&str>, top_arg: &str, json: bool) {
+fn cmd_analyze_dominators(
+    symbol: &str,
+    path_arg: Option<&str>,
+    top_arg: &str,
+    no_cache: bool,
+    json: bool,
+) {
     let project_path = resolve_project_path(path_arg);
 
     let body = || -> Result<(), String> {
-        let bridged = bridge_project(&project_path)?;
+        let bridged = bridge_project(&project_path, no_cache, json)?;
         let Some(entry) = resolve_symbol_via_index(&project_path, &bridged.id_map, symbol)? else {
             info(&format!(
                 "Symbol \"{symbol}\" not found in the analysis graph"
@@ -2786,6 +3281,7 @@ fn cmd_analyze_slice(
     direction_arg: &str,
     path_arg: Option<&str>,
     depth_arg: &str,
+    no_cache: bool,
     json: bool,
 ) {
     let project_path = resolve_project_path(path_arg);
@@ -2802,7 +3298,7 @@ fn cmd_analyze_slice(
     };
 
     let body = || -> Result<(), String> {
-        let bridged = bridge_project(&project_path)?;
+        let bridged = bridge_project(&project_path, no_cache, json)?;
         let Some(seed) = resolve_symbol_via_index(&project_path, &bridged.id_map, symbol)? else {
             info(&format!(
                 "Symbol \"{symbol}\" not found in the analysis graph"
@@ -2866,11 +3362,11 @@ fn cycle_kind_label(kind: &str) -> &'static str {
 }
 
 /// codegraph analyze cycles
-fn cmd_analyze_cycles(path_arg: Option<&str>, json: bool) {
+fn cmd_analyze_cycles(path_arg: Option<&str>, no_cache: bool, json: bool) {
     let project_path = resolve_project_path(path_arg);
 
     let body = || -> Result<(), String> {
-        let bridged = bridge_project(&project_path)?;
+        let bridged = bridge_project(&project_path, no_cache, json)?;
         let report = analyze::cycles_report(&bridged.graph);
 
         if json {
@@ -2930,11 +3426,17 @@ fn cmd_analyze_cycles(path_arg: Option<&str>, json: bool) {
 }
 
 /// codegraph analyze impact <symbol> [--signature <sig>]
-fn cmd_analyze_impact(symbol: &str, signature: Option<&str>, path_arg: Option<&str>, json: bool) {
+fn cmd_analyze_impact(
+    symbol: &str,
+    signature: Option<&str>,
+    path_arg: Option<&str>,
+    no_cache: bool,
+    json: bool,
+) {
     let project_path = resolve_project_path(path_arg);
 
     let body = || -> Result<(), String> {
-        let bridged = bridge_project(&project_path)?;
+        let bridged = bridge_project(&project_path, no_cache, json)?;
         let Some(target) = resolve_symbol_via_index(&project_path, &bridged.id_map, symbol)? else {
             info(&format!(
                 "Symbol \"{symbol}\" not found in the analysis graph"
@@ -3007,12 +3509,13 @@ fn cmd_analyze_taint(
     sink: &str,
     path_arg: Option<&str>,
     max_nodes_arg: &str,
+    no_cache: bool,
     json: bool,
 ) {
     let project_path = resolve_project_path(path_arg);
 
     let body = || -> Result<(), String> {
-        let bridged = bridge_project(&project_path)?;
+        let bridged = bridge_project(&project_path, no_cache, json)?;
         let cg =
             CodeGraph::open(&project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
         let source_id = resolve_analysis_symbol(&cg, &bridged.id_map, source)?;

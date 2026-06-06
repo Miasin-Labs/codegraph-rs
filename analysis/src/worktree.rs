@@ -3,7 +3,7 @@
 //! `GraphSession::from_directory` walks up the filesystem looking for a
 //! cached index, with no knowledge of git worktrees. When a worktree is
 //! created *inside* its parent checkout (the common pattern for
-//! agent-managed scratch trees under `.jfc-worktrees/<name>/`), a query
+//! agent-managed scratch trees under `.codegraph-worktrees/<name>/`), a query
 //! launched from inside the worktree silently borrows the **parent
 //! checkout's** index. Every result reflects the parent's branch — symbols
 //! the user just added in the worktree are invisible, with no warning.
@@ -50,7 +50,7 @@ pub fn detect_worktree_index_mismatch(
     }
     // Index lives in an *ancestor* directory of the caller's worktree —
     // this is the monorepo-subdir case (caller is `repo/sub/`, index is
-    // `repo/.jfc/`). Allow it: it isn't a worktree mismatch, it's how
+    // `repo/.codegraph/`). Allow it: it isn't a worktree mismatch, it's how
     // monorepos with a single index work.
     if caller_path
         .canonicalize()
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn no_mismatch_when_caller_and_index_share_root() {
-        // The jfc repo root is its own worktree — running this test
+        // This repo root is its own worktree — running this test
         // means caller and index BOTH resolve to the workspace root,
         // so the mismatch detector must return None.
         let pwd = std::env::current_dir().expect("cwd");
@@ -154,8 +154,10 @@ mod tests {
         // because that needs a fully-initialised repo with at least one
         // commit; instead we approximate the layout: two sibling git
         // repos so each has its own `git rev-parse --show-toplevel`.
-        let base =
-            std::env::temp_dir().join(format!("jfc-graph-worktree-test-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!(
+            "codegraph-analysis-worktree-test-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).expect("mkdir");
         let a = base.join("a");

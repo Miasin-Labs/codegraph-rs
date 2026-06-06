@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn lines_cache_hits_without_rereading() {
-        let dir = std::env::temp_dir().join(format!("jfc-ci-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("codegraph-ci-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("a.txt");
         std::fs::write(&f, "one\ntwo\nthree\n").unwrap();
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn lines_cache_refreshes_on_mtime_change() {
-        let dir = std::env::temp_dir().join(format!("jfc-ci-mtime-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("codegraph-ci-mtime-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("b.txt");
         std::fs::write(&f, "v1\n").unwrap();
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn invalidate_drops_entry() {
-        let dir = std::env::temp_dir().join(format!("jfc-ci-inval-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("codegraph-ci-inval-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("c.txt");
         std::fs::write(&f, "x\n").unwrap();

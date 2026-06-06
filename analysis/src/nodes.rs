@@ -141,15 +141,24 @@ pub struct NodeData {
     /// Per-function complexity metrics (cognitive, cyclomatic, nesting, Halstead,
     /// LOC, maintainability index). Only populated for `Function` nodes when
     /// the source is available at extraction time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// NOTE: these three optional fields deliberately do NOT use
+    /// `skip_serializing_if` — omitting fields on serialize breaks
+    /// non-self-describing formats (postcard), which the snapshot
+    /// persistence in [`crate::overlay`] and the event log in
+    /// [`crate::persistence`] rely on: the deserializer expects the
+    /// `Option` tag and hits end-of-buffer when it was skipped.
+    /// `#[serde(default)]` is kept so old JSON payloads (which omitted
+    /// `None` fields) still deserialize.
+    #[serde(default)]
     pub complexity: Option<ComplexityMetrics>,
     /// Per-function control flow graph. Only populated for `Function` nodes
     /// when the source is available at extraction time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub cfg: Option<FunctionCfg>,
     /// Per-function dataflow analysis. Only populated for `Function` nodes
     /// when the source is available at extraction time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub dataflow: Option<FunctionDataflow>,
 }
 

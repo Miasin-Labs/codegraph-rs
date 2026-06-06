@@ -1,5 +1,5 @@
 //! Exercise every new context/overlay/schema entry point against the
-//! real jfc workspace so we can see actual output (not just unit tests).
+//! real workspace so we can see actual output (not just unit tests).
 //!
 //! Run with:
 //!     cargo run -p codegraph-analysis --example try_context
@@ -104,7 +104,7 @@ fn main() {
     println!("{schema_text}");
 
     divider("overlay — save base snapshot and reload");
-    let snap_path = std::env::temp_dir().join("jfc-graph-try-base.json");
+    let snap_path = std::env::temp_dir().join("codegraph-analysis-try-base.json");
     session
         .save_for_overlay(&snap_path, &root, Some("HEAD"))
         .expect("save_for_overlay");

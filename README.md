@@ -80,6 +80,7 @@ Every subcommand prints human output by default and a stable camelCase JSON
 shape with `--json`:
 
 ```bash
+codegraph analyze query '<dsl>'               # pipe-based graph query DSL (below)
 codegraph analyze complexity [--top N]        # per-function cyclomatic/cognitive/
                                               # nesting/Halstead/maintainability
 codegraph analyze communities                 # Louvain call-graph communities
@@ -94,6 +95,64 @@ codegraph analyze impact <symbol> [-s <sig>]  # signature-edit cascade: direct c
                                               # which is a BFS blast radius)
 codegraph analyze taint <source> <sink>       # call-graph paths source → sink,
                                               # each hop annotated with edge kind
+```
+
+### Query DSL (`codegraph analyze query`)
+
+The engine's pipe-based DSL runs directly against the bridged graph. Seed a
+node set with `fn("name")`, `type("Name")`, `entrypoints`, `scc`, or `hot N`;
+pipe it through `callers`, `callees`, `depth N`, `filter kind=K`, …; combine
+with set algebra (`union` / `intersect` / `\`), path patterns, and
+aggregations (`count`, `exists`, `group_by`, …):
+
+```bash
+codegraph analyze query 'fn("main") | callees | depth 3'     # all main() reaches in ≤3 hops
+codegraph analyze query 'path fn("main") -> fn("helper")'    # shortest call path A → B
+codegraph analyze query 'scc'                                # mutual-recursion clusters
+```
+
+`--explain` prints the optimised query plan without executing; `--why`
+attaches per-row provenance (which operators produced each result).
+
+### Graph snapshot cache
+
+Bridging re-reads every node/edge row from SQLite, which dominates wall-clock
+on large indexes — so the bridged graph is snapshotted under
+`<project>/.codegraph/analysis/` (`graph.bin` + `meta.json`) keyed by a
+fingerprint of the index. Repeat `analyze`/`context --strategy analysis`
+invocations load the snapshot (a dim `(cached graph)` notice in human output;
+`--json` stays pure JSON), and any re-index that changes the store invalidates
+it automatically. `--no-cache` forces a rebuild; cache failures always degrade
+to a silent rebuild, never wrong answers.
+
+### Environment variables (all native — no `JFC_*` compatibility)
+
+- `CODEGRAPH_ANALYSIS_DATA_DIR` — overrides the engine's per-workspace data
+  dir. Default resolution: `$XDG_CACHE_HOME/codegraph-analysis/<workspace-hash>/`
+  → `$HOME/.cache/codegraph-analysis/<workspace-hash>/` → in-workspace
+  `.codegraph-analysis/` fallback.
+- `CODEGRAPH_ANALYSIS_CACHE_DIR` — relocates both the engine's per-file parse
+  cache (default `$HOME/.cache/codegraph-analysis/v1/`) and the CLI's graph
+  snapshot cache (which then lives under `<override>/<workspace-key>/`).
+- `CODEGRAPH_ANALYSIS_CAP_*=0|false|off|no` — capability kill-switches
+  (`CALL_GRAPH`, `TYPE_USAGE`, `PARTIAL_STRUCT`, `VIRTUAL_VALIDATION`,
+  `PERSISTENCE`, `SYMBOL_EDITING`).
+
+### Token-budgeted context (`codegraph context --strategy analysis`)
+
+`codegraph context "<task>" [--budget <tokens>] [--strategy classic|analysis]`:
+`classic` (default) is the pre-existing `ContextBuilder` pipeline, unchanged —
+`--budget` applies a plain output trim on top. `--strategy analysis` routes
+through the engine's context modules over the bridged graph: identifiers from
+the task are resolved to symbols (exact, then case-insensitive/prefix
+fallback), entry points are dataflow-seeded (DRACO), expansion is
+retrieval-gated (Repoformer), and per-file clustered source is rendered to
+markdown trimmed to the token budget (~4 chars/token). The report states its
+honest capability — e.g. `seeding: "call-graph"` when the index has no
+type-flow edges for the resolved symbols — and never fabricates dataflow.
+
+```bash
+codegraph context "how does the daemon handshake work" --strategy analysis --budget 2000
 ```
 
 **What runs at which fidelity** (the reports state this themselves rather

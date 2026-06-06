@@ -275,7 +275,7 @@ const STOP_WORDS: &[&str] = &[
     "each", "some", "such", "only", "same", "about", "after", "before", "between", "through",
     "during", "without", "again", "further", "once", "here", "there", "both", "just", "more",
     "most", "very", "how", "what", "when", "where", "which", "who", "why", "does", "doing", "done",
-    "use", "used", "using",
+    "use", "used", "using", "work", "works", "working",
 ];
 
 fn expand_related(graph: &CodeGraph, seeds: &[NodeId], depth: u8, budget: usize) -> Vec<NodeId> {

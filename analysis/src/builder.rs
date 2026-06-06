@@ -106,7 +106,7 @@ impl GraphBuilder {
                         // Edge-invariant violations are a builder/adapter bug,
                         // not user-facing, so we log loudly.
                         warn!(
-                            target: "jfc::graph::builder",
+                            target: "codegraph::analysis::builder",
                             error = %e,
                             "edge rejected by graph invariant — adapter produced a malformed edge"
                         );

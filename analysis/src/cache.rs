@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 /// 64-bit content fingerprint. Mirrors `rustc_data_structures::fingerprint::Fingerprint`
-/// in spirit — jfc only needs a deterministic key for in-process memoization,
+/// in spirit — codegraph-analysis only needs a deterministic key for in-process memoization,
 /// not a cryptographic digest.
 ///
 /// If a parallel agent later introduces a richer `Fingerprint` newtype (e.g.
@@ -184,7 +184,7 @@ pub struct AnalysisCache<V> {
     generation: u64,
     /// Override for the on-disk cache root. `None` means "use the default
     /// resolved by [`cache_root_for`] at call time" — that resolution
-    /// honors `JFC_GRAPH_CACHE_DIR`, then falls back to `$HOME/.cache/...`.
+    /// honors `CODEGRAPH_ANALYSIS_CACHE_DIR`, then falls back to `$HOME/.cache/...`.
     /// Storing a `PathBuf` here lets tests inject a `tempfile::tempdir`
     /// without a process-wide env mutation.
     cache_root_override: Option<PathBuf>,
@@ -192,7 +192,7 @@ pub struct AnalysisCache<V> {
 
 impl<V> AnalysisCache<V> {
     /// Create an empty cache. Disk-backed methods will resolve their root
-    /// via [`cache_root_for`] (env var, then `$HOME/.cache/jfc-graph/v1`).
+    /// via [`cache_root_for`] (env var, then `$HOME/.cache/codegraph-analysis/v1`).
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
@@ -431,9 +431,9 @@ impl<V> Default for AnalysisCache<V> {
 ///
 /// 1. If `override_root` is `Some`, it wins (used by tests via
 ///    [`AnalysisCache::with_cache_root`]).
-/// 2. The `JFC_GRAPH_CACHE_DIR` environment variable, if set and non-empty.
-/// 3. `$HOME/.cache/jfc-graph/v1/`.
-/// 4. As a last resort (no `$HOME`), `./.cache/jfc-graph/v1/` relative to
+/// 2. The `CODEGRAPH_ANALYSIS_CACHE_DIR` environment variable, if set and non-empty.
+/// 3. `$HOME/.cache/codegraph-analysis/v1/`.
+/// 4. As a last resort (no `$HOME`), `./.cache/codegraph-analysis/v1/` relative to
 ///    the current working directory.
 ///
 /// The `v1` suffix is intentional: bumping the path on a schema break is
@@ -446,7 +446,7 @@ pub fn cache_root_for<T: ?Sized>(override_root: Option<&Path>) -> PathBuf {
         return p.to_path_buf();
     }
 
-    if let Ok(val) = std::env::var("JFC_GRAPH_CACHE_DIR") {
+    if let Ok(val) = std::env::var("CODEGRAPH_ANALYSIS_CACHE_DIR") {
         if !val.is_empty() {
             return PathBuf::from(val);
         }
@@ -455,7 +455,7 @@ pub fn cache_root_for<T: ?Sized>(override_root: Option<&Path>) -> PathBuf {
     let base = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join(".cache").join("jfc-graph").join("v1")
+    base.join(".cache").join("codegraph-analysis").join("v1")
 }
 
 #[cfg(test)]
@@ -725,7 +725,7 @@ mod tests {
         // We can't safely mutate process-global env in a parallel test
         // runner, so check the override path (which env-var resolution
         // ultimately wires into) directly.
-        let injected = PathBuf::from("/tmp/jfc-test-root");
+        let injected = PathBuf::from("/tmp/codegraph-test-root");
         assert_eq!(
             cache_root_for::<()>(Some(&injected)),
             injected,

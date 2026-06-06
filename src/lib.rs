@@ -10,6 +10,7 @@
 pub mod analysis_bridge;
 pub mod analyze;
 pub mod context;
+pub mod context_analysis;
 pub mod db;
 pub mod directory;
 pub mod error;

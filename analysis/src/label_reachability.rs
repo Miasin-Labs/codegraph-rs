@@ -2,7 +2,7 @@
 //!
 //! From *Reachability queries with label-constraints* (the RLC line of work):
 //! instead of plain "is `t` reachable from `s`", answer "is `t` reachable via a
-//! path whose **edge-label sequence** matches a constraint". jfc's graph already
+//! path whose **edge-label sequence** matches a constraint". The graph already
 //! carries typed [`EdgeKind`] labels ([`crate::edges`]); this module lets a
 //! query say things like *"a function reachable via `(Calls)+`"* or *"a method
 //! reachable via `Contains` then `(Calls)+`"* and get an exact yes/no plus the
@@ -16,7 +16,7 @@
 //! visited set is bounded by `nodes × nfa_states`, so cycles terminate exactly
 //! as in `closure`.
 //!
-//! This is the precision lever the gap analysis flagged: jfc's existing
+//! This is the precision lever the gap analysis flagged: the existing
 //! reachability is label-*agnostic*, so it conflates a `Calls` path with a
 //! `UsesType` path. Constraining the label sequence sharpens what `taint_v2`
 //! and the DSL can ask for. (Full calling-context sensitivity — matched

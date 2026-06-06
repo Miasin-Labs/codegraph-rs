@@ -188,16 +188,51 @@ is the one intentional divergence to remember.
 
 ## jfc-specific behavior kept (follow-up candidates)
 
-Behavior was preserved per the brief; rename these only with a deliberate
-compat/migration story:
+Behavior was preserved per the brief. **Update 2026-06-06 (codegraph-native
+rebrand):** items 1–5 are now DONE — this copy is fully independent of jfc,
+so the rebrand deliberately breaks compatibility with jfc's caches/env vars
+(no fallback to old names, by design). See "Codegraph-native rebrand" below.
 
-1. **Env vars:** `JFC_GRAPH_DATA_DIR` (`data_dir.rs`), `JFC_GRAPH_CACHE_DIR` (`cache.rs`), `JFC_GRAPH_CAP_*` (`capabilities.rs`). A rename should accept both old and new names for a deprecation window.
-2. **On-disk locations:** `$XDG_CACHE_HOME|$HOME/.cache/jfc-graph/<workspace-hash>/` (data dir), `$HOME/.cache/jfc-graph/v1/` (analysis cache), in-workspace `.jfc-graph/` fallback, and the `.jfc-worktrees/` convention mentioned in `worktree.rs` docs. Renaming silently orphans users' existing caches/indexes.
-3. **Fingerprint domain strings** `"jfc-graph::CodeGraph::nodes"` / `"jfc-graph::CodeGraph::edges"` in `fingerprint.rs` — these are hashed into every fingerprint. Changing them invalidates every on-disk cache/snapshot AND the golden values in `tests/fingerprint_stability.rs`. Leave them unless a cache-format version bump is planned.
-4. **Tracing targets** `jfc::graph::{resolver,session,builder,pass,parser}` — consumers filtering by target would need updating in lockstep.
-5. **`session.rs` / `enrichment.rs`** still document jfc (the TUI app) as the consumer; `enrichment::LspDataProvider` has no in-repo implementor here (jfc's LspClient was the implementor). Decide whether codegraph-rs grows its own provider or the trait stays dormant.
+1. ~~**Env vars**~~ **DONE:** `JFC_GRAPH_DATA_DIR` → `CODEGRAPH_ANALYSIS_DATA_DIR` (`data_dir.rs`), `JFC_GRAPH_CACHE_DIR` → `CODEGRAPH_ANALYSIS_CACHE_DIR` (`cache.rs`), `JFC_GRAPH_CAP_*` → `CODEGRAPH_ANALYSIS_CAP_*` (`capabilities.rs`, all 6). No old-name fallback — deliberate, this copy has no jfc users.
+2. ~~**On-disk locations**~~ **DONE:** data dir is now `$XDG_CACHE_HOME|$HOME/.cache/codegraph-analysis/<workspace-hash>/`, analysis cache `$HOME/.cache/codegraph-analysis/v1/`, in-workspace fallback `.codegraph-analysis/`, and the worktree-convention doc mention is `.codegraph-worktrees/`. Pre-rebrand caches are orphaned by design (cold-rebuild only, no correctness impact).
+3. ~~**Fingerprint domain strings**~~ **DONE:** now `"codegraph-analysis::CodeGraph::nodes"` / `"codegraph-analysis::CodeGraph::edges"` — a deliberate one-time fingerprint break recorded in a comment at the hash site in `fingerprint.rs`. No golden constants needed rebasing: `tests/fingerprint_stability.rs` pins *relational* invariants (order-independence, sensitivity), and the two pinned hex constants in `fingerprint.rs`'s `fingerprint_is_cross_machine_stable` hash `"hello world"`/empty — neither includes the domain prefix. All 6 + 4 stability tests pass unchanged.
+4. ~~**Tracing targets**~~ **DONE:** `jfc::graph::{resolver,session,builder,pass,parser}` → `codegraph::analysis::{resolver,session,builder,pass,parser}`.
+5. ~~**`session.rs` / `enrichment.rs` jfc-as-consumer docs**~~ **DONE (reworded):** comments now say "the host application" instead of jfc. Still open: `enrichment::LspDataProvider` has no in-repo implementor (jfc's LspClient was the implementor) — decide whether codegraph-rs grows its own provider or the trait stays dormant.
 6. **`research/arbor/` contains an embedded `.git` directory** (it's a vendored reference checkout). `git add analysis/` will record it as a gitlink (and other vendored checkouts under `research/` may have the same). Decide before committing: strip the inner `.git` dirs, add `analysis/research/` to `.gitignore`, or accept gitlinks. `research/` is also ~259 MB — probably not something to push to a public repo as-is.
 7. **Functional overlap with the host crate:** `data_dir.rs`/`worktree.rs`/`framework_routes.rs` duplicate concerns codegraph-rs already has (`.codegraph/` dir, route nodes). Long-term integration should reconcile them; out of scope for the move.
+
+## Codegraph-native rebrand (2026-06-06)
+
+Second wave: every jfc-ism in `analysis/` renamed to codegraph-native. This
+copy has NO jfc-compat constraints (jfc keeps its own copy), so old env vars,
+cache paths, and fingerprint domains were dropped without fallbacks.
+
+- Env vars, on-disk dirs, tracing targets, fingerprint domains: items 1–4
+  above.
+- Comment/doc rewording (jfc-as-host → codegraph/host-application phrasing):
+  `session.rs`, `enrichment.rs`, `overlay.rs`, `cache.rs`, `kind_specific.rs`,
+  `incremental.rs`, `analysis_tools.rs`, `label_reachability.rs`,
+  `context/retrieval_gate.rs`, `worktree.rs` (incl. the `repo/.jfc/` →
+  `repo/.codegraph/` monorepo example), `data_dir.rs`,
+  `examples/try_context.rs`, host-side `src/bin/codegraph.rs` +
+  `tests/analyze_cli_test.rs` headers, `analysis/README.md` (`GraphSession`
+  consumer row), `analysis/DESIGN_FUTURE.md` (`jfc-lsp` → `codegraph-lsp`).
+- Test-fixture/temp-dir strings (previously deliberately kept) also renamed
+  so the sweep is clean: `jfc_routes_*` → `codegraph_routes_*`, `jfc-ci-*` →
+  `codegraph-ci-*`, `jfc-graph-{overlay,worktree}-test-*` →
+  `codegraph-analysis-…`, `jfc_irmap_test_*`/`/nonexistent/jfc_irmap/` →
+  `codegraph_…`, `jfc_analysistools_*` → `codegraph_analysistools_*`,
+  `/tmp/jfc-test-root` → `/tmp/codegraph-test-root`,
+  `jfc-graph-try-base.json` → `codegraph-analysis-try-base.json`, and the
+  resolver path-proximity fixtures `crates/jfc/...` → `crates/app/...`
+  (same segment count, scores unchanged).
+- Remaining `jfc` mentions after the sweep (`rg -i jfc analysis/src src`),
+  all deliberate: the one-time-rebrand comment at the domain-string hash
+  site in `analysis/src/fingerprint.rs` (references the old prefix + this
+  file), historical attribution in the root `README.md`, and this notes file.
+- Verified: `cargo test --workspace` green (773 + 6 + 4 analysis tests, 427
+  host lib tests, all integration suites), `cargo clippy --workspace
+  --all-targets` zero warnings, `cargo fmt --all --check` clean.
 
 ## Verification (all green, 2026-06-06)
 
@@ -284,3 +319,51 @@ under-picked; the agent-facing tool surface in `src/mcp/` is untouched).
 - README gained an "Analysis engine (`codegraph analyze`)" section covering
   the commands and the all-language vs 12-language vs bridge-unavailable
   fidelity split.
+
+## Final gate — assimilation wave complete (2026-06-06)
+
+Gate run after the rebrand + snapshot-cache + DSL + context-budget waves.
+**Status: GREEN.**
+
+- `cargo test --workspace --all-targets`: **2,203 passed, 0 failed,
+  0 ignored** across 34 targets — `codegraph-analysis` 779 lib (+5 new
+  resolver-fallback tests) + 6 `fingerprint_stability` + 4
+  `node_id_stability`; `codegraph-rs` 447 lib + 967 integration (incl. the
+  wave's `analyze_cache_test.rs` ×6 and `context_budget_test.rs` ×10).
+  `cargo clippy --workspace --all-targets`: zero warnings. `cargo fmt
+  --all --check`: clean.
+- Release smoke (this repo's own index): `analyze complexity --top 3` cold
+  then warm — `(cached graph)` notice on the second run, identical report;
+  `analyze query 'fn("main") | callees | depth 3'` and `'scc'` (both
+  documented examples) return ranked node sets; `context "how does the
+  daemon handshake work" --strategy analysis --budget 2000` anchors
+  `Daemon` + `HandshakeState` with on-topic source, honest
+  `seeding: "call-graph"` note, 451 measured tokens; `--budget 100`
+  truncates and says so.
+- One fix landed during the gate (the context smoke initially returned an
+  EMPTY context): `context::resolver::resolve_symbol` only accepted exact
+  case-sensitive names, so natural-language tokens ("daemon", "handshake")
+  anchored nothing. Added a **zero-exact-hit relaxed fallback** for
+  unqualified symbols (case-insensitive exact tier, then case-insensitive
+  name-prefix tier, deterministic `(name, file)` ordering) in
+  `analysis/src/context/resolver.rs` + 5 pinning tests. Exact-hit behavior
+  is unchanged (fallback never fires once any exact match exists; qualified
+  symbols never relax). Also added "work"/"works"/"working" to both
+  context stop-word lists (`analysis/src/context/mod.rs`,
+  `src/context_analysis.rs`) — "work" was prefix-anchoring the watcher's
+  `Worker*` types into a daemon question. No golden values were rebased;
+  no deliberate-rebrand test updates were needed this wave.
+- `rg -i jfc analysis/src src` → exactly one justified remnant: the
+  one-time fingerprint-domain rebrand comment in
+  `analysis/src/fingerprint.rs` (lines ~240–242), which intentionally
+  records the old `"jfc-graph::CodeGraph::*"` prefix and points here.
+- README "Analysis engine" section now documents the query DSL (with
+  `--why`/`--explain`), the `.codegraph/analysis/` snapshot cache +
+  `(cached graph)`/`--no-cache` contract, the native
+  `CODEGRAPH_ANALYSIS_{DATA_DIR,CACHE_DIR,CAP_*}` env vars (explicitly: no
+  `JFC_*` compatibility), and `codegraph context --strategy analysis
+  --budget`.
+- Nothing committed (per the gate brief). Still-open follow-ups: items 6–7
+  above (vendored `research/` checkouts + `data_dir`/`worktree`/
+  `framework_routes` overlap with the host crate), and the dormant
+  `enrichment::LspDataProvider` trait from item 5.

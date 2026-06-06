@@ -343,7 +343,7 @@ impl Pass for DemoResolveSymbolsPass {
             })
             .count();
         tracing::debug!(
-            target: "jfc::graph::pass",
+            target: "codegraph::analysis::pass",
             fn_count,
             "demo-resolve-symbols: indexed function symbols"
         );
@@ -368,7 +368,7 @@ impl Pass for DemoInferTypesPass {
     fn run(&self, graph: &mut CodeGraph) -> Result<(), PassError> {
         let typed = graph.nodes_with_metadata_key("type").count();
         tracing::debug!(
-            target: "jfc::graph::pass",
+            target: "codegraph::analysis::pass",
             typed,
             "demo-infer-types: nodes with type metadata"
         );

@@ -152,7 +152,7 @@ pub fn load_base_snapshot(path: &Path) -> Result<LoadedSnapshot, OverlayError> {
 }
 
 /// Save a graph snapshot using postcard (much faster than JSON for large graphs).
-/// Used by the session cache to persist between jfc runs.
+/// Used by the session cache to persist between runs.
 pub fn save_snapshot_bincode(
     path: &Path,
     graph: &CodeGraph,
@@ -349,7 +349,7 @@ mod tests {
         graph.add_node(make_node("beta"));
 
         let dir = std::env::temp_dir().join(format!(
-            "jfc-graph-overlay-test-{}-roundtrip",
+            "codegraph-analysis-overlay-test-{}-roundtrip",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&dir);
@@ -369,10 +369,50 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Regression: the postcard snapshot path must round-trip. It silently
+    /// could not before 2026-06 — `NodeData`'s optional analysis fields used
+    /// `skip_serializing_if`, which drops bytes a non-self-describing format
+    /// still expects on read ("Hit the end of buffer"). The JSON path never
+    /// noticed because JSON is self-describing.
+    #[test]
+    fn snapshot_bincode_round_trips() {
+        let mut graph = CodeGraph::new();
+        graph.add_node(make_node("alpha"));
+        graph.add_node(make_node("beta"));
+        let alpha = NodeId::new("src/lib.rs", "crate::alpha", NodeKind::Function);
+        let beta = NodeId::new("src/lib.rs", "crate::beta", NodeKind::Function);
+        graph
+            .add_edge(
+                &alpha,
+                &beta,
+                EdgeData {
+                    kind: crate::edges::EdgeKind::Calls,
+                    source_span: make_node("alpha").span,
+                    weight: 1.0,
+                },
+            )
+            .expect("valid call edge");
+
+        let dir = std::env::temp_dir().join(format!(
+            "codegraph-analysis-overlay-test-{}-bincode",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let snap_path = dir.join("base.bin");
+
+        save_snapshot_bincode(&snap_path, &graph, Path::new("/tmp/workspace")).expect("save");
+        let loaded = load_snapshot_bincode(&snap_path).expect("load");
+        assert_eq!(loaded.graph.node_count(), graph.node_count());
+        assert_eq!(loaded.graph.edge_count(), graph.edge_count());
+        assert_eq!(loaded.workspace_root, Path::new("/tmp/workspace"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn schema_mismatch_is_reported() {
         let dir = std::env::temp_dir().join(format!(
-            "jfc-graph-overlay-test-{}-mismatch",
+            "codegraph-analysis-overlay-test-{}-mismatch",
             std::process::id()
         ));
         fs::create_dir_all(&dir).unwrap();

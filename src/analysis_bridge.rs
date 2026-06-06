@@ -54,11 +54,42 @@
 //! are sorted before serialization — so bridging the same index twice (or
 //! after a re-index of unchanged sources) yields the identical fingerprint
 //! ([`codegraph_analysis::fingerprint::Fingerprintable`]).
+//!
+//! ## On-disk snapshot cache
+//!
+//! Bridging re-reads every node/edge/unresolved-ref row, which on large
+//! indexes dominates `codegraph analyze` wall-clock. [`build_analysis_graph_cached`]
+//! persists the bridged graph under `<project>/.codegraph/analysis/`:
+//!
+//! - `graph.bin` — the analysis engine's own postcard snapshot
+//!   ([`codegraph_analysis::overlay::save_snapshot_bincode`], versioned by
+//!   `OVERLAY_SCHEMA_VERSION`).
+//! - `meta.json` — host-side envelope: cache schema version, the host crate
+//!   version, the **index fingerprint** the snapshot was built from, the
+//!   codegraph-id → analysis-id map, and the [`BridgeStats`].
+//!
+//! The index fingerprint ([`compute_index_fingerprint`]) is a cheap BLAKE3
+//! digest of the SQLite store's row counts, max rowids, `max(updated_at)`,
+//! and every file's `(path, content_hash)` pair — any re-index that changes
+//! the store changes the fingerprint and invalidates the snapshot. All cache
+//! failures (missing, corrupt, schema/version/fingerprint mismatch) degrade
+//! to a silent rebuild; the cache is never load-bearing for correctness.
+//!
+//! `CODEGRAPH_ANALYSIS_CACHE_DIR` (the analysis engine's post-rebrand cache
+//! env var) overrides the location: the snapshot then lives under
+//! `<override>/<workspace-key>/`, where the key is a stable 16-hex digest of
+//! the project root so multiple projects can share one override directory.
+//! The default location needs no such key — `.codegraph/` is per-project by
+//! construction, and its `.gitignore` (`*` + `!.gitignore`) already keeps
+//! the cache out of user repositories.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use codegraph_analysis::edges::{EdgeData as AEdgeData, EdgeKind as AEdgeKind};
+use codegraph_analysis::fingerprint::FingerprintHasher;
 use codegraph_analysis::graph::CodeGraph as AnalysisGraph;
 use codegraph_analysis::nodes::{
     NodeData as ANodeData,
@@ -67,9 +98,12 @@ use codegraph_analysis::nodes::{
     Span as ASpan,
     Visibility as AVisibility,
 };
+use codegraph_analysis::overlay::{load_snapshot_bincode, save_snapshot_bincode};
 use codegraph_analysis::session::GraphSession;
+use serde::{Deserialize, Serialize};
 
 use crate::db::QueryBuilder;
+use crate::directory::get_codegraph_dir;
 use crate::error::{Result, log_debug};
 use crate::types::{EdgeKind, Node, NodeKind, Visibility};
 
@@ -86,7 +120,11 @@ pub const UNRESOLVED_FILE: &str = "<unresolved>";
 ///
 /// `skipped_*` maps are keyed by kind/reason so callers (and tests) can see
 /// exactly why a row didn't make it into the analysis graph.
-#[derive(Debug, Default, Clone)]
+///
+/// Serde derives exist so the stats round-trip through the on-disk snapshot
+/// cache (`meta.json`) — a cache hit returns the same [`BridgeResult`] shape
+/// a fresh bridge would.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct BridgeStats {
     /// Total node rows read from the database.
     pub nodes_total: usize,
@@ -624,6 +662,243 @@ pub fn build_analysis_graph(queries: &QueryBuilder) -> Result<BridgeResult> {
     })
 }
 
+// =============================================================================
+// On-disk snapshot cache
+// =============================================================================
+
+/// Environment variable that relocates the analysis snapshot cache (the
+/// analysis engine's post-rebrand cache-dir name). When set and non-empty,
+/// the cache lives under `<override>/<workspace-key>/` instead of
+/// `<project>/.codegraph/analysis/`.
+pub const ANALYSIS_CACHE_DIR_ENV: &str = "CODEGRAPH_ANALYSIS_CACHE_DIR";
+
+/// Subdirectory of `.codegraph/` holding the snapshot cache.
+const ANALYSIS_CACHE_SUBDIR: &str = "analysis";
+
+/// Engine-format graph snapshot (postcard, written via
+/// [`codegraph_analysis::overlay::save_snapshot_bincode`]).
+const GRAPH_SNAPSHOT_FILE: &str = "graph.bin";
+
+/// Host-side cache envelope (fingerprint, id map, stats). Written last —
+/// it is the cache's commit point: readers validate it before touching
+/// [`GRAPH_SNAPSHOT_FILE`].
+const CACHE_META_FILE: &str = "meta.json";
+
+/// Version of the `meta.json` envelope. Bump on any incompatible change to
+/// [`CacheMeta`]; mismatches degrade to a cache miss (rebuild + overwrite).
+const SNAPSHOT_CACHE_SCHEMA_VERSION: u32 = 1;
+
+/// Host-side cache envelope persisted next to the graph snapshot.
+///
+/// `host_version` pins the snapshot to the exact crate version that produced
+/// it: the bridge's kind-mapping rules are host logic, so a binary upgrade
+/// must never serve a snapshot built by older mapping rules.
+#[derive(Debug, Serialize, Deserialize)]
+struct CacheMeta {
+    schema_version: u32,
+    host_version: String,
+    index_fingerprint: u64,
+    /// Sorted by codegraph id for deterministic bytes on disk.
+    id_map: Vec<(String, ANodeId)>,
+    stats: BridgeStats,
+}
+
+/// Output of [`build_analysis_graph_cached`].
+pub struct CachedBridge {
+    /// The bridged graph — identical shape whether rebuilt or loaded.
+    pub result: BridgeResult,
+    /// True when the result was served from the on-disk snapshot.
+    pub from_cache: bool,
+}
+
+/// Cheap, deterministic fingerprint of the SQLite store's indexed state.
+///
+/// Folds (with BLAKE3, via the analysis engine's [`FingerprintHasher`]):
+/// node/edge/unresolved-ref counts, the edges/unresolved max rowids
+/// (AUTOINCREMENT — monotonic, so delete+reinsert churn is visible even at
+/// stable counts), `max(nodes.updated_at)`, and every indexed file's
+/// `(path, content_hash)` pair in sorted order. O(#files) rows read — far
+/// cheaper than the full node/edge scan the bridge itself performs, which
+/// is the whole point: validating the cache must cost much less than a
+/// rebuild.
+pub fn compute_index_fingerprint(queries: &QueryBuilder) -> Result<u64> {
+    let conn = queries.db().conn();
+    let scalar = |sql: &str| -> Result<i64> {
+        let v: i64 = conn.query_row(sql, [], |row| row.get(0))?;
+        Ok(v)
+    };
+
+    let node_count = scalar("SELECT COUNT(*) FROM nodes")?;
+    let nodes_max_updated = scalar("SELECT COALESCE(MAX(updated_at), 0) FROM nodes")?;
+    let edge_count = scalar("SELECT COUNT(*) FROM edges")?;
+    let edge_max_id = scalar("SELECT COALESCE(MAX(id), 0) FROM edges")?;
+    let unresolved_count = scalar("SELECT COUNT(*) FROM unresolved_refs")?;
+    let unresolved_max_id = scalar("SELECT COALESCE(MAX(id), 0) FROM unresolved_refs")?;
+
+    let mut stmt = conn.prepare("SELECT path, content_hash FROM files ORDER BY path")?;
+    let files: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+
+    let mut hasher = FingerprintHasher::new();
+    // Domain separation so this digest can never collide with the engine's
+    // graph-state fingerprints.
+    hasher.update(&"codegraph::analysis-cache::index-fingerprint::v1");
+    hasher.update(&node_count);
+    hasher.update(&nodes_max_updated);
+    hasher.update(&edge_count);
+    hasher.update(&edge_max_id);
+    hasher.update(&unresolved_count);
+    hasher.update(&unresolved_max_id);
+    hasher.update(&files.len());
+    for (path, content_hash) in &files {
+        hasher.update(path);
+        hasher.update(content_hash);
+    }
+    Ok(hasher.finish().as_u64())
+}
+
+/// Stable 16-hex digest of the project root, used to namespace per-project
+/// snapshots inside a shared `CODEGRAPH_ANALYSIS_CACHE_DIR` override.
+fn workspace_cache_key(project_root: &Path) -> String {
+    let mut hasher = FingerprintHasher::new();
+    hasher.update(&"codegraph::analysis-cache::workspace-key::v1");
+    hasher.update(&project_root.to_string_lossy().as_ref());
+    format!("{:016x}", hasher.finish().as_u64())
+}
+
+/// Where the analysis snapshot cache for `project_root` lives. Default:
+/// `<project>/.codegraph/analysis/`; relocated (and per-project namespaced)
+/// by [`ANALYSIS_CACHE_DIR_ENV`].
+pub fn analysis_cache_dir(project_root: &Path) -> PathBuf {
+    analysis_cache_dir_with_override(project_root, std::env::var_os(ANALYSIS_CACHE_DIR_ENV))
+}
+
+/// Env-free core of [`analysis_cache_dir`] so tests can exercise the
+/// override path without process-global env mutation.
+fn analysis_cache_dir_with_override(
+    project_root: &Path,
+    override_dir: Option<OsString>,
+) -> PathBuf {
+    if let Some(dir) = override_dir {
+        if !dir.is_empty() {
+            return PathBuf::from(dir).join(workspace_cache_key(project_root));
+        }
+    }
+    get_codegraph_dir(project_root).join(ANALYSIS_CACHE_SUBDIR)
+}
+
+/// Try to serve a [`BridgeResult`] from the on-disk snapshot. Any failure —
+/// missing files, decode errors, schema/host-version/fingerprint mismatch —
+/// returns `None` (cache miss), never an error.
+fn load_cache(cache_dir: &Path, expected_fingerprint: u64) -> Option<BridgeResult> {
+    let meta_bytes = fs::read(cache_dir.join(CACHE_META_FILE)).ok()?;
+    let meta: CacheMeta = serde_json::from_slice(&meta_bytes).ok()?;
+    if meta.schema_version != SNAPSHOT_CACHE_SCHEMA_VERSION
+        || meta.host_version != env!("CARGO_PKG_VERSION")
+        || meta.index_fingerprint != expected_fingerprint
+    {
+        return None;
+    }
+    let loaded = load_snapshot_bincode(&cache_dir.join(GRAPH_SNAPSHOT_FILE)).ok()?;
+    Some(BridgeResult {
+        graph: loaded.graph,
+        id_map: meta.id_map.into_iter().collect(),
+        stats: meta.stats,
+    })
+}
+
+/// Persist a freshly-bridged result. Both files are written atomically
+/// (tmp + rename); the graph snapshot lands first and `meta.json` last, so
+/// a reader can never validate a meta that points at a half-written graph.
+fn store_cache(
+    cache_dir: &Path,
+    project_root: &Path,
+    index_fingerprint: u64,
+    result: &BridgeResult,
+) -> Result<()> {
+    fs::create_dir_all(cache_dir)?;
+
+    let graph_target = cache_dir.join(GRAPH_SNAPSHOT_FILE);
+    let graph_tmp = cache_dir.join(format!("{GRAPH_SNAPSHOT_FILE}.tmp"));
+    save_snapshot_bincode(&graph_tmp, &result.graph, project_root)
+        .map_err(|e| crate::error::CodeGraphError::other(e.to_string()))?;
+    if let Err(err) = fs::rename(&graph_tmp, &graph_target) {
+        let _ = fs::remove_file(&graph_tmp);
+        return Err(err.into());
+    }
+
+    let mut id_map: Vec<(String, ANodeId)> = result
+        .id_map
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    id_map.sort_by(|a, b| a.0.cmp(&b.0));
+    let meta = CacheMeta {
+        schema_version: SNAPSHOT_CACHE_SCHEMA_VERSION,
+        host_version: env!("CARGO_PKG_VERSION").to_string(),
+        index_fingerprint,
+        id_map,
+        stats: result.stats.clone(),
+    };
+    let meta_target = cache_dir.join(CACHE_META_FILE);
+    let meta_tmp = cache_dir.join(format!("{CACHE_META_FILE}.tmp"));
+    fs::write(&meta_tmp, serde_json::to_vec(&meta)?)?;
+    if let Err(err) = fs::rename(&meta_tmp, &meta_target) {
+        let _ = fs::remove_file(&meta_tmp);
+        return Err(err.into());
+    }
+    Ok(())
+}
+
+/// [`build_analysis_graph`] with the on-disk snapshot cache in front.
+///
+/// Computes the index fingerprint (cheap), and when `use_cache` is true
+/// serves a valid snapshot from [`analysis_cache_dir`] instead of re-reading
+/// the whole store. On a miss — or when `use_cache` is false (`--no-cache`)
+/// — the graph is rebuilt from SQL and the cache is refreshed best-effort
+/// (a store failure is logged and ignored; the fresh result is returned
+/// regardless).
+pub fn build_analysis_graph_cached(
+    queries: &QueryBuilder,
+    project_root: &Path,
+    use_cache: bool,
+) -> Result<CachedBridge> {
+    let fingerprint = compute_index_fingerprint(queries)?;
+    let cache_dir = analysis_cache_dir(project_root);
+
+    if use_cache {
+        if let Some(result) = load_cache(&cache_dir, fingerprint) {
+            log_debug(
+                "analysis cache: snapshot hit",
+                Some(&serde_json::json!({
+                    "cacheDir": cache_dir.display().to_string(),
+                    "indexFingerprint": format!("{fingerprint:016x}"),
+                })),
+            );
+            return Ok(CachedBridge {
+                result,
+                from_cache: true,
+            });
+        }
+    }
+
+    let result = build_analysis_graph(queries)?;
+    if let Err(err) = store_cache(&cache_dir, project_root, fingerprint, &result) {
+        log_debug(
+            "analysis cache: store failed (continuing without cache)",
+            Some(&serde_json::json!({
+                "cacheDir": cache_dir.display().to_string(),
+                "error": err.to_string(),
+            })),
+        );
+    }
+    Ok(CachedBridge {
+        result,
+        from_cache: false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,6 +983,141 @@ mod tests {
         assert_eq!(
             map_edge_kind(EdgeKind::Overrides, Function, Function),
             Some(AEdgeKind::References)
+        );
+    }
+
+    fn sample_bridge_result() -> BridgeResult {
+        let mut graph = AnalysisGraph::new();
+        let aid = ANodeId::new("src/a.ts", "alpha", ANodeKind::Function);
+        graph.add_node(ANodeData {
+            id: aid.clone(),
+            kind: ANodeKind::Function,
+            name: "alpha".to_string(),
+            qualified_name: "alpha".to_string(),
+            file_path: PathBuf::from("src/a.ts"),
+            span: ASpan {
+                file: PathBuf::from("src/a.ts"),
+                start_line: 1,
+                start_col: 0,
+                end_line: 3,
+                end_col: 1,
+                byte_range: 0..0,
+            },
+            visibility: AVisibility::Public,
+            metadata: HashMap::new(),
+            birth_revision: 0,
+            last_modified_revision: 0,
+            complexity: None,
+            cfg: None,
+            dataflow: None,
+        });
+        let stats = BridgeStats {
+            nodes_total: 1,
+            nodes_mapped: 1,
+            ..Default::default()
+        };
+        BridgeResult {
+            graph,
+            id_map: HashMap::from([("cg-node-1".to_string(), aid)]),
+            stats,
+        }
+    }
+
+    #[test]
+    fn workspace_cache_key_is_stable_and_distinct() {
+        let a = workspace_cache_key(Path::new("/projects/a"));
+        assert_eq!(a, workspace_cache_key(Path::new("/projects/a")));
+        assert_eq!(a.len(), 16);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, workspace_cache_key(Path::new("/projects/b")));
+    }
+
+    #[test]
+    fn cache_dir_defaults_to_codegraph_analysis_and_honors_override() {
+        let root = Path::new("/projects/demo");
+        assert_eq!(
+            analysis_cache_dir_with_override(root, None),
+            root.join(".codegraph").join("analysis")
+        );
+        // Empty override is ignored.
+        assert_eq!(
+            analysis_cache_dir_with_override(root, Some(OsString::new())),
+            root.join(".codegraph").join("analysis")
+        );
+        // Non-empty override namespaces per project.
+        let dir = analysis_cache_dir_with_override(root, Some(OsString::from("/tmp/shared")));
+        assert_eq!(
+            dir,
+            Path::new("/tmp/shared").join(workspace_cache_key(root))
+        );
+    }
+
+    #[test]
+    fn snapshot_cache_round_trips_graph_id_map_and_stats() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let result = sample_bridge_result();
+
+        store_cache(&cache_dir, tmp.path(), 0xfeed, &result).expect("store");
+        assert!(cache_dir.join(GRAPH_SNAPSHOT_FILE).exists());
+        assert!(cache_dir.join(CACHE_META_FILE).exists());
+
+        let loaded = load_cache(&cache_dir, 0xfeed).expect("fingerprint matches");
+        assert_eq!(loaded.graph.node_count(), 1);
+        assert_eq!(loaded.id_map.len(), 1);
+        assert_eq!(loaded.stats.nodes_mapped, 1);
+        let aid = loaded.id_map.get("cg-node-1").expect("id map entry");
+        assert!(loaded.graph.get_node(aid).is_some());
+    }
+
+    #[test]
+    fn snapshot_cache_misses_on_fingerprint_mismatch_or_corruption() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let result = sample_bridge_result();
+        store_cache(&cache_dir, tmp.path(), 0xfeed, &result).expect("store");
+
+        // Different index fingerprint → miss.
+        assert!(load_cache(&cache_dir, 0xdead).is_none());
+
+        // Corrupt graph snapshot → miss, not a panic.
+        fs::write(
+            cache_dir.join(GRAPH_SNAPSHOT_FILE),
+            b"not a postcard snapshot",
+        )
+        .unwrap();
+        assert!(load_cache(&cache_dir, 0xfeed).is_none());
+
+        // Corrupt meta → miss.
+        store_cache(&cache_dir, tmp.path(), 0xfeed, &result).expect("re-store");
+        fs::write(cache_dir.join(CACHE_META_FILE), b"{ not json").unwrap();
+        assert!(load_cache(&cache_dir, 0xfeed).is_none());
+
+        // Missing dir → miss.
+        assert!(load_cache(&tmp.path().join("absent"), 0xfeed).is_none());
+    }
+
+    #[test]
+    fn snapshot_cache_rejects_other_schema_or_host_versions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let result = sample_bridge_result();
+        store_cache(&cache_dir, tmp.path(), 0xfeed, &result).expect("store");
+
+        let meta_path = cache_dir.join(CACHE_META_FILE);
+        let mut meta: serde_json::Value =
+            serde_json::from_slice(&fs::read(&meta_path).unwrap()).unwrap();
+
+        meta["schema_version"] = serde_json::json!(SNAPSHOT_CACHE_SCHEMA_VERSION + 1);
+        fs::write(&meta_path, serde_json::to_vec(&meta).unwrap()).unwrap();
+        assert!(load_cache(&cache_dir, 0xfeed).is_none(), "future schema");
+
+        meta["schema_version"] = serde_json::json!(SNAPSHOT_CACHE_SCHEMA_VERSION);
+        meta["host_version"] = serde_json::json!("0.0.0-other");
+        fs::write(&meta_path, serde_json::to_vec(&meta).unwrap()).unwrap();
+        assert!(
+            load_cache(&cache_dir, 0xfeed).is_none(),
+            "other host version"
         );
     }
 

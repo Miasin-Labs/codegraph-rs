@@ -32,6 +32,16 @@ use codegraph_analysis::cascade::generate_cascade;
 use codegraph_analysis::communities::louvain;
 use codegraph_analysis::complexity::compute_complexity;
 use codegraph_analysis::complexity_rules::LangRules;
+use codegraph_analysis::dsl::aggregate::{AggExpr, parse_aggregate};
+use codegraph_analysis::dsl::plan::{ScheduleStrategy, optimise_expr, pick_schedule_for_pipe};
+use codegraph_analysis::dsl::provenance::trace_query;
+use codegraph_analysis::dsl::{
+    Expr,
+    QueryConfig as DslQueryConfig,
+    QueryError as DslQueryError,
+    parse_expr,
+    run_query_expr,
+};
 use codegraph_analysis::edges::EdgeKind as AEdgeKind;
 use codegraph_analysis::graph::CodeGraph as AnalysisGraph;
 use codegraph_analysis::nodes::{NodeData as ANodeData, NodeId as ANodeId, NodeKind as ANodeKind};
@@ -880,6 +890,259 @@ pub fn taint_report(
     })
 }
 
+// =============================================================================
+// analyze query (pipe-based DSL)
+// =============================================================================
+
+/// An edge between two result nodes, by qualified name.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryEdge {
+    pub from: String,
+    pub to: String,
+    /// Edge kind as described by the query engine (e.g. `Calls`, `Contains`).
+    pub kind: String,
+}
+
+/// One why-provenance step: which DSL operator put a node into the result.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhyStep {
+    /// The DSL operator that produced/kept the node.
+    pub op: String,
+    /// Qualified names of the previous working-set nodes that led here
+    /// (empty for seed selectors like `fn("x")`).
+    pub predecessors: Vec<String>,
+    /// Pipeline stage at which the node entered the working set.
+    pub stage: usize,
+}
+
+/// Why-provenance for one result node.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhyEntry {
+    pub symbol: SymbolRef,
+    pub steps: Vec<WhyStep>,
+}
+
+/// Result of [`query_report`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryReport {
+    pub query: String,
+    /// Result rows, sorted by file/line/name. For path queries the path
+    /// *order* lives in `edges` (hops are emitted in path order).
+    pub nodes: Vec<SymbolRef>,
+    pub node_count: usize,
+    pub total_before_truncation: usize,
+    pub truncated: bool,
+    /// Edges between result nodes.
+    pub edges: Vec<QueryEdge>,
+    /// Engine metadata lines: aggregation scalars (`scalar = N`,
+    /// `bool = …`), SCC/cluster/community descriptions, etc.
+    pub metadata: Vec<String>,
+    /// Nodes at which a traversal detected a cycle.
+    pub cycles_detected: Vec<SymbolRef>,
+    /// Why-provenance — present when requested *and* the query shape is
+    /// traceable (aggregation queries are not; see [`query_report`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<Vec<WhyEntry>>,
+}
+
+/// Render a [`DslQueryError`] without the redundant outer `parse error:`
+/// wrapper — the inner parse error already carries position + offending
+/// token, which is what a CLI user needs to fix the query.
+fn friendly_query_error(err: DslQueryError) -> String {
+    match err {
+        DslQueryError::Parse(parse) => parse.to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn symbol_sort_key(s: &SymbolRef) -> (&String, u32, &String) {
+    (&s.file, s.line, &s.name)
+}
+
+/// Why-provenance via the engine's `trace_query`, projected onto
+/// [`WhyEntry`] rows for the final result nodes. Returns `None` when the
+/// query shape cannot be traced (the aggregation grammar has no pipe to
+/// replay) — callers surface that as "unavailable", never as an error.
+fn build_why(graph: &AnalysisGraph, query: &str, config: &DslQueryConfig) -> Option<Vec<WhyEntry>> {
+    let trace = trace_query(query, graph, config).ok()?;
+    let mut entries: Vec<WhyEntry> = trace
+        .result_nodes
+        .iter()
+        .filter_map(|id| {
+            let node = graph.get_node(id)?;
+            let prov = trace.entries.get(id)?;
+            let steps = prov
+                .steps
+                .iter()
+                .map(|step| WhyStep {
+                    op: step.op_name.clone(),
+                    predecessors: step
+                        .predecessors
+                        .iter()
+                        .filter_map(|p| graph.get_node(p))
+                        .map(|n| n.qualified_name.clone())
+                        .collect(),
+                    stage: step.depth,
+                })
+                .collect();
+            Some(WhyEntry {
+                symbol: symbol_ref(node),
+                steps,
+            })
+        })
+        .collect();
+    entries.sort_by(|a, b| symbol_sort_key(&a.symbol).cmp(&symbol_sort_key(&b.symbol)));
+    Some(entries)
+}
+
+/// Run a DSL query over the bridged graph through the engine's unified
+/// entry point (`run_query_expr`: pipe chains, set algebra, path patterns,
+/// entrypoint/dominator selectors, and aggregations), including the plan
+/// optimiser. Parse errors come back as the parser's own message (position
+/// + offending token) so the CLI can show them verbatim.
+pub fn query_report(
+    graph: &AnalysisGraph,
+    query: &str,
+    max_nodes: usize,
+    include_why: bool,
+) -> Result<QueryReport, String> {
+    let config = DslQueryConfig {
+        max_nodes,
+        ..Default::default()
+    };
+    let result = run_query_expr(query, graph, &config).map_err(friendly_query_error)?;
+
+    let mut nodes: Vec<SymbolRef> = result
+        .nodes
+        .iter()
+        .filter_map(|id| graph.get_node(id))
+        .map(symbol_ref)
+        .collect();
+    nodes.sort_by(|a, b| symbol_sort_key(a).cmp(&symbol_sort_key(b)));
+
+    let edges: Vec<QueryEdge> = result
+        .edges
+        .iter()
+        .filter_map(|(from, to, kind)| {
+            let from = graph.get_node(from)?;
+            let to = graph.get_node(to)?;
+            Some(QueryEdge {
+                from: from.qualified_name.clone(),
+                to: to.qualified_name.clone(),
+                kind: kind.clone(),
+            })
+        })
+        .collect();
+
+    let mut cycles: Vec<SymbolRef> = result
+        .cycles_detected
+        .iter()
+        .filter_map(|id| graph.get_node(id))
+        .map(symbol_ref)
+        .collect();
+    cycles.sort();
+    cycles.dedup();
+
+    let why = if include_why {
+        build_why(graph, query, &config)
+    } else {
+        None
+    };
+
+    Ok(QueryReport {
+        query: query.to_string(),
+        node_count: nodes.len(),
+        total_before_truncation: result.total_before_truncation,
+        truncated: result.was_truncated,
+        nodes,
+        edges,
+        metadata: result.metadata,
+        cycles_detected: cycles,
+        why,
+    })
+}
+
+// =============================================================================
+// analyze query --explain
+// =============================================================================
+
+/// Result of [`explain_report`] — the optimised query plan, never executed.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainReport {
+    pub query: String,
+    /// `pipe` (operator chain), `expression` (set algebra / path pattern /
+    /// selector), or `aggregation` (count/sum/group_by…, which bypass the
+    /// plan optimiser).
+    pub kind: String,
+    /// Optimised steps in execution order: one pipe operator per entry, or
+    /// a single rendered expression. Optimiser rewrites are already applied
+    /// (depth fusion, filter pushdown, intersect operand reordering).
+    pub steps: Vec<String>,
+    /// The optimiser's BFS schedule hint (`push`, `pull`, or `auto`).
+    pub strategy: String,
+    pub parallel: bool,
+}
+
+fn strategy_label(strategy: ScheduleStrategy) -> &'static str {
+    match strategy {
+        ScheduleStrategy::Push => "push",
+        ScheduleStrategy::Pull => "pull",
+        ScheduleStrategy::Auto => "auto",
+    }
+}
+
+/// Parse and optimise `query` exactly the way [`query_report`] would before
+/// executing it, and return the resulting plan. Pure function of the query
+/// string — touches neither a graph nor the index.
+pub fn explain_report(query: &str) -> Result<ExplainReport, String> {
+    // Mirror `run_query_expr`'s dispatch: the aggregation grammar first
+    // (it returns `Plain` for non-aggregation input), then the extended
+    // expression grammar as the error-reporting fallback.
+    let expr = match parse_aggregate(query) {
+        Ok(AggExpr::Plain(plain)) => plain,
+        Ok(aggregation) => {
+            return Ok(ExplainReport {
+                query: query.to_string(),
+                kind: "aggregation".to_string(),
+                steps: vec![format!("{aggregation:?}")],
+                strategy: strategy_label(ScheduleStrategy::Auto).to_string(),
+                parallel: false,
+            });
+        }
+        Err(_) => parse_expr(query).map_err(|e| e.to_string())?,
+    };
+
+    let plan = optimise_expr(expr);
+    let optimised = plan.expr().expect("optimise_expr yields Plan::Expr");
+    Ok(match optimised {
+        Expr::Pipe(ops) => {
+            let schedule = pick_schedule_for_pipe(ops);
+            ExplainReport {
+                query: query.to_string(),
+                kind: "pipe".to_string(),
+                steps: ops.iter().map(|op| format!("{op:?}")).collect(),
+                strategy: strategy_label(schedule.strategy).to_string(),
+                parallel: schedule.parallel,
+            }
+        }
+        other => {
+            let schedule = plan.schedule();
+            ExplainReport {
+                query: query.to_string(),
+                kind: "expression".to_string(),
+                steps: vec![format!("{other:?}")],
+                strategy: strategy_label(schedule.strategy).to_string(),
+                parallel: schedule.parallel,
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1032,5 +1295,61 @@ mod tests {
         assert_eq!(one.community_count, two.community_count);
         assert_eq!(one.multi_member_count, two.multi_member_count);
         assert!(one.multi_member_count >= 1, "call clusters detected");
+    }
+
+    #[test]
+    fn query_report_runs_pipe_dsl_over_call_edges() {
+        let (graph, _a, _b, _c) = fixture();
+        let report = query_report(&graph, r#"fn("a") | callees"#, 50, false).unwrap();
+        assert_eq!(report.node_count, 1, "a's only callee is b");
+        assert_eq!(report.nodes[0].name, "b");
+        assert!(!report.truncated);
+        assert!(report.why.is_none(), "why is opt-in");
+    }
+
+    #[test]
+    fn query_report_why_records_seed_predecessor() {
+        let (graph, _a, _b, _c) = fixture();
+        let report = query_report(&graph, r#"fn("a") | callees"#, 50, true).unwrap();
+        let why = report.why.expect("pipe queries are traceable");
+        let entry = why
+            .iter()
+            .find(|w| w.symbol.name == "b")
+            .expect("result node b is explained");
+        assert!(
+            entry
+                .steps
+                .iter()
+                .any(|s| s.predecessors.iter().any(|p| p == "a")),
+            "b's provenance references seed a: {why:?}"
+        );
+    }
+
+    #[test]
+    fn query_report_parse_error_quotes_bad_token() {
+        let (graph, _, _, _) = fixture();
+        let err = query_report(&graph, r#"fn("a") | bogus_op"#, 50, false).unwrap_err();
+        assert!(err.contains("bogus_op"), "offending token quoted: {err}");
+        assert!(err.contains("position"), "position included: {err}");
+    }
+
+    #[test]
+    fn explain_report_fuses_depth_without_executing() {
+        let report = explain_report(r#"fn("a") | callees | callees | callees"#).unwrap();
+        assert_eq!(report.kind, "pipe");
+        assert!(
+            report.steps.iter().any(|s| s.contains("Depth(3)")),
+            "depth fusion applied: {:?}",
+            report.steps
+        );
+    }
+
+    #[test]
+    fn explain_report_classifies_aggregations_and_rejects_bad_queries() {
+        let agg = explain_report(r#"count fn("a")"#).unwrap();
+        assert_eq!(agg.kind, "aggregation");
+
+        let err = explain_report(r#"fn("a") | bogus_op"#).unwrap_err();
+        assert!(err.contains("bogus_op"), "offending token quoted: {err}");
     }
 }
