@@ -7,6 +7,8 @@
 //! The public API surface is the [`CodeGraph`] struct, which wires all the
 //! layers together — extraction → resolution → graph → context.
 
+pub mod analysis_bridge;
+pub mod analyze;
 pub mod context;
 pub mod db;
 pub mod directory;

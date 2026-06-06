@@ -29,6 +29,8 @@ the npm package's `dist/bin/codegraph.js`:
 codegraph init [path]        # initialize .codegraph/ and build the index
 codegraph index|sync|status  # maintain the index
 codegraph query|files|context|affected   # query the graph
+codegraph analyze <cmd>      # analysis engine: complexity, communities, dominators,
+                             # slice, cycles, impact (cascade), taint — see below
 codegraph install            # wire the MCP server into agents (Claude Code, Cursor, …)
 codegraph serve --mcp        # run as an MCP server over stdio
 codegraph uninit [path]      # remove .codegraph/
@@ -57,8 +59,62 @@ entry point.
 | `src/sync/` | `src/sync/` | `FileWatcher` (notify-based, debounced, gitignore-aware), watch policy, git hooks, worktree detection |
 | `src/mcp/` | `src/mcp/` | MCP server: `session` (protocol state machine), `tools`, `transport`, `engine`, shared `daemon` + `proxy` (#411), `server_instructions` (returned in MCP `initialize`) |
 | `src/installer/` | `src/installer/` | `codegraph install`: target registry + one file per agent (`claude`, `cursor`, `codex`, `opencode`, `gemini`, `kiro`, `antigravity`, `hermes`), surgical JSON/JSONC/TOML/YAML config editing |
-| `src/bin/codegraph.rs` | `src/bin/codegraph.ts` | CLI (clap; commander in TS) — same subcommands, same flags |
+| `src/bin/codegraph.rs` | `src/bin/codegraph.ts` | CLI (clap; commander in TS) — same subcommands, same flags, plus the Rust-only `analyze` family |
 | `src/ui/` | `src/ui/` | Terminal UI: shimmer progress, glyph fallbacks (ASCII/Unicode) |
+| `src/analysis_bridge.rs`, `src/analyze.rs` | — (Rust-only) | Bridge from the SQLite index into the `codegraph-analysis` engine + the report runners behind `codegraph analyze` |
+| `analysis/` | — (Rust-only) | The `codegraph-analysis` crate (migrated jfc-graph): petgraph code graph, query DSL, graph algorithms, IR/CFG/dataflow analyses |
+
+## Analysis engine (`codegraph analyze`)
+
+The full **jfc-graph analysis engine** lives in this workspace as the
+[`analysis/`](analysis/) crate (`codegraph-analysis`; see
+[`notes/jfc-graph-migration.md`](notes/jfc-graph-migration.md) for the
+migration record). `src/analysis_bridge.rs` materializes an analysis graph
+from an already-indexed `.codegraph/` SQLite database — no re-parsing, pure
+read — and `src/analyze.rs` runs the engine's public capabilities over it.
+The `codegraph analyze` subcommands expose them on the CLI; the same
+functions are library API (`codegraph::analyze`). The MCP tool surface is
+deliberately untouched.
+
+Every subcommand prints human output by default and a stable camelCase JSON
+shape with `--json`:
+
+```bash
+codegraph analyze complexity [--top N]        # per-function cyclomatic/cognitive/
+                                              # nesting/Halstead/maintainability
+codegraph analyze communities                 # Louvain call-graph communities
+codegraph analyze dominators <symbol>         # immediate dominators of everything
+                                              # reachable from an entry symbol
+codegraph analyze slice <symbol> [--direction fwd|bwd]  # call-graph program slice
+codegraph analyze cycles                      # SCCs: mutual recursion + dependency
+                                              # cycles, with break suggestions
+codegraph analyze impact <symbol> [-s <sig>]  # signature-edit cascade: direct call
+                                              # sites to update, grouped by file
+                                              # (distinct from `codegraph impact`,
+                                              # which is a BFS blast radius)
+codegraph analyze taint <source> <sink>       # call-graph paths source → sink,
+                                              # each hop annotated with edge kind
+```
+
+**What runs at which fidelity** (the reports state this themselves rather
+than over-claiming):
+
+- **All indexed languages** — `communities`, `dominators`, `cycles`, `impact`,
+  and the call-graph–granularity `slice`/`taint` are pure graph algorithms
+  over the bridged index, so they work for every language the indexer
+  supports.
+- **12 languages** — `complexity` re-parses on-disk sources with the compiled
+  tree-sitter grammars and runs the engine's metrics; rules exist for Rust,
+  TypeScript/JavaScript, Python, Go, Java, C, C++, C#, PHP, Kotlin, Swift,
+  and Ruby. Functions in other languages are counted in the report's
+  `skipped` breakdown.
+- **Not available over the bridge** — value-level (statement-granularity)
+  slicing and sanitizer-aware taint require the engine's per-function
+  IR/CFG/dataflow, which only its own **Rust source adapter** produces
+  (`analysis/ADAPTER_PARITY.md`). The SQLite bridge carries no IR, so
+  `slice` and `taint` run over a call-graph dataflow oracle and say so in
+  their `note` field — function-level hops along call edges, never
+  pretended value tracking.
 
 ## Key architectural deviations from the TS implementation
 
@@ -98,14 +154,16 @@ deviations exhaustively. The big ones:
 
 ## Test suite
 
-`cargo test --all-targets`: **1,324 tests, 0 failures** (25 binaries):
+`cargo test --workspace --all-targets`: **2,154 tests, 0 failures**:
 
-- 417 unit tests in `src/` (`#[cfg(test)]`, alongside the code they cover)
-- 907 integration tests in `tests/` — 22 suites ported from `../__tests__/*.test.ts`
-  (extraction 289+3, frameworks 64/67/33, installer targets 80, db 49,
-  codegraph API 42, MCP tools/server/daemon 41/32/20, resolution 30+29+6,
-  graph 31, sync 26, context 23, security 15, CLI 9, foundation 8, git hooks 7,
-  grammars 3)
+- 427 unit tests in `src/` (`#[cfg(test)]`, alongside the code they cover)
+- 944 integration tests in `tests/` — 24 suites ported from `../__tests__/*.test.ts`
+  plus the Rust-only analysis suites (extraction 289+3, frameworks 64/67/33,
+  installer targets 80, db 50, codegraph API 42, MCP tools/server/protocol/daemon
+  41/32/15/20, resolution 30+29+6, graph 31, sync 26, context 23, security 15,
+  analyze CLI 12, analysis bridge 9, CLI 9, foundation 8, git hooks 7, grammars 3)
+- 783 tests in the `codegraph-analysis` crate (773 unit + the golden
+  `fingerprint_stability` and `node_id_stability` suites)
 
 Same testing philosophy as the TS suite: temp dirs (`tempfile::tempdir()`), real
 files, real SQLite — no mocking. Platform-specific behavior is gated with

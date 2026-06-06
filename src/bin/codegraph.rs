@@ -18,6 +18,9 @@
 //!   codegraph callees <symbol>   Find what a function/method calls
 //!   codegraph impact <symbol>    Analyze what code is affected by changing a symbol
 //!   codegraph affected [files]   Find test files affected by changes
+//!   codegraph analyze <cmd>      Analysis engine over the bridged index
+//!                                (complexity, communities, dominators,
+//!                                slice, cycles, impact, taint)
 //!   codegraph serve --mcp        Run as an MCP server over stdio
 //!   codegraph unlock [path]      Remove a stale lock file
 //!
@@ -35,6 +38,9 @@ use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
+use codegraph::analysis_bridge::{BridgeResult, build_analysis_graph};
+use codegraph::analyze::{self, SliceDirection};
+use codegraph::db::{DatabaseConnection, QueryBuilder, get_database_path};
 use codegraph::directory::{get_codegraph_dir, is_initialized};
 use codegraph::extraction::is_generated_file;
 use codegraph::installer::targets::{Location, get_target, list_target_ids};
@@ -68,6 +74,7 @@ use codegraph::{
     SearchOptions,
     Severity,
 };
+use codegraph_analysis::nodes::NodeId as ANodeId;
 
 // =============================================================================
 // ANSI Color Helpers (avoid chalk ESM issues — TS kept raw escapes; so do we)
@@ -708,6 +715,11 @@ enum Commands {
         #[arg(short = 'q', long)]
         quiet: bool,
     },
+    /// Run analysis-engine queries over the indexed project graph
+    Analyze {
+        #[command(subcommand)]
+        command: AnalyzeCommands,
+    },
     /// Install codegraph MCP server into one or more agents (Claude Code, Cursor, Codex CLI, opencode, Hermes Agent)
     Install {
         /// Target agent(s): comma-separated ids, or "auto"|"all"|"none". Default: prompt
@@ -737,6 +749,106 @@ enum Commands {
         /// Non-interactive: defaults to --location=global --target=all
         #[arg(short = 'y', long)]
         yes: bool,
+    },
+}
+
+/// `codegraph analyze` — the analysis engine (`codegraph-analysis`) running
+/// over the bridged SQLite index. Pure reads; the index is never mutated.
+#[derive(Subcommand)]
+enum AnalyzeCommands {
+    /// Per-function complexity metrics (cyclomatic, cognitive, nesting, maintainability)
+    Complexity {
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Show the N most complex functions
+        #[arg(short = 't', long, value_name = "number", default_value = "20")]
+        top: String,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Detect call-graph communities/modules (Louvain)
+    Communities {
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Maximum members listed per community
+        #[arg(long, value_name = "number", default_value = "8")]
+        sample: String,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Dominator analysis from an entry symbol (what every path must pass through)
+    Dominators {
+        #[arg(value_name = "symbol")]
+        symbol: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Maximum reachable nodes analyzed
+        #[arg(short = 't', long, value_name = "number", default_value = "50")]
+        top: String,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Program slice from a symbol at call-graph granularity
+    Slice {
+        #[arg(value_name = "symbol")]
+        symbol: String,
+        /// Slice direction: "fwd" (what it influences) or "bwd" (what affects it)
+        #[arg(long, value_name = "fwd|bwd", default_value = "fwd")]
+        direction: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Maximum slice depth (call hops)
+        #[arg(long, value_name = "number", default_value = "10")]
+        depth: String,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Strongly-connected components: mutual recursion and dependency cycles
+    Cycles {
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Signature-edit cascade: direct call sites to update, grouped by file
+    Impact {
+        #[arg(value_name = "symbol")]
+        symbol: String,
+        /// Proposed new signature shown in the generated tasks
+        #[arg(short = 's', long, value_name = "signature")]
+        signature: Option<String>,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Find call-graph paths from a source symbol to a sink symbol
+    Taint {
+        #[arg(value_name = "source-symbol")]
+        source: String,
+        #[arg(value_name = "sink-symbol")]
+        sink: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Maximum intermediate nodes per path
+        #[arg(long = "max-nodes", value_name = "number", default_value = "6")]
+        max_nodes: String,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
     },
 }
 
@@ -868,6 +980,7 @@ fn main() {
             json,
             quiet,
         ),
+        Commands::Analyze { command } => cmd_analyze(command),
         Commands::Install {
             target,
             location,
@@ -2331,6 +2444,641 @@ fn cmd_affected(
 
     if let Err(msg) = body() {
         error_msg(&format!("Affected analysis failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+// =============================================================================
+// analyze command family
+//
+// The jfc-graph analysis engine (`codegraph-analysis`) running over the
+// project's bridged SQLite index (`analysis_bridge::build_analysis_graph`).
+// All commands are pure reads. Report shapes live in `codegraph::analyze`;
+// this file only resolves symbols and renders.
+// =============================================================================
+
+/// Bridge the project's index into the analysis engine. Exits (status 1)
+/// when the project is not initialized — same contract as the other read
+/// commands.
+fn bridge_project(project_path: &Path) -> Result<BridgeResult, String> {
+    if !is_initialized(project_path) {
+        error_msg(&format!(
+            "CodeGraph not initialized in {}",
+            project_path.display()
+        ));
+        info("Run \"codegraph init\" first");
+        process::exit(1);
+    }
+    let conn =
+        DatabaseConnection::open(get_database_path(project_path)).map_err(|e| e.to_string())?;
+    let queries = QueryBuilder::new(conn.get_db().map_err(|e| e.to_string())?);
+    build_analysis_graph(&queries).map_err(|e| e.to_string())
+}
+
+/// Resolve a user-supplied symbol to its analysis-graph node via the index
+/// search, using the same exact-match conventions as `callers`/`callees`/
+/// `impact` (exact name or `.`/`::`-qualified suffix wins; otherwise the top
+/// search hit that the bridge mapped).
+fn resolve_analysis_symbol(
+    cg: &CodeGraph,
+    id_map: &HashMap<String, ANodeId>,
+    symbol: &str,
+) -> Result<Option<ANodeId>, String> {
+    let matches = cg
+        .search_nodes(
+            symbol,
+            Some(&SearchOptions {
+                limit: Some(50),
+                ..Default::default()
+            }),
+        )
+        .map_err(|e| e.to_string())?;
+    for m in &matches {
+        if is_exact_symbol_match(&m.node.name, symbol) || matches.len() == 1 {
+            if let Some(aid) = id_map.get(&m.node.id) {
+                return Ok(Some(aid.clone()));
+            }
+        }
+    }
+    // Fallback: top search hit with an analysis mapping (skipped node kinds
+    // like variables/imports have no analysis node).
+    for m in &matches {
+        if let Some(aid) = id_map.get(&m.node.id) {
+            return Ok(Some(aid.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// Resolve a symbol with the host index open/closed around it.
+fn resolve_symbol_via_index(
+    project_path: &Path,
+    id_map: &HashMap<String, ANodeId>,
+    symbol: &str,
+) -> Result<Option<ANodeId>, String> {
+    let cg = CodeGraph::open(project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
+    let resolved = resolve_analysis_symbol(&cg, id_map, symbol);
+    cg.close();
+    resolved
+}
+
+fn print_json<T: serde::Serialize>(value: &T) -> Result<(), String> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
+fn print_symbol_line(kind: &str, name: &str, file: &str, line: u32) {
+    let loc = if line != 0 {
+        format!(":{line}")
+    } else {
+        String::new()
+    };
+    println!("{}{}", cyan(&format!("{kind:<12}")), white(name));
+    println!("{}", dim(&format!("  {file}{loc}")));
+}
+
+/// codegraph analyze <subcommand>
+fn cmd_analyze(command: AnalyzeCommands) {
+    match command {
+        AnalyzeCommands::Complexity { path, top, json } => {
+            cmd_analyze_complexity(path.as_deref(), &top, json)
+        }
+        AnalyzeCommands::Communities { path, sample, json } => {
+            cmd_analyze_communities(path.as_deref(), &sample, json)
+        }
+        AnalyzeCommands::Dominators {
+            symbol,
+            path,
+            top,
+            json,
+        } => cmd_analyze_dominators(&symbol, path.as_deref(), &top, json),
+        AnalyzeCommands::Slice {
+            symbol,
+            direction,
+            path,
+            depth,
+            json,
+        } => cmd_analyze_slice(&symbol, &direction, path.as_deref(), &depth, json),
+        AnalyzeCommands::Cycles { path, json } => cmd_analyze_cycles(path.as_deref(), json),
+        AnalyzeCommands::Impact {
+            symbol,
+            signature,
+            path,
+            json,
+        } => cmd_analyze_impact(&symbol, signature.as_deref(), path.as_deref(), json),
+        AnalyzeCommands::Taint {
+            source,
+            sink,
+            path,
+            max_nodes,
+            json,
+        } => cmd_analyze_taint(&source, &sink, path.as_deref(), &max_nodes, json),
+    }
+}
+
+/// codegraph analyze complexity [--top N]
+fn cmd_analyze_complexity(path_arg: Option<&str>, top_arg: &str, json: bool) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path)?;
+        let top = parse_int_js(top_arg).unwrap_or(20).max(1) as usize;
+        let report = analyze::complexity_report(&bridged.graph, &project_path, top);
+
+        if json {
+            return print_json(&report);
+        }
+
+        if report.functions.is_empty() {
+            info("No functions with complexity metrics found (run with --json for skip reasons)");
+            return Ok(());
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "\nMost complex functions (top {} of {} analyzed):\n",
+                report.functions.len(),
+                format_number(report.functions_analyzed as u64)
+            ))
+        );
+        for f in &report.functions {
+            let mi = f
+                .maintainability_index
+                .map(|v| format!(", MI {}", js_to_fixed(v, 0)))
+                .unwrap_or_default();
+            print_symbol_line(
+                &f.symbol.kind,
+                &f.symbol.name,
+                &f.symbol.file,
+                f.symbol.line,
+            );
+            println!(
+                "{}",
+                dim(&format!(
+                    "  cyclomatic {}, cognitive {}, nesting {}{mi}",
+                    f.cyclomatic, f.cognitive, f.max_nesting
+                ))
+            );
+            println!();
+        }
+
+        let skipped_total: usize = report.skipped.values().sum();
+        if skipped_total > 0 {
+            info(&format!(
+                "{} of {} functions skipped (unsupported language or unreadable source) {} use --json for the breakdown",
+                format_number(skipped_total as u64),
+                format_number(
+                    (report.functions_total
+                        + report.skipped.get("placeholder").copied().unwrap_or(0))
+                        as u64
+                ),
+                get_glyphs().dash
+            ));
+        }
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze complexity failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze communities
+fn cmd_analyze_communities(path_arg: Option<&str>, sample_arg: &str, json: bool) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path)?;
+        let sample = parse_int_js(sample_arg).unwrap_or(8).max(1) as usize;
+        let report = analyze::communities_report(&bridged.graph, sample);
+
+        if json {
+            return print_json(&report);
+        }
+
+        if report.communities.is_empty() {
+            info("No multi-member call-graph communities found");
+            return Ok(());
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "\nCall-graph communities ({} multi-member, modularity {}):\n",
+                report.multi_member_count,
+                js_to_fixed(report.modularity, 2)
+            ))
+        );
+        for community in &report.communities {
+            println!(
+                "{} {}",
+                cyan(&format!("Community {}", community.id)),
+                dim(&format!("({} symbols)", community.size))
+            );
+            if !community.top_files.is_empty() {
+                println!(
+                    "{}",
+                    dim(&format!("  files: {}", community.top_files.join(", ")))
+                );
+            }
+            let names: Vec<&str> = community.members.iter().map(|m| m.name.as_str()).collect();
+            let more = if community.truncated {
+                format!(" (+{} more)", community.size - community.members.len())
+            } else {
+                String::new()
+            };
+            println!("  {}{}", names.join(", "), dim(&more));
+            println!();
+        }
+        info(&format!(
+            "{} symbols without call relationships remain singleton communities",
+            format_number(report.singleton_count as u64)
+        ));
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze communities failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze dominators <symbol>
+fn cmd_analyze_dominators(symbol: &str, path_arg: Option<&str>, top_arg: &str, json: bool) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path)?;
+        let Some(entry) = resolve_symbol_via_index(&project_path, &bridged.id_map, symbol)? else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+        let top = parse_int_js(top_arg).unwrap_or(50).max(1) as usize;
+        let Some(report) = analyze::dominators_report(&bridged.graph, &entry, top) else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+
+        if json {
+            return print_json(&report);
+        }
+
+        if report.nodes.is_empty() {
+            info(&format!("No nodes reachable from \"{symbol}\""));
+            return Ok(());
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "\nDominators from \"{symbol}\" ({} reachable nodes analyzed):\n",
+                report.analyzed
+            ))
+        );
+        for entry in &report.nodes {
+            print_symbol_line(
+                &entry.symbol.kind,
+                &entry.symbol.name,
+                &entry.symbol.file,
+                entry.symbol.line,
+            );
+            if let Some(idom) = &entry.immediate_dominator {
+                println!(
+                    "{}",
+                    dim(&format!(
+                        "  immediate dominator: {} (chain depth {})",
+                        idom.name, entry.dominator_depth
+                    ))
+                );
+            }
+            println!();
+        }
+        if report.truncated {
+            info(&format!(
+                "Output capped {} raise with --top to analyze more nodes",
+                get_glyphs().dash
+            ));
+        }
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze dominators failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze slice <symbol> [--direction fwd|bwd]
+fn cmd_analyze_slice(
+    symbol: &str,
+    direction_arg: &str,
+    path_arg: Option<&str>,
+    depth_arg: &str,
+    json: bool,
+) {
+    let project_path = resolve_project_path(path_arg);
+
+    let direction = match direction_arg {
+        "fwd" | "forward" => SliceDirection::Forward,
+        "bwd" | "backward" => SliceDirection::Backward,
+        other => {
+            error_msg(&format!(
+                "--direction must be \"fwd\" or \"bwd\" (got \"{other}\")."
+            ));
+            process::exit(1);
+        }
+    };
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path)?;
+        let Some(seed) = resolve_symbol_via_index(&project_path, &bridged.id_map, symbol)? else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+        let depth = parse_int_js(depth_arg).unwrap_or(10).clamp(1, 100) as usize;
+        let Some(report) = analyze::slice_report(&bridged.graph, &seed, direction, depth) else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+
+        if json {
+            return print_json(&report);
+        }
+
+        if report.nodes.is_empty() {
+            info(&format!(
+                "Slice from \"{symbol}\" is empty {} no call edges in that direction",
+                get_glyphs().dash
+            ));
+            return Ok(());
+        }
+
+        let heading = match direction {
+            SliceDirection::Forward => "Forward slice",
+            SliceDirection::Backward => "Backward slice",
+        };
+        println!(
+            "{}",
+            bold(&format!(
+                "\n{heading} of \"{symbol}\" ({} symbols within {} call hops):\n",
+                report.size, report.max_depth
+            ))
+        );
+        for node in &report.nodes {
+            print_symbol_line(&node.kind, &node.name, &node.file, node.line);
+            println!();
+        }
+        warn(&report.note);
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze slice failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// Human label for a cycle kind emitted by `analyze::cycles_report`.
+fn cycle_kind_label(kind: &str) -> &'static str {
+    match kind {
+        "mutualRecursion" => "mutual recursion",
+        "selfRecursion" => "direct recursion",
+        "moduleCycle" => "module cycle",
+        _ => "mixed cycle",
+    }
+}
+
+/// codegraph analyze cycles
+fn cmd_analyze_cycles(path_arg: Option<&str>, json: bool) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path)?;
+        let report = analyze::cycles_report(&bridged.graph);
+
+        if json {
+            return print_json(&report);
+        }
+
+        if report.cycles.is_empty() {
+            success("No dependency cycles or recursion clusters found");
+            return Ok(());
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "\nDependency cycles and recursion clusters ({}):\n",
+                report.cycle_count
+            ))
+        );
+        for cycle in &report.cycles {
+            println!(
+                "{} {}",
+                cyan(cycle_kind_label(&cycle.kind)),
+                dim(&format!(
+                    "({} member{})",
+                    cycle.size,
+                    if cycle.size == 1 { "" } else { "s" }
+                ))
+            );
+            for member in &cycle.members {
+                let loc = if member.line != 0 {
+                    format!(":{}", member.line)
+                } else {
+                    String::new()
+                };
+                println!(
+                    "  {} {}",
+                    white(&member.name),
+                    dim(&format!("{}{loc}", member.file))
+                );
+            }
+            println!();
+        }
+        for suggestion in &report.break_suggestions {
+            info(&format!(
+                "Break suggestion: remove the {} -> {} edge",
+                suggestion.from.name, suggestion.to.name
+            ));
+        }
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze cycles failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze impact <symbol> [--signature <sig>]
+fn cmd_analyze_impact(symbol: &str, signature: Option<&str>, path_arg: Option<&str>, json: bool) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path)?;
+        let Some(target) = resolve_symbol_via_index(&project_path, &bridged.id_map, symbol)? else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+        let Some(report) = analyze::impact_report(&bridged.graph, &target, signature) else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+
+        if json {
+            return print_json(&report);
+        }
+
+        if report.tasks.is_empty() {
+            info(&format!(
+                "No call sites found for \"{symbol}\" {} a signature edit cascades nowhere",
+                get_glyphs().dash
+            ));
+            return Ok(());
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "\nSignature-edit cascade for \"{symbol}\" {} {} call site{} in {} file{}:\n",
+                get_glyphs().dash,
+                report.call_site_count,
+                if report.call_site_count == 1 { "" } else { "s" },
+                report.task_count,
+                if report.task_count == 1 { "" } else { "s" }
+            ))
+        );
+        println!(
+            "{}",
+            dim(&format!("New signature: {}", report.new_signature))
+        );
+        println!();
+        for task in &report.tasks {
+            println!("{}", cyan(&task.file));
+            for site in &task.call_sites {
+                let loc = if site.line != 0 {
+                    format!(":{}", site.line)
+                } else {
+                    String::new()
+                };
+                println!("  {}{}", white(&site.caller), dim(&loc));
+            }
+            println!();
+        }
+        info(
+            "Cascade lists the direct call sites a signature edit must update; for the transitive blast radius use \"codegraph impact\".",
+        );
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze impact failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze taint <source-symbol> <sink-symbol>
+fn cmd_analyze_taint(
+    source: &str,
+    sink: &str,
+    path_arg: Option<&str>,
+    max_nodes_arg: &str,
+    json: bool,
+) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path)?;
+        let cg =
+            CodeGraph::open(&project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
+        let source_id = resolve_analysis_symbol(&cg, &bridged.id_map, source)?;
+        let sink_id = resolve_analysis_symbol(&cg, &bridged.id_map, sink)?;
+        cg.close();
+        let Some(source_id) = source_id else {
+            info(&format!(
+                "Symbol \"{source}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+        let Some(sink_id) = sink_id else {
+            info(&format!(
+                "Symbol \"{sink}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+
+        let max_nodes = parse_int_js(max_nodes_arg).unwrap_or(6).clamp(0, 32) as usize;
+        let Some(report) =
+            analyze::taint_report(&bridged.graph, &source_id, &sink_id, max_nodes, 25)
+        else {
+            info("Source or sink not found in the analysis graph");
+            return Ok(());
+        };
+
+        if json {
+            return print_json(&report);
+        }
+
+        if report.paths.is_empty() {
+            info(&format!(
+                "No paths from \"{source}\" to \"{sink}\" within {} intermediate nodes",
+                report.max_intermediate_nodes
+            ));
+            return Ok(());
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "\nPaths from \"{source}\" to \"{sink}\" ({} found{}):\n",
+                report.path_count,
+                if report.truncated {
+                    format!(", showing {}", report.paths.len())
+                } else {
+                    String::new()
+                }
+            ))
+        );
+        for path in &report.paths {
+            let names: Vec<&str> = path.nodes.iter().map(|n| n.name.as_str()).collect();
+            println!("  {}", white(&names.join(" -> ")));
+            println!(
+                "{}",
+                dim(&format!("    via {}", path.edge_kinds.join(", ")))
+            );
+            println!();
+        }
+        warn(&report.note);
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze taint failed: {msg}"));
         process::exit(1);
     }
 }
