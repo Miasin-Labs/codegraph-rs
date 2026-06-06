@@ -7,7 +7,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
 
 use regex::Regex;
 use serde::Serialize;
@@ -399,6 +400,37 @@ pub struct ToolDefinition {
     pub description: String,
     #[serde(rename = "inputSchema")]
     pub input_schema: InputSchema,
+    /// EXCEEDS TS: optional behavior hints (spec `ToolAnnotations`) — the TS
+    /// parent ships none. Hosts use these for permission UX / auto-approval.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ToolAnnotations>,
+}
+
+/// Spec tool behavior hints — field names/casing mirror rmcp `ToolAnnotations`
+/// (`model/tool.rs`, camelCase, skip-if-none).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAnnotations {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotent_hint: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_world_hint: Option<bool>,
+}
+
+/// The annotation set every CodeGraph tool shares: all 8 tools are pure
+/// reads over the local index — read-only, non-destructive, idempotent,
+/// closed-world.
+fn read_only_annotations() -> Option<ToolAnnotations> {
+    Some(ToolAnnotations {
+        read_only_hint: Some(true),
+        destructive_hint: Some(false),
+        idempotent_hint: Some(true),
+        open_world_hint: Some(false),
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -525,6 +557,7 @@ pub fn tools() -> Vec<ToolDefinition> {
                 properties: props,
                 required: Some(vec!["query".into()]),
             },
+            annotations: read_only_annotations(),
         });
     }
 
@@ -557,6 +590,7 @@ pub fn tools() -> Vec<ToolDefinition> {
                 properties: props,
                 required: Some(vec!["symbol".into()]),
             },
+            annotations: read_only_annotations(),
         });
     }
 
@@ -589,6 +623,7 @@ pub fn tools() -> Vec<ToolDefinition> {
                 properties: props,
                 required: Some(vec!["symbol".into()]),
             },
+            annotations: read_only_annotations(),
         });
     }
 
@@ -617,6 +652,7 @@ pub fn tools() -> Vec<ToolDefinition> {
                 properties: props,
                 required: Some(vec!["symbol".into()]),
             },
+            annotations: read_only_annotations(),
         });
     }
 
@@ -658,6 +694,7 @@ pub fn tools() -> Vec<ToolDefinition> {
                 properties: props,
                 required: Some(vec!["symbol".into()]),
             },
+            annotations: read_only_annotations(),
         });
     }
 
@@ -688,6 +725,7 @@ pub fn tools() -> Vec<ToolDefinition> {
                 properties: props,
                 required: Some(vec!["query".into()]),
             },
+            annotations: read_only_annotations(),
         });
     }
 
@@ -704,6 +742,7 @@ pub fn tools() -> Vec<ToolDefinition> {
                 properties: props,
                 required: None,
             },
+            annotations: read_only_annotations(),
         });
     }
 
@@ -757,6 +796,7 @@ pub fn tools() -> Vec<ToolDefinition> {
                 properties: props,
                 required: None,
             },
+            annotations: read_only_annotations(),
         });
     }
 
@@ -1005,6 +1045,55 @@ pub struct ToolHandler {
     /// Promise; here it is a one-shot closure run (and cleared) on the next
     /// `execute()`. Failures inside the closure are the engine's to log.
     catch_up_gate: RefCell<Option<Box<dyn FnOnce()>>>,
+    /// EXCEEDS TS: per-call context (progress emitter + cooperative cancel
+    /// flag) the engine sets around each `execute()` — see [`CallContext`].
+    call_context: Rc<CallContext>,
+}
+
+/// Progress callback the session plumbs through the engine when a `tools/call`
+/// carried a `_meta.progressToken` (rmcp `ProgressNotificationParam` fields:
+/// progress, total?, message?). Never installed unsolicited.
+pub type ProgressEmitter = Arc<dyn Fn(f64, Option<f64>, Option<&str>) + Send + Sync>;
+
+/// EXCEEDS TS: per-call execution context — set by the engine thread for the
+/// duration of one `ToolHandler::execute()`. The catch-up gate closure (built
+/// before any call arrives) reads the *current* call's progress emitter and
+/// cancel flag through this shared cell, mirroring rmcp's
+/// `RequestContext { ct, peer, .. }` made available to handlers.
+#[derive(Default)]
+pub struct CallContext {
+    progress: RefCell<Option<ProgressEmitter>>,
+    cancel: RefCell<Option<Arc<AtomicBool>>>,
+}
+
+impl CallContext {
+    /// Install the per-call progress emitter / cancel flag (engine thread).
+    pub fn set(&self, progress: Option<ProgressEmitter>, cancel: Option<Arc<AtomicBool>>) {
+        *self.progress.borrow_mut() = progress;
+        *self.cancel.borrow_mut() = cancel;
+    }
+
+    /// Clear after the call completes.
+    pub fn clear(&self) {
+        *self.progress.borrow_mut() = None;
+        *self.cancel.borrow_mut() = None;
+    }
+
+    /// Emit one `notifications/progress` if (and only if) the current call
+    /// asked for progress.
+    pub fn emit_progress(&self, progress: f64, total: Option<f64>, message: Option<&str>) {
+        if let Some(emit) = self.progress.borrow().as_ref() {
+            emit(progress, total, message);
+        }
+    }
+
+    /// Whether the current call was cancelled via `notifications/cancelled`.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel
+            .borrow()
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+    }
 }
 
 impl ToolHandler {
@@ -1015,7 +1104,14 @@ impl ToolHandler {
             default_project_hint: RefCell::new(None),
             worktree_mismatch_cache: RefCell::new(HashMap::new()),
             catch_up_gate: RefCell::new(None),
+            call_context: Rc::new(CallContext::default()),
         }
+    }
+
+    /// Shared per-call context — the engine sets/clears it around `execute()`
+    /// and shares it with the catch-up gate closure.
+    pub fn call_context(&self) -> Rc<CallContext> {
+        Rc::clone(&self.call_context)
     }
 
     /// Update the default CodeGraph instance (e.g. after lazy initialization).
@@ -1367,6 +1463,14 @@ impl ToolHandler {
         // Run the engine's post-open reconcile gate once.
         if let Some(gate) = self.catch_up_gate.borrow_mut().take() {
             gate();
+        }
+
+        // EXCEEDS TS: cooperative cancellation between pipeline stages — the
+        // catch-up sync above is the long first-call stage; if the client
+        // cancelled while it ran, stop here. The session suppresses the
+        // response (this placeholder is never sent).
+        if self.call_context.is_cancelled() {
+            return self.error_result("Request cancelled by client");
         }
 
         // Honor the optional tool allowlist (CODEGRAPH_MCP_TOOLS).

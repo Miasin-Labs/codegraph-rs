@@ -13,15 +13,17 @@
 //!
 //! Port of `src/mcp/session.ts`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::Receiver;
 use serde_json::{Map, Value, json};
 
-use crate::mcp::engine::EngineHandle;
+use crate::mcp::engine::{EngineHandle, LogSubscription, logging_level_rank};
 use crate::mcp::server_instructions::SERVER_INSTRUCTIONS;
-use crate::mcp::tools::tools;
+use crate::mcp::tools::{ProgressEmitter, tools};
 use crate::mcp::transport::{ErrorCodes, IncomingMessage, JsonRpcTransport};
 use crate::mcp::version::CODEGRAPH_PACKAGE_VERSION;
 
@@ -35,6 +37,22 @@ pub fn server_info() -> Value {
     json!({
         "name": "codegraph",
         "version": CODEGRAPH_PACKAGE_VERSION,
+    })
+}
+
+/// Server capabilities advertised in the `initialize` result. Exported so the
+/// proxy's locally-answered handshake stays byte-identical to the daemon's.
+///
+/// EXCEEDS TS (which advertises bare `{"tools": {}}`): adds
+/// `tools.listChanged` (the list IS dynamic — tiny-repo gating and the
+/// explore-budget suffix appear once a project opens) and `logging`
+/// (`logging/setLevel` + mirrored `[CodeGraph MCP]` diagnostics as
+/// `notifications/message`). Mirrors rmcp `ToolsCapability { list_changed }`
+/// and `ServerCapabilities` (logging before tools, camelCase).
+pub fn server_capabilities() -> Value {
+    json!({
+        "logging": {},
+        "tools": { "listChanged": true },
     })
 }
 
@@ -177,9 +195,18 @@ pub struct MCPSessionOptions {
 struct SessionState {
     client_supports_roots: bool,
     roots_attempted: bool,
+    /// EXCEEDS TS: set by `notifications/roots/list_changed` while no project
+    /// is resolved — re-arms the one-shot roots/list latch so the next
+    /// `retry_init_if_needed` re-asks the client (rmcp
+    /// `on_roots_list_changed`).
+    roots_refresh_requested: bool,
     /// In-flight background init kicked off from `handle_initialize`
     /// (TS `resolvePromise`).
     resolve_pending: Option<Receiver<()>>,
+    /// EXCEEDS TS: serialized tool list last served to this client via
+    /// `tools/list` — when a later project open changes the gated/budgeted
+    /// list, we emit `notifications/tools/list_changed`.
+    last_listed_tools: Option<String>,
 }
 
 struct SessionInner {
@@ -187,6 +214,13 @@ struct SessionInner {
     engine: EngineHandle,
     explicit_project_path: Option<String>,
     state: Mutex<SessionState>,
+    /// EXCEEDS TS: cancel flags for in-flight `tools/call` requests, keyed by
+    /// the serialized request id (rmcp `local_ct_pool` keyed by `RequestId`).
+    /// `initialize` is never tracked — it is never cancellable.
+    in_flight: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// EXCEEDS TS: this session's `logging` subscription (min level set via
+    /// `logging/setLevel`; engine diagnostics fan out through it).
+    log_subscription: Arc<LogSubscription>,
 }
 
 /// One MCP client's view of the server. Created fresh per stdio launch
@@ -201,6 +235,11 @@ impl MCPSession {
         engine: EngineHandle,
         opts: MCPSessionOptions,
     ) -> MCPSession {
+        // EXCEEDS TS: subscribe this session to the engine's mirrored
+        // diagnostics (the `logging` capability). The subscription holds the
+        // transport weakly, so a closed session is pruned automatically.
+        let log_subscription = LogSubscription::new(&transport);
+        engine.register_log_subscriber(Arc::clone(&log_subscription));
         MCPSession {
             inner: Arc::new(SessionInner {
                 transport,
@@ -209,8 +248,12 @@ impl MCPSession {
                 state: Mutex::new(SessionState {
                     client_supports_roots: false,
                     roots_attempted: false,
+                    roots_refresh_requested: false,
                     resolve_pending: None,
+                    last_listed_tools: None,
                 }),
+                in_flight: Mutex::new(HashMap::new()),
+                log_subscription,
             }),
         }
     }
@@ -218,6 +261,24 @@ impl MCPSession {
     /// Start handling messages from the transport. Returns immediately — the
     /// session lives for as long as the transport is open.
     pub fn start(&self) {
+        // EXCEEDS TS: intercept `notifications/cancelled` on the reader
+        // thread — the serial dispatcher may be blocked inside a long
+        // `tools/call`, and a cancellation queued behind it would always
+        // arrive too late (rmcp likewise intercepts ahead of dispatch).
+        // Weak: the interceptor must not keep the session alive via the
+        // transport it is installed on.
+        let weak = Arc::downgrade(&self.inner);
+        self.inner
+            .transport
+            .set_notification_interceptor(Box::new(move |message| {
+                if message.method != "notifications/cancelled" {
+                    return false;
+                }
+                if let Some(inner) = weak.upgrade() {
+                    inner.handle_cancelled_notification(message.params.as_ref());
+                }
+                true
+            }));
         let inner = Arc::clone(&self.inner);
         self.inner.transport.start(Box::new(move |message| {
             inner.handle_message(message);
@@ -246,7 +307,12 @@ impl SessionInner {
                     self.handle_initialize(&message);
                 }
             }
-            "initialized" => {
+            // EXCEEDS TS (session.ts:140 matches only the bare legacy
+            // string): the spec method name is `notifications/initialized`
+            // (rmcp `InitializedNotificationMethod`); both spellings hit the
+            // same no-op arm so the handshake hook is real, not an accident
+            // of the default arm tolerating unknown notifications.
+            "initialized" | "notifications/initialized" => {
                 // Notification that client has finished initialization — no
                 // action needed.
             }
@@ -258,6 +324,25 @@ impl SessionInner {
             "tools/call" => {
                 if is_request {
                     self.handle_tools_call(&message);
+                }
+            }
+            "logging/setLevel" => {
+                // EXCEEDS TS: `logging` capability (advertised in the
+                // initialize result) — store the session's minimum level and
+                // ack with an empty result (rmcp `SetLevelRequestParams`).
+                if is_request {
+                    self.handle_set_level(&message);
+                }
+            }
+            "notifications/roots/list_changed" => {
+                // EXCEEDS TS: mirrors rmcp `on_roots_list_changed` — a host
+                // that adds a workspace folder after connect re-arms the
+                // one-shot roots/list latch (only while no project resolved
+                // and no explicit --path pinned the project).
+                if !self.engine.has_default_code_graph() && self.explicit_project_path.is_none() {
+                    let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.roots_attempted = false;
+                    state.roots_refresh_requested = true;
                 }
             }
             "ping" => {
@@ -343,7 +428,7 @@ impl SessionInner {
             "protocolVersion".to_string(),
             Value::String(negotiated_protocol_version(get("protocolVersion"))),
         );
-        result.insert("capabilities".to_string(), json!({ "tools": {} }));
+        result.insert("capabilities".to_string(), server_capabilities());
         result.insert("serverInfo".to_string(), server_info());
         result.insert(
             "instructions".to_string(),
@@ -366,12 +451,17 @@ impl SessionInner {
 
     fn handle_tools_list(&self, request: &IncomingMessage) {
         self.retry_init_if_needed();
-        let tools_value =
-            serde_json::to_value(self.engine.get_tools()).unwrap_or(Value::Array(vec![]));
+        let tools = self.engine.get_tools();
+        let tools_value = serde_json::to_value(&tools).unwrap_or(Value::Array(vec![]));
         if let Some(id) = &request.id {
             self.transport
                 .send_result(id, json!({ "tools": tools_value }));
         }
+        // Remember what the client saw so a later project open that changes
+        // the gated/budgeted list triggers `notifications/tools/list_changed`
+        // (EXCEEDS TS).
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.last_listed_tools = serde_json::to_string(&tools).ok();
     }
 
     fn handle_tools_call(&self, request: &IncomingMessage) {
@@ -418,9 +508,144 @@ impl SessionInner {
 
         self.retry_init_if_needed();
 
-        let result = self.engine.execute(&tool_name, tool_args);
+        // EXCEEDS TS: honor `_meta.progressToken` (string or integer, per
+        // rmcp `Meta::get_progress_token` — floats ignored). When present,
+        // the engine's long stages (catch-up sync) emit
+        // `notifications/progress` through this emitter; absent token ⇒ no
+        // emitter ⇒ nothing is ever sent unsolicited.
+        let progress_token = params
+            .and_then(|p| p.get("_meta"))
+            .and_then(|m| m.get("progressToken"))
+            .and_then(|tok| match tok {
+                Value::String(_) => Some(tok.clone()),
+                Value::Number(n) if n.is_i64() || n.is_u64() => Some(tok.clone()),
+                _ => None,
+            });
+        let progress: Option<ProgressEmitter> = progress_token.map(|token| {
+            let transport = Arc::clone(&self.transport);
+            Arc::new(
+                move |progress: f64, total: Option<f64>, message: Option<&str>| {
+                    // rmcp `ProgressNotificationParam` field order:
+                    // progressToken, progress, total?, message?.
+                    let mut p = Map::new();
+                    p.insert("progressToken".to_string(), token.clone());
+                    p.insert("progress".to_string(), json!(progress));
+                    if let Some(total) = total {
+                        p.insert("total".to_string(), json!(total));
+                    }
+                    if let Some(message) = message {
+                        p.insert("message".to_string(), Value::String(message.to_string()));
+                    }
+                    transport.notify("notifications/progress", Some(Value::Object(p)));
+                },
+            ) as ProgressEmitter
+        });
+
+        // EXCEEDS TS: track this request so `notifications/cancelled` can set
+        // its cooperative cancel flag while the engine works (rmcp
+        // `local_ct_pool`). `initialize` never registers here — it is never
+        // cancellable.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let key = request_id_key(id);
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.clone(), Arc::clone(&cancel));
+
+        let result = self.engine.execute_with_context(
+            &tool_name,
+            tool_args,
+            progress,
+            Some(Arc::clone(&cancel)),
+        );
+
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+
+        // Cancelled mid-flight: per spec the response to a cancelled request
+        // is suppressed — send nothing.
+        if cancel.load(Ordering::SeqCst) {
+            return;
+        }
+
         let result_value = serde_json::to_value(&result).unwrap_or(Value::Null);
         self.transport.send_result(id, result_value);
+
+        // A project may have opened (or caught up) during this call — if that
+        // changed the tool list the client last saw, tell it (EXCEEDS TS;
+        // rmcp `notify_tool_list_changed`).
+        self.maybe_notify_tools_list_changed();
+    }
+
+    /// Reader-thread hook for `notifications/cancelled`: flag the in-flight
+    /// request if we know it; unknown/late ids are tolerated silently, same
+    /// as before (spec MUST).
+    fn handle_cancelled_notification(&self, params: Option<&Value>) {
+        let Some(request_id) = params.and_then(|p| p.get("requestId")) else {
+            return;
+        };
+        let key = request_id_key(request_id);
+        if let Some(flag) = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+        {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// `logging/setLevel` (EXCEEDS TS): set this session's minimum mirrored
+    /// log level (rmcp `LoggingLevel`, lowercase) and ack with `{}`.
+    fn handle_set_level(&self, request: &IncomingMessage) {
+        let Some(id) = &request.id else { return };
+        let level = request
+            .params
+            .as_ref()
+            .and_then(|p| p.get("level"))
+            .and_then(|l| l.as_str());
+        match level.and_then(logging_level_rank) {
+            Some(rank) => {
+                self.log_subscription.set_min_rank(rank);
+                self.transport.send_result(id, json!({}));
+            }
+            None => {
+                self.transport.send_error(
+                    id,
+                    ErrorCodes::INVALID_PARAMS,
+                    &format!("Invalid logging level: {}", level.unwrap_or("<missing>")),
+                    None,
+                );
+            }
+        }
+    }
+
+    /// Emit `notifications/tools/list_changed` when the engine's current tool
+    /// list differs from the one this client last received (EXCEEDS TS).
+    /// No-op until the client has listed at least once — there is nothing to
+    /// invalidate before that.
+    fn maybe_notify_tools_list_changed(&self) {
+        let current = match serde_json::to_string(&self.engine.get_tools()) {
+            Ok(serialized) => serialized,
+            Err(_) => return,
+        };
+        let changed = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            match &state.last_listed_tools {
+                Some(prev) if *prev != current => {
+                    state.last_listed_tools = Some(current);
+                    true
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            // rmcp `ToolListChangedNotification` is param-less.
+            self.transport
+                .notify("notifications/tools/list_changed", None);
+        }
     }
 
     /// Lazy default-project resolution. Three layers:
@@ -451,8 +676,12 @@ impl SessionInner {
 
         let (need_roots_attempt, supports_roots) = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if hint.is_none() && !state.roots_attempted {
+            // `roots_refresh_requested` (set by notifications/roots/list_changed
+            // while unresolved) re-arms the attempt even when an earlier
+            // fallback recorded a useless hint (EXCEEDS TS).
+            if (hint.is_none() || state.roots_refresh_requested) && !state.roots_attempted {
                 state.roots_attempted = true;
+                state.roots_refresh_requested = false;
                 (true, state.client_supports_roots)
             } else {
                 (false, state.client_supports_roots)
@@ -486,19 +715,35 @@ impl SessionInner {
             Ok(result) => match first_root_path(&result) {
                 Some(root_path) => target = root_path,
                 None => {
-                    eprintln!(
-                        "[CodeGraph MCP] Client returned no workspace roots; falling back to process cwd."
+                    self.log(
+                        "warning",
+                        "Client returned no workspace roots; falling back to process cwd.",
                     );
                 }
             },
             Err(msg) => {
-                eprintln!(
-                    "[CodeGraph MCP] roots/list request failed ({msg}); falling back to process cwd."
+                self.log(
+                    "warning",
+                    &format!("roots/list request failed ({msg}); falling back to process cwd."),
                 );
             }
         }
         self.engine.ensure_initialized(&target);
     }
+
+    /// Session-side diagnostic: keep the exact `[CodeGraph MCP]` stderr line
+    /// AND mirror it to this session as `notifications/message` (EXCEEDS TS —
+    /// `logging` capability).
+    fn log(&self, level: &str, message: &str) {
+        eprintln!("[CodeGraph MCP] {message}");
+        self.log_subscription.notify(level, message);
+    }
+}
+
+/// Stable map key for a JSON-RPC request id (string OR integer ids — both
+/// spec-legal; serialization disambiguates `1` from `"1"`).
+fn request_id_key(id: &Value) -> String {
+    serde_json::to_string(id).unwrap_or_default()
 }
 
 /// JS template-literal stringification for the "Unknown tool" edge where the

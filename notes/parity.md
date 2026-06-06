@@ -186,3 +186,51 @@ batch-boundary bug where **Rust produces the correct count**. Real action items:
    receiver-type-inference for `var.member` refs (~33 edges; TS's matches in this
    class are wrong-target, so divergence may be desirable).
 3. (Cosmetic) `query --json`: TS emits `"visibility": null`, Rust omits null keys.
+
+## Intentional MCP divergences (rmcp gap fixes — 2026-06-06)
+
+The MCP server deliberately EXCEEDS the TS parent on spec MUSTs/SHOULDs the TS
+arm lacks (full gap matrix + rationale: `notes/rmcp-gaps.md`, "Implemented
+divergences"). Every site is marked `// EXCEEDS TS:` in source. Summary:
+
+1. **Proxy degraded mode answers every request** — TS `proxy.ts::handleLocally`
+   answers only `tools/call` + `ping` and silently drops everything else (host
+   hangs until its own timeout). Rust `proxy.rs::handle_locally` adds: `-32601`
+   `"Method not found: {method}"` for any other id-bearing request, `-32700`
+   `"Parse error: invalid JSON"` (`id:null`) for unparseable lines, `-32600`
+   for valid-JSON non-JSON-RPC, static `tools/list`, and a `{}` ack for
+   `logging/setLevel`; notifications stay dropped. Error strings/wire shape are
+   byte-identical to the session transport (`transport.rs::ErrorCodes`).
+2. **`notifications/initialized` recognized by its spec name** — TS
+   `session.ts:140` matches only the bare legacy `"initialized"`; Rust matches
+   both spellings in the dedicated no-op arm.
+3. **Tool `annotations`** — all 8 tools advertise
+   `{readOnlyHint:true, destructiveHint:false, idempotentHint:true,
+   openWorldHint:false}` (TS ships none).
+4. **`tools.listChanged`** — capabilities are
+   `{"logging":{},"tools":{"listChanged":true}}` (TS: `{"tools":{}}`);
+   `notifications/tools/list_changed` is emitted when a project open changes
+   the gated/budgeted list; the local-handshake proxy forwards `tools/list` to
+   the daemon once Ready (TS answers statically forever) and nudges the client
+   with `list_changed` after attaching if it had answered statically.
+5. **Progress** — `tools/call` honors `_meta.progressToken` (string/int);
+   the catch-up sync emits `notifications/progress` through it. Never
+   unsolicited (TS ignores the token).
+6. **Cancellation honored** — `notifications/cancelled` (intercepted on the
+   reader thread) sets a per-request cancel flag checked between engine
+   pipeline stages; the response of a cancelled call is suppressed (TS only
+   tolerates the notification).
+7. **`logging` capability** — `logging/setLevel` stores a per-session min
+   level; `[CodeGraph MCP]` engine/session diagnostics are mirrored as
+   `notifications/message {level, logger:"codegraph", data}` (stderr bytes
+   unchanged).
+8. **`notifications/roots/list_changed`** — re-arms the one-shot roots/list
+   latch while no project is resolved (TS drops it).
+9. **Timeout cancellation** — our own `roots/list` timeout now emits
+   `notifications/cancelled {requestId, reason:"request timeout"}` before
+   abandoning the pending entry.
+
+These do not change any TS-parity wire bytes asserted by the suite
+(serverInfo key order, error strings, tool response shapes,
+`SERVER_INSTRUCTIONS`); only additive fields/messages and previously-absent
+responses differ.

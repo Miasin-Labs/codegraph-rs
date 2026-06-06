@@ -24,15 +24,123 @@
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 use crossbeam_channel::{Receiver, Sender};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::codegraph::{CodeGraph, IndexOptions, OpenOptions};
 use crate::directory::find_nearest_codegraph_root;
-use crate::mcp::tools::{ToolDefinition, ToolHandler, ToolResult};
+use crate::extraction::IndexProgress;
+use crate::mcp::tools::{ProgressEmitter, ToolDefinition, ToolHandler, ToolResult};
+use crate::mcp::transport::JsonRpcTransport;
 use crate::sync::{WatchOptions, WatchProbe, watch_disabled_reason};
+
+// =============================================================================
+// MCP logging support (EXCEEDS TS — the TS parent never advertises `logging`)
+// =============================================================================
+
+/// RFC 5424 severity rank for the MCP logging levels (rmcp `LoggingLevel`,
+/// lowercase serialization). Higher = more severe.
+pub fn logging_level_rank(level: &str) -> Option<u8> {
+    match level {
+        "debug" => Some(0),
+        "info" => Some(1),
+        "notice" => Some(2),
+        "warning" => Some(3),
+        "error" => Some(4),
+        "critical" => Some(5),
+        "alert" => Some(6),
+        "emergency" => Some(7),
+        _ => None,
+    }
+}
+
+/// Default minimum severity before the client calls `logging/setLevel`:
+/// `info` (debug-level chatter stays on stderr only).
+const DEFAULT_MIN_LOG_RANK: u8 = 1;
+
+/// One MCP session's view of the engine's diagnostics. Registered with the
+/// shared [`LogBroadcaster`]; holds the transport weakly so a closed session
+/// never keeps a socket alive (dead entries are pruned on the next emit).
+pub struct LogSubscription {
+    transport: Weak<dyn JsonRpcTransport>,
+    min_rank: AtomicU8,
+}
+
+impl LogSubscription {
+    pub fn new(transport: &Arc<dyn JsonRpcTransport>) -> Arc<LogSubscription> {
+        Arc::new(LogSubscription {
+            transport: Arc::downgrade(transport),
+            min_rank: AtomicU8::new(DEFAULT_MIN_LOG_RANK),
+        })
+    }
+
+    /// `logging/setLevel` handler updates this (rank from
+    /// [`logging_level_rank`]).
+    pub fn set_min_rank(&self, rank: u8) {
+        self.min_rank.store(rank, Ordering::SeqCst);
+    }
+
+    /// Session-side emit (e.g. roots/list fallback warnings) — same filter,
+    /// dead-transport result ignored (the broadcaster prunes separately).
+    pub fn notify(&self, level: &str, message: &str) {
+        let _ = self.emit(level, message);
+    }
+
+    /// Send one `notifications/message` if the session's transport is still
+    /// alive and the level clears its threshold. Returns `false` when the
+    /// transport is gone (caller prunes the subscription).
+    fn emit(&self, level: &str, message: &str) -> bool {
+        let Some(transport) = self.transport.upgrade() else {
+            return false;
+        };
+        let rank = logging_level_rank(level).unwrap_or(DEFAULT_MIN_LOG_RANK);
+        if rank >= self.min_rank.load(Ordering::SeqCst) {
+            // Param shape mirrors rmcp `LoggingMessageNotificationParam`
+            // ({level, logger, data}).
+            transport.notify(
+                "notifications/message",
+                Some(json!({
+                    "level": level,
+                    "logger": "codegraph",
+                    "data": message,
+                })),
+            );
+        }
+        true
+    }
+}
+
+/// Fan-out of `[CodeGraph MCP]` diagnostics to every subscribed session as
+/// `notifications/message` — in daemon mode stderr lands in
+/// `.codegraph/daemon.log` where the host can't see it (issue driver for the
+/// `logging` capability). `Send + Sync + Clone` so watcher callbacks and the
+/// catch-up gate can log from any thread.
+#[derive(Clone, Default)]
+pub struct LogBroadcaster {
+    subscribers: Arc<Mutex<Vec<Arc<LogSubscription>>>>,
+}
+
+impl LogBroadcaster {
+    pub fn subscribe(&self, subscription: Arc<LogSubscription>) {
+        self.subscribers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(subscription);
+    }
+
+    /// Write the `[CodeGraph MCP]` stderr line (exact pre-existing wording)
+    /// AND mirror it to subscribed sessions.
+    pub fn log(&self, level: &str, message: &str) {
+        eprintln!("[CodeGraph MCP] {message}");
+        self.subscribers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|sub| sub.emit(level, message));
+    }
+}
 
 /// Options for [`MCPEngine`].
 #[derive(Clone, Copy)]
@@ -61,10 +169,19 @@ pub struct MCPEngine {
     watcher_started: Cell<bool>,
     opts: MCPEngineOptions,
     closed: Cell<bool>,
+    /// Mirrors `[CodeGraph MCP]` stderr diagnostics to subscribed sessions
+    /// (EXCEEDS TS — MCP `logging` capability).
+    logs: LogBroadcaster,
 }
 
 impl MCPEngine {
     pub fn new(opts: MCPEngineOptions) -> MCPEngine {
+        MCPEngine::with_log_broadcaster(opts, LogBroadcaster::default())
+    }
+
+    /// Construct with a shared [`LogBroadcaster`] (daemon/direct wiring hands
+    /// the same broadcaster to every session via [`EngineHandle`]).
+    pub fn with_log_broadcaster(opts: MCPEngineOptions, logs: LogBroadcaster) -> MCPEngine {
         MCPEngine {
             cg: RefCell::new(None),
             tool_handler: ToolHandler::new(None),
@@ -72,6 +189,7 @@ impl MCPEngine {
             watcher_started: Cell::new(false),
             opts,
             closed: Cell::new(false),
+            logs,
         }
     }
 
@@ -187,10 +305,13 @@ impl MCPEngine {
                 self.catch_up_sync();
             }
             Err(err) => {
-                eprintln!(
-                    "[CodeGraph MCP] Failed to open project at {}: {}",
-                    resolved_root.display(),
-                    err
+                self.logs.log(
+                    "error",
+                    &format!(
+                        "Failed to open project at {}: {}",
+                        resolved_root.display(),
+                        err
+                    ),
                 );
             }
         }
@@ -212,8 +333,11 @@ impl MCPEngine {
                 .unwrap_or_default()
         });
         if let Some(disabled_reason) = watch_disabled_reason(&root, &WatchProbe::default()) {
-            eprintln!(
-                "[CodeGraph MCP] File watcher disabled — {disabled_reason}. The graph will not auto-update; run `codegraph sync` (or install the git sync hooks via `codegraph init`) to refresh."
+            self.logs.log(
+                "warning",
+                &format!(
+                    "File watcher disabled — {disabled_reason}. The graph will not auto-update; run `codegraph sync` (or install the git sync hooks via `codegraph init`) to refresh."
+                ),
             );
             self.watcher_started.set(true);
             return;
@@ -228,11 +352,14 @@ impl MCPEngine {
         let debounce_ms =
             parse_debounce_env(std::env::var("CODEGRAPH_WATCH_DEBOUNCE_MS").ok().as_deref());
         if let Some(ms) = debounce_ms {
-            eprintln!(
-                "[CodeGraph MCP] File watcher debounce: {ms}ms (CODEGRAPH_WATCH_DEBOUNCE_MS)"
+            self.logs.log(
+                "debug",
+                &format!("File watcher debounce: {ms}ms (CODEGRAPH_WATCH_DEBOUNCE_MS)"),
             );
         }
 
+        let sync_logs = self.logs.clone();
+        let err_logs = self.logs.clone();
         let started = self
             .cg
             .borrow()
@@ -240,16 +367,19 @@ impl MCPEngine {
             .map(|cg| {
                 cg.watch(WatchOptions {
                     debounce_ms,
-                    on_sync_complete: Some(Arc::new(|result| {
+                    on_sync_complete: Some(Arc::new(move |result| {
                         if result.files_changed > 0 {
-                            eprintln!(
-                                "[CodeGraph MCP] Auto-synced {} file(s) in {}ms",
-                                result.files_changed, result.duration_ms
+                            sync_logs.log(
+                                "info",
+                                &format!(
+                                    "Auto-synced {} file(s) in {}ms",
+                                    result.files_changed, result.duration_ms
+                                ),
                             );
                         }
                     })),
-                    on_sync_error: Some(Arc::new(|err| {
-                        eprintln!("[CodeGraph MCP] Auto-sync error: {err}");
+                    on_sync_error: Some(Arc::new(move |err| {
+                        err_logs.log("error", &format!("Auto-sync error: {err}"));
                     })),
                     inert_for_tests: false,
                 })
@@ -258,10 +388,14 @@ impl MCPEngine {
 
         self.watcher_started.set(true);
         if started {
-            eprintln!("[CodeGraph MCP] File watcher active — graph will auto-sync on changes");
+            self.logs.log(
+                "info",
+                "File watcher active — graph will auto-sync on changes",
+            );
         } else {
-            eprintln!(
-                "[CodeGraph MCP] File watcher unavailable on this platform — run `codegraph sync` to refresh the graph after changes."
+            self.logs.log(
+                "warning",
+                "File watcher unavailable on this platform — run `codegraph sync` to refresh the graph after changes.",
             );
         }
     }
@@ -281,16 +415,51 @@ impl MCPEngine {
             Some(cg) => Rc::clone(cg),
             None => return,
         };
-        let gate: Box<dyn FnOnce()> = Box::new(move || match cg.sync(&IndexOptions::default()) {
-            Ok(result) => {
-                let changed = result.files_added + result.files_modified + result.files_removed;
-                if changed > 0 {
-                    eprintln!("[CodeGraph MCP] Caught up {changed} file(s) changed since last run");
+        // EXCEEDS TS: the gate reads the *current* call's progress emitter
+        // through the shared CallContext, so a first `tools/call` that sent a
+        // `_meta.progressToken` gets `notifications/progress` while the
+        // catch-up sync blocks it (rmcp `ProgressNotificationParam` shape).
+        // Without a token every emit_progress below is a no-op — never
+        // unsolicited.
+        let ctx = self.tool_handler.call_context();
+        let logs = self.logs.clone();
+        let gate: Box<dyn FnOnce()> = Box::new(move || {
+            ctx.emit_progress(0.0, None, Some("Catching up index with filesystem changes"));
+            // Monotonic counter (the spec requires progress to increase);
+            // throttled so a large catch-up doesn't flood the stream.
+            let count = Cell::new(0.0f64);
+            let last_emit = Cell::new(std::time::Instant::now());
+            let on_progress = |p: &IndexProgress| {
+                count.set(count.get() + 1.0);
+                if last_emit.get().elapsed() >= std::time::Duration::from_millis(100) {
+                    last_emit.set(std::time::Instant::now());
+                    ctx.emit_progress(
+                        count.get(),
+                        None,
+                        Some(&format!("{}: {}/{}", p.phase.as_str(), p.current, p.total)),
+                    );
+                }
+            };
+            let options = IndexOptions {
+                on_progress: Some(&on_progress),
+                ..IndexOptions::default()
+            };
+            match cg.sync(&options) {
+                Ok(result) => {
+                    let changed = result.files_added + result.files_modified + result.files_removed;
+                    if changed > 0 {
+                        logs.log(
+                            "info",
+                            &format!("Caught up {changed} file(s) changed since last run"),
+                        );
+                    }
+                }
+                Err(err) => {
+                    logs.log("error", &format!("Catch-up sync failed: {err}"));
                 }
             }
-            Err(err) => {
-                eprintln!("[CodeGraph MCP] Catch-up sync failed: {err}");
-            }
+            let done = count.get() + 1.0;
+            ctx.emit_progress(done, Some(done), Some("Catch-up sync complete"));
         });
         self.tool_handler.set_catch_up_gate(Some(gate));
     }
@@ -345,6 +514,12 @@ enum EngineCommand {
     Execute {
         name: String,
         args: Value,
+        /// Progress emitter — present only when the caller's `tools/call`
+        /// carried a `_meta.progressToken` (EXCEEDS TS).
+        progress: Option<ProgressEmitter>,
+        /// Cooperative cancel flag set by `notifications/cancelled`
+        /// (EXCEEDS TS).
+        cancel: Option<Arc<AtomicBool>>,
         reply: Sender<ToolResult>,
     },
     Stop(Sender<()>),
@@ -356,16 +531,19 @@ enum EngineCommand {
 #[derive(Clone)]
 pub struct EngineHandle {
     tx: Sender<EngineCommand>,
+    logs: LogBroadcaster,
 }
 
 impl EngineHandle {
     /// Spawn the engine thread and return a handle to it.
     pub fn spawn(opts: MCPEngineOptions) -> EngineHandle {
         let (tx, rx) = crossbeam_channel::unbounded::<EngineCommand>();
+        let logs = LogBroadcaster::default();
+        let engine_logs = logs.clone();
         let _ = std::thread::Builder::new()
             .name("codegraph-mcp-engine".to_string())
             .spawn(move || {
-                let engine = MCPEngine::new(opts);
+                let engine = MCPEngine::with_log_broadcaster(opts, engine_logs);
                 for cmd in rx {
                     match cmd {
                         EngineCommand::SetProjectPathHint(p) => engine.set_project_path_hint(&p),
@@ -386,8 +564,18 @@ impl EngineHandle {
                         EngineCommand::GetTools(reply) => {
                             let _ = reply.send(engine.get_tool_handler().get_tools());
                         }
-                        EngineCommand::Execute { name, args, reply } => {
-                            let _ = reply.send(engine.get_tool_handler().execute(&name, &args));
+                        EngineCommand::Execute {
+                            name,
+                            args,
+                            progress,
+                            cancel,
+                            reply,
+                        } => {
+                            let ctx = engine.get_tool_handler().call_context();
+                            ctx.set(progress, cancel);
+                            let result = engine.get_tool_handler().execute(&name, &args);
+                            ctx.clear();
+                            let _ = reply.send(result);
                         }
                         EngineCommand::Stop(reply) => {
                             engine.stop();
@@ -399,7 +587,13 @@ impl EngineHandle {
                 // All handles dropped — clean teardown.
                 engine.stop();
             });
-        EngineHandle { tx }
+        EngineHandle { tx, logs }
+    }
+
+    /// Subscribe a session to the engine's mirrored `[CodeGraph MCP]`
+    /// diagnostics (`notifications/message`, EXCEEDS TS).
+    pub fn register_log_subscriber(&self, subscription: Arc<LogSubscription>) {
+        self.logs.subscribe(subscription);
     }
 
     pub fn set_project_path_hint(&self, project_path: &str) {
@@ -464,12 +658,27 @@ impl EngineHandle {
     }
 
     pub fn execute(&self, name: &str, args: Value) -> ToolResult {
+        self.execute_with_context(name, args, None, None)
+    }
+
+    /// `execute` with the per-call context: a progress emitter (only when the
+    /// caller sent `_meta.progressToken`) and a cooperative cancel flag
+    /// (EXCEEDS TS — rmcp `RequestContext.ct` analog).
+    pub fn execute_with_context(
+        &self,
+        name: &str,
+        args: Value,
+        progress: Option<ProgressEmitter>,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> ToolResult {
         let (reply, rx) = crossbeam_channel::bounded(1);
         let send_ok = self
             .tx
             .send(EngineCommand::Execute {
                 name: name.to_string(),
                 args,
+                progress,
+                cancel,
                 reply,
             })
             .is_ok();

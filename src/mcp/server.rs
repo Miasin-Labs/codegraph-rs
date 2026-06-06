@@ -585,6 +585,7 @@ fn run_proxy_with_local_handshake(root: &std::path::Path) -> ! {
         negotiate_protocol_version: Box::new(|v| {
             crate::mcp::session::negotiated_protocol_version(v)
         }),
+        server_capabilities: crate::mcp::session::server_capabilities(),
         server_info: crate::mcp::session::server_info(),
         server_instructions: crate::mcp::server_instructions::SERVER_INSTRUCTIONS.to_string(),
         static_tools: Box::new(|| {

@@ -117,6 +117,7 @@ mod unix_proxy {
     use super::*;
     use crate::mcp::daemon::{DaemonHello, MAX_HELLO_LINE_BYTES};
     use crate::mcp::daemon_paths::HOST_PPID_ENV;
+    use crate::mcp::transport::ErrorCodes;
 
     /// A connected daemon socket with its hello already consumed.
     pub struct DaemonSocket {
@@ -492,6 +493,9 @@ mod unix_proxy {
         pub root: PathBuf,
         /// TS `negotiatedProtocolVersion(clientVersion)` from session.ts.
         pub negotiate_protocol_version: Box<dyn Fn(Option<&Value>) -> String + Send + Sync>,
+        /// `server_capabilities()` from session.rs — injected so the locally
+        /// answered handshake stays byte-identical to the daemon session's.
+        pub server_capabilities: Value,
         /// TS `SERVER_INFO` from session.ts (e.g. `{"name":"codegraph","version":...}`).
         pub server_info: Value,
         /// TS `SERVER_INSTRUCTIONS` from server-instructions.ts.
@@ -520,6 +524,11 @@ mod unix_proxy {
         /// Client lines buffered until the daemon resolves.
         pending: Vec<String>,
         pending_bytes: usize,
+        /// EXCEEDS TS: whether any `tools/list` was answered from the static
+        /// list while the daemon wasn't Ready — on attach we nudge the client
+        /// with `notifications/tools/list_changed` so it re-fetches the
+        /// daemon's gated/budgeted list.
+        answered_tools_list_statically: bool,
         shutting_down: bool,
         reconnecting: bool,
         executor: Option<Box<dyn LocalToolExecutor>>,
@@ -530,6 +539,7 @@ mod unix_proxy {
         get_daemon_socket: Mutex<Box<dyn FnMut() -> Option<DaemonSocket> + Send>>,
         make_local_executor: Mutex<Box<dyn FnMut() -> Box<dyn LocalToolExecutor> + Send>>,
         negotiate_protocol_version: Box<dyn Fn(Option<&Value>) -> String + Send + Sync>,
+        server_capabilities: Value,
         server_info: Value,
         server_instructions: String,
         static_tools: Box<dyn Fn() -> Value + Send + Sync>,
@@ -577,44 +587,120 @@ mod unix_proxy {
     /// Daemon-unavailable fallback: serve a client message in-process.
     /// Called with the state lock held (mirrors the single-threaded TS
     /// execution: nothing else progresses during a local call).
+    ///
+    /// EXCEEDS TS (`proxy.ts::handleLocally` silently drops everything it
+    /// doesn't recognize): degraded mode must still answer EVERY request —
+    /// the JSON-RPC/MCP MUST that each request receives exactly one
+    /// response; an unanswered probe leaves the host hanging until its own
+    /// timeout. Error codes/strings reuse the session transport's
+    /// (`transport.rs::ErrorCodes`, mirroring rmcp's default
+    /// `ServerHandler::on_custom_request` → `method_not_found` and
+    /// `AsyncRwTransport::receive`'s parse-error recovery). Notifications
+    /// stay dropped, never answered (also a spec MUST).
     fn handle_locally(shared: &ProxyShared, st: &mut HandshakeState, line: &str) {
         let msg: Value = match serde_json::from_str(line) {
             Ok(m) => m,
-            Err(_) => return,
+            Err(_) => {
+                // Parse error: `-32700` with `id: null` (JSON-RPC 2.0 rule,
+                // same bytes as LineRpcCore::handle_line); stream stays alive.
+                write_client_value(&rpc_envelope(
+                    Some(&Value::Null),
+                    "error",
+                    serde_json::json!({
+                        "code": ErrorCodes::PARSE_ERROR,
+                        "message": "Parse error: invalid JSON",
+                    }),
+                ));
+                return;
+            }
         };
         let id = msg.get("id").cloned();
         let method = msg.get("method").and_then(|m| m.as_str());
-        if method == Some("tools/call") && id.is_some() {
-            if st.executor.is_none() {
-                let mut make = shared.make_local_executor.lock().unwrap();
-                st.executor = Some(make());
+        match (method, id.is_some()) {
+            (Some("tools/call"), true) => {
+                if st.executor.is_none() {
+                    let mut make = shared.make_local_executor.lock().unwrap();
+                    st.executor = Some(make());
+                }
+                let params = msg.get("params");
+                let name = params
+                    .and_then(|p| p.get("name"))
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("");
+                let arguments = params
+                    .and_then(|p| p.get("arguments"))
+                    .filter(|a| !a.is_null())
+                    .cloned()
+                    .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+                match st.executor.as_mut().unwrap().execute(name, &arguments) {
+                    Ok(result) => write_client_value(&rpc_envelope(id.as_ref(), "result", result)),
+                    Err(message) => write_client_value(&rpc_envelope(
+                        id.as_ref(),
+                        "error",
+                        serde_json::json!({ "code": -32603, "message": message }),
+                    )),
+                }
             }
-            let params = msg.get("params");
-            let name = params
-                .and_then(|p| p.get("name"))
-                .and_then(|n| n.as_str())
-                .unwrap_or("");
-            let arguments = params
-                .and_then(|p| p.get("arguments"))
-                .filter(|a| !a.is_null())
-                .cloned()
-                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-            match st.executor.as_mut().unwrap().execute(name, &arguments) {
-                Ok(result) => write_client_value(&rpc_envelope(id.as_ref(), "result", result)),
-                Err(message) => write_client_value(&rpc_envelope(
+            (Some("ping"), true) => {
+                write_client_value(&rpc_envelope(
+                    id.as_ref(),
+                    "result",
+                    Value::Object(serde_json::Map::new()),
+                ));
+            }
+            (Some("tools/list"), true) => {
+                // Reaches here only via the pending-queue drain (the live
+                // non-Ready path answers in process_client_line) — same
+                // static answer.
+                let result = serde_json::json!({ "tools": (shared.static_tools)() });
+                write_client_value(&rpc_envelope(id.as_ref(), "result", result));
+            }
+            (Some("logging/setLevel"), true) => {
+                // The local handshake advertises `logging`; degraded mode
+                // mirrors no log messages, so any minimum level trivially
+                // holds — ack with `{}` instead of a method-not-found.
+                write_client_value(&rpc_envelope(
+                    id.as_ref(),
+                    "result",
+                    Value::Object(serde_json::Map::new()),
+                ));
+            }
+            (Some("initialize"), _) => {
+                // Already answered locally by process_client_line — the line
+                // is only routed here to prime the (absent) daemon. No reply.
+            }
+            (Some(_), false) => {
+                // Notifications (initialized, cancelled, …) stay dropped.
+            }
+            (Some(other), true) => {
+                write_client_value(&rpc_envelope(
                     id.as_ref(),
                     "error",
-                    serde_json::json!({ "code": -32603, "message": message }),
-                )),
+                    serde_json::json!({
+                        "code": ErrorCodes::METHOD_NOT_FOUND,
+                        "message": format!("Method not found: {other}"),
+                    }),
+                ));
             }
-        } else if method == Some("ping") && id.is_some() {
-            write_client_value(&rpc_envelope(
-                id.as_ref(),
-                "result",
-                Value::Object(serde_json::Map::new()),
-            ));
+            (None, _) => {
+                // No method: a response to a server-initiated request (id +
+                // result/error) is silently absorbed; anything else is not a
+                // valid JSON-RPC message → `-32600` with `id: null`, exactly
+                // like LineRpcCore::handle_line.
+                let is_response =
+                    id.is_some() && (msg.get("result").is_some() || msg.get("error").is_some());
+                if !is_response {
+                    write_client_value(&rpc_envelope(
+                        Some(&Value::Null),
+                        "error",
+                        serde_json::json!({
+                            "code": ErrorCodes::INVALID_REQUEST,
+                            "message": "Invalid Request: not a valid JSON-RPC 2.0 message",
+                        }),
+                    ));
+                }
+            }
         }
-        // initialize already answered locally; notifications (initialized) need no reply.
     }
 
     /// Pending-queue overflow → permanent in-process fallback.
@@ -699,6 +785,17 @@ mod unix_proxy {
             for line in &pending {
                 write_daemon_line(d, line);
             }
+        }
+
+        // EXCEEDS TS: if any `tools/list` was answered statically before this
+        // attach, the daemon's gated/budgeted list may differ — tell the
+        // client to re-fetch (it now forwards to the daemon).
+        if std::mem::take(&mut st.answered_tools_list_statically) {
+            write_client_value(&rpc_envelope(
+                None,
+                "method",
+                Value::String("notifications/tools/list_changed".to_string()),
+            ));
         }
     }
 
@@ -841,7 +938,7 @@ mod unix_proxy {
                 let client_version = msg.get("params").and_then(|p| p.get("protocolVersion"));
                 let result = serde_json::json!({
                     "protocolVersion": (shared.negotiate_protocol_version)(client_version),
-                    "capabilities": { "tools": {} },
+                    "capabilities": shared.server_capabilities,
                     "serverInfo": shared.server_info,
                     "instructions": shared.server_instructions,
                 });
@@ -851,8 +948,22 @@ mod unix_proxy {
                 route_to_daemon(shared, line);
             }
             Some("tools/list") => {
-                let result = serde_json::json!({ "tools": (shared.static_tools)() });
-                write_client_value(&rpc_envelope(msg.get("id"), "result", result));
+                // EXCEEDS TS (which answers statically forever): once the
+                // daemon is Ready, forward — its session serves the
+                // gated/budgeted list. The static answer remains for
+                // Connecting (the cold-start fix is load-bearing) and Failed
+                // (degraded mode has no gating either).
+                let ready = {
+                    let st = shared.state.lock().unwrap();
+                    st.status == DaemonStatus::Ready && st.daemon.is_some()
+                };
+                if ready {
+                    route_to_daemon(shared, line);
+                } else {
+                    let result = serde_json::json!({ "tools": (shared.static_tools)() });
+                    write_client_value(&rpc_envelope(msg.get("id"), "result", result));
+                    shared.state.lock().unwrap().answered_tools_list_statically = true;
+                }
             }
             Some("resources/list") => {
                 // No resources exposed — answer the probe locally so it never
@@ -893,6 +1004,7 @@ mod unix_proxy {
             make_local_executor,
             root: _root,
             negotiate_protocol_version,
+            server_capabilities,
             server_info,
             server_instructions,
             static_tools,
@@ -907,6 +1019,7 @@ mod unix_proxy {
                 client_init_line: None,
                 pending: Vec::new(),
                 pending_bytes: 0,
+                answered_tools_list_statically: false,
                 shutting_down: false,
                 reconnecting: false,
                 executor: None,
@@ -914,6 +1027,7 @@ mod unix_proxy {
             get_daemon_socket: Mutex::new(get_daemon_socket),
             make_local_executor: Mutex::new(make_local_executor),
             negotiate_protocol_version,
+            server_capabilities,
             server_info,
             server_instructions,
             static_tools,

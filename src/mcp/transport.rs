@@ -68,12 +68,22 @@ impl IncomingMessage {
 /// client as `Internal error: <msg>` (TS catch in `handleLine`).
 pub type MessageHandler = Box<dyn FnMut(IncomingMessage) -> std::result::Result<(), String> + Send>;
 
+/// Reader-thread notification interceptor. Returns `true` when the
+/// notification was consumed (it is then NOT queued for the serial
+/// dispatcher). Used for `notifications/cancelled`, which must be observed
+/// *while* a handler is blocking the dispatcher thread — the analog of rmcp
+/// intercepting cancellations in `serve_inner` before task dispatch.
+pub type NotificationInterceptor = Box<dyn Fn(&IncomingMessage) -> bool + Send + Sync>;
+
 /// Generic JSON-RPC transport interface — common surface for stdio and socket
 /// carriers. Anything below the session layer (initialize, tool dispatch,
 /// etc.) talks to this, not to a concrete transport struct.
 pub trait JsonRpcTransport: Send + Sync {
     fn start(&self, handler: MessageHandler);
     fn stop(&self);
+    /// Install a reader-thread interceptor for incoming *notifications*
+    /// (id-less messages). See [`NotificationInterceptor`].
+    fn set_notification_interceptor(&self, interceptor: NotificationInterceptor);
     /// Send a pre-built JSON-RPC response value (TS `send`).
     fn send(&self, response: &Value);
     fn notify(&self, method: &str, params: Option<Value>);
@@ -118,6 +128,9 @@ pub(crate) struct LineRpcCore {
     id_prefix: String,
     /// Writes one line (no trailing newline) to the underlying stream.
     write_line: Box<dyn Fn(&str) + Send + Sync>,
+    /// Optional reader-thread interceptor for incoming notifications
+    /// (`notifications/cancelled` must not queue behind a blocked handler).
+    notification_interceptor: Mutex<Option<NotificationInterceptor>>,
 }
 
 impl LineRpcCore {
@@ -128,7 +141,15 @@ impl LineRpcCore {
             stopped: AtomicBool::new(false),
             id_prefix,
             write_line,
+            notification_interceptor: Mutex::new(None),
         }
+    }
+
+    fn set_notification_interceptor(&self, interceptor: NotificationInterceptor) {
+        *self
+            .notification_interceptor
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(interceptor);
     }
 
     fn write_value(&self, value: &Value) {
@@ -171,6 +192,19 @@ impl LineRpcCore {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&id);
+                // EXCEEDS TS: tell the client we abandoned the request so it
+                // can stop working on it — mirrors rmcp
+                // `RequestHandle::await_response` sending
+                // `notifications/cancelled` with `REQUEST_TIMEOUT_REASON`
+                // ("request timeout") on its own timeout path. Param shape is
+                // rmcp `CancelledNotificationParam` (camelCase `requestId`).
+                self.notify(
+                    "notifications/cancelled",
+                    Some(serde_json::json!({
+                        "requestId": id,
+                        "reason": "request timeout",
+                    })),
+                );
                 Err(format!(
                     "Timed out after {timeout_ms}ms waiting for \"{method}\" response"
                 ))
@@ -285,6 +319,22 @@ impl LineRpcCore {
                 .to_string(),
             params: obj.get("params").cloned(),
         };
+
+        // Notifications may be intercepted on the reader thread so they are
+        // observed even while a handler blocks the serial dispatcher (rmcp
+        // handles `notifications/cancelled` the same way, ahead of dispatch).
+        if !message.is_request() {
+            let interceptor = self
+                .notification_interceptor
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(intercept) = interceptor.as_ref() {
+                if intercept(&message) {
+                    return;
+                }
+            }
+        }
+
         dispatch(message);
     }
 
@@ -490,6 +540,10 @@ impl JsonRpcTransport for StdioTransport {
         self.latch.signal();
     }
 
+    fn set_notification_interceptor(&self, interceptor: NotificationInterceptor) {
+        self.core.set_notification_interceptor(interceptor);
+    }
+
     fn send(&self, response: &Value) {
         self.core.write_value(response);
     }
@@ -690,6 +744,10 @@ mod socket_transport {
             self.latch.signal();
         }
 
+        fn set_notification_interceptor(&self, interceptor: NotificationInterceptor) {
+            self.core.set_notification_interceptor(interceptor);
+        }
+
         fn send(&self, response: &Value) {
             self.core.write_value(response);
         }
@@ -812,6 +870,50 @@ mod tests {
         assert_eq!(
             lines[0],
             r#"{"jsonrpc":"2.0","id":"cg-test-1","method":"roots/list"}"#
+        );
+        // EXCEEDS TS: the timeout path tells the client we abandoned the
+        // request (rmcp REQUEST_TIMEOUT_REASON wire shape).
+        assert_eq!(
+            lines[1],
+            r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"cg-test-1","reason":"request timeout"}}"#
+        );
+    }
+
+    #[test]
+    fn notification_interceptor_consumes_on_the_reader_path() {
+        let (core, _out) = collecting_core();
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        core.set_notification_interceptor(Box::new(move |msg| {
+            if msg.method == "notifications/cancelled" {
+                sink.lock().unwrap().push(msg.method.clone());
+                return true; // consumed — must not dispatch
+            }
+            false
+        }));
+
+        // Consumed notification never reaches dispatch.
+        core.handle_line(
+            r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}"#,
+            &|_msg| panic!("consumed notification must not dispatch"),
+        );
+        assert_eq!(seen.lock().unwrap().as_slice(), ["notifications/cancelled"]);
+
+        // Unconsumed notifications and requests still dispatch normally.
+        let dispatched = Arc::new(Mutex::new(Vec::<String>::new()));
+        let dsink = Arc::clone(&dispatched);
+        let dispatch = move |msg: IncomingMessage| {
+            dsink.lock().unwrap().push(msg.method);
+        };
+        core.handle_line(r#"{"jsonrpc":"2.0","method":"initialized"}"#, &dispatch);
+        // Requests bypass the interceptor entirely, even with a matching method.
+        core.handle_line(
+            r#"{"jsonrpc":"2.0","id":7,"method":"notifications/cancelled"}"#,
+            &dispatch,
+        );
+        assert_eq!(
+            dispatched.lock().unwrap().as_slice(),
+            ["initialized", "notifications/cancelled"]
         );
     }
 
