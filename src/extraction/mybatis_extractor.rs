@@ -167,6 +167,9 @@ impl<'a> MyBatisExtractor<'a> {
         );
         node.start_column = 0;
         node.end_column = lines.last().map(|l| l.len()).unwrap_or(0) as u32;
+        // The file node spans the whole source by definition.
+        node.start_byte = Some(0);
+        node.end_byte = Some(self.source.len() as u32);
         node.updated_at = now_ms();
 
         self.nodes.push(node);

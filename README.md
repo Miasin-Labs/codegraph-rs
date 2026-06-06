@@ -77,24 +77,78 @@ functions are library API (`codegraph::analyze`). The MCP tool surface is
 deliberately untouched.
 
 Every subcommand prints human output by default and a stable camelCase JSON
-shape with `--json`:
+shape with `--json` (wrapped in a `{"schemaVersion", "kind", "data"}`
+envelope). The full command table:
 
 ```bash
-codegraph analyze query '<dsl>'               # pipe-based graph query DSL (below)
-codegraph analyze complexity [--top N]        # per-function cyclomatic/cognitive/
-                                              # nesting/Halstead/maintainability
+# Query & graph structure
+codegraph analyze query '<dsl>'               # pipe-based graph query DSL (below);
+                                              # --explain plan, --why provenance,
+                                              # --lcov enables `untested`
+codegraph analyze stats [--estimate-reachability]  # node/edge/kind counts; exact or
+                                              # HyperLogLog reachability profiling
 codegraph analyze communities                 # Louvain call-graph communities
-codegraph analyze dominators <symbol>         # immediate dominators of everything
-                                              # reachable from an entry symbol
-codegraph analyze slice <symbol> [--direction fwd|bwd]  # call-graph program slice
 codegraph analyze cycles                      # SCCs: mutual recursion + dependency
                                               # cycles, with break suggestions
+codegraph analyze dominators <symbol>         # immediate dominators of everything
+                                              # reachable from an entry symbol
+codegraph analyze centrality [--top N]        # PageRank: most depended-upon symbols
+codegraph analyze critical                    # articulation nodes + bridge edges
+                                              # (single points of failure)
+codegraph analyze export [-s <symbol> -d N]   # Graphviz DOT export (whole graph or
+                                              # a symbol's neighborhood)
+
+# Flow & change analysis
+codegraph analyze slice <symbol> [--direction fwd|bwd] [--value-level]
+                                              # program slice: call-graph hops, or
+                                              # value-level over dataflow IR on
+                                              # schema-v5 indexes (byte offsets)
+codegraph analyze taint <source> <sink> [--value-level]
+                                              # source → sink paths, each hop
+                                              # annotated; --suggest ranks candidate
+                                              # pairs by identifier naming
 codegraph analyze impact <symbol> [-s <sig>]  # signature-edit cascade: direct call
                                               # sites to update, grouped by file
                                               # (distinct from `codegraph impact`,
                                               # which is a BFS blast radius)
-codegraph analyze taint <source> <sink>       # call-graph paths source → sink,
-                                              # each hop annotated with edge kind
+codegraph analyze validate <symbol> --params-before N --params-after M
+                                              # simulate an arity change before
+                                              # making it: per-caller verdicts
+codegraph analyze diff [--base <snapshot|auto>]
+                                              # working tree vs the last cached
+                                              # snapshot: nodes/edges added/removed/
+                                              # changed, complexity deltas for
+                                              # changed functions, newly-introduced
+                                              # cycles, impact set of the delta
+
+# Per-function source analysis (re-parse anchor pattern)
+codegraph analyze complexity [--top N]        # cyclomatic/cognitive/nesting/
+                                              # Halstead/maintainability
+codegraph analyze cfg <symbol>                # control-flow graph: basic blocks +
+                                              # typed edges
+codegraph analyze dataflow <symbol>           # params, returns, assignments,
+                                              # argument flows, mutations
+
+# Types & dispatch
+codegraph analyze types <symbol>              # concrete types that can flow
+                                              # into/out of a function
+codegraph analyze traits [type]               # trait/interface hierarchies,
+                                              # dispatch calls, type clusters
+codegraph analyze generics [symbol]           # generic definitions + callsite
+                                              # instantiations
+codegraph analyze boundaries                  # cross-language boundaries: HTTP
+                                              # routes, FFI and WASM exports
+
+# History & coverage
+codegraph analyze co-change [symbol]          # temporal coupling mined from git log
+codegraph analyze coverage --lcov <path> [--untested]
+                                              # map LCOV onto functions; also
+                                              # enables the DSL `untested` operator
+
+# Introspection
+codegraph analyze capabilities                # engine capability toggles + their
+                                              # CODEGRAPH_ANALYSIS_CAP_* env vars
+codegraph analyze schema <kind>               # JSON Schema for an engine payload
 ```
 
 ### Query DSL (`codegraph analyze query`)
@@ -124,6 +178,15 @@ invocations load the snapshot (a dim `(cached graph)` notice in human output;
 `--json` stays pure JSON), and any re-index that changes the store invalidates
 it automatically. `--no-cache` forces a rebuild; cache failures always degrade
 to a silent rebuild, never wrong answers.
+
+One **previous generation** is kept: a refresh that changes the fingerprint
+first rotates the old snapshot to `*.prev`. That rotated generation is what
+`codegraph analyze diff --base auto` compares the working tree against
+(edit → re-index → `analyze diff` shows exactly what changed). A diff run
+also annotates the current snapshot with per-function complexity
+(`complexity.json`), so the *next* diff reports full before/after complexity
+deltas; with no base snapshot cached, `analyze diff` says so honestly and
+exits 0.
 
 ### Environment variables (all native — no `JFC_*` compatibility)
 
@@ -158,21 +221,24 @@ codegraph context "how does the daemon handshake work" --strategy analysis --bud
 **What runs at which fidelity** (the reports state this themselves rather
 than over-claiming):
 
-- **All indexed languages** — `communities`, `dominators`, `cycles`, `impact`,
-  and the call-graph–granularity `slice`/`taint` are pure graph algorithms
-  over the bridged index, so they work for every language the indexer
-  supports.
-- **12 languages** — `complexity` re-parses on-disk sources with the compiled
-  tree-sitter grammars and runs the engine's metrics; rules exist for Rust,
-  TypeScript/JavaScript, Python, Go, Java, C, C++, C#, PHP, Kotlin, Swift,
-  and Ruby. Functions in other languages are counted in the report's
-  `skipped` breakdown.
-- **Not available over the bridge** — value-level (statement-granularity)
-  slicing and sanitizer-aware taint require the engine's per-function
-  IR/CFG/dataflow, which only its own **Rust source adapter** produces
-  (`analysis/ADAPTER_PARITY.md`). The SQLite bridge carries no IR, so
-  `slice` and `taint` run over a call-graph dataflow oracle and say so in
-  their `note` field — function-level hops along call edges, never
+- **All indexed languages** — `communities`, `dominators`, `cycles`,
+  `impact`, `validate`, `centrality`, `critical`, `export`, `stats`,
+  `traits`, `diff`, `co-change`, `coverage`, and the call-graph–granularity
+  `slice`/`taint` are pure graph algorithms over the bridged index, so they
+  work for every language the indexer supports.
+- **12 languages** — `complexity` (and `diff`'s complexity deltas) re-parses
+  on-disk sources with the compiled tree-sitter grammars and runs the
+  engine's metrics; rules exist for Rust, TypeScript/JavaScript, Python, Go,
+  Java, C, C++, C#, PHP, Kotlin, Swift, and Ruby. Functions in other
+  languages are counted in the report's `skipped` breakdown.
+- **Value level needs IR** — `slice`/`taint --value-level` lower the
+  engine's per-function dataflow IR by re-parsing on-disk sources anchored
+  at the indexed byte offsets (schema-v5 indexes; re-index pre-v5 projects
+  to enable). IR lowering covers Rust, TypeScript/JavaScript, Python, and
+  Go; `cfg`/`dataflow` use the same anchor pattern with their own rule
+  tables. Without `--value-level` (or on pre-v5 indexes), `slice` and
+  `taint` run over a call-graph dataflow oracle and say so in their
+  `note`/`granularity` fields — function-level hops along call edges, never
   pretended value tracking.
 
 ## Key architectural deviations from the TS implementation

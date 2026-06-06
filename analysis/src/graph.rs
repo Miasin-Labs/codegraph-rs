@@ -489,15 +489,17 @@ impl CodeGraph {
         let Some(&idx) = self.index_map.get(id) else {
             return false;
         };
-        // Snapshot old metadata keys for index diff.
-        let old_keys: Vec<String> = self.graph[idx].metadata.keys().cloned().collect();
+        // Snapshot the node *before* the closure runs so index eviction sees
+        // the keys that were originally inserted — evicting with the
+        // post-mutation node would leave a stale metadata-key bucket behind
+        // for any key the closure removed.
+        let old = self.graph[idx].clone();
         f(&mut self.graph[idx].metadata);
         let rev = self.bump_revision();
         self.graph[idx].last_modified_revision = rev;
         // Rebuild index entries for this node (cheap: one node).
-        self.indices.remove_node(&self.graph[idx]);
+        self.indices.remove_node(&old);
         self.indices.insert_node(&self.graph[idx]);
-        let _ = old_keys; // suppress unused warning
         true
     }
 
@@ -1174,5 +1176,47 @@ mod tests {
         let module_hits = graph.nodes_in_module("crate::widgets");
         assert!(module_hits.contains(&s));
         assert!(module_hits.contains(&f));
+    }
+
+    // Robust: `update_node_metadata` keeps the metadata-key index in
+    // lockstep for keys the closure ADDS and — the regression this test
+    // pins — keys the closure REMOVES (eviction must use the pre-mutation
+    // snapshot, or the removed key's bucket retains a stale entry).
+    #[test]
+    fn update_node_metadata_evicts_removed_keys_robust() {
+        let mut graph = CodeGraph::new();
+        let mut node = make_node("foo", NodeKind::Function);
+        node.metadata
+            .insert("stale_key".to_string(), "v".to_string());
+        let id = graph.add_node(node);
+        assert_eq!(graph.nodes_with_metadata_key("stale_key").count(), 1);
+
+        let rev_before = graph.current_revision();
+        let ok = graph.update_node_metadata(&id, |meta| {
+            meta.remove("stale_key");
+            meta.insert("fresh_key".to_string(), "w".to_string());
+        });
+        assert!(ok);
+
+        // Removed key fully evicted; added key indexed; revision bumped.
+        assert_eq!(graph.nodes_with_metadata_key("stale_key").count(), 0);
+        assert_eq!(
+            graph
+                .nodes_with_metadata_key("fresh_key")
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![id.clone()]
+        );
+        assert!(graph.current_revision() > rev_before);
+        assert!(
+            graph.get_node(&id).unwrap().last_modified_revision > rev_before,
+            "metadata mutation must stamp last_modified_revision"
+        );
+
+        // Missing node: returns false, no revision bump.
+        let rev = graph.current_revision();
+        let ghost = NodeId::new("src/lib.rs", "crate::ghost", NodeKind::Function);
+        assert!(!graph.update_node_metadata(&ghost, |_| {}));
+        assert_eq!(graph.current_revision(), rev);
     }
 }

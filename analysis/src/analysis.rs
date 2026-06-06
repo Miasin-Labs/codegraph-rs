@@ -118,35 +118,141 @@ pub struct DominatorChain {
     pub dominators: Vec<NodeId>,
 }
 
+/// Whole-graph dominator tree keyed by [`NodeId`] — **compute once, query
+/// many**. This is the batch counterpart to [`dominator_chain`], which
+/// rebuilds the tree on every call: hosts reporting dominators for N nodes
+/// should build one `DominatorTree` and call [`DominatorTree::chain`] /
+/// [`DominatorTree::immediate_dominator`] per node, instead of paying the
+/// Cooper-Harvey-Kennedy pass N times.
+///
+/// The tree is a snapshot: it does not observe graph mutations made after
+/// [`dominator_tree`] returns. Nodes unreachable from the root are absent
+/// (no immediate dominator, empty chain) — same convention as
+/// [`crate::dominators::Dominators`].
+#[derive(Debug, Clone)]
+pub struct DominatorTree {
+    root: NodeId,
+    /// `idom[node] = immediate dominator`. The root is intentionally absent
+    /// (it has no strict dominator), as is every unreachable node.
+    idom: HashMap<NodeId, NodeId>,
+}
+
+impl DominatorTree {
+    /// The entry node this tree was computed from.
+    pub fn root(&self) -> &NodeId {
+        &self.root
+    }
+
+    /// Immediate dominator of `node`, or `None` if `node` is the root or
+    /// unreachable from it.
+    pub fn immediate_dominator(&self, node: &NodeId) -> Option<&NodeId> {
+        self.idom.get(node)
+    }
+
+    /// Dominator chain of `node`, ordered from immediate dominator outward
+    /// to the root (the same ordering [`dominator_chain`] reports). Empty
+    /// for the root and for unreachable nodes; `node` itself is excluded.
+    pub fn chain(&self, node: &NodeId) -> Vec<NodeId> {
+        let mut chain = Vec::new();
+        let mut cursor = self.idom.get(node);
+        while let Some(dom) = cursor {
+            chain.push(dom.clone());
+            cursor = self.idom.get(dom);
+        }
+        chain
+    }
+
+    /// [`DominatorChain`] report for `node` — the batch-friendly equivalent
+    /// of [`dominator_chain`] over a pre-built tree.
+    pub fn chain_report(&self, node: &NodeId) -> DominatorChain {
+        DominatorChain {
+            target: node.clone(),
+            dominators: self.chain(node),
+        }
+    }
+
+    /// True iff `a` dominates `b` (every path from the root to `b` passes
+    /// through `a`). Reflexive: a node dominates itself.
+    pub fn dominates(&self, a: &NodeId, b: &NodeId) -> bool {
+        if a == b {
+            return true;
+        }
+        let mut cursor = self.idom.get(b);
+        while let Some(dom) = cursor {
+            if dom == a {
+                return true;
+            }
+            cursor = self.idom.get(dom);
+        }
+        false
+    }
+
+    /// Iterate every `(node, immediate_dominator)` pair — the whole tree in
+    /// one pass, for hosts that want to render or serialize it. The root and
+    /// unreachable nodes have no entry. Iteration order is unspecified.
+    pub fn idoms(&self) -> impl Iterator<Item = (&NodeId, &NodeId)> + '_ {
+        self.idom.iter()
+    }
+
+    /// Number of nodes that have an immediate dominator (i.e. reachable
+    /// nodes excluding the root).
+    pub fn len(&self) -> usize {
+        self.idom.len()
+    }
+
+    /// True when no node other than the root is reachable.
+    pub fn is_empty(&self) -> bool {
+        self.idom.is_empty()
+    }
+}
+
+/// Compute the dominator tree for the graph rooted at `root`, keyed by
+/// [`NodeId`]. Returns `None` if `root` is not in the graph.
+///
+/// One Cooper-Harvey-Kennedy pass (`petgraph::algo::dominators::simple_fast`)
+/// plus an O(V) translation from internal indices to stable [`NodeId`]s —
+/// build it once and answer any number of chain / dominates queries.
+pub fn dominator_tree(graph: &CodeGraph, root: &NodeId) -> Option<DominatorTree> {
+    let root_idx = graph.resolve(root)?;
+    let doms = dominators_simple_fast(graph.inner(), root_idx);
+
+    let mut idom = HashMap::new();
+    for idx in graph.inner().node_indices() {
+        if idx == root_idx {
+            continue;
+        }
+        // `immediate_dominator` is `None` for unreachable nodes.
+        if let Some(dom_idx) = doms.immediate_dominator(idx) {
+            if let (Some(node), Some(dom)) = (graph.node_id_for(idx), graph.node_id_for(dom_idx)) {
+                idom.insert(node.clone(), dom.clone());
+            }
+        }
+    }
+
+    Some(DominatorTree {
+        root: root.clone(),
+        idom,
+    })
+}
+
 /// Compute the dominator tree for the graph rooted at `root` and return
 /// the dominator chain for `target`.
 ///
 /// The dominator of a node X is the set of nodes that must be traversed
 /// on every path from root to X. This powers the `preconditions` DSL
 /// operator — "what must have been called before reaching this function?"
+///
+/// **One-shot convenience**: this rebuilds the dominator tree on every
+/// call. When reporting chains for many targets, build the tree once with
+/// [`dominator_tree`] and use [`DominatorTree::chain_report`] per target.
 pub fn dominator_chain(
     graph: &CodeGraph,
     root: &NodeId,
     target: &NodeId,
 ) -> Option<DominatorChain> {
-    let root_idx = graph.resolve(root)?;
-    let target_idx = graph.resolve(target)?;
-
-    let doms = dominators_simple_fast(graph.inner(), root_idx);
-
-    let mut chain = Vec::new();
-    let mut current = doms.immediate_dominator(target_idx);
-    while let Some(dom) = current {
-        if let Some(id) = graph.node_id_for(dom) {
-            chain.push(id.clone());
-        }
-        current = doms.immediate_dominator(dom);
-    }
-
-    Some(DominatorChain {
-        target: target.clone(),
-        dominators: chain,
-    })
+    graph.resolve(target)?;
+    let tree = dominator_tree(graph, root)?;
+    Some(tree.chain_report(target))
 }
 
 // ─── Topological Sort ────────────────────────────────────────────────────────
@@ -2913,5 +3019,112 @@ mod tests {
             .find(|s| s.node_id == id)
             .expect("public fn falls through to PublicApi");
         assert_eq!(s.kind, EntrypointKind::PublicApi);
+    }
+
+    // ── DominatorTree: batch dominator queries over one computation ──────
+
+    /// Fixture: main → a → b, main → c, b ←also— c (diamond-ish), plus an
+    /// orphan disconnected from the root.
+    ///
+    /// ```text
+    ///   main ──→ a ──→ b
+    ///     └──→ c ──────┘     orphan
+    /// ```
+    fn dominator_fixture() -> (CodeGraph, [NodeId; 5]) {
+        let mut g = CodeGraph::new();
+        let main_n = g.add_node(node("main"));
+        let a = g.add_node(node("a"));
+        let b = g.add_node(node("b"));
+        let c = g.add_node(node("c"));
+        let orphan = g.add_node(node("orphan"));
+        g.add_edge(&main_n, &a, edge()).unwrap();
+        g.add_edge(&a, &b, edge()).unwrap();
+        g.add_edge(&main_n, &c, edge()).unwrap();
+        g.add_edge(&c, &b, edge()).unwrap();
+        (g, [main_n, a, b, c, orphan])
+    }
+
+    // Normal: one tree answers every chain — and each chain matches what
+    // the per-node `dominator_chain` recompute would have produced.
+    #[test]
+    fn dominator_tree_batch_matches_per_node_chains_normal() {
+        let (g, [main_n, a, b, c, orphan]) = dominator_fixture();
+        let tree = dominator_tree(&g, &main_n).expect("root exists");
+
+        // b is reached via a AND via c → only main dominates it.
+        assert_eq!(tree.chain(&b), vec![main_n.clone()]);
+        assert_eq!(tree.immediate_dominator(&a), Some(&main_n));
+        assert_eq!(tree.immediate_dominator(&main_n), None, "root has no idom");
+        assert_eq!(tree.root(), &main_n);
+
+        // Equivalence with the one-shot API for every node.
+        for target in [&main_n, &a, &b, &c, &orphan] {
+            let one_shot = dominator_chain(&g, &main_n, target).unwrap();
+            assert_eq!(
+                tree.chain_report(target).dominators,
+                one_shot.dominators,
+                "tree and per-node chains must agree for {target:?}"
+            );
+        }
+
+        // Batch access: idoms() covers exactly the reachable non-root nodes.
+        assert_eq!(tree.len(), 3);
+        assert!(!tree.is_empty());
+        let pairs: HashMap<&NodeId, &NodeId> = tree.idoms().collect();
+        assert_eq!(pairs.get(&a), Some(&&main_n));
+        assert_eq!(pairs.get(&b), Some(&&main_n));
+        assert!(!pairs.contains_key(&orphan));
+    }
+
+    // Robust: dominates() semantics (reflexive, transitive, branch-aware),
+    // unreachable nodes, and missing roots.
+    #[test]
+    fn dominator_tree_dominates_and_boundaries_robust() {
+        let (g, [main_n, a, b, _c, orphan]) = dominator_fixture();
+        let tree = dominator_tree(&g, &main_n).unwrap();
+
+        assert!(tree.dominates(&main_n, &b));
+        assert!(tree.dominates(&a, &a), "reflexive");
+        assert!(
+            !tree.dominates(&a, &b),
+            "b is also reachable via c, so a must not dominate it"
+        );
+
+        // Unreachable: empty chain, no idom, not dominated by the root.
+        assert_eq!(tree.chain(&orphan), Vec::<NodeId>::new());
+        assert_eq!(tree.immediate_dominator(&orphan), None);
+        assert!(!tree.dominates(&main_n, &orphan));
+
+        // Missing root → None (and the one-shot agrees).
+        let ghost = NodeId::new("test.rs", "crate::ghost", NodeKind::Function);
+        assert!(dominator_tree(&g, &ghost).is_none());
+        assert!(dominator_chain(&g, &ghost, &a).is_none());
+        assert!(
+            dominator_chain(&g, &main_n, &ghost).is_none(),
+            "missing target must stay None, not an empty chain"
+        );
+    }
+
+    // Robust: a linear chain exercises multi-hop chains and the snapshot
+    // property (tree built before a mutation keeps answering from the
+    // pre-mutation graph).
+    #[test]
+    fn dominator_tree_linear_chain_and_snapshot_robust() {
+        let mut g = CodeGraph::new();
+        let r = g.add_node(node("r"));
+        let x = g.add_node(node("x"));
+        let y = g.add_node(node("y"));
+        g.add_edge(&r, &x, edge()).unwrap();
+        g.add_edge(&x, &y, edge()).unwrap();
+
+        let tree = dominator_tree(&g, &r).unwrap();
+        assert_eq!(tree.chain(&y), vec![x.clone(), r.clone()]);
+
+        // Mutate after building: add a bypass r → y. The snapshot still
+        // reports the old chain; a rebuilt tree sees the new structure.
+        g.add_edge(&r, &y, edge()).unwrap();
+        assert_eq!(tree.chain(&y), vec![x.clone(), r.clone()]);
+        let rebuilt = dominator_tree(&g, &r).unwrap();
+        assert_eq!(rebuilt.chain(&y), vec![r.clone()]);
     }
 }

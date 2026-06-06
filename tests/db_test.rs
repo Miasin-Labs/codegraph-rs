@@ -252,8 +252,8 @@ fn gets_schema_version() {
     let (_dir, db, _q) = setup();
     let version = db.get_schema_version().unwrap();
     assert!(version.is_some());
-    assert_eq!(version.unwrap().version, 4);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 4);
+    assert_eq!(version.unwrap().version, 5);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 5);
 }
 
 #[test]
@@ -654,7 +654,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 4);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 5);
 
     let handle = db.get_db().unwrap();
     // Migration 2 added columns + project_metadata
@@ -694,7 +694,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     // History records each applied migration
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5]);
 }
 
 #[test]
@@ -705,13 +705,106 @@ fn open_does_not_rerun_migrations_on_current_database() {
         let _db = DatabaseConnection::initialize(&db_path).unwrap();
     }
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 4);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 5);
     let handle = db.get_db().unwrap();
     assert!(!codegraph::db::needs_migration(&handle));
-    // initialize() recorded versions 1 + 4 only; open() added nothing.
+    // initialize() recorded versions 1 + 5 only; open() added nothing.
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 4]);
+    assert_eq!(versions, vec![1, 5]);
+}
+
+#[test]
+fn open_migrates_v4_database_adding_byte_offset_columns() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("v4.db");
+
+    // Hand-build a v4-shaped database: the full pre-v5 schema (no
+    // start_byte/end_byte on nodes) with versions 1–4 recorded, plus one
+    // pre-existing node row.
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_versions (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, description TEXT);
+             INSERT INTO schema_versions VALUES (1, 0, 'Initial schema');
+             INSERT INTO schema_versions VALUES (2, 0, 'metadata/provenance/refs');
+             INSERT INTO schema_versions VALUES (3, 0, 'lower(name) index');
+             INSERT INTO schema_versions VALUES (4, 0, 'drop narrow edge indexes');
+             CREATE TABLE nodes (
+               id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,
+               qualified_name TEXT NOT NULL, file_path TEXT NOT NULL,
+               language TEXT NOT NULL, start_line INTEGER NOT NULL,
+               end_line INTEGER NOT NULL, start_column INTEGER NOT NULL,
+               end_column INTEGER NOT NULL, docstring TEXT, signature TEXT,
+               visibility TEXT, is_exported INTEGER DEFAULT 0,
+               is_async INTEGER DEFAULT 0, is_static INTEGER DEFAULT 0,
+               is_abstract INTEGER DEFAULT 0, decorators TEXT,
+               type_parameters TEXT, updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE edges (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+               target TEXT NOT NULL, kind TEXT NOT NULL, metadata TEXT,
+               line INTEGER, col INTEGER, provenance TEXT DEFAULT NULL
+             );
+             CREATE TABLE files (
+               path TEXT PRIMARY KEY, content_hash TEXT NOT NULL,
+               language TEXT NOT NULL, size INTEGER NOT NULL,
+               modified_at INTEGER NOT NULL, indexed_at INTEGER NOT NULL,
+               node_count INTEGER DEFAULT 0, errors TEXT
+             );
+             CREATE TABLE unresolved_refs (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, from_node_id TEXT NOT NULL,
+               reference_name TEXT NOT NULL, reference_kind TEXT NOT NULL,
+               line INTEGER NOT NULL, col INTEGER NOT NULL, candidates TEXT,
+               file_path TEXT NOT NULL DEFAULT '', language TEXT NOT NULL DEFAULT 'unknown'
+             );
+             INSERT INTO nodes (id, kind, name, qualified_name, file_path, language,
+                                start_line, end_line, start_column, end_column, updated_at)
+             VALUES ('old1', 'function', 'legacy', 'a.ts::legacy', 'a.ts', 'typescript',
+                     1, 3, 0, 1, 0);",
+        )
+        .unwrap();
+    }
+
+    let db = DatabaseConnection::open(&db_path).unwrap();
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 5);
+    let handle = db.get_db().unwrap();
+
+    // v5 added the nullable byte-offset columns.
+    let node_cols: Vec<String> = {
+        let mut stmt = handle
+            .conn()
+            .prepare("SELECT name FROM pragma_table_info('nodes')")
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    assert!(node_cols.iter().any(|c| c == "start_byte"));
+    assert!(node_cols.iter().any(|c| c == "end_byte"));
+
+    // The pre-existing row was backfilled with NULL and reads back gracefully.
+    let q = QueryBuilder::new(handle.clone());
+    let legacy = q.get_node_by_id("old1").unwrap().expect("legacy row");
+    assert_eq!(legacy.start_byte, None);
+    assert_eq!(legacy.end_byte, None);
+    assert_eq!(legacy.byte_range(), None);
+
+    // New writes round-trip byte offsets through the migrated database.
+    let mut node = make_node("new1", "fresh");
+    node.start_byte = Some(10);
+    node.end_byte = Some(42);
+    q.insert_node(&node).unwrap();
+    q.clear_cache();
+    let fresh = q.get_node_by_id("new1").unwrap().expect("fresh row");
+    assert_eq!(fresh.start_byte, Some(10));
+    assert_eq!(fresh.end_byte, Some(42));
+    assert_eq!(fresh.byte_range(), Some(10..42));
+
+    let history = codegraph::db::get_migration_history(&handle).unwrap();
+    let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
+    assert_eq!(versions, vec![1, 2, 3, 4, 5]);
 }
 
 // =============================================================================

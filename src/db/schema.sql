@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS nodes (
     end_line INTEGER NOT NULL,
     start_column INTEGER NOT NULL,
     end_column INTEGER NOT NULL,
+    -- Byte offsets of the symbol in its source file (tree-sitter
+    -- start_byte()/end_byte()). Nullable: rows indexed before schema v5 and
+    -- extractors that don't track byte offsets store NULL (migration v5
+    -- backfills NULL; offsets appear on re-index).
+    start_byte INTEGER,
+    end_byte INTEGER,
     docstring TEXT,
     signature TEXT,
     visibility TEXT,

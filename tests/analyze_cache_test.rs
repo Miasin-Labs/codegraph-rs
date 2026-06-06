@@ -59,7 +59,9 @@ fn stderr_str(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
 }
 
-/// Run an analyze subcommand with `--json` and parse stdout.
+/// Run an analyze subcommand with `--json` and parse stdout. The payload is
+/// the versioned envelope (`{"schemaVersion", "kind", "data"}`); cache tests
+/// compare whole envelopes and read report fields under `data`.
 fn run_analyze_json(cwd: &Path, args: &[&str]) -> serde_json::Value {
     let mut full: Vec<&str> = vec!["analyze"];
     full.extend_from_slice(args);
@@ -181,7 +183,7 @@ fn first_run_creates_cache_and_second_run_hits_with_identical_output() {
     // `slice` output is fully sorted by the report, so it is byte-stable
     // across processes and a safe equality target.
     let first = run_analyze_json(&root, &["slice", "main"]);
-    assert_eq!(first["size"].as_u64(), Some(2));
+    assert_eq!(first["data"]["size"].as_u64(), Some(2));
     assert_cache_files_exist(&cache_dir(&root));
 
     // Second run, human output: served from the snapshot, says so once.
@@ -264,7 +266,11 @@ fn reindex_that_changes_the_store_invalidates_the_cache() {
     init_fixture(&root);
 
     let before = run_analyze_json(&root, &["cycles"]);
-    assert_eq!(before["cycleCount"].as_u64(), Some(1), "ping/pong only");
+    assert_eq!(
+        before["data"]["cycleCount"].as_u64(),
+        Some(1),
+        "ping/pong only"
+    );
 
     // Warm hit to prove the cache was valid before the re-index.
     let out = run_cli(&root, &["analyze", "cycles"]);
@@ -303,7 +309,7 @@ export function tock(n: number): number {
 
     let after = run_analyze_json(&root, &["cycles"]);
     assert_eq!(
-        after["cycleCount"].as_u64(),
+        after["data"]["cycleCount"].as_u64(),
         Some(2),
         "rebuild and the refreshed cache both see ping/pong + tick/tock: {after}"
     );
@@ -341,7 +347,7 @@ fn no_cache_flag_bypasses_a_valid_snapshot() {
 
     let rebuilt = run_analyze_json(&root, &["cycles", "--no-cache"]);
     assert_eq!(
-        warm["cycleCount"], rebuilt["cycleCount"],
+        warm["data"]["cycleCount"], rebuilt["data"]["cycleCount"],
         "bypass changes the code path, not the answer"
     );
 

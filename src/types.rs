@@ -388,6 +388,18 @@ pub struct Node {
     pub start_column: u32,
     /// Ending column (0-indexed)
     pub end_column: u32,
+    /// Starting byte offset in the source file (tree-sitter `start_byte()`).
+    ///
+    /// `None` for rows indexed before schema v5 and for extractors that do
+    /// not track byte offsets (some standalone non-tree-sitter extractors,
+    /// synthetic nodes such as routes). `skip_serializing_if` keeps the JSON
+    /// wire shape unchanged when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_byte: Option<u32>,
+    /// Ending byte offset (exclusive) in the source file (tree-sitter
+    /// `end_byte()`). Present iff [`Self::start_byte`] is present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_byte: Option<u32>,
     /// Documentation string if present
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docstring: Option<String>,
@@ -443,6 +455,8 @@ impl Node {
             end_line,
             start_column: 0,
             end_column: 0,
+            start_byte: None,
+            end_byte: None,
             docstring: None,
             signature: None,
             visibility: None,
@@ -453,6 +467,16 @@ impl Node {
             decorators: None,
             type_parameters: None,
             updated_at: 0,
+        }
+    }
+
+    /// The node's byte range in its source file, when both offsets are
+    /// known and well-formed (`start <= end`). `None` for rows indexed
+    /// before schema v5 or by extractors that don't track byte offsets.
+    pub fn byte_range(&self) -> Option<std::ops::Range<usize>> {
+        match (self.start_byte, self.end_byte) {
+            (Some(s), Some(e)) if s <= e => Some(s as usize..e as usize),
+            _ => None,
         }
     }
 }

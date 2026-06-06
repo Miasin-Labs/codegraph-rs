@@ -31,7 +31,7 @@ use crate::graph::CodeGraph;
 use crate::nodes::NodeId;
 
 /// Matches a single edge by its label.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EdgeMatcher {
     /// Matches edges of the given kind, comparing by *discriminant* — so
     /// `Exactly(EdgeKind::UnresolvedCall(String::new()))` matches any
@@ -62,7 +62,7 @@ pub enum Rep {
 }
 
 /// One atom of a label-constraint pattern: an edge matcher with a repetition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatternAtom {
     pub matcher: EdgeMatcher,
     pub rep: Rep,
@@ -96,6 +96,123 @@ impl PatternAtom {
             matcher: EdgeMatcher::Any,
             rep,
         }
+    }
+}
+
+/// Error from [`parse_pattern`]: the offending atom text plus a reason.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("invalid pattern atom '{atom}': {reason}")]
+pub struct PatternParseError {
+    /// The whitespace-delimited token that failed to parse.
+    pub atom: String,
+    /// Human-readable failure reason (unknown label, dangling repetition…).
+    pub reason: String,
+}
+
+/// Parse a textual label-constraint pattern into [`PatternAtom`]s.
+///
+/// Syntax: whitespace-separated atoms, each an edge-kind label with an
+/// optional trailing repetition suffix:
+///
+/// - `Calls` — exactly one `Calls` edge ([`Rep::One`])
+/// - `Calls+` — one or more ([`Rep::Plus`])
+/// - `Calls*` — zero or more ([`Rep::Star`])
+/// - `any` / `any+` / `any*` — wildcard label ([`EdgeMatcher::Any`])
+///
+/// Valid labels mirror [`EdgeKind`]'s unit-payload spelling: `Calls`,
+/// `UnresolvedCall`, `UsesType`, `References`, `Contains`, `Implements`,
+/// `ExternalCall`, `Extends`, `Returns`, `TypeOf` (payload-carrying kinds
+/// match by discriminant — see [`EdgeMatcher::Exactly`]). An empty / all-
+/// whitespace input parses to the empty pattern, which matches only the
+/// zero-length path (the source itself).
+///
+/// This is the string form consumed by the DSL's `reachable via "<pattern>"`
+/// operator and available to hosts building CLI surfaces (e.g.
+/// `analyze reachable --edge-pattern`).
+pub fn parse_pattern(input: &str) -> Result<Vec<PatternAtom>, PatternParseError> {
+    let mut atoms = Vec::new();
+    for raw in input.split_whitespace() {
+        let (label, rep) = match raw.as_bytes().last() {
+            Some(b'*') => (&raw[..raw.len() - 1], Rep::Star),
+            Some(b'+') => (&raw[..raw.len() - 1], Rep::Plus),
+            _ => (raw, Rep::One),
+        };
+        if label.is_empty() {
+            return Err(PatternParseError {
+                atom: raw.to_string(),
+                reason: "repetition suffix without an edge label".to_string(),
+            });
+        }
+        let matcher = if label.eq_ignore_ascii_case("any") {
+            EdgeMatcher::Any
+        } else {
+            EdgeMatcher::Exactly(
+                edge_kind_from_label(label).ok_or_else(|| PatternParseError {
+                    atom: raw.to_string(),
+                    reason: format!(
+                        "unknown edge label '{label}'. Valid: Calls, UnresolvedCall, UsesType, \
+                     References, Contains, Implements, ExternalCall, Extends, Returns, TypeOf, any"
+                    ),
+                })?,
+            )
+        };
+        atoms.push(PatternAtom { matcher, rep });
+    }
+    Ok(atoms)
+}
+
+/// Render a pattern back to the textual form [`parse_pattern`] accepts.
+/// Round-trips: `parse_pattern(&format_pattern(&p)) == Ok(p)`.
+pub fn format_pattern(pattern: &[PatternAtom]) -> String {
+    pattern
+        .iter()
+        .map(|atom| {
+            let label = match &atom.matcher {
+                EdgeMatcher::Any => "any",
+                EdgeMatcher::Exactly(kind) => edge_kind_label(kind),
+            };
+            let suffix = match atom.rep {
+                Rep::One => "",
+                Rep::Star => "*",
+                Rep::Plus => "+",
+            };
+            format!("{label}{suffix}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Edge-kind label → [`EdgeKind`] (payload-carrying kinds get empty
+/// payloads; matching is by discriminant). Inverse of [`edge_kind_label`].
+fn edge_kind_from_label(label: &str) -> Option<EdgeKind> {
+    match label {
+        "Calls" => Some(EdgeKind::Calls),
+        "UnresolvedCall" => Some(EdgeKind::UnresolvedCall(String::new())),
+        "UsesType" => Some(EdgeKind::UsesType),
+        "References" => Some(EdgeKind::References),
+        "Contains" => Some(EdgeKind::Contains),
+        "Implements" => Some(EdgeKind::Implements),
+        "ExternalCall" => Some(EdgeKind::ExternalCall(String::new(), String::new())),
+        "Extends" => Some(EdgeKind::Extends),
+        "Returns" => Some(EdgeKind::Returns),
+        "TypeOf" => Some(EdgeKind::TypeOf),
+        _ => None,
+    }
+}
+
+/// [`EdgeKind`] → its pattern label. Inverse of [`edge_kind_from_label`].
+fn edge_kind_label(kind: &EdgeKind) -> &'static str {
+    match kind {
+        EdgeKind::Calls => "Calls",
+        EdgeKind::UnresolvedCall(_) => "UnresolvedCall",
+        EdgeKind::UsesType => "UsesType",
+        EdgeKind::References => "References",
+        EdgeKind::Contains => "Contains",
+        EdgeKind::Implements => "Implements",
+        EdgeKind::ExternalCall(_, _) => "ExternalCall",
+        EdgeKind::Extends => "Extends",
+        EdgeKind::Returns => "Returns",
+        EdgeKind::TypeOf => "TypeOf",
     }
 }
 
@@ -418,6 +535,70 @@ mod tests {
         let targets = reachable_targets(&g, &a, &[], ClosureDirection::Outgoing);
         assert_eq!(targets, vec![a.clone()]);
         assert!(!reachable(&g, &a, &b, &[], ClosureDirection::Outgoing));
+    }
+
+    // Normal: textual patterns parse to the expected atoms and round-trip
+    // through format_pattern.
+    #[test]
+    fn parse_pattern_atoms_and_roundtrip_normal() {
+        let pat = parse_pattern("Contains Calls+ any*").unwrap();
+        assert_eq!(
+            pat,
+            vec![
+                PatternAtom::one(EdgeKind::Contains),
+                PatternAtom::plus(EdgeKind::Calls),
+                PatternAtom::any(Rep::Star),
+            ]
+        );
+        assert_eq!(format_pattern(&pat), "Contains Calls+ any*");
+        assert_eq!(parse_pattern(&format_pattern(&pat)).unwrap(), pat);
+    }
+
+    // Normal: a parsed pattern drives the same product BFS as a hand-built
+    // one (Contains then Calls+ over the two-stage fixture).
+    #[test]
+    fn parse_pattern_drives_reachability_normal() {
+        let mut g = CodeGraph::new();
+        let m = g.add_node(mk("m", NodeKind::Module));
+        let f0 = g.add_node(mk("f0", NodeKind::Function));
+        let f1 = g.add_node(mk("f1", NodeKind::Function));
+        g.add_edge(&m, &f0, ed(EdgeKind::Contains)).unwrap();
+        g.add_edge(&f0, &f1, ed(EdgeKind::Calls)).unwrap();
+
+        let pat = parse_pattern("Contains Calls+").unwrap();
+        let targets = reachable_targets(&g, &m, &pat, ClosureDirection::Outgoing);
+        assert_eq!(targets, vec![f1.clone()]);
+    }
+
+    // Robust: unknown labels and dangling repetition suffixes are rejected
+    // with the offending atom named; empty input is the empty pattern.
+    #[test]
+    fn parse_pattern_rejects_bad_atoms_robust() {
+        let err = parse_pattern("Calls+ Bogus").unwrap_err();
+        assert_eq!(err.atom, "Bogus");
+        assert!(err.reason.contains("unknown edge label"));
+
+        let err = parse_pattern("+").unwrap_err();
+        assert_eq!(err.atom, "+");
+        assert!(err.reason.contains("repetition suffix"));
+
+        assert_eq!(parse_pattern("").unwrap(), Vec::new());
+        assert_eq!(parse_pattern("   ").unwrap(), Vec::new());
+    }
+
+    // Robust: payload-carrying kinds parse to discriminant matchers — an
+    // `UnresolvedCall` atom matches any payload.
+    #[test]
+    fn parse_pattern_unresolved_call_matches_by_discriminant_robust() {
+        let mut g = CodeGraph::new();
+        let a = g.add_node(mk("a", NodeKind::Function));
+        let b = g.add_node(mk("b", NodeKind::Function));
+        g.add_edge(&a, &b, ed(EdgeKind::UnresolvedCall("payload".into())))
+            .unwrap();
+
+        let pat = parse_pattern("UnresolvedCall").unwrap();
+        let targets = reachable_targets(&g, &a, &pat, ClosureDirection::Outgoing);
+        assert_eq!(targets, vec![b.clone()]);
     }
 
     // Robust: an Any-matcher Plus traverses a mixed-label path.

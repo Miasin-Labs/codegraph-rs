@@ -372,6 +372,9 @@ impl<'a> TreeSitterExtractor<'a> {
                     end_line: self.source.split('\n').count() as u32,
                     start_column: 0,
                     end_column: 0,
+                    // The file node spans the whole source by definition.
+                    start_byte: Some(0),
+                    end_byte: Some(self.source.len() as u32),
                     docstring: None,
                     signature: None,
                     visibility: None,
@@ -588,13 +591,19 @@ impl<'a> TreeSitterExtractor<'a> {
         // the signature node, so the declaration node's own range is just the
         // signature line. Extend end_line to the resolved body when it sits beyond
         // the node so the node spans its body. Guarded to only ever extend.
+        // end_byte is extended in lockstep so the byte range covers the body too.
         let mut end_line = node.end_position().row as u32 + 1;
+        let mut end_byte = node.end_byte() as u32;
         if matches!(kind, NodeKind::Function | NodeKind::Method) {
             if let Some(ext) = self.extractor {
                 if let Some(body) = ext.resolve_body(node, ext.body_field()) {
                     let body_end = body.end_position().row as u32 + 1;
                     if body_end > end_line {
                         end_line = body_end;
+                    }
+                    let body_end_byte = body.end_byte() as u32;
+                    if body_end_byte > end_byte {
+                        end_byte = body_end_byte;
                     }
                 }
             }
@@ -615,6 +624,8 @@ impl<'a> TreeSitterExtractor<'a> {
             end_line,
             start_column: node.start_position().column as u32,
             end_column: node.end_position().column as u32,
+            start_byte: Some(node.start_byte() as u32),
+            end_byte: Some(end_byte),
             docstring: extra.docstring,
             signature: extra.signature,
             visibility: extra.visibility,

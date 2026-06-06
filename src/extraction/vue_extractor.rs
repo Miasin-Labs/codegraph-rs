@@ -85,6 +85,9 @@ struct ScriptBlock<'a> {
     content: &'a str,
     /// 0-indexed line where the script content starts (line after `<script>`).
     start_line: u32,
+    /// Byte offset of `content` within the full `.vue` source. Used to
+    /// remap the inner extraction's byte ranges back to whole-file offsets.
+    start_byte: u32,
     /// Computed for parity with TS, which stores but never reads it.
     #[allow(dead_code)]
     is_setup: bool,
@@ -182,6 +185,9 @@ impl<'a> VueExtractor<'a> {
             end_line: lines.len() as u32,
             start_column: 0,
             end_column: lines.last().map(|l| l.len() as u32).unwrap_or(0),
+            // The component node spans the whole .vue file by definition.
+            start_byte: Some(0),
+            end_byte: Some(self.source.len() as u32),
             docstring: None,
             signature: None,
             visibility: None,
@@ -225,6 +231,7 @@ impl<'a> VueExtractor<'a> {
             blocks.push(ScriptBlock {
                 content,
                 start_line: content_start_line as u32,
+                start_byte: caps.name("content").map(|m| m.start() as u32).unwrap_or(0),
                 is_setup,
                 is_typescript,
             });
@@ -271,6 +278,11 @@ impl<'a> VueExtractor<'a> {
         for mut node in result.nodes {
             node.start_line += block.start_line;
             node.end_line += block.start_line;
+            // Byte offsets from the inner extraction are relative to the
+            // script slice; shift them to whole-file offsets. `content` is a
+            // byte slice of the original source, so the shift is exact.
+            node.start_byte = node.start_byte.map(|b| b + block.start_byte);
+            node.end_byte = node.end_byte.map(|b| b + block.start_byte);
             node.language = Language::Vue; // Mark as vue, not TS/JS
 
             let target = node.id.clone();

@@ -144,6 +144,9 @@ impl<'a> LiquidExtractor<'a> {
         );
         file_node.start_column = 0;
         file_node.end_column = lines.last().map(|l| l.len()).unwrap_or(0) as u32;
+        // The file node spans the whole source by definition.
+        file_node.start_byte = Some(0);
+        file_node.end_byte = Some(self.source.len() as u32);
         file_node.updated_at = now_ms();
 
         self.nodes.push(file_node);

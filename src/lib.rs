@@ -9,6 +9,7 @@
 
 pub mod analysis_bridge;
 pub mod analyze;
+pub mod analyze_ir;
 pub mod context;
 pub mod context_analysis;
 pub mod db;

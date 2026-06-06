@@ -36,8 +36,9 @@ fn stderr_str(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
 }
 
-/// Run an analyze subcommand with `--json` and parse stdout.
-fn run_analyze_json(cwd: &Path, args: &[&str]) -> serde_json::Value {
+/// Run an analyze subcommand with `--json` and parse the full envelope —
+/// `{"schemaVersion": N, "kind": "<kind>", "data": …}`.
+fn run_analyze_envelope(cwd: &Path, args: &[&str]) -> serde_json::Value {
     let mut full: Vec<&str> = vec!["analyze"];
     full.extend_from_slice(args);
     full.push("--json");
@@ -55,6 +56,21 @@ fn run_analyze_json(cwd: &Path, args: &[&str]) -> serde_json::Value {
             stdout_str(&out)
         )
     })
+}
+
+/// Run an analyze subcommand with `--json`, assert the envelope contract,
+/// and return its `data` payload.
+fn run_analyze_json(cwd: &Path, args: &[&str]) -> serde_json::Value {
+    let envelope = run_analyze_envelope(cwd, args);
+    assert!(
+        envelope["schemaVersion"].as_u64().is_some(),
+        "envelope carries schemaVersion: {envelope}"
+    );
+    assert!(
+        envelope["kind"].as_str().is_some(),
+        "envelope carries kind: {envelope}"
+    );
+    envelope["data"].clone()
 }
 
 /// Canonicalized tempdir (macOS /var → /private/var symlink parity).
@@ -575,4 +591,704 @@ fn analyze_requires_initialized_project() {
     let out = run_cli(&root, &["analyze", "cycles"]);
     assert!(!out.status.success());
     assert!(stderr_str(&out).contains("not initialized"));
+}
+
+// =============================================================================
+// JSON envelope contract (every analyze --json payload)
+// =============================================================================
+
+#[test]
+fn analyze_json_is_wrapped_in_versioned_envelope() {
+    let (_dir, root) = temp_project();
+    init_fixture(&root);
+
+    let envelope = run_analyze_envelope(&root, &["cycles"]);
+    assert_eq!(envelope["schemaVersion"].as_u64(), Some(1));
+    assert_eq!(envelope["kind"].as_str(), Some("cycles"));
+    assert_eq!(envelope["data"]["cycleCount"].as_u64(), Some(1));
+
+    // The kind discriminates per subcommand.
+    let envelope = run_analyze_envelope(&root, &["slice", "main"]);
+    assert_eq!(envelope["kind"].as_str(), Some("slice"));
+    let envelope = run_analyze_envelope(&root, &["query", r#"fn("main") | callees"#]);
+    assert_eq!(envelope["kind"].as_str(), Some("query"));
+    let envelope = run_analyze_envelope(&root, &["query", r#"fn("main")"#, "--explain"]);
+    assert_eq!(envelope["kind"].as_str(), Some("queryPlan"));
+}
+
+// =============================================================================
+// fixture for the close-list subcommands (traits/types/generics/taint-suggest)
+// =============================================================================
+
+/// A fixture with known trait/type/generic/taint ground truth:
+/// - `Shape` interface implemented by `Circle` and `Square`,
+/// - `totalArea(shapes: Shape[])` (UsesType → trait expansion),
+/// - `identity<T>` (signature-heuristic generic),
+/// - `readUserInput` → `execQuery` via `pipeline` (taint naming).
+fn write_close_fixture(root: &Path) {
+    write(
+        &root.join("src/shapes.ts"),
+        r#"export interface Shape {
+  area(): number;
+}
+
+export class Circle implements Shape {
+  radius: number = 1;
+  area(): number {
+    return 3.14 * this.radius * this.radius;
+  }
+}
+
+export class Square implements Shape {
+  side: number = 2;
+  area(): number {
+    return this.side * this.side;
+  }
+}
+
+export function totalArea(shapes: Shape[]): number {
+  let total = 0;
+  for (const shape of shapes) {
+    total += shape.area();
+  }
+  return total;
+}
+
+export function identity<T>(value: T): T {
+  return value;
+}
+"#,
+    );
+    write(
+        &root.join("src/io.ts"),
+        r#"export function readUserInput(): string {
+  return "input";
+}
+
+export function execQuery(sql: string): void {
+}
+
+export function pipeline(): void {
+  execQuery(readUserInput());
+}
+"#,
+    );
+}
+
+fn init_close_fixture(root: &Path) {
+    write_close_fixture(root);
+    let out = run_cli(root, &["init"]);
+    assert!(out.status.success(), "init failed: {}", stderr_str(&out));
+}
+
+/// Run `git` in the fixture with identity pinned (CI has no global config).
+fn git(root: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args([
+            "-c",
+            "user.email=test@codegraph.test",
+            "-c",
+            "user.name=codegraph-test",
+        ])
+        .args(args)
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn git");
+    assert!(
+        out.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// =============================================================================
+// co-change
+// =============================================================================
+
+#[test]
+fn analyze_co_change_mines_git_history_and_is_honest_without_it() {
+    let (_dir, root) = temp_project();
+    init_fixture(&root);
+
+    // Phase 1: not a git repository → exit 0 with the honest note.
+    let out = run_cli(&root, &["analyze", "co-change"]);
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+    assert!(
+        stdout_str(&out).contains("No git history"),
+        "honest no-history note: {}",
+        stdout_str(&out)
+    );
+
+    // Phase 2: util.ts and main.ts committed together twice → a real
+    // cross-file pair at min support 2.
+    git(&root, &["init", "-q"]);
+    git(&root, &["add", "src"]);
+    git(&root, &["commit", "-qm", "one"]);
+    for (file, suffix) in [
+        ("src/util.ts", "// touch a\n"),
+        ("src/main.ts", "// touch b\n"),
+    ] {
+        let path = root.join(file);
+        let mut content = fs::read_to_string(&path).unwrap();
+        content.push_str(suffix);
+        fs::write(&path, content).unwrap();
+    }
+    git(&root, &["add", "src"]);
+    git(&root, &["commit", "-qm", "two"]);
+
+    let json = run_analyze_json(&root, &["co-change", "--min-support", "2"]);
+    assert_eq!(json["commitsAnalyzed"].as_u64(), Some(2));
+    assert_eq!(json["minSupport"].as_u64(), Some(2));
+    let pairs = json["pairs"].as_array().expect("pairs array");
+    assert!(
+        !pairs.is_empty(),
+        "main.ts/util.ts symbols co-change twice: {json}"
+    );
+    let pair = &pairs[0];
+    assert_eq!(pair["timesChangedTogether"].as_u64(), Some(2));
+    assert!(pair["confidence"].as_f64().unwrap() > 0.0);
+    // Pairs are cross-file by contract; same-file pairs are only counted.
+    assert_ne!(
+        pair["a"]["file"].as_str(),
+        pair["b"]["file"].as_str(),
+        "listed pairs are cross-file: {pair}"
+    );
+    assert!(json["sameFilePairCount"].as_u64().unwrap() > 0);
+
+    // Seeded: every pair touches the seed symbol.
+    let json = run_analyze_json(&root, &["co-change", "helper", "--min-support", "2"]);
+    for pair in json["pairs"].as_array().unwrap() {
+        assert!(
+            pair["a"]["name"].as_str() == Some("helper")
+                || pair["b"]["name"].as_str() == Some("helper"),
+            "seeded pair touches helper: {pair}"
+        );
+    }
+}
+
+// =============================================================================
+// coverage
+// =============================================================================
+
+/// LCOV covering helper/compute (and main) but not ping/pong.
+fn write_lcov(root: &Path) -> String {
+    let lcov = root.join("lcov.info");
+    fs::write(
+        &lcov,
+        "SF:src/util.ts\nDA:1,5\nDA:2,5\nDA:3,2\nDA:5,1\nDA:8,3\nDA:9,4\nDA:10,4\nDA:16,1\nend_of_record\n\
+         SF:src/main.ts\nDA:3,1\nDA:4,1\nend_of_record\n",
+    )
+    .unwrap();
+    lcov.display().to_string()
+}
+
+#[test]
+fn analyze_coverage_maps_lcov_onto_functions() {
+    let (_dir, root) = temp_project();
+    init_fixture(&root);
+    let lcov = write_lcov(&root);
+
+    let json = run_analyze_json(&root, &["coverage", "--lcov", &lcov]);
+    assert_eq!(json["functionsTotal"].as_u64(), Some(5));
+    assert!(json["functionsTested"].as_u64().unwrap() >= 2);
+    assert!(json["functionsUntested"].as_u64().unwrap() >= 1);
+    assert_eq!(json["lcovFiles"].as_u64(), Some(2));
+
+    // --untested filters the listing to untested functions only.
+    let json = run_analyze_json(&root, &["coverage", "--lcov", &lcov, "--untested"]);
+    let functions = json["functions"].as_array().unwrap();
+    assert!(!functions.is_empty());
+    for function in functions {
+        assert_eq!(function["tested"].as_bool(), Some(false));
+        assert_eq!(function["coverageCount"].as_u64(), Some(0));
+    }
+    let symbols: Vec<serde_json::Value> = functions.iter().map(|f| f["symbol"].clone()).collect();
+    let untested = names_of(&symbols);
+    assert!(
+        untested.contains(&"pong"),
+        "pong has no covered lines: {untested:?}"
+    );
+
+    // Human output names the untested functions.
+    let out = run_cli(
+        &root,
+        &["analyze", "coverage", "--lcov", &lcov, "--untested"],
+    );
+    assert!(out.status.success());
+    assert!(stdout_str(&out).contains("untested"));
+}
+
+#[test]
+fn analyze_coverage_unreadable_lcov_exits_one() {
+    let (_dir, root) = temp_project();
+    init_fixture(&root);
+
+    let out = run_cli(&root, &["analyze", "coverage", "--lcov", "missing.info"]);
+    assert!(!out.status.success(), "missing LCOV file is an error");
+    assert!(stderr_str(&out).contains("missing.info"));
+}
+
+#[test]
+fn analyze_query_lcov_unblinds_untested_operator() {
+    let (_dir, root) = temp_project();
+    init_fixture(&root);
+    let lcov = write_lcov(&root);
+
+    // ping has no DA lines → untested keeps it.
+    let json = run_analyze_json(
+        &root,
+        &["query", r#"fn("ping") | untested"#, "--lcov", &lcov],
+    );
+    let nodes = names_of(json["nodes"].as_array().unwrap());
+    assert_eq!(nodes, vec!["ping"], "uncovered ping survives: {json}");
+
+    // compute is covered → untested filters it out.
+    let json = run_analyze_json(
+        &root,
+        &["query", r#"fn("compute") | untested"#, "--lcov", &lcov],
+    );
+    assert_eq!(
+        json["nodes"].as_array().unwrap().len(),
+        0,
+        "covered compute is filtered: {json}"
+    );
+}
+
+// =============================================================================
+// validate
+// =============================================================================
+
+#[test]
+fn analyze_validate_judges_arity_change_against_callers() {
+    let (_dir, root) = temp_project();
+    init_fixture(&root);
+
+    // Arity change: compute (helper's only caller) needs review.
+    let json = run_analyze_json(
+        &root,
+        &[
+            "validate",
+            "helper",
+            "--params-before",
+            "1",
+            "--params-after",
+            "2",
+        ],
+    );
+    assert_eq!(json["target"]["name"].as_str(), Some("helper"));
+    assert_eq!(json["isSafe"].as_bool(), Some(false));
+    let incompatible = json["incompatible"].as_array().unwrap();
+    assert_eq!(incompatible.len(), 1);
+    assert_eq!(incompatible[0]["symbol"]["name"].as_str(), Some("compute"));
+    assert!(
+        incompatible[0]["reason"].as_str().unwrap().contains("2"),
+        "reason names the new arity: {json}"
+    );
+    assert!(!json["callSites"].as_array().unwrap().is_empty());
+    assert!(json["note"].as_str().unwrap().contains("call-graph"));
+
+    // Unchanged arity: safe.
+    let json = run_analyze_json(
+        &root,
+        &[
+            "validate",
+            "helper",
+            "--params-before",
+            "1",
+            "--params-after",
+            "1",
+        ],
+    );
+    assert_eq!(json["isSafe"].as_bool(), Some(true));
+    assert_eq!(json["incompatible"].as_array().unwrap().len(), 0);
+
+    // Bad arity argument exits 1.
+    let out = run_cli(
+        &root,
+        &[
+            "analyze",
+            "validate",
+            "helper",
+            "--params-before",
+            "x",
+            "--params-after",
+            "2",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(stderr_str(&out).contains("--params-before"));
+}
+
+// =============================================================================
+// traits
+// =============================================================================
+
+#[test]
+fn analyze_traits_reports_hierarchies_and_clusters() {
+    let (_dir, root) = temp_project();
+    init_close_fixture(&root);
+
+    let json = run_analyze_json(&root, &["traits"]);
+    assert_eq!(json["traitCount"].as_u64(), Some(1));
+    let hierarchy = &json["hierarchies"][0];
+    assert_eq!(hierarchy["trait"]["name"].as_str(), Some("Shape"));
+    assert_eq!(hierarchy["implementorCount"].as_u64(), Some(2));
+    let implementors = names_of(hierarchy["implementors"].as_array().unwrap());
+    assert_eq!(implementors, vec!["Circle", "Square"]);
+
+    // totalArea manipulates Shape → clustered under it.
+    let clusters = json["clusters"].as_array().unwrap();
+    let shape_cluster = clusters
+        .iter()
+        .find(|c| c["primaryType"]["name"].as_str() == Some("Shape"))
+        .expect("Shape cluster");
+    let members = names_of(shape_cluster["functions"].as_array().unwrap());
+    assert!(members.contains(&"totalArea"), "members: {members:?}");
+
+    // Type filter narrows to the requested type.
+    let json = run_analyze_json(&root, &["traits", "Shape"]);
+    assert_eq!(json["traitCount"].as_u64(), Some(1));
+    let json = run_analyze_json(&root, &["traits", "NoSuchType"]);
+    assert_eq!(json["traitCount"].as_u64(), Some(0));
+
+    // Human output renders the hierarchy.
+    let out = run_cli(&root, &["analyze", "traits"]);
+    assert!(out.status.success());
+    let stdout = stdout_str(&out);
+    assert!(stdout.contains("Shape") && stdout.contains("Circle"));
+}
+
+// =============================================================================
+// centrality / critical
+// =============================================================================
+
+#[test]
+fn analyze_centrality_ranks_symbols_descending() {
+    let (_dir, root) = temp_project();
+    init_fixture(&root);
+
+    let json = run_analyze_json(&root, &["centrality", "--top", "3"]);
+    assert!(json["analyzed"].as_u64().unwrap() >= 5);
+    let nodes = json["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 3, "--top caps the list: {json}");
+    let scores: Vec<f64> = nodes.iter().map(|n| n["score"].as_f64().unwrap()).collect();
+    let mut sorted = scores.clone();
+    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
+    assert_eq!(scores, sorted, "sorted by score descending");
+
+    let out = run_cli(&root, &["analyze", "centrality"]);
+    assert!(out.status.success());
+    assert!(stdout_str(&out).contains("Most central symbols"));
+}
+
+#[test]
+fn analyze_critical_finds_articulation_nodes() {
+    let (_dir, root) = temp_project();
+    init_fixture(&root);
+
+    let json = run_analyze_json(&root, &["critical"]);
+    let nodes = names_of(json["nodes"].as_array().unwrap());
+    assert!(
+        nodes.contains(&"compute"),
+        "compute articulates main → helper: {json}"
+    );
+    assert!(json["bridgeCount"].as_u64().unwrap() >= 1);
+    let bridge = &json["bridges"][0];
+    assert!(bridge["from"]["name"].is_string() && bridge["to"]["name"].is_string());
+    assert!(json["note"].as_str().unwrap().contains("undirected"));
+}
+
+// =============================================================================
+// export
+// =============================================================================
+
+#[test]
+fn analyze_export_emits_dot_for_graph_and_symbol_neighborhood() {
+    let (_dir, root) = temp_project();
+    init_fixture(&root);
+
+    // Human output is the raw DOT document — pipeable, no decoration.
+    let out = run_cli(&root, &["analyze", "export"]);
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+    let dot = stdout_str(&out);
+    assert!(dot.starts_with("digraph"), "raw DOT on stdout: {dot}");
+    assert!(dot.contains("->"), "edges rendered: {dot}");
+    assert!(dot.contains("compute"), "node labels rendered: {dot}");
+
+    // JSON wraps the document plus scope metadata.
+    let json = run_analyze_json(&root, &["export"]);
+    assert_eq!(json["format"].as_str(), Some("dot"));
+    assert_eq!(json["scope"].as_str(), Some("graph"));
+    assert!(json["nodeCount"].as_u64().unwrap() >= 5);
+    assert!(json["dot"].as_str().unwrap().starts_with("digraph"));
+
+    // --symbol narrows to the neighborhood.
+    let json = run_analyze_json(&root, &["export", "--symbol", "main", "--depth", "1"]);
+    assert_eq!(json["scope"].as_str(), Some("subgraph"));
+    assert_eq!(json["seed"]["name"].as_str(), Some("main"));
+    assert!(json["nodeCount"].as_u64().unwrap() >= 2);
+
+    // Unsupported formats are rejected up front.
+    let out = run_cli(&root, &["analyze", "export", "--format", "svg"]);
+    assert!(!out.status.success());
+    assert!(stderr_str(&out).contains("--format"));
+}
+
+// =============================================================================
+// types
+// =============================================================================
+
+#[test]
+fn analyze_types_propagates_concrete_types_through_traits() {
+    let (_dir, root) = temp_project();
+    init_close_fixture(&root);
+
+    // totalArea takes Shape[] → trait expansion delivers Circle and Square.
+    let json = run_analyze_json(&root, &["types", "totalArea"]);
+    assert_eq!(json["symbol"]["name"].as_str(), Some("totalArea"));
+    let inputs: Vec<&str> = json["inputTypes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    for expected in ["Shape", "Circle", "Square"] {
+        assert!(inputs.contains(&expected), "{expected} flows in: {json}");
+    }
+    assert!(json["functionsAnnotated"].as_u64().unwrap() >= 1);
+
+    // A function with no type references reports honestly empty.
+    let json = run_analyze_json(&root, &["types", "readUserInput"]);
+    assert_eq!(json["inputTypes"].as_array().unwrap().len(), 0);
+    assert!(json["note"].as_str().unwrap().contains("No concrete types"));
+}
+
+// =============================================================================
+// generics
+// =============================================================================
+
+#[test]
+fn analyze_generics_lists_signature_heuristic_definitions_honestly() {
+    let (_dir, root) = temp_project();
+    init_close_fixture(&root);
+
+    let json = run_analyze_json(&root, &["generics"]);
+    // The bridge carries no generics metadata → engine instantiations are
+    // empty, and the note says exactly why.
+    assert_eq!(json["instantiationCount"].as_u64(), Some(0));
+    assert!(json["note"].as_str().unwrap().contains("does not populate"));
+    // The signature heuristic still finds identity<T>.
+    let definitions = json["likelyGenericDefinitions"].as_array().unwrap();
+    let identity = definitions
+        .iter()
+        .find(|d| d["symbol"]["name"].as_str() == Some("identity"))
+        .expect("identity<T> detected");
+    assert_eq!(identity["typeParams"][0].as_str(), Some("T"));
+
+    // Filtered to a non-generic symbol → honest empty message, exit 0.
+    let out = run_cli(&root, &["analyze", "generics", "totalArea"]);
+    assert!(out.status.success());
+    assert!(stdout_str(&out).contains("No generic definition matches"));
+}
+
+// =============================================================================
+// taint --suggest
+// =============================================================================
+
+#[test]
+fn analyze_taint_suggest_ranks_sources_and_sinks_by_name() {
+    let (_dir, root) = temp_project();
+    init_close_fixture(&root);
+
+    let json = run_analyze_json(&root, &["taint", "--suggest"]);
+    let sources = json["sources"].as_array().unwrap();
+    let sinks = json["sinks"].as_array().unwrap();
+    assert!(
+        sources
+            .iter()
+            .any(|c| c["symbol"]["name"].as_str() == Some("readUserInput")),
+        "readUserInput is source-named: {json}"
+    );
+    assert!(
+        sinks
+            .iter()
+            .any(|c| c["symbol"]["name"].as_str() == Some("execQuery")),
+        "execQuery is sink-named: {json}"
+    );
+    let pairs = json["pairs"].as_array().unwrap();
+    assert!(!pairs.is_empty());
+    assert!(pairs[0]["priority"].as_f64().unwrap() > 0.0);
+    assert!(json["note"].as_str().unwrap().contains("naming"));
+
+    // Bare `analyze taint` defaults to suggestion mode.
+    let envelope = run_analyze_envelope(&root, &["taint"]);
+    assert_eq!(envelope["kind"].as_str(), Some("taintSuggest"));
+
+    // One symbol without --suggest is a usage error.
+    let out = run_cli(&root, &["analyze", "taint", "readUserInput"]);
+    assert!(!out.status.success());
+    assert!(stderr_str(&out).contains("--suggest"));
+}
+
+// =============================================================================
+// boundaries
+// =============================================================================
+
+#[test]
+fn analyze_boundaries_is_honestly_empty_over_bridged_index() {
+    let (_dir, root) = temp_project();
+    init_fixture(&root);
+
+    let json = run_analyze_json(&root, &["boundaries"]);
+    assert_eq!(json["boundaryCount"].as_u64(), Some(0));
+    assert!(
+        json["note"]
+            .as_str()
+            .unwrap()
+            .contains("does not populate these keys"),
+        "honest capability note: {json}"
+    );
+    assert_eq!(json["crossLanguageCalls"]["edgesEmitted"].as_u64(), Some(0));
+
+    // Human output prints the capability note instead of silence.
+    let out = run_cli(&root, &["analyze", "boundaries"]);
+    assert!(out.status.success());
+    assert!(
+        stderr_str(&out).contains("No cross-language boundaries")
+            || stdout_str(&out).contains("No cross-language boundaries"),
+        "stdout: {} stderr: {}",
+        stdout_str(&out),
+        stderr_str(&out)
+    );
+}
+
+// =============================================================================
+// capabilities
+// =============================================================================
+
+#[test]
+fn analyze_capabilities_lists_env_toggles_and_cascades() {
+    // Pure environment read — no init required.
+    let (_dir, root) = temp_project();
+
+    let json = run_analyze_json(&root, &["capabilities"]);
+    let capabilities = json["capabilities"].as_array().unwrap();
+    assert_eq!(capabilities.len(), 6);
+    let call_graph = capabilities
+        .iter()
+        .find(|c| c["name"].as_str() == Some("callGraph"))
+        .expect("callGraph listed");
+    assert_eq!(
+        call_graph["envVar"].as_str(),
+        Some("CODEGRAPH_ANALYSIS_CAP_CALL_GRAPH")
+    );
+    assert_eq!(call_graph["enabled"].as_bool(), Some(true));
+    assert_eq!(
+        call_graph["disables"][0].as_str(),
+        Some("virtualValidation"),
+        "dependency cascade surfaced: {call_graph}"
+    );
+
+    // A kill-switch env var disables the capability AND its dependents.
+    let out = Command::new(bin())
+        .args(["analyze", "capabilities", "--json"])
+        .current_dir(&root)
+        .env("CODEGRAPH_NO_DAEMON", "1")
+        .env("CODEGRAPH_ANALYSIS_CAP_CALL_GRAPH", "0")
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn codegraph binary");
+    assert!(out.status.success());
+    let envelope: serde_json::Value = serde_json::from_str(stdout_str(&out).trim()).unwrap();
+    let capabilities = envelope["data"]["capabilities"].as_array().unwrap();
+    let by_name = |name: &str| -> &serde_json::Value {
+        capabilities
+            .iter()
+            .find(|c| c["name"].as_str() == Some(name))
+            .unwrap()
+    };
+    assert_eq!(by_name("callGraph")["enabled"].as_bool(), Some(false));
+    assert_eq!(by_name("callGraph")["envValue"].as_str(), Some("0"));
+    assert_eq!(
+        by_name("virtualValidation")["enabled"].as_bool(),
+        Some(false),
+        "cascade applied: {envelope}"
+    );
+    assert_eq!(by_name("typeUsage")["enabled"].as_bool(), Some(true));
+}
+
+// =============================================================================
+// schema
+// =============================================================================
+
+#[test]
+fn analyze_schema_prints_engine_json_schemas() {
+    // Pure schema read — no init required.
+    let (_dir, root) = temp_project();
+
+    for kind in [
+        "query_result",
+        "entrypoint_summary",
+        "context_result",
+        "formatted_output",
+    ] {
+        let out = run_cli(&root, &["analyze", "schema", kind]);
+        assert!(out.status.success(), "schema {kind} exits 0");
+        let schema: serde_json::Value = serde_json::from_str(stdout_str(&out).trim())
+            .unwrap_or_else(|e| panic!("schema {kind} is valid JSON ({e})"));
+        assert!(schema["title"].is_string());
+        assert_eq!(
+            schema["properties"]["schema_version"]["type"].as_str(),
+            Some("integer")
+        );
+    }
+
+    let out = run_cli(&root, &["analyze", "schema", "bogus"]);
+    assert!(!out.status.success());
+    assert!(stderr_str(&out).contains("known kinds"));
+}
+
+// =============================================================================
+// stats
+// =============================================================================
+
+#[test]
+fn analyze_stats_counts_graph_and_estimates_reachability() {
+    let (_dir, root) = temp_project();
+    init_fixture(&root);
+
+    let json = run_analyze_json(&root, &["stats"]);
+    assert_eq!(json["nodesByKind"]["function"].as_u64(), Some(5));
+    assert!(json["nodeCount"].as_u64().unwrap() >= 5);
+    assert!(json["edgesByKind"]["calls"].as_u64().unwrap() >= 4);
+    assert_eq!(json["fileCount"].as_u64(), Some(2));
+    assert!(
+        json.get("reachability").is_none() || json["reachability"].is_null(),
+        "reachability is opt-in: {json}"
+    );
+
+    let json = run_analyze_json(&root, &["stats", "--estimate-reachability", "--top", "5"]);
+    let reachability = &json["reachability"];
+    assert_eq!(
+        reachability["method"].as_str(),
+        Some("exact"),
+        "small graphs get exact numbers: {json}"
+    );
+    let top = reachability["top"].as_array().unwrap();
+    assert!(!top.is_empty() && top.len() <= 5);
+    let main_entry = top
+        .iter()
+        .find(|e| e["symbol"]["name"].as_str() == Some("main"));
+    if let Some(main_entry) = main_entry {
+        assert!(
+            main_entry["descendants"].as_f64().unwrap() >= 2.0,
+            "main reaches compute and helper: {json}"
+        );
+    }
+
+    let out = run_cli(&root, &["analyze", "stats", "--estimate-reachability"]);
+    assert!(out.status.success());
+    assert!(stdout_str(&out).contains("Bridged analysis graph"));
 }

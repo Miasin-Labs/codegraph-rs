@@ -22,7 +22,11 @@
 //!                                (--budget <tokens>, --strategy classic|analysis)
 //!   codegraph analyze <cmd>      Analysis engine over the bridged index
 //!                                (query, complexity, communities, dominators,
-//!                                slice, cycles, impact, taint)
+//!                                slice, cycles, impact, taint, co-change,
+//!                                coverage, validate, traits, centrality,
+//!                                critical, export, types, generics,
+//!                                boundaries, capabilities, schema, stats,
+//!                                cfg, dataflow)
 //!   codegraph serve --mcp        Run as an MCP server over stdio
 //!   codegraph unlock [path]      Remove a stale lock file
 //!
@@ -40,7 +44,14 @@ use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
-use codegraph::analysis_bridge::{BridgeResult, build_analysis_graph_cached};
+use codegraph::analysis_bridge::{
+    BridgeResult,
+    build_analysis_graph_cached,
+    compute_index_fingerprint,
+    load_auto_base_snapshot,
+    load_explicit_base_snapshot,
+    store_complexity_sidecar,
+};
 use codegraph::analyze::{self, SliceDirection};
 use codegraph::context_analysis::{self, AnalysisContextOptions};
 use codegraph::db::{DatabaseConnection, QueryBuilder, get_database_path};
@@ -79,6 +90,7 @@ use codegraph::{
     SearchOptions,
     Severity,
     TaskInput,
+    analyze_ir,
 };
 use codegraph_analysis::nodes::NodeId as ANodeId;
 
@@ -800,11 +812,14 @@ enum AnalyzeCommands {
       Strongly-connected components: every mutual-recursion cluster.
 
 Grammar: seed with fn(\"name\"), type(\"Name\"), entrypoints, scc, or hot N;
-pipe through callers, callees, depth N, filter kind=K, since N, ...; combine
-with set algebra (union / intersect / \\), path patterns (path A -> B,
+pipe through callers, callees, depth N, filter kind=K, since N,
+reachable via \"Calls+\" [incoming], ...; combine with set algebra
+(union / intersect / \\), path patterns (path A -> B,
 paths A -> B via Calls), and aggregations (count, exists, group_by, ...).
 Use --explain to print the optimised plan without executing, --why to
-include per-row provenance (which operators produced each result).")]
+include per-row provenance (which operators produced each result).
+The `untested` operator needs coverage data: pass --lcov <path> to
+annotate the graph before the query runs (see `analyze coverage`).")]
     Query {
         /// The DSL query, e.g. 'fn("main") | callees | depth 3'
         #[arg(value_name = "dsl")]
@@ -821,6 +836,9 @@ include per-row provenance (which operators produced each result).")]
         /// Print the optimised query plan without executing it
         #[arg(long)]
         explain: bool,
+        /// Annotate LCOV coverage before the query runs (enables `untested`)
+        #[arg(long, value_name = "path")]
+        lcov: Option<String>,
         /// Rebuild the analysis graph from the index, ignoring the cached snapshot
         #[arg(long = "no-cache")]
         no_cache: bool,
@@ -875,7 +893,7 @@ include per-row provenance (which operators produced each result).")]
         #[arg(short = 'j', long)]
         json: bool,
     },
-    /// Program slice from a symbol at call-graph granularity
+    /// Program slice from a symbol (call-graph granularity by default)
     Slice {
         #[arg(value_name = "symbol")]
         symbol: String,
@@ -888,6 +906,10 @@ include per-row provenance (which operators produced each result).")]
         /// Maximum slice depth (call hops)
         #[arg(long, value_name = "number", default_value = "10")]
         depth: String,
+        /// Value-level precision via per-function dataflow IR (needs byte
+        /// offsets in the index; re-index pre-v5 projects to enable)
+        #[arg(long = "value-level")]
+        value_level: bool,
         /// Rebuild the analysis graph from the index, ignoring the cached snapshot
         #[arg(long = "no-cache")]
         no_cache: bool,
@@ -926,16 +948,314 @@ include per-row provenance (which operators produced each result).")]
     },
     /// Find call-graph paths from a source symbol to a sink symbol
     Taint {
+        /// Source symbol (omit together with sink for --suggest mode)
         #[arg(value_name = "source-symbol")]
-        source: String,
+        source: Option<String>,
+        /// Sink symbol
         #[arg(value_name = "sink-symbol")]
-        sink: String,
+        sink: Option<String>,
+        /// Suggest source/sink candidates by identifier naming instead of
+        /// tracing paths (the default when no symbols are given)
+        #[arg(long)]
+        suggest: bool,
+        /// Value-level precision via per-function dataflow IR (needs byte
+        /// offsets in the index; re-index pre-v5 projects to enable)
+        #[arg(long = "value-level")]
+        value_level: bool,
         /// Project path
         #[arg(short = 'p', long, value_name = "path")]
         path: Option<String>,
         /// Maximum intermediate nodes per path
         #[arg(long = "max-nodes", value_name = "number", default_value = "6")]
         max_nodes: String,
+        /// Maximum suggested pairs (--suggest mode)
+        #[arg(short = 't', long, value_name = "number", default_value = "20")]
+        top: String,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Temporal coupling: symbols that change together across git history
+    #[command(name = "co-change")]
+    CoChange {
+        /// Limit pairs to those touching this symbol
+        #[arg(value_name = "symbol")]
+        symbol: Option<String>,
+        /// Minimum co-occurrence count for a pair to be reported
+        #[arg(long = "min-support", value_name = "number", default_value = "2")]
+        min_support: String,
+        /// Maximum commits mined from git log
+        #[arg(long = "max-commits", value_name = "number", default_value = "500")]
+        max_commits: String,
+        /// Show the N strongest pairs
+        #[arg(short = 't', long, value_name = "number", default_value = "25")]
+        top: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Map LCOV coverage onto functions; find untested code
+    #[command(
+        after_help = "Annotating coverage also enables the analysis DSL's `untested` \
+operator: `codegraph analyze query --lcov coverage/lcov.info 'entrypoints | untested'`."
+    )]
+    Coverage {
+        /// Path to an LCOV-format coverage file (e.g. coverage/lcov.info)
+        #[arg(long, value_name = "path")]
+        lcov: String,
+        /// List only untested functions
+        #[arg(long)]
+        untested: bool,
+        /// Show at most N functions
+        #[arg(short = 't', long, value_name = "number", default_value = "50")]
+        top: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Simulate a signature (arity) change before making it
+    Validate {
+        #[arg(value_name = "symbol")]
+        symbol: String,
+        /// Parameter count before the edit
+        #[arg(long = "params-before", value_name = "number")]
+        params_before: String,
+        /// Parameter count after the edit
+        #[arg(long = "params-after", value_name = "number")]
+        params_after: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Trait/interface hierarchies, dispatch calls, and type clusters
+    Traits {
+        /// Limit output to this trait/type (exact name or qualified suffix)
+        #[arg(value_name = "type")]
+        type_name: Option<String>,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// PageRank centrality: the most depended-upon symbols
+    Centrality {
+        /// Show the N most central symbols
+        #[arg(short = 't', long, value_name = "number", default_value = "20")]
+        top: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Articulation nodes and bridge edges: single points of failure
+    Critical {
+        /// Show at most N nodes and N edges
+        #[arg(short = 't', long, value_name = "number", default_value = "25")]
+        top: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Export the graph as Graphviz DOT (pipe to `dot -Tsvg`)
+    Export {
+        /// Output format (only "dot" is supported)
+        #[arg(short = 'f', long, value_name = "format", default_value = "dot")]
+        format: String,
+        /// Export only this symbol's neighborhood instead of the whole graph
+        #[arg(short = 's', long, value_name = "symbol")]
+        symbol: Option<String>,
+        /// Neighborhood depth around --symbol (hops, both directions)
+        #[arg(short = 'd', long, value_name = "number", default_value = "2")]
+        depth: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Concrete types that can flow into/out of a function
+    Types {
+        #[arg(value_name = "symbol")]
+        symbol: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Generic definitions and callsite-supplied instantiations
+    Generics {
+        /// Limit output to this symbol (exact name or qualified suffix)
+        #[arg(value_name = "symbol")]
+        symbol: Option<String>,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Cross-language boundaries: HTTP routes, FFI and WASM exports
+    Boundaries {
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Analysis-engine capability toggles and their env kill-switches
+    Capabilities {
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Print the JSON Schema for an engine payload kind
+    #[command(
+        after_help = "Known kinds: query_result, entrypoint_summary, context_result, \
+formatted_output."
+    )]
+    Schema {
+        /// Payload kind (e.g. query_result)
+        #[arg(value_name = "kind")]
+        kind: String,
+        /// Output as JSON (the schema is already JSON; printed identically)
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Bridged-graph statistics, optionally with reachability profiling
+    Stats {
+        /// Add per-node reachability counts (exact on small graphs,
+        /// HyperLogLog estimates on large ones)
+        #[arg(long = "estimate-reachability")]
+        estimate_reachability: bool,
+        /// Show the N widest-reaching nodes
+        #[arg(short = 't', long, value_name = "number", default_value = "10")]
+        top: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Control-flow graph of one function: basic blocks + typed edges
+    #[command(
+        after_help = "Built by re-parsing the on-disk source with the host grammars and \
+anchoring the function at its indexed position. CFG rules cover Rust, TypeScript/TSX, \
+JavaScript/JSX, Python, Go, Java, C, C++, and PHP; other languages get an honest \
+capability note."
+    )]
+    Cfg {
+        #[arg(value_name = "symbol")]
+        symbol: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Per-function dataflow: params, returns, assignments, argument flows, mutations
+    #[command(
+        after_help = "Built by re-parsing the on-disk source with the host grammars and \
+anchoring the function at its indexed position. Dataflow rules cover Rust, \
+TypeScript/TSX, JavaScript/JSX, Python, and Go; other languages get an honest \
+capability note."
+    )]
+    Dataflow {
+        #[arg(value_name = "symbol")]
+        symbol: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Working-tree vs base: what changed since the last cached snapshot
+    #[command(
+        after_help = "Compares the current bridged graph against a base snapshot: \
+nodes/edges added/removed/changed, complexity deltas for changed functions, \
+newly-introduced cycles, and the impact set of the delta. --base auto (default) \
+uses the last cached snapshot built before the current index state — every \
+analyze command caches one, and one previous generation is kept under \
+.codegraph/analysis/*.prev. The run also annotates the current snapshot with \
+per-function complexity so the NEXT diff reports full before/after deltas."
+    )]
+    Diff {
+        /// Base snapshot: "auto", or a path to a snapshot file / cache directory
+        #[arg(long, value_name = "snapshot|auto", default_value = "auto")]
+        base: String,
+        /// Impact BFS depth from the changed/added/removed symbols
+        #[arg(long, value_name = "number", default_value = "3")]
+        depth: String,
+        /// Maximum entries listed per section
+        #[arg(short = 't', long, value_name = "number", default_value = "50")]
+        top: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
         /// Rebuild the analysis graph from the index, ignoring the cached snapshot
         #[arg(long = "no-cache")]
         no_cache: bool,
@@ -2805,6 +3125,13 @@ fn print_json<T: serde::Serialize>(value: &T) -> Result<(), String> {
     Ok(())
 }
 
+/// Print an `analyze` report wrapped in the versioned JSON envelope —
+/// `{"schemaVersion": N, "kind": "<kind>", "data": …}` (see
+/// [`analyze::ReportEnvelope`]). Every `analyze … --json` goes through here.
+fn print_report_json<T: serde::Serialize>(kind: &'static str, data: &T) -> Result<(), String> {
+    print_json(&analyze::ReportEnvelope::new(kind, data))
+}
+
 fn print_symbol_line(kind: &str, name: &str, file: &str, line: u32) {
     let loc = if line != 0 {
         format!(":{line}")
@@ -2824,6 +3151,7 @@ fn cmd_analyze(command: AnalyzeCommands) {
             max_nodes,
             why,
             explain,
+            lcov,
             no_cache,
             json,
         } => cmd_analyze_query(
@@ -2832,6 +3160,7 @@ fn cmd_analyze(command: AnalyzeCommands) {
             &max_nodes,
             why,
             explain,
+            lcov.as_deref(),
             no_cache,
             json,
         ),
@@ -2859,9 +3188,18 @@ fn cmd_analyze(command: AnalyzeCommands) {
             direction,
             path,
             depth,
+            value_level,
             no_cache,
             json,
-        } => cmd_analyze_slice(&symbol, &direction, path.as_deref(), &depth, no_cache, json),
+        } => cmd_analyze_slice(
+            &symbol,
+            &direction,
+            path.as_deref(),
+            &depth,
+            value_level,
+            no_cache,
+            json,
+        ),
         AnalyzeCommands::Cycles {
             path,
             no_cache,
@@ -2883,19 +3221,154 @@ fn cmd_analyze(command: AnalyzeCommands) {
         AnalyzeCommands::Taint {
             source,
             sink,
+            suggest,
+            value_level,
             path,
             max_nodes,
+            top,
             no_cache,
             json,
-        } => cmd_analyze_taint(&source, &sink, path.as_deref(), &max_nodes, no_cache, json),
+        } => cmd_analyze_taint(
+            source.as_deref(),
+            sink.as_deref(),
+            suggest,
+            value_level,
+            path.as_deref(),
+            &max_nodes,
+            &top,
+            no_cache,
+            json,
+        ),
+        AnalyzeCommands::CoChange {
+            symbol,
+            min_support,
+            max_commits,
+            top,
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_co_change(
+            symbol.as_deref(),
+            &min_support,
+            &max_commits,
+            &top,
+            path.as_deref(),
+            no_cache,
+            json,
+        ),
+        AnalyzeCommands::Coverage {
+            lcov,
+            untested,
+            top,
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_coverage(&lcov, untested, &top, path.as_deref(), no_cache, json),
+        AnalyzeCommands::Validate {
+            symbol,
+            params_before,
+            params_after,
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_validate(
+            &symbol,
+            &params_before,
+            &params_after,
+            path.as_deref(),
+            no_cache,
+            json,
+        ),
+        AnalyzeCommands::Traits {
+            type_name,
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_traits(type_name.as_deref(), path.as_deref(), no_cache, json),
+        AnalyzeCommands::Centrality {
+            top,
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_centrality(&top, path.as_deref(), no_cache, json),
+        AnalyzeCommands::Critical {
+            top,
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_critical(&top, path.as_deref(), no_cache, json),
+        AnalyzeCommands::Export {
+            format,
+            symbol,
+            depth,
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_export(
+            &format,
+            symbol.as_deref(),
+            &depth,
+            path.as_deref(),
+            no_cache,
+            json,
+        ),
+        AnalyzeCommands::Types {
+            symbol,
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_types(&symbol, path.as_deref(), no_cache, json),
+        AnalyzeCommands::Generics {
+            symbol,
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_generics(symbol.as_deref(), path.as_deref(), no_cache, json),
+        AnalyzeCommands::Boundaries {
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_boundaries(path.as_deref(), no_cache, json),
+        AnalyzeCommands::Capabilities { json } => cmd_analyze_capabilities(json),
+        AnalyzeCommands::Schema { kind, json } => cmd_analyze_schema(&kind, json),
+        AnalyzeCommands::Stats {
+            estimate_reachability,
+            top,
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_stats(estimate_reachability, &top, path.as_deref(), no_cache, json),
+        AnalyzeCommands::Cfg {
+            symbol,
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_cfg(&symbol, path.as_deref(), no_cache, json),
+        AnalyzeCommands::Dataflow {
+            symbol,
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_dataflow(&symbol, path.as_deref(), no_cache, json),
+        AnalyzeCommands::Diff {
+            base,
+            depth,
+            top,
+            path,
+            no_cache,
+            json,
+        } => cmd_analyze_diff(&base, &depth, &top, path.as_deref(), no_cache, json),
     }
 }
 
-/// codegraph analyze query "<dsl>" [--why] [--explain]
+/// codegraph analyze query "<dsl>" [--why] [--explain] [--lcov <path>]
 ///
 /// Runs the analysis engine's pipe-based query DSL over the bridged graph.
 /// `--explain` parses + optimises only (never touches the index, so it works
-/// without an initialized project); `--why` adds per-row provenance.
+/// without an initialized project); `--why` adds per-row provenance;
+/// `--lcov` annotates coverage onto the in-memory graph first so the
+/// `untested` operator returns real rows instead of treating every function
+/// as untested.
 #[allow(clippy::too_many_arguments)]
 fn cmd_analyze_query(
     query: &str,
@@ -2903,6 +3376,7 @@ fn cmd_analyze_query(
     max_nodes_arg: &str,
     why: bool,
     explain: bool,
+    lcov: Option<&str>,
     no_cache: bool,
     json: bool,
 ) {
@@ -2910,7 +3384,7 @@ fn cmd_analyze_query(
         if explain {
             let report = analyze::explain_report(query)?;
             if json {
-                return print_json(&report);
+                return print_report_json("queryPlan", &report);
             }
             println!(
                 "{}",
@@ -2932,12 +3406,15 @@ fn cmd_analyze_query(
         }
 
         let project_path = resolve_project_path(path_arg);
-        let bridged = bridge_project(&project_path, no_cache, json)?;
+        let mut bridged = bridge_project(&project_path, no_cache, json)?;
+        if let Some(lcov_path) = lcov {
+            analyze::annotate_coverage(&mut bridged.graph, Path::new(lcov_path), &project_path)?;
+        }
         let max_nodes = parse_int_js(max_nodes_arg).unwrap_or(50).max(1) as usize;
         let report = analyze::query_report(&bridged.graph, query, max_nodes, why)?;
 
         if json {
-            return print_json(&report);
+            return print_report_json("query", &report);
         }
 
         if report.nodes.is_empty() && report.metadata.is_empty() {
@@ -3078,7 +3555,7 @@ fn cmd_analyze_complexity(path_arg: Option<&str>, top_arg: &str, no_cache: bool,
         let report = analyze::complexity_report(&bridged.graph, &project_path, top);
 
         if json {
-            return print_json(&report);
+            return print_report_json("complexity", &report);
         }
 
         if report.functions.is_empty() {
@@ -3148,7 +3625,7 @@ fn cmd_analyze_communities(path_arg: Option<&str>, sample_arg: &str, no_cache: b
         let report = analyze::communities_report(&bridged.graph, sample);
 
         if json {
-            return print_json(&report);
+            return print_report_json("communities", &report);
         }
 
         if report.communities.is_empty() {
@@ -3226,7 +3703,7 @@ fn cmd_analyze_dominators(
         };
 
         if json {
-            return print_json(&report);
+            return print_report_json("dominators", &report);
         }
 
         if report.nodes.is_empty() {
@@ -3281,6 +3758,7 @@ fn cmd_analyze_slice(
     direction_arg: &str,
     path_arg: Option<&str>,
     depth_arg: &str,
+    value_level: bool,
     no_cache: bool,
     json: bool,
 ) {
@@ -3306,7 +3784,12 @@ fn cmd_analyze_slice(
             return Ok(());
         };
         let depth = parse_int_js(depth_arg).unwrap_or(10).clamp(1, 100) as usize;
-        let Some(report) = analyze::slice_report(&bridged.graph, &seed, direction, depth) else {
+        let report = if value_level {
+            analyze_ir::value_slice_report(&bridged.graph, &project_path, &seed, direction, depth)
+        } else {
+            analyze::slice_report(&bridged.graph, &seed, direction, depth)
+        };
+        let Some(report) = report else {
             info(&format!(
                 "Symbol \"{symbol}\" not found in the analysis graph"
             ));
@@ -3314,14 +3797,22 @@ fn cmd_analyze_slice(
         };
 
         if json {
-            return print_json(&report);
+            return print_report_json("slice", &report);
         }
 
         if report.nodes.is_empty() {
-            info(&format!(
-                "Slice from \"{symbol}\" is empty {} no call edges in that direction",
-                get_glyphs().dash
-            ));
+            if value_level {
+                // The value-level note explains *why* the slice is empty
+                // (no value flow, fallback, or coverage gaps) — print it
+                // instead of the generic no-call-edges line.
+                info(&format!("Slice from \"{symbol}\" is empty"));
+                warn(&report.note);
+            } else {
+                info(&format!(
+                    "Slice from \"{symbol}\" is empty {} no call edges in that direction",
+                    get_glyphs().dash
+                ));
+            }
             return Ok(());
         }
 
@@ -3329,10 +3820,15 @@ fn cmd_analyze_slice(
             SliceDirection::Forward => "Forward slice",
             SliceDirection::Backward => "Backward slice",
         };
+        let granularity = if report.granularity == "value-level" {
+            "value-level hops"
+        } else {
+            "call hops"
+        };
         println!(
             "{}",
             bold(&format!(
-                "\n{heading} of \"{symbol}\" ({} symbols within {} call hops):\n",
+                "\n{heading} of \"{symbol}\" ({} symbols within {} {granularity}):\n",
                 report.size, report.max_depth
             ))
         );
@@ -3370,7 +3866,7 @@ fn cmd_analyze_cycles(path_arg: Option<&str>, no_cache: bool, json: bool) {
         let report = analyze::cycles_report(&bridged.graph);
 
         if json {
-            return print_json(&report);
+            return print_report_json("cycles", &report);
         }
 
         if report.cycles.is_empty() {
@@ -3451,7 +3947,7 @@ fn cmd_analyze_impact(
         };
 
         if json {
-            return print_json(&report);
+            return print_report_json("impact", &report);
         }
 
         if report.tasks.is_empty() {
@@ -3503,16 +3999,118 @@ fn cmd_analyze_impact(
     }
 }
 
-/// codegraph analyze taint <source-symbol> <sink-symbol>
+/// codegraph analyze taint [source-symbol] [sink-symbol] [--suggest]
+///
+/// With both symbols: call-graph paths from source to sink (the existing
+/// behavior). With `--suggest` — or when both symbols are omitted — ranks
+/// candidate sources/sinks by identifier naming instead.
+#[allow(clippy::too_many_arguments)]
 fn cmd_analyze_taint(
-    source: &str,
-    sink: &str,
+    source: Option<&str>,
+    sink: Option<&str>,
+    suggest: bool,
+    value_level: bool,
     path_arg: Option<&str>,
     max_nodes_arg: &str,
+    top_arg: &str,
     no_cache: bool,
     json: bool,
 ) {
     let project_path = resolve_project_path(path_arg);
+
+    if suggest || (source.is_none() && sink.is_none()) {
+        if value_level {
+            error_msg(
+                "--value-level applies to source\u{2192}sink tracing; give both \
+                 <source-symbol> and <sink-symbol> (it has no effect on --suggest).",
+            );
+            process::exit(1);
+        }
+        let body = || -> Result<(), String> {
+            let bridged = bridge_project(&project_path, no_cache, json)?;
+            let top = parse_int_js(top_arg).unwrap_or(20).max(1) as usize;
+            let report = analyze::taint_suggest_report(&bridged.graph, top);
+
+            if json {
+                return print_report_json("taintSuggest", &report);
+            }
+
+            if report.source_count == 0 && report.sink_count == 0 {
+                info(&report.note);
+                return Ok(());
+            }
+
+            println!(
+                "{}",
+                bold(&format!(
+                    "\nSuggested taint candidates ({} source{}, {} sink{} of {} functions):\n",
+                    report.source_count,
+                    if report.source_count == 1 { "" } else { "s" },
+                    report.sink_count,
+                    if report.sink_count == 1 { "" } else { "s" },
+                    format_number(report.functions_classified as u64)
+                ))
+            );
+            if !report.sources.is_empty() {
+                println!("{}", cyan("Sources (named like untrusted input):"));
+                for candidate in &report.sources {
+                    println!(
+                        "  {} {}",
+                        white(&candidate.symbol.name),
+                        dim(&format!(
+                            "{} (score {})",
+                            candidate.symbol.file,
+                            js_to_fixed(candidate.score, 2)
+                        ))
+                    );
+                }
+                println!();
+            }
+            if !report.sinks.is_empty() {
+                println!("{}", cyan("Sinks (named like dangerous operations):"));
+                for candidate in &report.sinks {
+                    println!(
+                        "  {} {}",
+                        white(&candidate.symbol.name),
+                        dim(&format!(
+                            "{} (score {})",
+                            candidate.symbol.file,
+                            js_to_fixed(candidate.score, 2)
+                        ))
+                    );
+                }
+                println!();
+            }
+            if !report.pairs.is_empty() {
+                println!("{}", cyan("Top pairs to confirm:"));
+                for pair in &report.pairs {
+                    println!(
+                        "  {} {} {} {}",
+                        white(&pair.source.name),
+                        dim("->"),
+                        white(&pair.sink.name),
+                        dim(&format!("(priority {})", js_to_fixed(pair.priority, 2)))
+                    );
+                }
+                println!();
+            }
+            info(&report.note);
+            Ok(())
+        };
+        if let Err(msg) = body() {
+            error_msg(&format!("analyze taint failed: {msg}"));
+            process::exit(1);
+        }
+        return;
+    }
+
+    let (Some(source), Some(sink)) = (source, sink) else {
+        error_msg(
+            "analyze taint needs both <source-symbol> and <sink-symbol> (or --suggest / no \
+             symbols for name-based suggestion).",
+        );
+        process::exit(1);
+    };
 
     let body = || -> Result<(), String> {
         let bridged = bridge_project(&project_path, no_cache, json)?;
@@ -3535,22 +4133,46 @@ fn cmd_analyze_taint(
         };
 
         let max_nodes = parse_int_js(max_nodes_arg).unwrap_or(6).clamp(0, 32) as usize;
-        let Some(report) =
+        let report = if value_level {
+            analyze_ir::value_taint_report(
+                &bridged.graph,
+                &project_path,
+                &source_id,
+                &sink_id,
+                max_nodes,
+                25,
+            )
+        } else {
             analyze::taint_report(&bridged.graph, &source_id, &sink_id, max_nodes, 25)
-        else {
+        };
+        let Some(report) = report else {
             info("Source or sink not found in the analysis graph");
             return Ok(());
         };
 
         if json {
-            return print_json(&report);
+            return print_report_json("taint", &report);
         }
 
         if report.paths.is_empty() {
-            info(&format!(
-                "No paths from \"{source}\" to \"{sink}\" within {} intermediate nodes",
-                report.max_intermediate_nodes
-            ));
+            if value_level {
+                // The value-level note explains the absence (no value flow,
+                // call-graph fallback, or coverage gaps) — print it instead
+                // of the generic intermediate-node-cap line.
+                if report.granularity == "value-level" {
+                    info(&format!(
+                        "No value-level flow from \"{source}\" to \"{sink}\""
+                    ));
+                } else {
+                    info(&format!("No paths from \"{source}\" to \"{sink}\""));
+                }
+                warn(&report.note);
+            } else {
+                info(&format!(
+                    "No paths from \"{source}\" to \"{sink}\" within {} intermediate nodes",
+                    report.max_intermediate_nodes
+                ));
+            }
             return Ok(());
         }
 
@@ -3582,6 +4204,1446 @@ fn cmd_analyze_taint(
 
     if let Err(msg) = body() {
         error_msg(&format!("analyze taint failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze co-change [symbol] [--min-support N] [--max-commits N]
+fn cmd_analyze_co_change(
+    symbol: Option<&str>,
+    min_support_arg: &str,
+    max_commits_arg: &str,
+    top_arg: &str,
+    path_arg: Option<&str>,
+    no_cache: bool,
+    json: bool,
+) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path, no_cache, json)?;
+        let seed = match symbol {
+            Some(symbol) => {
+                let Some(seed) = resolve_symbol_via_index(&project_path, &bridged.id_map, symbol)?
+                else {
+                    info(&format!(
+                        "Symbol \"{symbol}\" not found in the analysis graph"
+                    ));
+                    return Ok(());
+                };
+                Some(seed)
+            }
+            None => None,
+        };
+        let min_support = parse_int_js(min_support_arg).unwrap_or(2).max(1) as u32;
+        let max_commits = parse_int_js(max_commits_arg).unwrap_or(500).max(1) as usize;
+        let top = parse_int_js(top_arg).unwrap_or(25).max(1) as usize;
+        let report = analyze::co_change_report(
+            &bridged.graph,
+            &project_path,
+            seed.as_ref(),
+            min_support,
+            max_commits,
+            top,
+        );
+
+        if json {
+            return print_report_json("coChange", &report);
+        }
+
+        if report.commits_analyzed == 0 {
+            warn(&report.note);
+            return Ok(());
+        }
+        if report.pairs.is_empty() {
+            info(&format!(
+                "No cross-file co-change pairs at min support {} across {} commits{}",
+                report.min_support,
+                format_number(report.commits_analyzed as u64),
+                symbol
+                    .map(|s| format!(" touching \"{s}\""))
+                    .unwrap_or_default()
+            ));
+            return Ok(());
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "\nCo-change pairs ({} of {} cross-file, {} commits, min support {}):\n",
+                report.pairs.len(),
+                format_number(report.cross_file_pair_count as u64),
+                format_number(report.commits_analyzed as u64),
+                report.min_support
+            ))
+        );
+        for pair in &report.pairs {
+            println!(
+                "  {} {} {}",
+                white(&pair.a.name),
+                dim("<->"),
+                white(&pair.b.name)
+            );
+            println!(
+                "{}",
+                dim(&format!(
+                    "    together {}x, confidence {} ({} <-> {})",
+                    pair.times_changed_together,
+                    js_to_fixed(pair.confidence, 2),
+                    pair.a.file,
+                    pair.b.file
+                ))
+            );
+        }
+        println!();
+        if report.same_file_pair_count > 0 {
+            info(&format!(
+                "{} same-file pairs folded (same-file symbols co-change by construction)",
+                format_number(report.same_file_pair_count as u64)
+            ));
+        }
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze co-change failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze coverage --lcov <path> [--untested]
+fn cmd_analyze_coverage(
+    lcov: &str,
+    untested_only: bool,
+    top_arg: &str,
+    path_arg: Option<&str>,
+    no_cache: bool,
+    json: bool,
+) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let mut bridged = bridge_project(&project_path, no_cache, json)?;
+        let top = parse_int_js(top_arg).unwrap_or(50).max(1) as usize;
+        let report = analyze::coverage_report(
+            &mut bridged.graph,
+            Path::new(lcov),
+            &project_path,
+            untested_only,
+            top,
+        )?;
+
+        if json {
+            return print_report_json("coverage", &report);
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "\nCoverage: {} tested / {} untested of {} functions ({} LCOV files):\n",
+                format_number(report.functions_tested as u64),
+                format_number(report.functions_untested as u64),
+                format_number(report.functions_total as u64),
+                report.lcov_files
+            ))
+        );
+        for function in &report.functions {
+            print_symbol_line(
+                &function.symbol.kind,
+                &function.symbol.name,
+                &function.symbol.file,
+                function.symbol.line,
+            );
+            println!(
+                "{}",
+                if function.tested {
+                    dim(&format!("  tested ({} hits)", function.coverage_count))
+                } else {
+                    yellow("  untested")
+                }
+            );
+            println!();
+        }
+        if report.truncated {
+            info(&format!(
+                "Listing capped at {} {} raise with --top for more",
+                report.functions.len(),
+                get_glyphs().dash
+            ));
+        }
+        if report.parse_warnings > 0 {
+            warn(&format!(
+                "{} malformed LCOV lines skipped",
+                report.parse_warnings
+            ));
+        }
+        info(&report.note);
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze coverage failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze validate <symbol> --params-before N --params-after M
+fn cmd_analyze_validate(
+    symbol: &str,
+    params_before_arg: &str,
+    params_after_arg: &str,
+    path_arg: Option<&str>,
+    no_cache: bool,
+    json: bool,
+) {
+    let project_path = resolve_project_path(path_arg);
+
+    let parse_params = |label: &str, value: &str| -> usize {
+        match parse_int_js(value) {
+            Some(n) if n >= 0 => n as usize,
+            _ => {
+                error_msg(&format!(
+                    "--{label} must be a non-negative integer (got \"{value}\")."
+                ));
+                process::exit(1);
+            }
+        }
+    };
+    let params_before = parse_params("params-before", params_before_arg);
+    let params_after = parse_params("params-after", params_after_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path, no_cache, json)?;
+        let Some(target) = resolve_symbol_via_index(&project_path, &bridged.id_map, symbol)? else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+        let Some(report) =
+            analyze::validate_report(&bridged.graph, &target, params_before, params_after)
+        else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+
+        if json {
+            return print_report_json("validate", &report);
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "\nSignature change for \"{symbol}\": {} -> {} parameter{}\n",
+                report.params_before,
+                report.params_after,
+                if report.params_after == 1 { "" } else { "s" }
+            ))
+        );
+        if report.is_safe {
+            success(&format!(
+                "Safe: no incompatible callers ({} compatible)",
+                report.compatible.len()
+            ));
+        } else {
+            warn(&format!(
+                "Unsafe: {} caller{} updating",
+                report.incompatible.len(),
+                if report.incompatible.len() == 1 {
+                    " needs"
+                } else {
+                    "s need"
+                }
+            ));
+            println!();
+            for caller in &report.incompatible {
+                print_symbol_line(
+                    &caller.symbol.kind,
+                    &caller.symbol.name,
+                    &caller.symbol.file,
+                    caller.symbol.line,
+                );
+                println!("{}", dim(&format!("  {}", caller.reason)));
+                println!();
+            }
+        }
+        if !report.call_sites.is_empty() {
+            println!("{}", cyan("Affected call sites:"));
+            for site in &report.call_sites {
+                let loc = if site.line != 0 {
+                    format!(":{}", site.line)
+                } else {
+                    String::new()
+                };
+                println!(
+                    "  {} {}",
+                    white(&site.caller),
+                    dim(&format!("{}{loc}", site.file))
+                );
+            }
+            println!();
+        }
+        info(&report.note);
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze validate failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze traits [type]
+fn cmd_analyze_traits(type_name: Option<&str>, path_arg: Option<&str>, no_cache: bool, json: bool) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path, no_cache, json)?;
+        let report = analyze::traits_report(&bridged.graph, type_name);
+
+        if json {
+            return print_report_json("traits", &report);
+        }
+
+        if report.hierarchies.is_empty() && report.clusters.is_empty() {
+            match type_name {
+                Some(filter) => info(&format!(
+                    "No trait hierarchy or type cluster matches \"{filter}\""
+                )),
+                None => info(&report.note),
+            }
+            return Ok(());
+        }
+
+        if !report.hierarchies.is_empty() {
+            println!(
+                "{}",
+                bold(&format!("\nTrait hierarchies ({}):\n", report.trait_count))
+            );
+            for hierarchy in &report.hierarchies {
+                println!(
+                    "{} {}",
+                    cyan(&hierarchy.trait_ref.name),
+                    dim(&format!(
+                        "({} implementor{}, {})",
+                        hierarchy.implementor_count,
+                        if hierarchy.implementor_count == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                        hierarchy.trait_ref.file
+                    ))
+                );
+                for implementor in &hierarchy.implementors {
+                    println!("  {} {}", white(&implementor.name), dim(&implementor.file));
+                }
+                println!();
+            }
+        }
+
+        if !report.dispatch_calls.is_empty() {
+            println!(
+                "{}",
+                bold(&format!(
+                    "Trait-dispatch calls ({}):\n",
+                    report.dispatch_call_count
+                ))
+            );
+            for dispatch in &report.dispatch_calls {
+                println!(
+                    "  {} {} {} {}",
+                    white(&dispatch.caller.name),
+                    dim("->"),
+                    white(&dispatch.callee.name),
+                    dim(&format!("(via {})", dispatch.trait_ref.name))
+                );
+            }
+            println!();
+        }
+
+        if !report.clusters.is_empty() {
+            println!(
+                "{}",
+                bold(&format!(
+                    "Functions clustered by primary type ({}):\n",
+                    report.cluster_count
+                ))
+            );
+            for cluster in &report.clusters {
+                let names: Vec<&str> = cluster.functions.iter().map(|f| f.name.as_str()).collect();
+                let more = if cluster.truncated {
+                    format!(
+                        " (+{} more)",
+                        cluster.function_count - cluster.functions.len()
+                    )
+                } else {
+                    String::new()
+                };
+                println!(
+                    "{} {}",
+                    cyan(&cluster.primary_type.name),
+                    dim(&format!("({} functions)", cluster.function_count))
+                );
+                println!("  {}{}", names.join(", "), dim(&more));
+                println!();
+            }
+        }
+        info(&report.note);
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze traits failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze centrality [--top N]
+fn cmd_analyze_centrality(top_arg: &str, path_arg: Option<&str>, no_cache: bool, json: bool) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path, no_cache, json)?;
+        let top = parse_int_js(top_arg).unwrap_or(20).max(1) as usize;
+        let report = analyze::centrality_report(&bridged.graph, top);
+
+        if json {
+            return print_report_json("centrality", &report);
+        }
+
+        if report.nodes.is_empty() {
+            info("No symbols to rank (empty graph)");
+            return Ok(());
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "\nMost central symbols (PageRank over {} nodes, damping {}):\n",
+                format_number(report.analyzed as u64),
+                js_to_fixed(report.damping_factor, 2)
+            ))
+        );
+        for ranked in &report.nodes {
+            print_symbol_line(
+                &ranked.symbol.kind,
+                &ranked.symbol.name,
+                &ranked.symbol.file,
+                ranked.symbol.line,
+            );
+            println!(
+                "{}",
+                dim(&format!("  score {}", js_to_fixed(ranked.score, 4)))
+            );
+            println!();
+        }
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze centrality failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze critical
+fn cmd_analyze_critical(top_arg: &str, path_arg: Option<&str>, no_cache: bool, json: bool) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path, no_cache, json)?;
+        let top = parse_int_js(top_arg).unwrap_or(25).max(1) as usize;
+        let report = analyze::critical_report(&bridged.graph, top);
+
+        if json {
+            return print_report_json("critical", &report);
+        }
+
+        if report.nodes.is_empty() && report.bridges.is_empty() {
+            success("No articulation nodes or bridge edges — no single point of failure");
+            return Ok(());
+        }
+
+        if !report.nodes.is_empty() {
+            println!(
+                "{}",
+                bold(&format!(
+                    "\nArticulation nodes ({}) — removal disconnects the graph:\n",
+                    report.articulation_count
+                ))
+            );
+            for node in &report.nodes {
+                print_symbol_line(&node.kind, &node.name, &node.file, node.line);
+                println!();
+            }
+        }
+        if !report.bridges.is_empty() {
+            println!(
+                "{}",
+                bold(&format!("Bridge edges ({}):\n", report.bridge_count))
+            );
+            for bridge in &report.bridges {
+                println!(
+                    "  {} {} {}",
+                    white(&bridge.from.name),
+                    dim("->"),
+                    white(&bridge.to.name)
+                );
+            }
+            println!();
+        }
+        if report.truncated {
+            info(&format!(
+                "Output capped {} raise with --top for more",
+                get_glyphs().dash
+            ));
+        }
+        info(&report.note);
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze critical failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze export --format dot [--symbol <s> --depth N]
+///
+/// Human output is the raw DOT document (pipe straight to `dot -Tsvg`);
+/// `--json` wraps it in the envelope.
+fn cmd_analyze_export(
+    format: &str,
+    symbol: Option<&str>,
+    depth_arg: &str,
+    path_arg: Option<&str>,
+    no_cache: bool,
+    json: bool,
+) {
+    if format != "dot" {
+        error_msg(&format!(
+            "--format must be \"dot\" (got \"{format}\"); other formats are not supported yet."
+        ));
+        process::exit(1);
+    }
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        // The DOT goes to stdout verbatim — suppress the human-mode cache
+        // notice so the output stays pipeable.
+        let bridged = bridge_project(&project_path, no_cache, true)?;
+        let seed = match symbol {
+            Some(symbol) => {
+                let Some(seed) = resolve_symbol_via_index(&project_path, &bridged.id_map, symbol)?
+                else {
+                    info(&format!(
+                        "Symbol \"{symbol}\" not found in the analysis graph"
+                    ));
+                    return Ok(());
+                };
+                Some(seed)
+            }
+            None => None,
+        };
+        let depth = parse_int_js(depth_arg).unwrap_or(2).clamp(1, 64) as usize;
+        let Some(report) = analyze::export_report(&bridged.graph, seed.as_ref(), depth) else {
+            info(&format!(
+                "Symbol \"{}\" not found in the analysis graph",
+                symbol.unwrap_or_default()
+            ));
+            return Ok(());
+        };
+
+        if json {
+            return print_report_json("export", &report);
+        }
+
+        print!("{}", report.dot);
+        let _ = io::stdout().flush();
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze export failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze types <symbol>
+fn cmd_analyze_types(symbol: &str, path_arg: Option<&str>, no_cache: bool, json: bool) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let mut bridged = bridge_project(&project_path, no_cache, json)?;
+        let Some(target) = resolve_symbol_via_index(&project_path, &bridged.id_map, symbol)? else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+        let Some(report) = analyze::types_report(&mut bridged.graph, &target)? else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+
+        if json {
+            return print_report_json("types", &report);
+        }
+
+        println!(
+            "{}",
+            bold(&format!("\nPossible concrete types for \"{symbol}\":\n"))
+        );
+        if report.input_types.is_empty() && report.return_types.is_empty() {
+            info(&report.note);
+            return Ok(());
+        }
+        if !report.input_types.is_empty() {
+            println!(
+                "{} {}",
+                cyan("inputs: "),
+                white(&report.input_types.join(", "))
+            );
+        }
+        if !report.return_types.is_empty() {
+            println!(
+                "{} {}",
+                cyan("returns:"),
+                white(&report.return_types.join(", "))
+            );
+        }
+        println!();
+        info(&format!(
+            "{} functions annotated by the propagation pass",
+            format_number(report.functions_annotated as u64)
+        ));
+        info(&report.note);
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze types failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze generics [symbol]
+fn cmd_analyze_generics(symbol: Option<&str>, path_arg: Option<&str>, no_cache: bool, json: bool) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path, no_cache, json)?;
+        let report = analyze::generics_report(&bridged.graph, symbol);
+
+        if json {
+            return print_report_json("generics", &report);
+        }
+
+        if !report.instantiations.is_empty() {
+            println!(
+                "{}",
+                bold(&format!(
+                    "\nGeneric instantiations ({}):\n",
+                    report.instantiation_count
+                ))
+            );
+            for instantiation in &report.instantiations {
+                println!(
+                    "  {} {} {} {}",
+                    white(&instantiation.generic.name),
+                    dim("<-"),
+                    white(&instantiation.callsite.name),
+                    dim(&format!("[{}]", instantiation.type_args.join(", ")))
+                );
+            }
+            println!();
+        }
+        if !report.likely_generic_definitions.is_empty() {
+            println!(
+                "{}",
+                bold(&format!(
+                    "\nLikely generic definitions ({}, signature heuristic):\n",
+                    report.likely_generic_count
+                ))
+            );
+            for definition in &report.likely_generic_definitions {
+                print_symbol_line(
+                    &definition.symbol.kind,
+                    &definition.symbol.name,
+                    &definition.symbol.file,
+                    definition.symbol.line,
+                );
+                println!(
+                    "{}",
+                    dim(&format!(
+                        "  type params: {}",
+                        definition.type_params.join(", ")
+                    ))
+                );
+                println!();
+            }
+        }
+        if report.instantiations.is_empty() && report.likely_generic_definitions.is_empty() {
+            match symbol {
+                Some(filter) => info(&format!("No generic definition matches \"{filter}\"")),
+                None => info("No generic definitions detected"),
+            }
+        }
+        info(&report.note);
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze generics failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze boundaries
+fn cmd_analyze_boundaries(path_arg: Option<&str>, no_cache: bool, json: bool) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let mut bridged = bridge_project(&project_path, no_cache, json)?;
+        let report = analyze::boundaries_report(&mut bridged.graph);
+
+        if json {
+            return print_report_json("boundaries", &report);
+        }
+
+        if report.boundary_count == 0 {
+            warn(&report.note);
+            return Ok(());
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "\nCross-language boundaries ({}):\n",
+                report.boundary_count
+            ))
+        );
+        if !report.http_routes.is_empty() {
+            println!("{}", cyan("HTTP routes:"));
+            for route in &report.http_routes {
+                println!(
+                    "  {} {} {}",
+                    white(&format!("{} {}", route.method, route.path)),
+                    dim("->"),
+                    white(&route.provider.name)
+                );
+            }
+            println!();
+        }
+        if !report.ffi_exports.is_empty() {
+            println!("{}", cyan("FFI exports (C ABI):"));
+            for export in &report.ffi_exports {
+                println!(
+                    "  {} {}",
+                    white(&export.symbol_name),
+                    dim(&export.provider.file)
+                );
+            }
+            println!();
+        }
+        if !report.wasm_boundaries.is_empty() {
+            println!("{}", cyan("WASM boundaries:"));
+            for boundary in &report.wasm_boundaries {
+                let module = boundary
+                    .module
+                    .as_ref()
+                    .map(|m| format!("{m}."))
+                    .unwrap_or_default();
+                println!(
+                    "  {} {}{} {}",
+                    dim(&boundary.direction),
+                    dim(&module),
+                    white(&boundary.name),
+                    dim(&boundary.provider.file)
+                );
+            }
+            println!();
+        }
+        info(&format!(
+            "Cross-language stitching: {} clients seen, {} call edges emitted",
+            report.cross_language_calls.clients_seen, report.cross_language_calls.edges_emitted
+        ));
+        info(&report.note);
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze boundaries failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze capabilities
+///
+/// Pure environment read — works without an initialized project.
+fn cmd_analyze_capabilities(json: bool) {
+    let report = analyze::capabilities_report();
+
+    if json {
+        if let Err(msg) = print_report_json("capabilities", &report) {
+            error_msg(&format!("analyze capabilities failed: {msg}"));
+            process::exit(1);
+        }
+        return;
+    }
+
+    println!("{}", bold("\nAnalysis-engine capabilities:\n"));
+    for capability in &report.capabilities {
+        let state = if capability.enabled {
+            green("on ")
+        } else {
+            red("off")
+        };
+        println!(
+            "  {} {} {}",
+            state,
+            white(&format!("{:<18}", capability.name)),
+            dim(&capability.env_var)
+        );
+        if let Some(value) = &capability.env_value {
+            println!("{}", dim(&format!("      env override: \"{value}\"")));
+        }
+        if !capability.disables.is_empty() {
+            println!(
+                "{}",
+                dim(&format!(
+                    "      disabling also disables: {}",
+                    capability.disables.join(", ")
+                ))
+            );
+        }
+    }
+    println!();
+    info(&report.note);
+}
+
+/// codegraph analyze schema <kind>
+///
+/// Prints the engine's JSON Schema document verbatim (it is already JSON, so
+/// `--json` prints the same bytes). Works without an initialized project.
+fn cmd_analyze_schema(kind: &str, _json: bool) {
+    match analyze::schema_text(kind) {
+        Ok(schema) => println!("{schema}"),
+        Err(msg) => {
+            error_msg(&format!("analyze schema failed: {msg}"));
+            process::exit(1);
+        }
+    }
+}
+
+/// codegraph analyze stats [--estimate-reachability]
+fn cmd_analyze_stats(
+    estimate_reachability: bool,
+    top_arg: &str,
+    path_arg: Option<&str>,
+    no_cache: bool,
+    json: bool,
+) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path, no_cache, json)?;
+        let top = parse_int_js(top_arg).unwrap_or(10).max(1) as usize;
+        let report = analyze::stats_report(&bridged.graph, estimate_reachability, top);
+
+        if json {
+            return print_report_json("stats", &report);
+        }
+
+        println!("{}", bold("\nBridged analysis graph:\n"));
+        let nodes_by_kind: Vec<String> = report
+            .nodes_by_kind
+            .iter()
+            .map(|(kind, count)| format!("{kind} {}", format_number(*count as u64)))
+            .collect();
+        let edges_by_kind: Vec<String> = report
+            .edges_by_kind
+            .iter()
+            .map(|(kind, count)| format!("{kind} {}", format_number(*count as u64)))
+            .collect();
+        println!(
+            "  {} {}",
+            white(&format!(
+                "{} nodes",
+                format_number(report.node_count as u64)
+            )),
+            dim(&format!("({})", nodes_by_kind.join(", ")))
+        );
+        println!(
+            "  {} {}",
+            white(&format!(
+                "{} edges",
+                format_number(report.edge_count as u64)
+            )),
+            dim(&format!("({})", edges_by_kind.join(", ")))
+        );
+        println!(
+            "  {} {}",
+            white(&format!(
+                "{} files",
+                format_number(report.file_count as u64)
+            )),
+            dim(&format!(
+                "{} unresolved-call placeholders",
+                format_number(report.placeholder_count as u64)
+            ))
+        );
+        println!();
+
+        if let Some(reachability) = &report.reachability {
+            println!(
+                "{}",
+                bold(&format!(
+                    "Widest-reaching symbols ({}):\n",
+                    reachability.method
+                ))
+            );
+            for entry in &reachability.top {
+                println!(
+                    "  {} {}",
+                    white(&entry.symbol.name),
+                    dim(&format!(
+                        "reaches {}, reached by {} ({})",
+                        js_to_fixed(entry.descendants, 0),
+                        js_to_fixed(entry.ancestors, 0),
+                        entry.symbol.file
+                    ))
+                );
+            }
+            println!();
+            info(&reachability.note);
+        }
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze stats failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze cfg <symbol>
+///
+/// Control-flow graph of one function, built by re-parsing its on-disk
+/// source with the host grammars (the `analyze complexity` anchor pattern).
+/// Languages without engine CFG rules get the report's honest capability
+/// note instead of an empty graph.
+fn cmd_analyze_cfg(symbol: &str, path_arg: Option<&str>, no_cache: bool, json: bool) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path, no_cache, json)?;
+        let Some(target) = resolve_symbol_via_index(&project_path, &bridged.id_map, symbol)? else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+        let Some(report) = analyze_ir::cfg_report(&bridged.graph, &project_path, &target) else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+
+        if json {
+            return print_report_json("cfg", &report);
+        }
+
+        if !report.analyzed {
+            // Honest capability note — never an empty block list.
+            warn(&report.note);
+            return Ok(());
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "\nControl-flow graph of \"{}\" ({} block{}, {} edge{}):\n",
+                report.symbol.name,
+                report.block_count,
+                if report.block_count == 1 { "" } else { "s" },
+                report.edge_count,
+                if report.edge_count == 1 { "" } else { "s" },
+            ))
+        );
+        print_symbol_line(
+            &report.symbol.kind,
+            &report.symbol.name,
+            &report.symbol.file,
+            report.symbol.line,
+        );
+        println!();
+        println!("{}", cyan("Blocks:"));
+        for block in &report.blocks {
+            let lines = if block.start_line == 0 && block.end_line == 0 {
+                String::new()
+            } else if block.start_line == block.end_line {
+                format!("  line {}", block.start_line)
+            } else {
+                format!("  lines {}-{}", block.start_line, block.end_line)
+            };
+            println!(
+                "  {} {}{}",
+                white(&format!("[{}] {}", block.id, block.label)),
+                dim(&format!("({})", block.kind)),
+                dim(&lines)
+            );
+        }
+        println!();
+        println!("{}", cyan("Edges:"));
+        for edge in &report.edges {
+            println!(
+                "  {} {} {} {}",
+                white(&edge.from.to_string()),
+                dim("->"),
+                white(&edge.to.to_string()),
+                dim(&format!("({})", edge.kind))
+            );
+        }
+        println!();
+        info(&report.note);
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze cfg failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// codegraph analyze dataflow <symbol>
+///
+/// Per-function dataflow facts (params, returns, assignments, argument
+/// flows, mutations), same source re-parse anchoring as `analyze cfg`.
+fn cmd_analyze_dataflow(symbol: &str, path_arg: Option<&str>, no_cache: bool, json: bool) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path, no_cache, json)?;
+        let Some(target) = resolve_symbol_via_index(&project_path, &bridged.id_map, symbol)? else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+        let Some(report) = analyze_ir::dataflow_report(&bridged.graph, &project_path, &target)
+        else {
+            info(&format!(
+                "Symbol \"{symbol}\" not found in the analysis graph"
+            ));
+            return Ok(());
+        };
+
+        if json {
+            return print_report_json("dataflow", &report);
+        }
+
+        if !report.analyzed {
+            // Honest capability note — never empty fact sections.
+            warn(&report.note);
+            return Ok(());
+        }
+
+        println!(
+            "{}",
+            bold(&format!("\nDataflow of \"{}\":\n", report.symbol.name))
+        );
+        print_symbol_line(
+            &report.symbol.kind,
+            &report.symbol.name,
+            &report.symbol.file,
+            report.symbol.line,
+        );
+        println!();
+
+        if !report.params.is_empty() {
+            println!("{}", cyan("Params:"));
+            for p in &report.params {
+                let ty = p
+                    .type_annotation
+                    .as_deref()
+                    .map(|t| format!(": {t}"))
+                    .unwrap_or_default();
+                let default = if p.has_default { " (has default)" } else { "" };
+                println!(
+                    "  {}{}",
+                    white(&format!("{}{ty}", p.name)),
+                    dim(&format!("  position {}{default}", p.position))
+                );
+            }
+            println!();
+        }
+        if !report.assignments.is_empty() {
+            println!("{}", cyan("Assignments:"));
+            for a in &report.assignments {
+                println!(
+                    "  {} {}",
+                    white(&a.target),
+                    dim(&format!("<- {} (line {})", a.source_kind, a.line))
+                );
+            }
+            println!();
+        }
+        if !report.returns.is_empty() {
+            println!("{}", cyan("Returns:"));
+            for r in &report.returns {
+                println!(
+                    "  {} {}",
+                    white(&r.expression),
+                    dim(&format!("(line {})", r.line))
+                );
+            }
+            println!();
+        }
+        if !report.arg_flows.is_empty() {
+            println!("{}", cyan("Argument flows:"));
+            for f in &report.arg_flows {
+                let from = f
+                    .source_param
+                    .as_deref()
+                    .map(|p| format!("param {p} -> "))
+                    .unwrap_or_default();
+                println!(
+                    "  {} {}",
+                    white(&format!("{from}{} arg {}", f.callee, f.arg_position)),
+                    dim(&format!("(line {})", f.line))
+                );
+            }
+            println!();
+        }
+        if !report.mutations.is_empty() {
+            println!("{}", cyan("Mutations:"));
+            for m in &report.mutations {
+                println!(
+                    "  {} {}",
+                    white(&format!("{}.{}", m.target, m.method)),
+                    dim(&format!("(line {})", m.line))
+                );
+            }
+            println!();
+        }
+        if report.params.is_empty()
+            && report.assignments.is_empty()
+            && report.returns.is_empty()
+            && report.arg_flows.is_empty()
+            && report.mutations.is_empty()
+        {
+            info(&format!(
+                "No dataflow facts in \"{}\" {} the body has no params, assignments, returns, \
+                 argument flows, or mutations",
+                report.symbol.name,
+                get_glyphs().dash
+            ));
+        }
+        info(&report.note);
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze dataflow failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+/// The honest no-base note `analyze diff` prints (exit 0): a diff needs a
+/// snapshot of the pre-edit state, and any analyze command caches one.
+const NO_BASE_NOTE: &str = "no base snapshot — run any analyze command on the base state first";
+
+/// codegraph analyze diff [--base <snapshot|auto>] [--depth N] [--top N]
+///
+/// Working-tree vs base. Bridges the current index FIRST (which refreshes
+/// the snapshot cache — rotation preserves the pre-edit generation as
+/// `.prev`), then resolves the base: `auto` picks the last cached snapshot
+/// built from a different index fingerprint (stale current generation, else
+/// `.prev`); an explicit path loads a snapshot file or cache directory.
+/// After diffing, the working tree's per-function complexity is written as
+/// a sidecar next to the current snapshot so the NEXT diff has before
+/// metrics.
+fn cmd_analyze_diff(
+    base_arg: &str,
+    depth_arg: &str,
+    top_arg: &str,
+    path_arg: Option<&str>,
+    no_cache: bool,
+    json: bool,
+) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        // Same init/open contract as `bridge_project`, but the fingerprint
+        // is needed for base resolution, so the cache wrapper is driven
+        // directly here.
+        if !is_initialized(&project_path) {
+            error_msg(&format!(
+                "CodeGraph not initialized in {}",
+                project_path.display()
+            ));
+            info("Run \"codegraph init\" first");
+            process::exit(1);
+        }
+        let conn = DatabaseConnection::open(get_database_path(&project_path))
+            .map_err(|e| e.to_string())?;
+        let queries = QueryBuilder::new(conn.get_db().map_err(|e| e.to_string())?);
+        let fingerprint = compute_index_fingerprint(&queries).map_err(|e| e.to_string())?;
+        let cached = build_analysis_graph_cached(&queries, &project_path, !no_cache)
+            .map_err(|e| e.to_string())?;
+        if cached.from_cache && !json {
+            println!("{}", dim("(cached graph)"));
+        }
+        let bridged = cached.result;
+
+        let base = if base_arg == "auto" {
+            load_auto_base_snapshot(&project_path, fingerprint)
+        } else {
+            Some(
+                load_explicit_base_snapshot(Path::new(base_arg))
+                    .map_err(|e| format!("cannot load base snapshot \"{base_arg}\": {e}"))?,
+            )
+        };
+        let Some(base) = base else {
+            // Honest no-base case (exit 0): nothing older than the working
+            // tree is cached. This run primed the cache, so after the next
+            // edit + re-index a plain `analyze diff` will work.
+            if json {
+                return print_report_json(
+                    "diff",
+                    &serde_json::json!({ "baseAvailable": false, "note": NO_BASE_NOTE }),
+                );
+            }
+            info(NO_BASE_NOTE);
+            return Ok(());
+        };
+
+        let depth = parse_int_js(depth_arg).unwrap_or(3).max(1) as usize;
+        let top = parse_int_js(top_arg).unwrap_or(50).max(1) as usize;
+        let current_complexity = analyze::measure_complexity_map(&bridged.graph, &project_path);
+        let report = analyze::diff_report(&base, &bridged.graph, &current_complexity, depth, top);
+        // Best-effort: annotate the current generation so the next diff has
+        // before-metrics. A failure only degrades that future report.
+        let _ = store_complexity_sidecar(&project_path, fingerprint, &current_complexity);
+
+        if json {
+            return print_report_json("diff", &report);
+        }
+
+        let base_label = match &report.base.index_fingerprint {
+            Some(fp) => format!("{} {fp}", report.base.source),
+            None => report.base.source.clone(),
+        };
+        if report.nodes_added_count == 0
+            && report.nodes_removed_count == 0
+            && report.nodes_changed_count == 0
+            && report.edges_added_count == 0
+            && report.edges_removed_count == 0
+        {
+            success(&format!(
+                "No differences vs the base snapshot ({base_label})"
+            ));
+            return Ok(());
+        }
+
+        println!(
+            "{}",
+            bold(&format!("\nDiff vs base snapshot ({base_label}):\n"))
+        );
+
+        println!(
+            "{}",
+            bold(&format!(
+                "Nodes: {} added, {} removed, {} changed",
+                report.nodes_added_count, report.nodes_removed_count, report.nodes_changed_count
+            ))
+        );
+        let loc = |file: &str, line: u32| {
+            if line != 0 {
+                format!("{file}:{line}")
+            } else {
+                file.to_string()
+            }
+        };
+        for n in &report.nodes_added {
+            println!(
+                "  {} {} {} {}",
+                green("+"),
+                cyan(&n.kind),
+                white(&n.name),
+                dim(&loc(&n.file, n.line))
+            );
+        }
+        for n in &report.nodes_removed {
+            println!(
+                "  {} {} {} {}",
+                red("-"),
+                cyan(&n.kind),
+                white(&n.name),
+                dim(&loc(&n.file, n.line))
+            );
+        }
+        for n in &report.nodes_changed {
+            println!(
+                "  {} {} {} {} {}",
+                yellow("~"),
+                cyan(&n.symbol.kind),
+                white(&n.symbol.name),
+                dim(&loc(&n.symbol.file, n.symbol.line)),
+                dim(&format!("({})", n.reasons.join(", ")))
+            );
+        }
+        println!();
+
+        if report.edges_added_count > 0 || report.edges_removed_count > 0 {
+            println!(
+                "{}",
+                bold(&format!(
+                    "Edges: {} added, {} removed",
+                    report.edges_added_count, report.edges_removed_count
+                ))
+            );
+            for e in &report.edges_added {
+                println!(
+                    "  {} {} {} {} {}",
+                    green("+"),
+                    white(&e.from),
+                    dim("->"),
+                    white(&e.to),
+                    dim(&format!("({})", e.kind))
+                );
+            }
+            for e in &report.edges_removed {
+                println!(
+                    "  {} {} {} {} {}",
+                    red("-"),
+                    white(&e.from),
+                    dim("->"),
+                    white(&e.to),
+                    dim(&format!("({})", e.kind))
+                );
+            }
+            println!();
+        }
+
+        if !report.changed_functions.is_empty() {
+            println!("{}", bold("Changed functions (complexity):"));
+            let fmt_metric = |before: Option<u32>, after: Option<u32>, delta: Option<i64>| {
+                let b = before.map_or("?".to_string(), |v| v.to_string());
+                let a = after.map_or("?".to_string(), |v| v.to_string());
+                match delta {
+                    Some(d) => format!("{b} -> {a} ({d:+})"),
+                    None => format!("{b} -> {a}"),
+                }
+            };
+            for f in &report.changed_functions {
+                println!(
+                    "  {} {} {} {}",
+                    white(&f.symbol.name),
+                    dim(&format!(
+                        "cyclomatic {}",
+                        fmt_metric(f.cyclomatic_before, f.cyclomatic_after, f.cyclomatic_delta)
+                    )),
+                    dim(&format!(
+                        "cognitive {}",
+                        fmt_metric(f.cognitive_before, f.cognitive_after, f.cognitive_delta)
+                    )),
+                    dim(&format!("lines {} -> {}", f.lines_before, f.lines_after))
+                );
+            }
+            println!();
+        }
+
+        if report.new_cycle_count > 0 {
+            println!(
+                "{}",
+                bold(&format!(
+                    "Newly-introduced cycles ({}):",
+                    report.new_cycle_count
+                ))
+            );
+            for cycle in &report.new_cycles {
+                let members: Vec<&str> = cycle.members.iter().map(|m| m.name.as_str()).collect();
+                println!(
+                    "  {} {}",
+                    cyan(cycle_kind_label(&cycle.kind)),
+                    white(&members.join(", "))
+                );
+            }
+            println!();
+        }
+        if report.resolved_cycle_count > 0 {
+            info(&format!(
+                "{} cycle{} from the base no longer exist{}",
+                report.resolved_cycle_count,
+                if report.resolved_cycle_count == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                if report.resolved_cycle_count == 1 {
+                    "s"
+                } else {
+                    ""
+                }
+            ));
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "Impact of the delta (depth {}): {} symbol{}",
+                report.impact.depth,
+                report.impact.impacted_count,
+                if report.impact.impacted_count == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ))
+        );
+        for n in &report.impact.nodes {
+            println!(
+                "  {} {} {}",
+                cyan(&n.kind),
+                white(&n.name),
+                dim(&loc(&n.file, n.line))
+            );
+        }
+        println!();
+
+        if report.truncated || report.impact.truncated {
+            info(&format!(
+                "Listings capped at {top} entries {} raise --top for more (counts are exact)",
+                get_glyphs().dash
+            ));
+        }
+        info(&report.note);
+
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze diff failed: {msg}"));
         process::exit(1);
     }
 }

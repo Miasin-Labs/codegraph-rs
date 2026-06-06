@@ -271,6 +271,62 @@ impl GraphSession {
         self.capabilities.is_enabled(cap)
     }
 
+    // ── Partial-struct field registration (host-bridged field data) ──────
+    //
+    // Hosts whose own index carries field/property data the graph
+    // projection drops register it here; `partial_struct` then renders
+    // field-level views. All three methods honor the `PartialStruct`
+    // capability (`CODEGRAPH_ANALYSIS_CAP_PARTIAL_STRUCT=0` disables) and
+    // return [`crate::partial::PartialStructError::Disabled`] rather than
+    // silently doing nothing.
+
+    /// Register the field list of a `Struct` node. Typed wrapper over
+    /// [`crate::partial::set_struct_fields`]; invalidates memoised queries
+    /// that read the node.
+    pub fn register_struct_fields(
+        &mut self,
+        struct_id: &NodeId,
+        fields: &[crate::partial::FieldInfo],
+    ) -> Result<(), crate::partial::PartialStructError> {
+        if !self.capabilities.is_enabled(Capability::PartialStruct) {
+            return Err(crate::partial::PartialStructError::Disabled);
+        }
+        crate::partial::set_struct_fields(&mut self.graph, struct_id, fields)?;
+        self.query_cache.invalidate_for_node(struct_id);
+        Ok(())
+    }
+
+    /// Register the struct-field names a `Function` node accesses. An empty
+    /// slice clears the annotation. Typed wrapper over
+    /// [`crate::partial::set_accessed_fields`].
+    pub fn register_accessed_fields(
+        &mut self,
+        fn_id: &NodeId,
+        accessed: &[String],
+    ) -> Result<(), crate::partial::PartialStructError> {
+        if !self.capabilities.is_enabled(Capability::PartialStruct) {
+            return Err(crate::partial::PartialStructError::Disabled);
+        }
+        crate::partial::set_accessed_fields(&mut self.graph, fn_id, accessed)?;
+        self.query_cache.invalidate_for_node(fn_id);
+        Ok(())
+    }
+
+    /// Field-level view of `struct_id` as seen from `accessing_fn`, with
+    /// precise errors (missing node / wrong kind / no field data /
+    /// capability disabled) so callers can render an honest note instead
+    /// of an empty section.
+    pub fn partial_struct(
+        &self,
+        struct_id: &NodeId,
+        accessing_fn: &NodeId,
+    ) -> Result<crate::partial::PartialView, crate::partial::PartialStructError> {
+        if !self.capabilities.is_enabled(Capability::PartialStruct) {
+            return Err(crate::partial::PartialStructError::Disabled);
+        }
+        crate::partial::try_get_partial_struct(&self.graph, struct_id, accessing_fn)
+    }
+
     /// Build an agent-friendly `context()` payload — entry points,
     /// related symbols, optional source blocks, all rendered as
     /// budget-bounded markdown with intent-aware reminders. Mirrors
@@ -1445,6 +1501,95 @@ mod tests {
         let session = GraphSession::from_directory(fixtures_dir());
         let out = session.grep("(unclosed", None, 10);
         assert!(out.contains("Invalid regex"));
+    }
+
+    // Normal + robust: the partial-struct registration surface — register
+    // field data on a snapshot session (the bridge path), render the view,
+    // and verify the capability flag gates all three methods with an
+    // honest `Disabled` error instead of silence.
+    #[test]
+    fn partial_struct_registration_and_capability_gate() {
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        use crate::nodes::{NodeKind, Span, Visibility};
+        use crate::partial::{FieldInfo, PartialStructError};
+
+        fn node(name: &str, kind: NodeKind) -> NodeData {
+            NodeData {
+                id: crate::nodes::NodeId::new("t.rs", &format!("crate::{name}"), kind),
+                kind,
+                name: name.to_string(),
+                qualified_name: format!("crate::{name}"),
+                file_path: PathBuf::from("t.rs"),
+                span: Span {
+                    file: PathBuf::from("t.rs"),
+                    start_line: 1,
+                    start_col: 0,
+                    end_line: 3,
+                    end_col: 1,
+                    byte_range: 0..10,
+                },
+                visibility: Visibility::Public,
+                metadata: HashMap::new(),
+                birth_revision: 0,
+                last_modified_revision: 0,
+                complexity: None,
+                cfg: None,
+                dataflow: None,
+            }
+        }
+
+        let mut graph = CodeGraph::new();
+        let struct_id = graph.add_node(node("Config", NodeKind::Struct));
+        let fn_id = graph.add_node(node("load", NodeKind::Function));
+        let mut session = GraphSession::from_snapshot(graph, fixtures_dir());
+        // Hermetic: don't depend on the test environment's CAP_* vars.
+        session.capabilities.enable(Capability::PartialStruct);
+
+        // Unregistered struct → precise NoFieldData, not a silent empty.
+        assert!(matches!(
+            session.partial_struct(&struct_id, &fn_id),
+            Err(PartialStructError::NoFieldData(_))
+        ));
+
+        let fields = vec![
+            FieldInfo {
+                name: "path".into(),
+                type_str: "std::path::PathBuf".into(),
+                is_public: true,
+            },
+            FieldInfo {
+                name: "retries".into(),
+                type_str: "u32".into(),
+                is_public: false,
+            },
+        ];
+        session.register_struct_fields(&struct_id, &fields).unwrap();
+        session
+            .register_accessed_fields(&fn_id, &["path".to_string()])
+            .unwrap();
+
+        let view = session.partial_struct(&struct_id, &fn_id).unwrap();
+        assert!(view.is_partial);
+        assert_eq!(view.all_fields.len(), 2);
+        assert_eq!(view.visible_fields().len(), 1);
+        assert_eq!(view.visible_fields()[0].type_str, "std::path::PathBuf");
+
+        // Capability off → every entry point reports Disabled.
+        session.capabilities.disable(Capability::PartialStruct);
+        assert_eq!(
+            session.partial_struct(&struct_id, &fn_id),
+            Err(PartialStructError::Disabled)
+        );
+        assert_eq!(
+            session.register_struct_fields(&struct_id, &fields),
+            Err(PartialStructError::Disabled)
+        );
+        assert_eq!(
+            session.register_accessed_fields(&fn_id, &[]),
+            Err(PartialStructError::Disabled)
+        );
     }
 
     #[test]

@@ -75,6 +75,12 @@
 //! failures (missing, corrupt, schema/version/fingerprint mismatch) degrade
 //! to a silent rebuild; the cache is never load-bearing for correctness.
 //!
+//! One **previous generation** is kept: a store whose fingerprint differs
+//! from the cached one first rotates `graph.bin`/`meta.json` (and the
+//! optional `complexity.json` sidecar `analyze diff` writes) to `.prev`.
+//! That rotated generation is what `codegraph analyze diff --base auto`
+//! compares the working tree against ([`load_auto_base_snapshot`]).
+//!
 //! `CODEGRAPH_ANALYSIS_CACHE_DIR` (the analysis engine's post-rebrand cache
 //! env var) overrides the location: the snapshot then lives under
 //! `<override>/<workspace-key>/`, where the key is a stable 16-hex digest of
@@ -155,6 +161,12 @@ pub struct BridgeStats {
     pub unresolved_skipped: usize,
     /// Placeholder `Function` nodes created to anchor `UnresolvedCall` edges.
     pub placeholder_nodes: usize,
+    /// Mapped (inserted) nodes whose database row lacks byte offsets
+    /// (`start_byte`/`end_byte` NULL — indexed before schema v5 or by an
+    /// extractor that doesn't track byte offsets). Their analysis spans
+    /// carry the degraded `byte_range: 0..0`, so IR-backed analyses skip
+    /// them; a re-index with a v5+ binary backfills tree-sitter offsets.
+    pub nodes_missing_byte_range: usize,
     /// Skipped node counts keyed by codegraph node kind.
     pub skipped_node_kinds: BTreeMap<String, usize>,
     /// Skipped edge counts keyed by reason.
@@ -281,10 +293,12 @@ fn node_span(node: &Node) -> ASpan {
         start_col: node.start_column,
         end_line: node.end_line,
         end_col: node.end_column,
-        // Byte offsets are not stored in the codegraph schema; 0..0 is the
-        // documented "unknown" value (the analysis crate only needs byte
-        // ranges for source-backed lowering, which the bridge skips).
-        byte_range: 0..0,
+        // Schema v5 stores tree-sitter byte offsets on nodes; rows indexed
+        // before v5 (or by extractors that don't track byte offsets) carry
+        // NULL and degrade to 0..0 — the documented "unknown" value. Real
+        // ranges unlock source-backed lowering (ir_map, value-level
+        // slicing/taint) over the bridged graph.
+        byte_range: node.byte_range().unwrap_or(0..0),
     }
 }
 
@@ -509,6 +523,9 @@ pub fn build_analysis_graph(queries: &QueryBuilder) -> Result<BridgeResult> {
             metadata.insert("accessed_fields".to_string(), serde_json::to_string(&arr)?);
         }
 
+        if node.byte_range().is_none() {
+            stats.nodes_missing_byte_range += 1;
+        }
         graph.add_node(ANodeData {
             id: aid.clone(),
             kind: *akind,
@@ -650,6 +667,7 @@ pub fn build_analysis_graph(queries: &QueryBuilder) -> Result<BridgeResult> {
             "edgesEnriched": stats.edges_enriched,
             "unresolvedMapped": stats.unresolved_mapped,
             "placeholderNodes": stats.placeholder_nodes,
+            "nodesMissingByteRange": stats.nodes_missing_byte_range,
             "skippedNodeKinds": stats.skipped_node_kinds,
             "skippedEdgeReasons": stats.skipped_edge_reasons,
         })),
@@ -684,9 +702,25 @@ const GRAPH_SNAPSHOT_FILE: &str = "graph.bin";
 /// [`GRAPH_SNAPSHOT_FILE`].
 const CACHE_META_FILE: &str = "meta.json";
 
+/// Suffix appended to every cache file when a store rotates the existing
+/// generation aside. Exactly one previous generation is kept — the rotation
+/// overwrites any older `.prev` files.
+const PREV_SUFFIX: &str = ".prev";
+
+/// Optional per-function complexity sidecar (`complexity.json`), written by
+/// `codegraph analyze diff` after it measures the working tree so the *next*
+/// diff has before-metrics for its base. Validated against the generation's
+/// index fingerprint; absent or stale sidecars simply mean "no base
+/// complexity" — never an error.
+const COMPLEXITY_SIDECAR_FILE: &str = "complexity.json";
+
 /// Version of the `meta.json` envelope. Bump on any incompatible change to
 /// [`CacheMeta`]; mismatches degrade to a cache miss (rebuild + overwrite).
-const SNAPSHOT_CACHE_SCHEMA_VERSION: u32 = 1;
+///
+/// v2: [`BridgeStats`] gained `nodes_missing_byte_range` and node spans
+/// carry real byte ranges (host schema v5) — v1 snapshots were built with
+/// `byte_range: 0..0` spans and must not be served.
+const SNAPSHOT_CACHE_SCHEMA_VERSION: u32 = 2;
 
 /// Host-side cache envelope persisted next to the graph snapshot.
 ///
@@ -714,7 +748,9 @@ pub struct CachedBridge {
 /// Cheap, deterministic fingerprint of the SQLite store's indexed state.
 ///
 /// Folds (with BLAKE3, via the analysis engine's [`FingerprintHasher`]):
-/// node/edge/unresolved-ref counts, the edges/unresolved max rowids
+/// the database's **schema version** (so a schema migration — e.g. v4→v5
+/// adding byte offsets — invalidates snapshots built from the pre-migration
+/// shape), node/edge/unresolved-ref counts, the edges/unresolved max rowids
 /// (AUTOINCREMENT — monotonic, so delete+reinsert churn is visible even at
 /// stable counts), `max(nodes.updated_at)`, and every indexed file's
 /// `(path, content_hash)` pair in sorted order. O(#files) rows read — far
@@ -722,7 +758,9 @@ pub struct CachedBridge {
 /// is the whole point: validating the cache must cost much less than a
 /// rebuild.
 pub fn compute_index_fingerprint(queries: &QueryBuilder) -> Result<u64> {
-    let conn = queries.db().conn();
+    let db = queries.db();
+    let schema_version = crate::db::get_current_version(db);
+    let conn = db.conn();
     let scalar = |sql: &str| -> Result<i64> {
         let v: i64 = conn.query_row(sql, [], |row| row.get(0))?;
         Ok(v)
@@ -742,8 +780,10 @@ pub fn compute_index_fingerprint(queries: &QueryBuilder) -> Result<u64> {
 
     let mut hasher = FingerprintHasher::new();
     // Domain separation so this digest can never collide with the engine's
-    // graph-state fingerprints.
-    hasher.update(&"codegraph::analysis-cache::index-fingerprint::v1");
+    // graph-state fingerprints. v2: schema_version joined the digest (a
+    // deliberate one-time break so pre-v5 snapshots can't be served).
+    hasher.update(&"codegraph::analysis-cache::index-fingerprint::v2");
+    hasher.update(&(schema_version as i64));
     hasher.update(&node_count);
     hasher.update(&nodes_max_updated);
     hasher.update(&edge_count);
@@ -788,16 +828,25 @@ fn analysis_cache_dir_with_override(
     get_codegraph_dir(project_root).join(ANALYSIS_CACHE_SUBDIR)
 }
 
+/// Read and structurally validate a cache meta envelope. `None` on any
+/// failure (missing, unparseable, other schema/host version).
+fn read_cache_meta(path: &Path) -> Option<CacheMeta> {
+    let meta_bytes = fs::read(path).ok()?;
+    let meta: CacheMeta = serde_json::from_slice(&meta_bytes).ok()?;
+    if meta.schema_version != SNAPSHOT_CACHE_SCHEMA_VERSION
+        || meta.host_version != env!("CARGO_PKG_VERSION")
+    {
+        return None;
+    }
+    Some(meta)
+}
+
 /// Try to serve a [`BridgeResult`] from the on-disk snapshot. Any failure —
 /// missing files, decode errors, schema/host-version/fingerprint mismatch —
 /// returns `None` (cache miss), never an error.
 fn load_cache(cache_dir: &Path, expected_fingerprint: u64) -> Option<BridgeResult> {
-    let meta_bytes = fs::read(cache_dir.join(CACHE_META_FILE)).ok()?;
-    let meta: CacheMeta = serde_json::from_slice(&meta_bytes).ok()?;
-    if meta.schema_version != SNAPSHOT_CACHE_SCHEMA_VERSION
-        || meta.host_version != env!("CARGO_PKG_VERSION")
-        || meta.index_fingerprint != expected_fingerprint
-    {
+    let meta = read_cache_meta(&cache_dir.join(CACHE_META_FILE))?;
+    if meta.index_fingerprint != expected_fingerprint {
         return None;
     }
     let loaded = load_snapshot_bincode(&cache_dir.join(GRAPH_SNAPSHOT_FILE)).ok()?;
@@ -808,9 +857,54 @@ fn load_cache(cache_dir: &Path, expected_fingerprint: u64) -> Option<BridgeResul
     })
 }
 
+/// Rotate the existing snapshot generation to `.prev` when a store is about
+/// to replace it with one built from a *different* index fingerprint.
+///
+/// Keeps exactly one previous generation (the rotation overwrites older
+/// `.prev` files), which is what `analyze diff --base auto` reads after the
+/// current generation has been refreshed to the working tree's state.
+/// A store with the *same* fingerprint (e.g. the complexity-sidecar refresh)
+/// overwrites in place and must NOT rotate — that would clobber the real
+/// previous generation with a duplicate of the current one. Best-effort:
+/// rotation failures are logged and the store proceeds.
+fn rotate_cache_generation(cache_dir: &Path, new_fingerprint: u64) {
+    let Some(meta) = read_cache_meta(&cache_dir.join(CACHE_META_FILE)) else {
+        // Nothing valid to preserve (missing/corrupt/other-version meta):
+        // overwrite in place. An existing `.prev` generation stays intact.
+        return;
+    };
+    if meta.index_fingerprint == new_fingerprint {
+        return;
+    }
+    for file in [
+        GRAPH_SNAPSHOT_FILE,
+        CACHE_META_FILE,
+        COMPLEXITY_SIDECAR_FILE,
+    ] {
+        let from = cache_dir.join(file);
+        let to = cache_dir.join(format!("{file}{PREV_SUFFIX}"));
+        // The sidecar is optional; a missing source just clears the stale
+        // `.prev` twin so generations never mix.
+        let _ = fs::remove_file(&to);
+        if from.exists() {
+            if let Err(err) = fs::rename(&from, &to) {
+                log_debug(
+                    "analysis cache: snapshot rotation failed (continuing)",
+                    Some(&serde_json::json!({
+                        "file": file,
+                        "error": err.to_string(),
+                    })),
+                );
+            }
+        }
+    }
+}
+
 /// Persist a freshly-bridged result. Both files are written atomically
 /// (tmp + rename); the graph snapshot lands first and `meta.json` last, so
 /// a reader can never validate a meta that points at a half-written graph.
+/// A store that changes the index fingerprint first rotates the existing
+/// generation to `.prev` (see [`rotate_cache_generation`]).
 fn store_cache(
     cache_dir: &Path,
     project_root: &Path,
@@ -818,6 +912,7 @@ fn store_cache(
     result: &BridgeResult,
 ) -> Result<()> {
     fs::create_dir_all(cache_dir)?;
+    rotate_cache_generation(cache_dir, index_fingerprint);
 
     let graph_target = cache_dir.join(GRAPH_SNAPSHOT_FILE);
     let graph_tmp = cache_dir.join(format!("{GRAPH_SNAPSHOT_FILE}.tmp"));
@@ -849,6 +944,191 @@ fn store_cache(
         return Err(err.into());
     }
     Ok(())
+}
+
+// =============================================================================
+// Complexity sidecar + base-snapshot loading (analyze diff)
+// =============================================================================
+
+/// Per-function complexity captured for one snapshot generation — the
+/// "before" side of `analyze diff`'s complexity deltas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredComplexity {
+    pub cyclomatic: u32,
+    pub cognitive: u32,
+    pub max_nesting: u32,
+}
+
+/// On-disk shape of [`COMPLEXITY_SIDECAR_FILE`]. Versioned with the cache
+/// schema and pinned to the generation's index fingerprint.
+#[derive(Debug, Serialize, Deserialize)]
+struct ComplexitySidecar {
+    schema_version: u32,
+    index_fingerprint: u64,
+    /// Sorted by node id for deterministic bytes on disk.
+    entries: Vec<(ANodeId, StoredComplexity)>,
+}
+
+/// Persist per-function complexity next to the *current* snapshot generation
+/// (atomic tmp + rename). Written by `analyze diff` after measuring the
+/// working tree; `index_fingerprint` must be the fingerprint the current
+/// generation was stored under, so the sidecar is rotated/invalidated in
+/// lockstep with its graph.
+pub fn store_complexity_sidecar(
+    project_root: &Path,
+    index_fingerprint: u64,
+    entries: &HashMap<ANodeId, StoredComplexity>,
+) -> Result<()> {
+    let cache_dir = analysis_cache_dir(project_root);
+    fs::create_dir_all(&cache_dir)?;
+    let mut sorted: Vec<(ANodeId, StoredComplexity)> = entries
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let sidecar = ComplexitySidecar {
+        schema_version: SNAPSHOT_CACHE_SCHEMA_VERSION,
+        index_fingerprint,
+        entries: sorted,
+    };
+    let target = cache_dir.join(COMPLEXITY_SIDECAR_FILE);
+    let tmp = cache_dir.join(format!("{COMPLEXITY_SIDECAR_FILE}.tmp"));
+    fs::write(&tmp, serde_json::to_vec(&sidecar)?)?;
+    if let Err(err) = fs::rename(&tmp, &target) {
+        let _ = fs::remove_file(&tmp);
+        return Err(err.into());
+    }
+    Ok(())
+}
+
+/// Load a complexity sidecar if it exists, parses, and matches the expected
+/// fingerprint. `None` otherwise — never an error.
+fn load_complexity_sidecar(
+    path: &Path,
+    expected_fingerprint: u64,
+) -> Option<HashMap<ANodeId, StoredComplexity>> {
+    let bytes = fs::read(path).ok()?;
+    let sidecar: ComplexitySidecar = serde_json::from_slice(&bytes).ok()?;
+    if sidecar.schema_version != SNAPSHOT_CACHE_SCHEMA_VERSION
+        || sidecar.index_fingerprint != expected_fingerprint
+    {
+        return None;
+    }
+    Some(sidecar.entries.into_iter().collect())
+}
+
+/// Which snapshot generation served as the diff base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseGeneration {
+    /// The current cache generation (its fingerprint differs from the
+    /// working tree's — i.e. the index moved on since it was stored).
+    Current,
+    /// The rotated `.prev` generation (the current generation already
+    /// matches the working tree).
+    Previous,
+    /// An explicit snapshot path supplied via `--base <path>`.
+    Explicit,
+}
+
+impl BaseGeneration {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BaseGeneration::Current => "cache",
+            BaseGeneration::Previous => "cache-prev",
+            BaseGeneration::Explicit => "file",
+        }
+    }
+}
+
+/// A base snapshot resolved for `analyze diff`.
+pub struct BaseSnapshot {
+    pub graph: AnalysisGraph,
+    /// Fingerprint of the index state the base was bridged from, when known
+    /// (`None` for an explicit bare `graph.bin` without a meta envelope).
+    pub index_fingerprint: Option<u64>,
+    pub generation: BaseGeneration,
+    /// Per-function complexity captured for the base generation by a prior
+    /// `analyze diff` run. Empty when no valid sidecar exists.
+    pub complexity: HashMap<ANodeId, StoredComplexity>,
+}
+
+/// Load one cache generation (current or `.prev`) as a diff base, but only
+/// if it is valid and was built from a fingerprint *other than*
+/// `current_fingerprint` — a base identical to the working tree has nothing
+/// to diff against.
+fn load_base_generation(
+    cache_dir: &Path,
+    suffix: &str,
+    generation: BaseGeneration,
+    current_fingerprint: u64,
+) -> Option<BaseSnapshot> {
+    let meta = read_cache_meta(&cache_dir.join(format!("{CACHE_META_FILE}{suffix}")))?;
+    if meta.index_fingerprint == current_fingerprint {
+        return None;
+    }
+    let loaded =
+        load_snapshot_bincode(&cache_dir.join(format!("{GRAPH_SNAPSHOT_FILE}{suffix}"))).ok()?;
+    let complexity = load_complexity_sidecar(
+        &cache_dir.join(format!("{COMPLEXITY_SIDECAR_FILE}{suffix}")),
+        meta.index_fingerprint,
+    )
+    .unwrap_or_default();
+    Some(BaseSnapshot {
+        graph: loaded.graph,
+        index_fingerprint: Some(meta.index_fingerprint),
+        generation,
+        complexity,
+    })
+}
+
+/// Resolve the `--base auto` snapshot: the last cached snapshot built from a
+/// fingerprint other than `current_fingerprint`. Checks the current cache
+/// generation first (stale current = the pre-edit base), then the rotated
+/// `.prev` generation (current already refreshed to the working tree).
+/// `None` when no such generation exists.
+pub fn load_auto_base_snapshot(
+    project_root: &Path,
+    current_fingerprint: u64,
+) -> Option<BaseSnapshot> {
+    let cache_dir = analysis_cache_dir(project_root);
+    load_base_generation(&cache_dir, "", BaseGeneration::Current, current_fingerprint).or_else(
+        || {
+            load_base_generation(
+                &cache_dir,
+                PREV_SUFFIX,
+                BaseGeneration::Previous,
+                current_fingerprint,
+            )
+        },
+    )
+}
+
+/// Load an explicit `--base <path>` snapshot. `path` may be either a
+/// `graph.bin`-style postcard snapshot file, or a cache directory containing
+/// `graph.bin` (+ optional `meta.json`/`complexity.json`, which supply the
+/// fingerprint and base complexity when present and consistent).
+pub fn load_explicit_base_snapshot(path: &Path) -> Result<BaseSnapshot> {
+    let (graph_path, dir) = if path.is_dir() {
+        (path.join(GRAPH_SNAPSHOT_FILE), Some(path))
+    } else {
+        (path.to_path_buf(), None)
+    };
+    let loaded = load_snapshot_bincode(&graph_path)
+        .map_err(|e| crate::error::CodeGraphError::other(e.to_string()))?;
+    let meta = dir.and_then(|d| read_cache_meta(&d.join(CACHE_META_FILE)));
+    let index_fingerprint = meta.as_ref().map(|m| m.index_fingerprint);
+    let complexity = match (dir, index_fingerprint) {
+        (Some(d), Some(fp)) => {
+            load_complexity_sidecar(&d.join(COMPLEXITY_SIDECAR_FILE), fp).unwrap_or_default()
+        }
+        _ => HashMap::new(),
+    };
+    Ok(BaseSnapshot {
+        graph: loaded.graph,
+        index_fingerprint,
+        generation: BaseGeneration::Explicit,
+        complexity,
+    })
 }
 
 /// [`build_analysis_graph`] with the on-disk snapshot cache in front.
@@ -1119,6 +1399,151 @@ mod tests {
             load_cache(&cache_dir, 0xfeed).is_none(),
             "other host version"
         );
+    }
+
+    #[test]
+    fn store_with_new_fingerprint_rotates_one_previous_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let result = sample_bridge_result();
+
+        // Generation A, plus its complexity sidecar.
+        store_cache(&cache_dir, tmp.path(), 0xaaaa, &result).expect("store A");
+        let sidecar = ComplexitySidecar {
+            schema_version: SNAPSHOT_CACHE_SCHEMA_VERSION,
+            index_fingerprint: 0xaaaa,
+            entries: vec![],
+        };
+        fs::write(
+            cache_dir.join(COMPLEXITY_SIDECAR_FILE),
+            serde_json::to_vec(&sidecar).unwrap(),
+        )
+        .unwrap();
+
+        // Same fingerprint: in-place refresh, NO rotation.
+        store_cache(&cache_dir, tmp.path(), 0xaaaa, &result).expect("refresh A");
+        assert!(
+            !cache_dir
+                .join(format!("{CACHE_META_FILE}{PREV_SUFFIX}"))
+                .exists(),
+            "same-fingerprint store must not rotate"
+        );
+        assert!(
+            cache_dir.join(COMPLEXITY_SIDECAR_FILE).exists(),
+            "in-place refresh keeps the sidecar"
+        );
+
+        // New fingerprint: A (incl. sidecar) rotates to .prev, B is current.
+        store_cache(&cache_dir, tmp.path(), 0xbbbb, &result).expect("store B");
+        let prev_meta = read_cache_meta(&cache_dir.join(format!("{CACHE_META_FILE}{PREV_SUFFIX}")))
+            .expect("rotated meta is valid");
+        assert_eq!(prev_meta.index_fingerprint, 0xaaaa);
+        assert!(
+            cache_dir
+                .join(format!("{GRAPH_SNAPSHOT_FILE}{PREV_SUFFIX}"))
+                .exists()
+        );
+        assert!(
+            cache_dir
+                .join(format!("{COMPLEXITY_SIDECAR_FILE}{PREV_SUFFIX}"))
+                .exists()
+        );
+        assert!(
+            !cache_dir.join(COMPLEXITY_SIDECAR_FILE).exists(),
+            "the new generation starts without a sidecar"
+        );
+        assert!(load_cache(&cache_dir, 0xbbbb).is_some(), "B is current");
+
+        // A third fingerprint keeps exactly one previous generation (B).
+        store_cache(&cache_dir, tmp.path(), 0xcccc, &result).expect("store C");
+        let prev_meta = read_cache_meta(&cache_dir.join(format!("{CACHE_META_FILE}{PREV_SUFFIX}")))
+            .expect("rotated meta is valid");
+        assert_eq!(
+            prev_meta.index_fingerprint, 0xbbbb,
+            "A's .prev was replaced"
+        );
+    }
+
+    #[test]
+    fn complexity_sidecar_round_trips_and_rejects_stale_fingerprints() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Default cache location: <project>/.codegraph/analysis. Avoid env
+        // mutation by pointing the project root at the tempdir.
+        let entries = HashMap::from([(
+            ANodeId::new("src/a.ts", "alpha", ANodeKind::Function),
+            StoredComplexity {
+                cyclomatic: 3,
+                cognitive: 2,
+                max_nesting: 1,
+            },
+        )]);
+        store_complexity_sidecar(tmp.path(), 0xfeed, &entries).expect("store sidecar");
+        let path = analysis_cache_dir_with_override(tmp.path(), None).join(COMPLEXITY_SIDECAR_FILE);
+        assert!(path.exists());
+
+        let loaded = load_complexity_sidecar(&path, 0xfeed).expect("fingerprint matches");
+        assert_eq!(loaded, entries);
+        assert!(
+            load_complexity_sidecar(&path, 0xdead).is_none(),
+            "stale fingerprint is rejected"
+        );
+        fs::write(&path, b"{ not json").unwrap();
+        assert!(load_complexity_sidecar(&path, 0xfeed).is_none());
+    }
+
+    #[test]
+    fn auto_base_prefers_stale_current_generation_then_prev() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = analysis_cache_dir_with_override(tmp.path(), None);
+        let result = sample_bridge_result();
+
+        // No cache at all → no base.
+        assert!(load_auto_base_snapshot(tmp.path(), 0xbbbb).is_none());
+
+        // Current generation A; working tree already at B → A is the base.
+        store_cache(&cache_dir, tmp.path(), 0xaaaa, &result).expect("store A");
+        let base = load_auto_base_snapshot(tmp.path(), 0xbbbb).expect("stale current is the base");
+        assert_eq!(base.generation, BaseGeneration::Current);
+        assert_eq!(base.index_fingerprint, Some(0xaaaa));
+        assert_eq!(base.graph.node_count(), 1);
+        assert!(base.complexity.is_empty(), "no sidecar was written");
+
+        // Refresh to B (rotates A → .prev): base flips to the .prev gen.
+        store_cache(&cache_dir, tmp.path(), 0xbbbb, &result).expect("store B");
+        let base = load_auto_base_snapshot(tmp.path(), 0xbbbb).expect(".prev is the base");
+        assert_eq!(base.generation, BaseGeneration::Previous);
+        assert_eq!(base.index_fingerprint, Some(0xaaaa));
+
+        // Only a current generation that matches the working tree → no base.
+        let _ = fs::remove_file(cache_dir.join(format!("{CACHE_META_FILE}{PREV_SUFFIX}")));
+        let _ = fs::remove_file(cache_dir.join(format!("{GRAPH_SNAPSHOT_FILE}{PREV_SUFFIX}")));
+        assert!(
+            load_auto_base_snapshot(tmp.path(), 0xbbbb).is_none(),
+            "a base identical to the working tree is not a base"
+        );
+    }
+
+    #[test]
+    fn explicit_base_loads_bare_snapshots_and_cache_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let result = sample_bridge_result();
+        store_cache(&cache_dir, tmp.path(), 0xfeed, &result).expect("store");
+
+        // Directory form: fingerprint comes from meta.json.
+        let base = load_explicit_base_snapshot(&cache_dir).expect("dir base");
+        assert_eq!(base.generation, BaseGeneration::Explicit);
+        assert_eq!(base.index_fingerprint, Some(0xfeed));
+        assert_eq!(base.graph.node_count(), 1);
+
+        // Bare graph.bin form: graph only, no fingerprint.
+        let base =
+            load_explicit_base_snapshot(&cache_dir.join(GRAPH_SNAPSHOT_FILE)).expect("file base");
+        assert_eq!(base.index_fingerprint, None);
+        assert_eq!(base.graph.node_count(), 1);
+
+        // Missing path is an error, not a panic.
+        assert!(load_explicit_base_snapshot(&tmp.path().join("absent.bin")).is_err());
     }
 
     /// Every combination `map_edge_kind` produces must pass the analysis

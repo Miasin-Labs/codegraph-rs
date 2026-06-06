@@ -454,6 +454,10 @@ impl<'a> IdaCExtractor<'a> {
         );
         node.start_column = 0;
         node.end_column = lines.last().map(|l| l.len()).unwrap_or(0) as u32;
+        // The file node spans the whole source by definition. Function nodes
+        // stay byte-less: this extractor tracks line/column only.
+        node.start_byte = Some(0);
+        node.end_byte = Some(self.source.len() as u32);
         node.is_exported = Some(false);
         node.updated_at = now_ms();
         node

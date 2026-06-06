@@ -618,3 +618,100 @@ fn invariant_violating_rows_are_skipped_and_counted() {
         "skipped rows must leave the analysis graph untouched"
     );
 }
+
+// =============================================================================
+// Byte ranges (host schema v5) — spans carry real tree-sitter byte offsets
+// =============================================================================
+
+#[test]
+fn bridged_spans_carry_real_byte_ranges() {
+    let dir = TempDir::new().unwrap();
+    write_fixture(dir.path());
+    index_fixture(dir.path());
+    let result = bridge(dir.path());
+
+    // A freshly indexed fixture stores tree-sitter byte offsets for every
+    // extracted node, so no mapped node degrades to the 0..0 sentinel.
+    assert_eq!(
+        result.stats.nodes_missing_byte_range, 0,
+        "fresh v5 index must not produce byte-less mapped nodes"
+    );
+
+    // The span's byte range slices the on-disk source back to the
+    // declaration — the anchor `ir_map`/value-level analyses need.
+    let helper = node_id_by_name(&result, "helper", ANodeKind::Function);
+    let span = &result.graph.get_node(&helper).unwrap().span;
+    assert_ne!(span.byte_range, 0..0, "helper span must carry real bytes");
+    let source = fs::read_to_string(dir.path().join("src/util.ts")).unwrap();
+    let snippet = &source[span.byte_range.clone()];
+    assert!(
+        snippet.starts_with("function helper()"),
+        "byte range should slice to the declaration, got: {snippet:?}"
+    );
+
+    let engine = node_id_by_name(&result, "Engine", ANodeKind::Struct);
+    let engine_span = &result.graph.get_node(&engine).unwrap().span;
+    let main_src = fs::read_to_string(dir.path().join("src/main.ts")).unwrap();
+    assert!(main_src[engine_span.byte_range.clone()].starts_with("class Engine"));
+}
+
+#[test]
+fn nodes_without_byte_offsets_degrade_to_zero_range_and_are_counted() {
+    let dir = TempDir::new().unwrap();
+    write_fixture(dir.path());
+    index_fixture(dir.path());
+
+    // Plant a function row with NULL byte offsets — the shape of any row
+    // indexed before schema v5 (the migration backfills NULL).
+    let (_conn, qb) = open_queries(dir.path());
+    let legacy = Node::new(
+        "function:fixture0000000000000000000000",
+        NodeKind::Function,
+        "legacyFn",
+        "src/legacy.ts::legacyFn",
+        "src/legacy.ts",
+        Language::Typescript,
+        1,
+        3,
+    );
+    assert_eq!(legacy.start_byte, None);
+    qb.insert_node(&legacy).expect("insert legacy node");
+
+    let result = build_analysis_graph(&qb).expect("bridge");
+    assert_eq!(
+        result.stats.nodes_missing_byte_range, 1,
+        "exactly the planted byte-less node should be counted"
+    );
+    let legacy_aid = node_id_by_name(&result, "legacyFn", ANodeKind::Function);
+    let span = &result.graph.get_node(&legacy_aid).unwrap().span;
+    assert_eq!(
+        span.byte_range,
+        0..0,
+        "NULL offsets degrade to the sentinel"
+    );
+}
+
+#[test]
+fn index_fingerprint_incorporates_schema_version() {
+    let dir = TempDir::new().unwrap();
+    write_fixture(dir.path());
+    index_fixture(dir.path());
+
+    let (_conn, qb) = open_queries(dir.path());
+    let before = codegraph::analysis_bridge::compute_index_fingerprint(&qb).expect("fingerprint");
+
+    // Simulate a future schema migration: only schema_versions changes —
+    // counts, rowids, updated_at, and file hashes all stay identical.
+    qb.db()
+        .conn()
+        .execute(
+            "INSERT INTO schema_versions (version, applied_at, description) VALUES (99, 0, 'simulated')",
+            [],
+        )
+        .unwrap();
+    let after = codegraph::analysis_bridge::compute_index_fingerprint(&qb).expect("fingerprint");
+    assert_ne!(
+        before, after,
+        "schema version must be part of the snapshot-cache fingerprint (v4→v5 invalidation)"
+    );
+}

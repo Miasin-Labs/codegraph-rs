@@ -6,6 +6,7 @@
 //! op          := fn_select | type_select | callers | callees | depth | filter
 //!              | show | taint | preconditions | since | hot | scc
 //!              | dispatch | cluster_by_type | affected | co_changes
+//!              | reachable
 //! fn_select   := 'fn' '(' STRING ')'
 //! type_select := 'type' '(' STRING ')'
 //! callers     := 'callers'
@@ -20,7 +21,16 @@
 //! dispatch    := 'dispatch'
 //! cluster_by_type := 'cluster' 'by' 'type'
 //! affected    := 'affected' NUMBER 'since' NUMBER
+//! reachable   := 'reachable' 'via' STRING ( 'incoming' | 'outgoing' )?
 //! ```
+//!
+//! The `reachable` STRING is a label-constraint pattern — whitespace-
+//! separated edge labels, each with an optional `*` / `+` repetition
+//! (`"Contains Calls+"`, `"any*"`); see
+//! [`crate::label_reachability::parse_pattern`]. The op expands the working
+//! set to every node reachable via a path whose edge-label *sequence*
+//! matches the pattern (label-constrained reachability), in the given
+//! direction (default `outgoing`; `incoming` answers "who reaches me").
 //!
 //! Extended grammar (set algebra, path patterns, entrypoint selector,
 //! dominator queries, trait/cluster selectors, multi-source path):
@@ -57,8 +67,10 @@ pub mod stream;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use crate::closure::ClosureDirection;
 use crate::edges::EdgeKind;
 use crate::graph::CodeGraph;
+use crate::label_reachability::{self, PatternAtom};
 use crate::nodes::{NodeId, NodeKind};
 use crate::traversal::{self, TraversalConfig, TraversalDirection};
 
@@ -163,6 +175,9 @@ pub enum Token {
     Cfg,
     /// `dataflow` — postfix operator surfacing per-function dataflow analysis.
     Dataflow,
+    /// `reachable via "<pattern>"` — label-constrained reachability
+    /// expansion of the working set. See [`DslOp::ReachableVia`].
+    Reachable,
     String(String),
     Number(usize),
     Ident(String),
@@ -298,6 +313,26 @@ pub enum DslOp {
     /// for nodes in the working set. Retains only Function nodes that have
     /// dataflow data populated.
     Dataflow,
+    /// `reachable via "<pattern>" [incoming|outgoing]` — label-constrained
+    /// reachability (RLC). Expands the working set to every node reachable
+    /// via a path whose **edge-label sequence** matches the pattern, riding
+    /// [`crate::label_reachability::reachable_targets`]. Unlike `depth N`
+    /// (label-agnostic BFS) or `path ... via K` (≥1 edge of kind K anywhere
+    /// on the path), the pattern constrains the *whole sequence*:
+    /// `fn("handler") | reachable via "Calls+ Implements"` reaches only
+    /// nodes at the end of one-or-more `Calls` edges followed by exactly
+    /// one `Implements` edge.
+    ///
+    /// Direction defaults to `outgoing`; `incoming` runs the product BFS
+    /// over reverse edges ("who reaches me via this label sequence").
+    /// Seeds are *replaced* by the reachable set — a seed survives only if
+    /// the pattern matches the zero-length path (empty pattern or all-`*`
+    /// atoms). An empty working set is reported honestly in `metadata`
+    /// rather than silently returning nothing.
+    ReachableVia {
+        pattern: Vec<PatternAtom>,
+        direction: ClosureDirection,
+    },
 }
 
 /// Top-level expression supporting set algebra, path patterns, and
@@ -638,6 +673,7 @@ pub fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
                     "complexity" => tokens.push(Token::Complexity),
                     "cfg" => tokens.push(Token::Cfg),
                     "dataflow" => tokens.push(Token::Dataflow),
+                    "reachable" => tokens.push(Token::Reachable),
                     _ => tokens.push(Token::Ident(word.to_string())),
                 }
             }
@@ -892,6 +928,58 @@ fn parse_op(tokens: &[Token], pos: &mut usize) -> Result<DslOp, ParseError> {
             *pos += 1;
             Ok(DslOp::Dataflow)
         }
+        // `reachable via "<pattern>" [incoming|outgoing]` — label-constrained
+        // reachability. The pattern string is parsed eagerly so a typo'd
+        // edge label fails at parse time with a position, like every other
+        // grammar error.
+        Token::Reachable => {
+            *pos += 1;
+            if *pos >= tokens.len() || tokens[*pos] != Token::Via {
+                return Err(ParseError::new(*pos, "expected 'via' after 'reachable'"));
+            }
+            *pos += 1;
+            if *pos >= tokens.len() {
+                return Err(ParseError::new(
+                    *pos,
+                    "expected pattern string after 'reachable via'",
+                ));
+            }
+            let pattern = match &tokens[*pos] {
+                Token::String(s) => label_reachability::parse_pattern(s)
+                    .map_err(|e| ParseError::new(*pos, e.to_string()))?,
+                _ => {
+                    return Err(ParseError::new(
+                        *pos,
+                        "expected pattern string (e.g. \"Contains Calls+\") after 'reachable via'",
+                    ));
+                }
+            };
+            *pos += 1;
+            // Optional direction keyword. Only `incoming` / `outgoing` are
+            // valid here; any other ident is a hard error so a typo doesn't
+            // silently fall through as a confusing "expected '|'" later.
+            let direction = match tokens.get(*pos) {
+                Some(Token::Ident(s)) if s == "incoming" => {
+                    *pos += 1;
+                    ClosureDirection::Incoming
+                }
+                Some(Token::Ident(s)) if s == "outgoing" => {
+                    *pos += 1;
+                    ClosureDirection::Outgoing
+                }
+                Some(Token::Ident(s)) => {
+                    return Err(ParseError::new(
+                        *pos,
+                        format!(
+                            "unknown direction '{s}' after 'reachable via \"...\"'. \
+                             Valid: incoming, outgoing (default)"
+                        ),
+                    ));
+                }
+                _ => ClosureDirection::Outgoing,
+            };
+            Ok(DslOp::ReachableVia { pattern, direction })
+        }
         // `cluster by type` — exact two-keyword sequence. We don't currently
         // support clustering by anything else, but the `by` keyword leaves
         // room (`cluster by trait`, `cluster by file`) without re-parsing.
@@ -960,13 +1048,13 @@ fn parse_op(tokens: &[Token], pos: &mut usize) -> Result<DslOp, ParseError> {
         Token::Ident(s) => Err(ParseError::new(
             *pos,
             format!(
-                "unknown operation '{s}'. Valid operations: fn, type, callers, callees, depth, filter, show, taint, preconditions, since, hot, scc, dispatch, cluster, affected, co_changes"
+                "unknown operation '{s}'. Valid operations: fn, type, callers, callees, depth, filter, show, taint, preconditions, since, hot, scc, dispatch, cluster, affected, co_changes, reachable"
             ),
         )),
         _ => Err(ParseError::new(
             *pos,
             format!(
-                "unexpected token {:?}. Expected an operation (fn, type, callers, callees, depth, filter, show, taint, preconditions, since, hot, scc, dispatch, cluster, affected, co_changes)",
+                "unexpected token {:?}. Expected an operation (fn, type, callers, callees, depth, filter, show, taint, preconditions, since, hot, scc, dispatch, cluster, affected, co_changes, reachable)",
                 token
             ),
         )),
@@ -2120,6 +2208,42 @@ impl<'a> QueryEngine<'a> {
                                 ));
                             }
                         }
+                    }
+                }
+                // `reachable via "<pattern>"` — label-constrained reachability.
+                // The working set is the seed set; each seed is expanded via
+                // a product BFS over (node, NFA-state) pairs and the union of
+                // accepting nodes replaces the working set. Seeds survive only
+                // if the pattern matches the zero-length path — consistent
+                // with `label_reachability::reachable_targets` semantics.
+                DslOp::ReachableVia { pattern, direction } => {
+                    let pattern_str = label_reachability::format_pattern(pattern);
+                    let direction_str = match direction {
+                        ClosureDirection::Outgoing => "outgoing",
+                        ClosureDirection::Incoming => "incoming",
+                    };
+                    if working_set.is_empty() {
+                        // Honest empty: a bare `reachable via` has no seeds;
+                        // say so instead of silently returning nothing.
+                        metadata.push(format!(
+                            "reachable via \"{pattern_str}\" {direction_str}: empty working set — \
+                             seed with fn(\"...\") or type(\"...\") first"
+                        ));
+                    } else {
+                        let seeds = working_set.len();
+                        let mut reached: HashSet<NodeId> = HashSet::new();
+                        for seed in &working_set {
+                            for id in label_reachability::reachable_targets(
+                                self.graph, seed, pattern, *direction,
+                            ) {
+                                reached.insert(id);
+                            }
+                        }
+                        metadata.push(format!(
+                            "reachable via \"{pattern_str}\" {direction_str} seeds={seeds} reached={}",
+                            reached.len()
+                        ));
+                        working_set = reached;
                     }
                 }
             }
@@ -4277,5 +4401,221 @@ mod tests {
         let names = names_of(&g, &result.nodes);
         assert!(names.contains("user"), "got {names:?}");
         assert!(!names.contains("other_fn"), "got {names:?}");
+    }
+
+    // -----------------------------------------------------------------
+    // `reachable via "<pattern>"` — label-constrained reachability (RLC).
+    // -----------------------------------------------------------------
+
+    /// Helper: an edge of an arbitrary kind (the `reachable` tests need
+    /// mixed-label paths).
+    fn fixture_edge(kind: crate::edges::EdgeKind) -> crate::edges::EdgeData {
+        use std::path::PathBuf;
+
+        use crate::edges::EdgeData;
+        use crate::nodes::Span;
+        EdgeData {
+            kind,
+            source_span: Span {
+                file: PathBuf::from("t.rs"),
+                start_line: 1,
+                start_col: 0,
+                end_line: 5,
+                end_col: 1,
+                byte_range: 0..50,
+            },
+            weight: 1.0,
+        }
+    }
+
+    // Normal: `reachable via "<pattern>"` parses into ReachableVia with an
+    // eagerly-parsed pattern and the default outgoing direction.
+    #[test]
+    fn dsl_reachable_via_parses_pattern_normal() {
+        use crate::label_reachability::{PatternAtom, Rep};
+
+        let ops = parse_query(r#"fn("m") | reachable via "Contains Calls+""#).unwrap();
+        assert_eq!(
+            ops,
+            vec![
+                DslOp::SelectFn("m".into()),
+                DslOp::ReachableVia {
+                    pattern: vec![
+                        PatternAtom::one(EdgeKind::Contains),
+                        PatternAtom::plus(EdgeKind::Calls),
+                    ],
+                    direction: ClosureDirection::Outgoing,
+                },
+            ]
+        );
+
+        // Explicit direction keyword.
+        let ops = parse_query(r#"fn("m") | reachable via "Calls+" incoming"#).unwrap();
+        assert_eq!(
+            ops[1],
+            DslOp::ReachableVia {
+                pattern: vec![PatternAtom::plus(EdgeKind::Calls)],
+                direction: ClosureDirection::Incoming,
+            }
+        );
+        let ops = parse_query(r#"fn("m") | reachable via "any*" outgoing"#).unwrap();
+        assert_eq!(
+            ops[1],
+            DslOp::ReachableVia {
+                pattern: vec![PatternAtom::any(Rep::Star)],
+                direction: ClosureDirection::Outgoing,
+            }
+        );
+    }
+
+    // Robust: bad patterns, missing `via`, and unknown direction keywords
+    // are parse errors with actionable messages — not runtime surprises.
+    #[test]
+    fn dsl_reachable_via_rejects_bad_input_robust() {
+        let err = parse_query(r#"fn("m") | reachable via "Bogus+""#).unwrap_err();
+        assert!(err.to_string().contains("unknown edge label"), "{err}");
+
+        let err = parse_query(r#"fn("m") | reachable "Calls+""#).unwrap_err();
+        assert!(err.to_string().contains("expected 'via'"), "{err}");
+
+        let err = parse_query(r#"fn("m") | reachable via "Calls+" sideways"#).unwrap_err();
+        assert!(err.to_string().contains("unknown direction"), "{err}");
+
+        let err = parse_query(r#"fn("m") | reachable via"#).unwrap_err();
+        assert!(err.to_string().contains("expected pattern string"), "{err}");
+    }
+
+    // Normal: the operator distinguishes label *sequences* — a `Contains
+    // Calls+` pattern reaches the transitive callees entered through the
+    // module, but not the module's direct child that made zero calls, and
+    // not nodes reached via a UsesType edge.
+    #[test]
+    fn dsl_reachable_via_constrains_label_sequence_normal() {
+        let mut g = CodeGraph::new();
+        let m = g.add_node(fixture_node("m", NodeKind::Module));
+        let f0 = g.add_node(fixture_node("f0", NodeKind::Function));
+        let f1 = g.add_node(fixture_node("f1", NodeKind::Function));
+        let f2 = g.add_node(fixture_node("f2", NodeKind::Function));
+        let s = g.add_node(fixture_node("S", NodeKind::Struct));
+        g.add_edge(&m, &f0, fixture_edge(EdgeKind::Contains))
+            .unwrap();
+        g.add_edge(&f0, &f1, fixture_calls_edge()).unwrap();
+        g.add_edge(&f1, &f2, fixture_calls_edge()).unwrap();
+        g.add_edge(&f1, &s, fixture_edge(EdgeKind::UsesType))
+            .unwrap();
+
+        // The DSL's selectors are fn()/type(), so exercise the executor arm
+        // through a Function seed: f0's `Calls+` reach is {f1, f2} and must
+        // exclude the UsesType target and the seed itself.
+        let result = run_query(
+            r#"fn("f0") | reachable via "Calls+""#,
+            &g,
+            &QueryConfig::default(),
+        )
+        .unwrap();
+        let names = names_of(&g, &result.nodes);
+        assert!(
+            names.contains("f1") && names.contains("f2"),
+            "got {names:?}"
+        );
+        assert!(!names.contains("S"), "UsesType target leaked: {names:?}");
+        assert!(!names.contains("f0"), "Plus requires >= 1 edge: {names:?}");
+        assert!(
+            result
+                .metadata
+                .iter()
+                .any(|m| m.contains("reachable via \"Calls+\"") && m.contains("seeds=1")),
+            "got {:?}",
+            result.metadata
+        );
+        let _ = m; // Module seed exercised in label_reachability's own tests.
+
+        // Two-stage sequence via a type seed: S ←UsesType— f1 in incoming
+        // direction reaches f1 (one UsesType edge backwards).
+        let result = run_query(
+            r#"type("S") | reachable via "UsesType" incoming"#,
+            &g,
+            &QueryConfig::default(),
+        )
+        .unwrap();
+        let names = names_of(&g, &result.nodes);
+        assert_eq!(
+            names,
+            std::collections::HashSet::from(["f1".to_string()]),
+            "got {names:?}"
+        );
+    }
+
+    // Robust: `incoming` answers "who reaches me" and a bare (unseeded)
+    // `reachable` reports the empty working set honestly in metadata.
+    #[test]
+    fn dsl_reachable_via_incoming_and_empty_seed_robust() {
+        let mut g = CodeGraph::new();
+        let caller = g.add_node(fixture_node("caller", NodeKind::Function));
+        let mid = g.add_node(fixture_node("mid", NodeKind::Function));
+        let target = g.add_node(fixture_node("target", NodeKind::Function));
+        g.add_edge(&caller, &mid, fixture_calls_edge()).unwrap();
+        g.add_edge(&mid, &target, fixture_calls_edge()).unwrap();
+
+        let result = run_query(
+            r#"fn("target") | reachable via "Calls+" incoming"#,
+            &g,
+            &QueryConfig::default(),
+        )
+        .unwrap();
+        let names = names_of(&g, &result.nodes);
+        assert!(
+            names.contains("caller") && names.contains("mid"),
+            "got {names:?}"
+        );
+
+        // Unseeded: empty result + honest metadata note.
+        let result = run_query(r#"reachable via "Calls+""#, &g, &QueryConfig::default()).unwrap();
+        assert!(result.nodes.is_empty());
+        assert!(
+            result
+                .metadata
+                .iter()
+                .any(|m| m.contains("empty working set")),
+            "got {:?}",
+            result.metadata
+        );
+    }
+
+    // Robust: the op composes inside the extended grammar (set algebra and
+    // PipeFrom) without confusing the path-query `via` qualifier.
+    #[test]
+    fn dsl_reachable_via_composes_with_extended_grammar_robust() {
+        let mut g = CodeGraph::new();
+        let a = g.add_node(fixture_node("a", NodeKind::Function));
+        let b = g.add_node(fixture_node("b", NodeKind::Function));
+        let c = g.add_node(fixture_node("c", NodeKind::Function));
+        g.add_edge(&a, &b, fixture_calls_edge()).unwrap();
+        g.add_edge(&b, &c, fixture_calls_edge()).unwrap();
+
+        // Set algebra: reachable set minus a direct selection.
+        let result = run_query_expr(
+            r#"(fn("a") | reachable via "Calls+") diff fn("b")"#,
+            &g,
+            &QueryConfig::default(),
+        )
+        .unwrap();
+        let names = names_of(&g, &result.nodes);
+        assert_eq!(
+            names,
+            std::collections::HashSet::from(["c".to_string()]),
+            "got {names:?}"
+        );
+
+        // Path-query `via EDGE_KIND` qualifier still parses (regression
+        // guard: the new keyword must not shadow the path qualifier).
+        let result = run_query_expr(
+            r#"paths fn("a") -> fn("c") via Calls depth 5"#,
+            &g,
+            &QueryConfig::default(),
+        )
+        .unwrap();
+        let names = names_of(&g, &result.nodes);
+        assert!(names.contains("a") && names.contains("c"), "got {names:?}");
     }
 }
