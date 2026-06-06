@@ -1166,3 +1166,48 @@ fn update_and_delete_node() {
     q.insert_node(&bogus).unwrap();
     assert!(q.get_nodes_by_name("nameless").unwrap().is_empty());
 }
+
+// =============================================================================
+// TS-written database compatibility — REAL (float) numeric columns
+// =============================================================================
+
+/// The TS implementation stores plain JS numbers; `files.modified_at` comes
+/// from `fs.statSync().mtimeMs`, which is FRACTIONAL, so a TS-written
+/// database holds REAL where the Rust port writes INTEGER. The readers must
+/// accept both or a `codegraph status` against a Node-built index fails with
+/// "Invalid column type Real" (found switching a real project from the npm
+/// build to this crate).
+#[test]
+fn reads_ts_written_real_timestamps() {
+    let (_dir, db, q) = setup();
+
+    // Simulate Node writing fractional timestamps and a REAL updated_at.
+    db.get_db()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO files (path, content_hash, language, size, modified_at, indexed_at, node_count)
+             VALUES ('src/a.ts', 'abc', 'typescript', 120.0, 1749167991123.4561, 1749167999456.789, 3);",
+        )
+        .unwrap();
+    db.get_db()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO nodes (id, kind, name, qualified_name, file_path, language,
+                                start_line, end_line, start_column, end_column,
+                                is_exported, is_async, is_static, is_abstract, updated_at)
+             VALUES ('n-real', 'function', 'f', 'src/a.ts::f', 'src/a.ts', 'typescript',
+                     1, 2, 0, 0, 0, 0, 0, 0, 1749167991123.875);",
+        )
+        .unwrap();
+
+    let f = q.get_file_by_path("src/a.ts").unwrap().expect("file row");
+    assert_eq!(f.modified_at, 1749167991123); // truncated like a JS reader
+    assert_eq!(f.indexed_at, 1749167999456);
+    assert_eq!(f.size, 120);
+
+    let n = q.get_node_by_id("n-real").unwrap().expect("node row");
+    assert_eq!(n.updated_at, 1749167991123);
+
+    // MAX(indexed_at) goes through its own lenient path.
+    assert_eq!(q.get_last_indexed_at().unwrap(), Some(1749167999456));
+}

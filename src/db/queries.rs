@@ -109,7 +109,7 @@ fn node_from_row(row: &Row<'_>) -> rusqlite::Result<Node> {
         decorators: decorators.and_then(|s| safe_json_parse::<Option<Vec<String>>>(&s, None)),
         type_parameters: type_parameters
             .and_then(|s| safe_json_parse::<Option<Vec<String>>>(&s, None)),
-        updated_at: row.get("updated_at")?,
+        updated_at: lenient_i64(row, "updated_at")?,
     })
 }
 
@@ -149,6 +149,27 @@ fn unresolved_from_row(row: &Row<'_>) -> rusqlite::Result<UnresolvedReference> {
     })
 }
 
+/// Read an INTEGER-ish column leniently, accepting REAL by truncation.
+///
+/// The TS implementation stores plain JS numbers, and some of them are
+/// fractional — most notably `files.modified_at`, which Node fills from
+/// `fs.statSync().mtimeMs` (a float). A TS-written database therefore holds
+/// REAL where the Rust port expects INTEGER; truncate exactly like a JS
+/// reader coerced back through `Math.trunc` would, so the two
+/// implementations can share one `.codegraph/codegraph.db`.
+fn lenient_i64(row: &Row<'_>, col: &str) -> rusqlite::Result<i64> {
+    use rusqlite::types::ValueRef;
+    match row.get_ref(col)? {
+        ValueRef::Integer(i) => Ok(i),
+        ValueRef::Real(f) => Ok(f as i64),
+        other => Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            other.data_type(),
+            format!("expected INTEGER or REAL for column {col}").into(),
+        )),
+    }
+}
+
 /// Convert database row to FileRecord object (TS `rowToFileRecord`).
 fn file_from_row(row: &Row<'_>) -> rusqlite::Result<FileRecord> {
     let lang_s: String = row.get("language")?;
@@ -157,9 +178,9 @@ fn file_from_row(row: &Row<'_>) -> rusqlite::Result<FileRecord> {
         path: row.get("path")?,
         content_hash: row.get("content_hash")?,
         language: lang_s.parse().unwrap_or(Language::Unknown),
-        size: row.get::<_, i64>("size")?.max(0) as u64,
-        modified_at: row.get("modified_at")?,
-        indexed_at: row.get("indexed_at")?,
+        size: lenient_i64(row, "size")?.max(0) as u64,
+        modified_at: lenient_i64(row, "modified_at")?,
+        indexed_at: lenient_i64(row, "indexed_at")?,
         node_count: row.get("node_count")?,
         errors: errors
             .and_then(|s| safe_json_parse::<Option<Vec<crate::types::ExtractionError>>>(&s, None)),
@@ -1797,7 +1818,19 @@ impl QueryBuilder {
             self.db
                 .conn()
                 .query_row("SELECT MAX(indexed_at) AS last FROM files", [], |row| {
-                    row.get(0)
+                    // Lenient like `lenient_i64`: a TS-written database may
+                    // hold REAL timestamps (fractional mtimeMs-style numbers).
+                    use rusqlite::types::ValueRef;
+                    match row.get_ref(0)? {
+                        ValueRef::Null => Ok(None),
+                        ValueRef::Integer(i) => Ok(Some(i)),
+                        ValueRef::Real(f) => Ok(Some(f as i64)),
+                        other => Err(rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            other.data_type(),
+                            "expected INTEGER or REAL for MAX(indexed_at)".into(),
+                        )),
+                    }
                 })?;
         Ok(last)
     }

@@ -1,3 +1,4 @@
 /target
 # stray local agent config (installer test artifact) — not part of the project
 /opencode.jsonc
+/.codegraph
