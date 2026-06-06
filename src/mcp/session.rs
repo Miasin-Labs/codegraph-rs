@@ -24,7 +24,7 @@ use serde_json::{Map, Value, json};
 use crate::mcp::engine::{EngineHandle, LogSubscription, logging_level_rank};
 use crate::mcp::server_instructions::SERVER_INSTRUCTIONS;
 use crate::mcp::tools::{ProgressEmitter, tools};
-use crate::mcp::transport::{ErrorCodes, IncomingMessage, JsonRpcTransport};
+use crate::mcp::transport::{ErrorCodes, IncomingMessage, JsonRpcTransport, js_truthy};
 use crate::mcp::version::CODEGRAPH_PACKAGE_VERSION;
 
 /// MCP Server Info — kept on the session because some clients log it. The
@@ -79,17 +79,6 @@ pub fn negotiated_protocol_version(client_version: Option<&Value>) -> String {
 /// How long to wait for the client's `roots/list` response before giving up
 /// and falling back to the process cwd.
 const ROOTS_LIST_TIMEOUT_MS: u64 = 5000;
-
-/// JS truthiness (`!!value`) for the few spots the TS session relies on it.
-fn js_truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().map(|f| f != 0.0 && !f.is_nan()).unwrap_or(true),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(_) | Value::Object(_) => true,
-    }
-}
 
 /// Lenient `decodeURIComponent`: decodes valid `%XX` escapes (UTF-8 byte
 /// sequences); malformed escapes are left verbatim (the TS version throws and

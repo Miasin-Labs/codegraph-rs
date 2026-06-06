@@ -108,8 +108,19 @@ pub trait JsonRpcTransport: Send + Sync {
 // Shared line-based JSON-RPC core (TS `LineBasedJsonRpcTransport`)
 // =============================================================================
 
-/// JS truthiness for the `if ('error' in msg && msg.error)` check.
-fn js_truthy(v: &Value) -> bool {
+/// Capacity of the reader→dispatcher queue. EXCEEDS TS: the TS event loop
+/// implicitly queues without bound; here a client that pipelines requests
+/// faster than the serial handler drains them would otherwise grow memory
+/// without limit. On overflow, requests fail fast with an error response and
+/// notifications are dropped (see [`queue_or_reject`]). The reader must never
+/// *block* on a full queue: the dispatcher may be awaiting a client response
+/// (e.g. roots/list) that only the reader can route, so a blocking send could
+/// stall the connection until the request timeout.
+const MAX_DISPATCH_QUEUE_MESSAGES: usize = 1024;
+
+/// JS truthiness for the `if ('error' in msg && msg.error)` check. Also used
+/// by the session layer (`!!value` parity spots).
+pub(crate) fn js_truthy(v: &Value) -> bool {
     match v {
         Value::Null => false,
         Value::Bool(b) => *b,
@@ -123,18 +134,29 @@ pub(crate) struct LineRpcCore {
     /// Outstanding server-initiated requests (e.g. roots/list), keyed by the
     /// id we sent. Responses from the client are matched back here.
     pending: Mutex<HashMap<String, crossbeam_channel::Sender<std::result::Result<Value, String>>>>,
+    /// Monotonic per-core counter; ids are `<prefix>-<n>`. Uniqueness relies
+    /// on the invariant that each core owns exactly one wire (stdio: one per
+    /// process; socket: one per connection) and is never reused across
+    /// connections — a reused core or two cores sharing a wire could route a
+    /// stale response to the wrong pending request.
     next_request_id: AtomicU64,
     pub(crate) stopped: AtomicBool,
     id_prefix: String,
     /// Writes one line (no trailing newline) to the underlying stream.
-    write_line: Box<dyn Fn(&str) + Send + Sync>,
+    /// Returns `Err` when the underlying write fails (broken pipe, closed
+    /// stream) so [`LineRpcCore::request`] can fail fast instead of burning
+    /// its full timeout waiting for a response that can never arrive.
+    write_line: Box<dyn Fn(&str) -> std::io::Result<()> + Send + Sync>,
     /// Optional reader-thread interceptor for incoming notifications
     /// (`notifications/cancelled` must not queue behind a blocked handler).
     notification_interceptor: Mutex<Option<NotificationInterceptor>>,
 }
 
 impl LineRpcCore {
-    fn new(id_prefix: String, write_line: Box<dyn Fn(&str) + Send + Sync>) -> Self {
+    fn new(
+        id_prefix: String,
+        write_line: Box<dyn Fn(&str) -> std::io::Result<()> + Send + Sync>,
+    ) -> Self {
         LineRpcCore {
             pending: Mutex::new(HashMap::new()),
             next_request_id: AtomicU64::new(1),
@@ -152,9 +174,13 @@ impl LineRpcCore {
             .unwrap_or_else(|e| e.into_inner()) = Some(interceptor);
     }
 
-    fn write_value(&self, value: &Value) {
-        if let Ok(line) = serde_json::to_string(value) {
-            (self.write_line)(&line);
+    /// Serialize + write one JSON-RPC message. Returns whether the bytes made
+    /// it to the underlying stream. Fire-and-forget callers (notify, send_*)
+    /// ignore the result — TS parity; `request` uses it to fail fast.
+    fn write_value(&self, value: &Value) -> bool {
+        match serde_json::to_string(value) {
+            Ok(line) => (self.write_line)(&line).is_ok(),
+            Err(_) => false,
         }
     }
 
@@ -183,7 +209,18 @@ impl LineRpcCore {
         if let Some(p) = params {
             map.insert("params".to_string(), p);
         }
-        self.write_value(&Value::Object(map));
+        // EXCEEDS TS: a failed write means the response can never arrive —
+        // fail fast instead of blocking for the full timeout (a broken pipe
+        // used to be indistinguishable from a slow client).
+        if !self.write_value(&Value::Object(map)) {
+            self.pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
+            return Err(format!(
+                "Transport write failed sending \"{method}\" request"
+            ));
+        }
 
         match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
             Ok(result) => result,
@@ -250,7 +287,9 @@ impl LineRpcCore {
     fn reject_pending(&self, reason: &str) {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         for (_, tx) in pending.drain() {
-            let _ = tx.send(Err(reason.to_string()));
+            // Send can only fail if the requester already gave up (timed out
+            // and dropped its receiver) — nothing left to notify.
+            tx.send(Err(reason.to_string())).ok();
         }
     }
 
@@ -363,12 +402,52 @@ impl LineRpcCore {
                     .and_then(|m| m.as_str())
                     .filter(|s| !s.is_empty())
                     .unwrap_or("Request failed");
-                let _ = tx.send(Err(message.to_string()));
+                // Failure means the requester timed out and dropped its
+                // receiver between our `remove` and this send — benign.
+                tx.send(Err(message.to_string())).ok();
             }
             _ => {
-                let _ = tx.send(Ok(msg.get("result").cloned().unwrap_or(Value::Null)));
+                tx.send(Ok(msg.get("result").cloned().unwrap_or(Value::Null)))
+                    .ok();
             }
         }
+    }
+}
+
+/// Queue a validated request/notification for the serial dispatcher without
+/// ever blocking the reader thread. On overflow (client pipelining faster
+/// than the handler drains): requests get an immediate error response so the
+/// client isn't left waiting, notifications are dropped (fire-and-forget;
+/// `notifications/cancelled` is intercepted on the reader thread before
+/// dispatch, so it is never lost here).
+fn queue_or_reject(
+    core: &LineRpcCore,
+    tx: &crossbeam_channel::Sender<IncomingMessage>,
+    message: IncomingMessage,
+) {
+    match tx.try_send(message) {
+        Ok(()) => {}
+        Err(crossbeam_channel::TrySendError::Full(message)) => {
+            if let Some(id) = message.id {
+                core.send_error(
+                    &id,
+                    ErrorCodes::INTERNAL_ERROR,
+                    "Server overloaded: dispatch queue is full",
+                    None,
+                );
+            }
+        }
+        // Dispatcher gone — connection is shutting down; nothing to do.
+        Err(crossbeam_channel::TrySendError::Disconnected(_)) => {}
+    }
+}
+
+/// Spawn a named transport thread, surfacing the (rare, fatal-for-this-
+/// connection) spawn failure on stderr instead of swallowing it — a transport
+/// with no reader/dispatcher thread is silently dead otherwise.
+fn spawn_transport_thread<F: FnOnce() + Send + 'static>(name: &str, f: F) {
+    if let Err(err) = std::thread::Builder::new().name(name.to_string()).spawn(f) {
+        eprintln!("[CodeGraph MCP] failed to spawn {name} thread: {err}");
     }
 }
 
@@ -451,13 +530,14 @@ pub struct StdioTransport {
 
 impl StdioTransport {
     pub fn new(opts: StdioTransportOptions) -> Self {
-        let write_line: Box<dyn Fn(&str) + Send + Sync> = Box::new(|line: &str| {
-            let stdout = std::io::stdout();
-            let mut out = stdout.lock();
-            let _ = out.write_all(line.as_bytes());
-            let _ = out.write_all(b"\n");
-            let _ = out.flush();
-        });
+        let write_line: Box<dyn Fn(&str) -> std::io::Result<()> + Send + Sync> =
+            Box::new(|line: &str| {
+                let stdout = std::io::stdout();
+                let mut out = stdout.lock();
+                out.write_all(line.as_bytes())?;
+                out.write_all(b"\n")?;
+                out.flush()
+            });
         StdioTransport {
             core: Arc::new(LineRpcCore::new("cg-srv".to_string(), write_line)),
             exit_on_close: opts.exit_on_close,
@@ -480,18 +560,17 @@ impl JsonRpcTransport for StdioTransport {
             return;
         }
 
-        // Serial handler dispatch (mirrors the single JS event loop).
-        let (tx, rx) = crossbeam_channel::unbounded::<IncomingMessage>();
+        // Serial handler dispatch (mirrors the single JS event loop). Bounded:
+        // see MAX_DISPATCH_QUEUE_MESSAGES.
+        let (tx, rx) = crossbeam_channel::bounded::<IncomingMessage>(MAX_DISPATCH_QUEUE_MESSAGES);
         {
             let core = Arc::clone(&self.core);
             let mut handler = handler;
-            let _ = std::thread::Builder::new()
-                .name("cg-mcp-stdio-dispatch".to_string())
-                .spawn(move || {
-                    for message in rx {
-                        run_handler(&core, &mut handler, message);
-                    }
-                });
+            spawn_transport_thread("cg-mcp-stdio-dispatch", move || {
+                for message in rx {
+                    run_handler(&core, &mut handler, message);
+                }
+            });
         }
 
         // Reader thread: stdin lines → core (responses routed inline,
@@ -504,32 +583,28 @@ impl JsonRpcTransport for StdioTransport {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take();
-        let _ = std::thread::Builder::new()
-            .name("cg-mcp-stdio-reader".to_string())
-            .spawn(move || {
-                let stdin = std::io::stdin();
-                let reader = stdin.lock();
-                for line in reader.lines() {
-                    if core.stopped.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    match line {
-                        Ok(line) => core.handle_line(&line, &|msg| {
-                            let _ = tx.send(msg);
-                        }),
-                        Err(_) => break,
-                    }
+        spawn_transport_thread("cg-mcp-stdio-reader", move || {
+            let stdin = std::io::stdin();
+            let reader = stdin.lock();
+            for line in reader.lines() {
+                if core.stopped.load(Ordering::SeqCst) {
+                    break;
                 }
-                // stdin closed (or read error): mirror readline's 'close'.
-                core.reject_pending("Transport stopped");
-                if let Some(cb) = on_close {
-                    cb();
+                match line {
+                    Ok(line) => core.handle_line(&line, &|msg| queue_or_reject(&core, &tx, msg)),
+                    Err(_) => break,
                 }
-                latch.signal();
-                if exit_on_close {
-                    std::process::exit(0);
-                }
-            });
+            }
+            // stdin closed (or read error): mirror readline's 'close'.
+            core.reject_pending("Transport stopped");
+            if let Some(cb) = on_close {
+                cb();
+            }
+            latch.signal();
+            if exit_on_close {
+                std::process::exit(0);
+            }
+        });
     }
 
     fn stop(&self) {
@@ -606,14 +681,19 @@ mod socket_transport {
 
         pub fn with_prefix(socket: UnixStream, prefix: &str) -> Self {
             let writer = socket.try_clone().ok().map(Mutex::new);
-            let write_line: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |line: &str| {
-                if let Some(w) = &writer {
+            let write_line: Box<dyn Fn(&str) -> std::io::Result<()> + Send + Sync> =
+                Box::new(move |line: &str| {
+                    let Some(w) = &writer else {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::NotConnected,
+                            "socket writer unavailable",
+                        ));
+                    };
                     let mut stream = w.lock().unwrap_or_else(|e| e.into_inner());
-                    let _ = stream.write_all(line.as_bytes());
-                    let _ = stream.write_all(b"\n");
-                    let _ = stream.flush();
-                }
-            });
+                    stream.write_all(line.as_bytes())?;
+                    stream.write_all(b"\n")?;
+                    stream.flush()
+                });
             SocketTransport {
                 core: Arc::new(LineRpcCore::new(prefix.to_string(), write_line)),
                 socket: Mutex::new(socket),
@@ -633,25 +713,36 @@ mod socket_transport {
                 .push(handler);
         }
 
-        /// Write a one-shot line directly to the socket (no JSON-RPC framing
-        /// applied — caller produces the line). The daemon uses this for the
-        /// hello/handshake line that precedes the JSON-RPC stream.
-        pub fn write_raw(&self, line: &str) {
-            let mut stream = self.socket.lock().unwrap_or_else(|e| e.into_inner());
-            if line.ends_with('\n') {
-                let _ = stream.write_all(line.as_bytes());
-            } else {
-                let _ = stream.write_all(line.as_bytes());
-                let _ = stream.write_all(b"\n");
-            }
-            let _ = stream.flush();
-        }
-
         /// Block until the socket closes (from either side) or `stop()` runs.
         /// Lets the daemon's per-connection thread run a session to
         /// completion.
         pub fn wait_until_closed(&self) {
             self.latch.wait();
+        }
+
+        /// Reader-thread body: socket lines → core (responses routed inline,
+        /// requests/notifications queued for the dispatcher). Returns when the
+        /// peer disconnects, a read errors, or `stop()` flips the flag.
+        fn read_loop(
+            core: &LineRpcCore,
+            stream: UnixStream,
+            tx: &crossbeam_channel::Sender<IncomingMessage>,
+        ) {
+            let reader = BufReader::new(stream);
+            for line in reader.lines() {
+                if core.stopped.load(Ordering::SeqCst) {
+                    return;
+                }
+                match line {
+                    Ok(line) => core.handle_line(&line, &|msg| queue_or_reject(core, tx, msg)),
+                    Err(err) => {
+                        // Don't crash the daemon over a broken pipe; just
+                        // shut this connection.
+                        eprintln!("[CodeGraph daemon] socket error: {err}");
+                        return;
+                    }
+                }
+            }
         }
 
         fn handle_socket_close(
@@ -670,7 +761,7 @@ mod socket_transport {
                 .collect();
             for h in handlers {
                 // Never let a close-handler take the daemon down.
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(h));
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(h)).ok();
             }
             latch.signal();
         }
@@ -682,17 +773,17 @@ mod socket_transport {
                 return;
             }
 
-            let (tx, rx) = crossbeam_channel::unbounded::<IncomingMessage>();
+            // Bounded: see MAX_DISPATCH_QUEUE_MESSAGES.
+            let (tx, rx) =
+                crossbeam_channel::bounded::<IncomingMessage>(MAX_DISPATCH_QUEUE_MESSAGES);
             {
                 let core = Arc::clone(&self.core);
                 let mut handler = handler;
-                let _ = std::thread::Builder::new()
-                    .name("cg-mcp-sock-dispatch".to_string())
-                    .spawn(move || {
-                        for message in rx {
-                            run_handler(&core, &mut handler, message);
-                        }
-                    });
+                spawn_transport_thread("cg-mcp-sock-dispatch", move || {
+                    for message in rx {
+                        run_handler(&core, &mut handler, message);
+                    }
+                });
             }
 
             let read_half = self
@@ -703,35 +794,15 @@ mod socket_transport {
             let core = Arc::clone(&self.core);
             let close_handlers = Arc::clone(&self.close_handlers);
             let latch = Arc::clone(&self.latch);
-            let _ = std::thread::Builder::new()
-                .name("cg-mcp-sock-reader".to_string())
-                .spawn(move || {
-                    match read_half {
-                        Ok(stream) => {
-                            let reader = BufReader::new(stream);
-                            for line in reader.lines() {
-                                if core.stopped.load(Ordering::SeqCst) {
-                                    break;
-                                }
-                                match line {
-                                    Ok(line) => core.handle_line(&line, &|msg| {
-                                        let _ = tx.send(msg);
-                                    }),
-                                    Err(err) => {
-                                        // Don't crash the daemon over a broken
-                                        // pipe; just shut this connection.
-                                        eprintln!("[CodeGraph daemon] socket error: {err}");
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            eprintln!("[CodeGraph daemon] socket error: {err}");
-                        }
+            spawn_transport_thread("cg-mcp-sock-reader", move || {
+                match read_half {
+                    Ok(stream) => SocketTransport::read_loop(&core, stream, &tx),
+                    Err(err) => {
+                        eprintln!("[CodeGraph daemon] socket error: {err}");
                     }
-                    SocketTransport::handle_socket_close(&core, &close_handlers, &latch);
-                });
+                }
+                SocketTransport::handle_socket_close(&core, &close_handlers, &latch);
+            });
         }
 
         fn stop(&self) {
@@ -740,7 +811,8 @@ mod socket_transport {
             }
             self.core.reject_pending("Transport stopped");
             let stream = self.socket.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = stream.shutdown(std::net::Shutdown::Both);
+            // Shutdown fails only if the peer already closed — benign here.
+            stream.shutdown(std::net::Shutdown::Both).ok();
             self.latch.signal();
         }
 
@@ -788,6 +860,7 @@ mod tests {
             "cg-test".to_string(),
             Box::new(move |line: &str| {
                 sink.lock().unwrap().push(line.to_string());
+                Ok(())
             }),
         ));
         (core, out)
@@ -928,6 +1001,52 @@ mod tests {
             &|_msg| panic!("responses must not dispatch"),
         );
         assert_eq!(t.join().unwrap().unwrap_err(), "nope");
+    }
+
+    #[test]
+    fn request_fails_fast_when_the_transport_write_fails() {
+        let core = LineRpcCore::new(
+            "cg-test".to_string(),
+            Box::new(|_line: &str| Err(std::io::Error::other("broken pipe"))),
+        );
+        let started = std::time::Instant::now();
+        let err = core.request("roots/list", None, Some(5000)).unwrap_err();
+        // Must not have waited out the 5s timeout.
+        assert!(started.elapsed() < Duration::from_millis(1000));
+        assert_eq!(err, "Transport write failed sending \"roots/list\" request");
+        // The pending entry must not leak.
+        assert!(core.pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn dispatch_queue_overflow_fails_requests_and_drops_notifications() {
+        let (core, out) = collecting_core();
+        let (tx, _rx) = crossbeam_channel::bounded::<IncomingMessage>(1);
+        let msg = |id: Option<Value>| IncomingMessage {
+            id,
+            method: "tools/call".to_string(),
+            params: None,
+        };
+        // Fills the queue — no error written.
+        queue_or_reject(&core, &tx, msg(Some(json!(1))));
+        assert!(out.lock().unwrap().is_empty());
+        // Overflowing request fails fast with an error response.
+        queue_or_reject(&core, &tx, msg(Some(json!(2))));
+        {
+            let lines = out.lock().unwrap();
+            assert_eq!(lines.len(), 1);
+            assert!(lines[0].contains("\"id\":2"));
+            assert!(lines[0].contains("\"code\":-32603"));
+            assert!(lines[0].contains("Server overloaded"));
+        }
+        // Overflowing notification is dropped silently.
+        queue_or_reject(&core, &tx, msg(None));
+        assert_eq!(out.lock().unwrap().len(), 1);
+        // Queue drains → sends succeed again.
+        let drained = _rx.try_recv().unwrap();
+        assert_eq!(drained.id, Some(json!(1)));
+        queue_or_reject(&core, &tx, msg(Some(json!(3))));
+        assert_eq!(out.lock().unwrap().len(), 1);
     }
 
     #[test]

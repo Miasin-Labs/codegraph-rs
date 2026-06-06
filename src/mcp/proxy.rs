@@ -155,6 +155,8 @@ mod unix_proxy {
             if let Some(idx) = buffer.iter().position(|&b| b == b'\n') {
                 break idx;
             }
+            // Checked after every read (below) too — checking only here would
+            // let the buffer overshoot the cap by one chunk.
             if buffer.len() > MAX_HELLO_LINE_BYTES {
                 return Err("daemon hello line exceeded size limit".to_string());
             }
@@ -165,7 +167,14 @@ mod unix_proxy {
             let _ = stream.set_read_timeout(Some(deadline - now));
             match stream.read(&mut chunk) {
                 Ok(0) => return Err("daemon closed connection before hello".to_string()),
-                Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+                Ok(n) => {
+                    buffer.extend_from_slice(&chunk[..n]);
+                    if buffer.len() > MAX_HELLO_LINE_BYTES
+                        && !buffer[..=MAX_HELLO_LINE_BYTES].contains(&b'\n')
+                    {
+                        return Err("daemon hello line exceeded size limit".to_string());
+                    }
+                }
                 Err(e)
                     if e.kind() == std::io::ErrorKind::WouldBlock
                         || e.kind() == std::io::ErrorKind::TimedOut =>
