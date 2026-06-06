@@ -97,6 +97,21 @@ pub fn encode_lock_info(info: &DaemonLockInfo) -> String {
     body
 }
 
+/// Validate a decoded pid before it is trusted by the liveness/clear paths.
+///
+/// A real OS pid is a positive integer that fits in a `u32` — the liveness
+/// checks in `daemon.rs`/`server.rs` narrow `info.pid as u32` before calling
+/// [`crate::utils::is_process_alive`], and an out-of-range value silently wraps:
+/// `2^32` truncates to `0` (which `libc::kill(0, …)` treats as the *caller's
+/// own process group*, reporting a dead daemon as alive and wedging startup),
+/// and a negative pid would otherwise leave an unclearable stale lock. Rejecting
+/// such values here routes a corrupt/hostile lockfile to `None` ("treat as a
+/// dead/unknown holder, clearable") instead of a bogus "live" pid. Mirrors the
+/// bound check already enforced by `proxy::parse_pid`.
+fn pid_in_valid_range(pid: f64) -> bool {
+    pid.is_finite() && pid.fract() == 0.0 && pid > 1.0 && pid <= u32::MAX as f64
+}
+
 /// Parse a pidfile body. Tolerant of old-format pidfiles (plain pid that fails
 /// JSON parsing, e.g. a leading-zero decimal) so a 0.10.x daemon doesn't trip
 /// over a 0.9.x lockfile if that ever happens — we treat such a lockfile as
@@ -121,6 +136,12 @@ pub fn decode_lock_info(raw: &str) -> Option<DaemonLockInfo> {
         if let (Some(pid), Some(version), Some(socket_path), Some(started_at)) =
             (pid, version, socket_path, started_at)
         {
+            // Reject pids that can't be a real process (out of u32 range,
+            // non-positive, fractional) so the downstream `as u32` narrowing
+            // can never wrap into a live-looking pid.
+            if !pid_in_valid_range(pid) {
+                return None;
+            }
             return Some(DaemonLockInfo {
                 pid: pid as i64,
                 version: version.to_string(),
@@ -132,7 +153,7 @@ pub fn decode_lock_info(raw: &str) -> Option<DaemonLockInfo> {
     }
     // Fall through to legacy plain-pid handling (TS: `Number(trimmed)`).
     if let Ok(pid) = trimmed.parse::<f64>() {
-        if pid.is_finite() && pid > 0.0 {
+        if pid_in_valid_range(pid) {
             return Some(DaemonLockInfo {
                 pid: pid as i64,
                 version: "unknown".to_string(),
@@ -203,6 +224,34 @@ mod tests {
         assert_eq!(decode_lock_info("   \n"), None);
         assert_eq!(decode_lock_info("{\"pid\":\"not-a-number\"}"), None);
         assert_eq!(decode_lock_info("not json at all"), None);
+    }
+
+    #[test]
+    fn decode_rejects_out_of_range_pids() {
+        // 2^32 would truncate to pid 0 via `as u32` — kill(0, 0) targets the
+        // caller's own process group and always "succeeds", so a dead daemon
+        // would look alive forever and no new daemon could start.
+        let json = |pid: &str| {
+            format!(
+                "{{\"pid\":{pid},\"version\":\"1.0.0\",\"socketPath\":\"/tmp/x.sock\",\"startedAt\":1}}"
+            )
+        };
+        assert_eq!(decode_lock_info(&json("4294967296")), None); // 2^32 → wraps to 0
+        assert_eq!(decode_lock_info(&json("4294967297")), None); // 2^32+1 → wraps to 1 (init)
+        assert_eq!(decode_lock_info(&json("-1")), None); // negative
+        assert_eq!(decode_lock_info(&json("0")), None); // process group
+        assert_eq!(decode_lock_info(&json("1")), None); // init — never a daemon
+        assert_eq!(decode_lock_info(&json("123.5")), None); // fractional
+        assert_eq!(decode_lock_info(&json("1e300")), None); // huge float
+        // In-range pid still decodes.
+        assert_eq!(decode_lock_info(&json("4242")).map(|i| i.pid), Some(4242));
+        assert_eq!(
+            decode_lock_info(&json("4294967295")).map(|i| i.pid),
+            Some(u32::MAX as i64)
+        );
+        // Legacy plain-pid branch gets the same range guard.
+        assert_eq!(decode_lock_info("-00123"), None);
+        assert_eq!(decode_lock_info("04294967296"), None);
     }
 
     #[test]
