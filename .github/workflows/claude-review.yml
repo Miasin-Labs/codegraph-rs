@@ -1,0 +1,43 @@
+# Ported from jfc's `/setup-github-actions` template (jfc-review.yml).
+# After this lands in main, add the ANTHROPIC_API_KEY secret in
+#   Settings → Secrets and variables → Actions → New repository secret.
+# Then comment "/claude review" on a PR to trigger a review run.
+name: claude-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  claude-review:
+    # Auto-review every ordinary PR; respond to "/claude" comments anywhere.
+    # The standing full-codebase PR (base: code-review-base) is EXCLUDED from
+    # auto-runs — its diff is the whole repo and re-reviewing it on every main
+    # push would burn tokens for nothing (CodeRabbit covers it via
+    # .coderabbit.yaml). "/claude" comments still work there on demand.
+    if: |
+      (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'code-review-base') ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '/claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '/claude'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Tell the action which trigger phrase to listen for in comments.
+          trigger_phrase: "/claude"
