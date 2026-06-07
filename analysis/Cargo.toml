@@ -54,6 +54,14 @@ stacker = "0.1"
 # indices built on CI couldn't be shared with developer machines. BLAKE3 is
 # fixed, fast, and the same on every host.
 blake3 = "1.8"
+# GPU graph analytics (optional): CUDA driver + NVRTC via cudarc, runtime-loaded.
+cudarc = { version = "0.16", features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-12090"], default-features = false, optional = true }
+
+[features]
+default = []
+# GPU-accelerated graph analytics (PageRank, ...). Runtime-probed; falls back
+# to the CPU path when no CUDA device is present.
+gpu = ["dep:cudarc"]
 
 [dev-dependencies]
 tempfile = "3"

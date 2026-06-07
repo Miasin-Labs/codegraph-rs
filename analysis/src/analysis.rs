@@ -1764,7 +1764,7 @@ impl CodeGraph {
         }
 
         if inner.node_count() > 0 {
-            let ranks = page_rank(inner, 0.85_f32, 50);
+            let ranks = self.pagerank_scores(inner);
             for (idx, score) in inner.node_indices().zip(ranks.iter()) {
                 if let Some(id) = self.node_id_for(idx) {
                     pagerank.insert(id.clone(), *score as f64);
@@ -1777,6 +1777,54 @@ impl CodeGraph {
             out_degree,
             pagerank,
         }
+    }
+
+    /// PageRank scores in node-index order (damping 0.85, 50 iters).
+    ///
+    /// With feature `gpu` and a CUDA device present, runs on the GPU via a
+    /// petgraph-equivalent reverse-CSR kernel; otherwise (or on any GPU
+    /// failure) falls back to petgraph's `page_rank`. The GPU path produces
+    /// identical top-N rankings and scores within ~1e-3 (both are the same
+    /// "approximate" algorithm; f32 summation order differs).
+    fn pagerank_scores(
+        &self,
+        inner: &petgraph::stable_graph::StableDiGraph<
+            crate::nodes::NodeData,
+            crate::edges::EdgeData,
+        >,
+    ) -> Vec<f32> {
+        #[cfg(feature = "gpu")]
+        {
+            use petgraph::Direction;
+            let n = inner.node_count();
+            // Reverse-CSR (incoming) adjacency with DEDUPED predecessors —
+            // petgraph's update treats a multi-edge w⇉v as a single
+            // predecessor while counting every out-edge in outdeg[w].
+            let mut in_off: Vec<u32> = Vec::with_capacity(n + 1);
+            let mut in_pred: Vec<u32> = Vec::new();
+            let mut out_deg: Vec<f32> = vec![0.0; n];
+            in_off.push(0);
+            for v in inner.node_indices() {
+                let mut preds: Vec<u32> = inner
+                    .neighbors_directed(v, Direction::Incoming)
+                    .map(|w| w.index() as u32)
+                    .collect();
+                preds.sort_unstable();
+                preds.dedup();
+                in_pred.extend_from_slice(&preds);
+                in_off.push(in_pred.len() as u32);
+            }
+            for w in inner.node_indices() {
+                out_deg[w.index()] =
+                    inner.neighbors_directed(w, Direction::Outgoing).count() as f32;
+            }
+            if let Some(ranks) =
+                crate::gpu_pagerank::pagerank_gpu(n, &in_off, &in_pred, &out_deg, 0.85, 50)
+            {
+                return ranks;
+            }
+        }
+        page_rank(inner, 0.85_f32, 50)
     }
 
     /// Top-N functions by PageRank.
