@@ -176,6 +176,20 @@ fn walk_block(
     predecessor: u32,
     exit_id: u32,
 ) -> Option<u32> {
+    // Recursion guard — nested control-flow blocks are bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        walk_block_inner(builder, block_node, source, rules, predecessor, exit_id)
+    })
+}
+
+fn walk_block_inner(
+    builder: &mut CfgBuilder,
+    block_node: TsNode<'_>,
+    source: &[u8],
+    rules: &CfgRules,
+    predecessor: u32,
+    exit_id: u32,
+) -> Option<u32> {
     let mut current = predecessor;
     let mut cursor = block_node.walk();
     let mut terminated = false;

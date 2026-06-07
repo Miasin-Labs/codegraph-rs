@@ -100,6 +100,18 @@ fn walk_ruby(
     scope: &[&str],
     out: &mut Vec<NodeData>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| walk_ruby_inner(node, source, path, path_str, scope, out));
+}
+
+fn walk_ruby_inner(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    path_str: &str,
+    scope: &[&str],
+    out: &mut Vec<NodeData>,
+) {
     match node.kind() {
         "module" => {
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -163,6 +175,17 @@ fn walk_ruby(
 
 /// Extract edges: call edges and inheritance (UsesType).
 fn extract_ruby_edges(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    nodes: &[NodeData],
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
+    // Recursion guard — descends the Ruby AST node tree.
+    crate::ensure_sufficient_stack(|| extract_ruby_edges_inner(node, source, path, nodes, edges));
+}
+
+fn extract_ruby_edges_inner(
     node: TsNode<'_>,
     source: &str,
     path: &Path,

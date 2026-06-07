@@ -396,7 +396,16 @@ fn run_index_all(cg: &CodeGraph, verbose: bool) -> codegraph::Result<IndexResult
 }
 
 /// Print indexing results using clack log methods.
-fn print_index_result(result: &IndexResult, project_path: Option<&Path>) {
+///
+/// `totals` is the post-run (nodes, edges) snapshot of the whole index.
+/// `nodes_created`/`edges_created` are the DB delta of this run — on a
+/// re-index where most files are content-hash-unchanged that delta is tiny,
+/// which read as "the index is nearly empty" without the totals alongside.
+fn print_index_result(
+    result: &IndexResult,
+    project_path: Option<&Path>,
+    totals: Option<(u64, u64)>,
+) {
     let has_errors = result.files_errored > 0;
 
     // Surface non-file-level failures (e.g. lock-acquisition failure
@@ -428,12 +437,27 @@ fn print_index_result(result: &IndexResult, project_path: Option<&Path>) {
                 format_number(result.files_indexed as u64)
             ));
         }
-        clack_log_info(&format!(
-            "{} nodes, {} edges in {}",
+        let delta = format!(
+            "+{} nodes, +{} edges in {}",
             format_number(result.nodes_created as u64),
             format_number(result.edges_created as u64),
             format_duration(result.duration_ms)
-        ));
+        );
+        // Append totals when they differ from the delta (i.e. an incremental
+        // re-index over an existing graph) so a small delta isn't mistaken
+        // for a near-empty index.
+        match totals {
+            Some((nodes, edges))
+                if nodes != result.nodes_created as u64 || edges != result.edges_created as u64 =>
+            {
+                clack_log_info(&format!(
+                    "{delta} (index total: {} nodes, {} edges)",
+                    format_number(nodes),
+                    format_number(edges)
+                ));
+            }
+            _ => clack_log_info(&delta),
+        }
     } else if has_errors {
         clack_log_error(&format!(
             "Indexing failed {} all {} files had errors",
@@ -1482,7 +1506,8 @@ fn cmd_init(path_arg: Option<&str>, _index: bool, verbose: bool) {
         // accepted (so existing muscle memory and scripts don't break) but is a
         // no-op — initializing always builds the initial index.
         let result = run_index_all(&cg, verbose).map_err(|e| e.to_string())?;
-        print_index_result(&result, Some(&project_path));
+        let totals = cg.get_stats().ok().map(|s| (s.node_count, s.edge_count));
+        print_index_result(&result, Some(&project_path), totals);
 
         // try { offerWatchFallback } catch { /* non-fatal */ }
         offer_watch_fallback(&project_path, false);
@@ -1597,7 +1622,8 @@ fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, verbose: bool) {
 
         let result = run_index_all(&cg, verbose).map_err(|e| e.to_string())?;
 
-        print_index_result(&result, Some(&project_path));
+        let totals = cg.get_stats().ok().map(|s| (s.node_count, s.edge_count));
+        print_index_result(&result, Some(&project_path), totals);
 
         if !result.success {
             process::exit(1);
@@ -2218,6 +2244,20 @@ fn print_file_tree(files: &[FileRecord], include_metadata: bool, max_depth: Opti
     }
 
     fn render_node(
+        node: &TreeNode,
+        prefix: &str,
+        is_last: bool,
+        depth: i64,
+        include_metadata: bool,
+        max_depth: Option<i64>,
+    ) {
+        // Recursion guard — tree depth grows with nested children.
+        codegraph::ensure_sufficient_stack(|| {
+            render_node_inner(node, prefix, is_last, depth, include_metadata, max_depth)
+        });
+    }
+
+    fn render_node_inner(
         node: &TreeNode,
         prefix: &str,
         is_last: bool,

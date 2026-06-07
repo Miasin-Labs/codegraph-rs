@@ -33,23 +33,27 @@ tree-sitter-c-sharp = "0.23"
 tree-sitter-ruby = "0.23"
 tree-sitter-kotlin-sg = "0.4"
 tree-sitter-swift = "0.7"
-serde = { version = "1.0.221", features = ["derive", "rc"] }
-serde_json = { version = "1.0.144", features = ["preserve_order", "raw_value"] }
+serde = { version = "1.0.228", features = ["derive", "rc"] }
+serde_json = { version = "1.0.150", features = ["preserve_order", "raw_value"] }
 # default-features off: drops `heapless-cas` -> heapless 0.7 -> the
 # archived atomic-polyfill (RUSTSEC-2023-0089); we only need std Vec I/O.
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 ignore = "0.4"
-thiserror = "2.0.12"
-tracing = "0.1.40"
+thiserror = "2.0.18"
+tracing = "0.1.44"
 # Phase 1 — parallelism + dense bitsets for direction-optimised BFS.
-rayon = "1.10"
+rayon = "1.12"
 roaring = "0.10"
 dashmap = "6"
+# Recursion guard: grows the stack on demand so recursive AST/IR/graph walkers
+# (complexity, cfg, dataflow, ir, adapters, SCC/clique) can't overflow a worker
+# thread's fixed stack on pathologically deep inputs. See `ensure_sufficient_stack`.
+stacker = "0.1"
 # Deterministic, cross-machine-stable digest for `Fingerprint`. SipHash
 # (DefaultHasher) is process-specific and varies across stdlib versions, so
 # indices built on CI couldn't be shared with developer machines. BLAKE3 is
 # fixed, fast, and the same on every host.
-blake3 = "1.5"
+blake3 = "1.8"
 
 [dev-dependencies]
 tempfile = "3"

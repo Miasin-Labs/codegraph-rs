@@ -110,6 +110,25 @@ pub fn validate_path_within_root(project_root: &Path, file_path: &str) -> Option
     }
 }
 
+/// Validate an existing filesystem path using both lexical and realpath checks.
+///
+/// This is stricter than [`validate_path_within_root`]: symlinks are resolved
+/// and the final target must still be under the canonical project root.
+pub fn validate_existing_path_within_root_real(
+    project_root: &Path,
+    file_path: &str,
+) -> Option<PathBuf> {
+    let resolved = validate_path_within_root(project_root, file_path)?;
+    let real_path = fs::canonicalize(&resolved).ok()?;
+    let real_root = fs::canonicalize(project_root).ok()?;
+
+    if real_path == real_root || real_path.starts_with(&real_root) {
+        Some(resolved)
+    } else {
+        None
+    }
+}
+
 /// Validate that a path is a safe project root directory.
 ///
 /// Rejects sensitive system directories and ensures the path is a real,

@@ -178,6 +178,11 @@ impl GraphBuilder {
 /// Used to correlate `NodeData.span.byte_range.start` back to the AST node
 /// for IR lowering.
 fn find_ts_node_at(root: tree_sitter::Node, byte_offset: usize) -> Option<tree_sitter::Node> {
+    // Recursion guard — depth driven by AST nesting depth.
+    crate::ensure_sufficient_stack(|| find_ts_node_at_inner(root, byte_offset))
+}
+
+fn find_ts_node_at_inner(root: tree_sitter::Node, byte_offset: usize) -> Option<tree_sitter::Node> {
     if root.start_byte() == byte_offset && root.is_named() {
         return Some(root);
     }

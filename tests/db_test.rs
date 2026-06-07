@@ -490,6 +490,59 @@ fn search_supports_kind_and_path_field_filters() {
     );
 }
 
+#[test]
+fn search_intersects_options_with_query_field_filters() {
+    let (_dir, _db, q) = setup();
+    let func = make_node("f1", "process");
+    let class = Node::new(
+        "c1",
+        NodeKind::Class,
+        "process",
+        "process",
+        "src/other/process.ts",
+        Language::Typescript,
+        1,
+        1,
+    );
+    q.insert_nodes(&[func, class]).unwrap();
+
+    let kind_results = q
+        .search_nodes(
+            "kind:class process",
+            &SearchOptions {
+                kinds: Some(vec![NodeKind::Function]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        kind_results.is_empty(),
+        "kind filters from options and query must be intersected"
+    );
+
+    let mut rust_func = make_node("f2", "shared");
+    rust_func.language = Language::Rust;
+    rust_func.file_path = "src/shared.rs".to_string();
+    let mut ts_func = make_node("f3", "shared");
+    ts_func.language = Language::Typescript;
+    ts_func.file_path = "src/shared.ts".to_string();
+    q.insert_nodes(&[rust_func, ts_func]).unwrap();
+
+    let language_results = q
+        .search_nodes(
+            "lang:typescript shared",
+            &SearchOptions {
+                languages: Some(vec![Language::Rust]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        language_results.is_empty(),
+        "language filters from options and query must be intersected"
+    );
+}
+
 // =============================================================================
 // iterate-nodes-by-kind.test.ts (#610 streaming)
 // =============================================================================

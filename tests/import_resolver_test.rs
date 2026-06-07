@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::sync::Mutex;
 
 use codegraph::resolution::import_resolver::{
     clear_cpp_include_dir_cache,
@@ -27,6 +28,8 @@ use codegraph::resolution::import_resolver::{
 };
 use codegraph::resolution::types::{ImportMapping, ResolutionContext, ResolvedBy, UnresolvedRef};
 use codegraph::types::{EdgeKind, Language, Node, NodeKind};
+
+static CPP_INCLUDE_DIR_CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// Stub context mirroring the TS test mocks (closure-built objects).
 #[derive(Default)]
@@ -486,6 +489,9 @@ fn should_extract_c_cpp_import_mappings_from_include_directives() {
 
 #[test]
 fn should_discover_include_directories_from_compile_commands_json() {
+    let _cache_guard = CPP_INCLUDE_DIR_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // Create a temp project with compile_commands.json
     let temp_project = tempfile::tempdir().unwrap();
     let root = temp_project.path();
@@ -517,6 +523,9 @@ fn should_discover_include_directories_from_compile_commands_json() {
 
 #[test]
 fn should_fall_back_to_heuristic_include_dirs_when_no_compile_commands_json() {
+    let _cache_guard = CPP_INCLUDE_DIR_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let temp_project = tempfile::tempdir().unwrap();
     let root = temp_project.path();
     // Create include/ and src/ directories with headers
@@ -545,6 +554,9 @@ fn should_fall_back_to_heuristic_include_dirs_when_no_compile_commands_json() {
 // trade-off explicitly.
 #[test]
 fn heuristic_claims_any_top_level_dir_containing_h_files_including_obj_c() {
+    let _cache_guard = CPP_INCLUDE_DIR_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let temp_project = tempfile::tempdir().unwrap();
     let root = temp_project.path();
     // C++ side: a `cppmod` dir with a .hpp (C++-only extension)
@@ -565,6 +577,9 @@ fn heuristic_claims_any_top_level_dir_containing_h_files_including_obj_c() {
 
 #[test]
 fn load_cpp_include_dirs_is_cached_per_project_root() {
+    let _cache_guard = CPP_INCLUDE_DIR_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let temp_project = tempfile::tempdir().unwrap();
     let root = temp_project.path();
     fs::create_dir_all(root.join("include")).unwrap();

@@ -100,6 +100,18 @@ fn walk_cpp(
     scope: &[String],
     out: &mut Vec<NodeData>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| walk_cpp_inner(node, source, path, path_str, scope, out));
+}
+
+fn walk_cpp_inner(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    path_str: &str,
+    scope: &[String],
+    out: &mut Vec<NodeData>,
+) {
     match node.kind() {
         "namespace_definition" => {
             let name = node
@@ -183,6 +195,17 @@ fn walk_cpp(
 
 /// Extract edges: calls, inheritance, type references.
 fn extract_cpp_edges(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    nodes: &[NodeData],
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| extract_cpp_edges_inner(node, source, path, nodes, edges));
+}
+
+fn extract_cpp_edges_inner(
     node: TsNode<'_>,
     source: &str,
     path: &Path,
@@ -284,6 +307,11 @@ fn extract_base_classes(
 /// Extract a type name from a node (handles type_identifier, qualified_identifier,
 /// template_type, etc.)
 fn extract_type_name_from_node(node: TsNode<'_>, source: &str) -> String {
+    // Recursion guard — nested type-expression depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| extract_type_name_from_node_inner(node, source))
+}
+
+fn extract_type_name_from_node_inner(node: TsNode<'_>, source: &str) -> String {
     match node.kind() {
         "type_identifier" | "identifier" => text(node, source),
         "qualified_identifier" => {
@@ -331,6 +359,11 @@ fn extract_function_name(node: TsNode<'_>, source: &str) -> String {
 
 /// Recursively extract the name from a declarator node.
 fn extract_declarator_name(node: TsNode<'_>, source: &str) -> String {
+    // Recursion guard — nested declarator depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| extract_declarator_name_inner(node, source))
+}
+
+fn extract_declarator_name_inner(node: TsNode<'_>, source: &str) -> String {
     match node.kind() {
         "function_declarator" => {
             // The declarator field of a function_declarator holds the name.

@@ -45,6 +45,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use ignore::gitignore::Gitignore;
+use notify::event::{AccessKind, AccessMode, EventKind, MetadataKind, ModifyKind};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use serde::Serialize;
 
@@ -291,6 +292,17 @@ fn rel_to_root(root: &Path, p: &Path) -> Option<String> {
         return None;
     }
     Some(normalize_path(&s))
+}
+
+fn is_index_relevant_event(kind: &EventKind) -> bool {
+    match *kind {
+        EventKind::Any | EventKind::Create(_) | EventKind::Remove(_) => true,
+        EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime)) => false,
+        EventKind::Modify(_) => true,
+        EventKind::Access(AccessKind::Open(AccessMode::Write))
+        | EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        EventKind::Access(_) | EventKind::Other => false,
+    }
 }
 
 /// Shared change handler for both watch strategies (TS: `handleChange`). `rel`
@@ -570,6 +582,9 @@ impl Worker {
         if stopped {
             return;
         }
+        if !is_index_relevant_event(&event.kind) {
+            return;
+        }
         let paths: Vec<PathBuf> = event.paths;
         for p in paths {
             if self.per_directory {
@@ -819,6 +834,10 @@ impl FileWatcher {
 
         let spawned = std::thread::Builder::new()
             .name("codegraph-file-watcher".to_string())
+            // 16 MiB stack: the watcher re-extracts changed files (recursive AST
+            // walkers) and walks the directory tree to install watches. Those
+            // are stacker-guarded, but a roomy base stack avoids segment churn.
+            .stack_size(16 * 1024 * 1024)
             .spawn(move || {
                 let mut worker = Worker {
                     per_directory: !shared.inert_for_tests && !supports_recursive_watch(),
@@ -955,6 +974,17 @@ impl FileWatcher {
         kick(&self.shared);
     }
 
+    /// @internal Test-only: feed a synthetic notify event through the worker's
+    /// raw event branch. Unlike [`FileWatcher::ingest_event_for_tests`], this
+    /// exercises notify event-kind filtering before reaching `handle_change`.
+    pub fn ingest_notify_event_for_tests(&self, kind: EventKind, rel_path: &str) {
+        let normalized = normalize_path(rel_path);
+        let event = notify::Event::new(kind).add_path(self.shared.project_root.join(normalized));
+        if let Some(tx) = self.shared.tx.lock().unwrap().as_ref() {
+            let _ = tx.send(WorkerMsg::Fs(Ok(event)));
+        }
+    }
+
     /// Whether the watcher is currently active.
     pub fn is_active(&self) -> bool {
         let st = self.shared.state.lock().unwrap();
@@ -1017,6 +1047,8 @@ impl Drop for FileWatcher {
 
 #[cfg(test)]
 mod tests {
+    use notify::event::{CreateKind, DataChange, RemoveKind, RenameMode};
+
     use super::*;
 
     #[test]
@@ -1058,6 +1090,58 @@ mod tests {
             rel_to_root(root, Path::new("/proj/src/a.ts")),
             Some("src/a.ts".to_string())
         );
+    }
+
+    #[test]
+    fn index_relevant_event_ignores_non_mutating_access() {
+        assert!(!is_index_relevant_event(&EventKind::Access(
+            AccessKind::Any
+        )));
+        assert!(!is_index_relevant_event(&EventKind::Access(
+            AccessKind::Read
+        )));
+        assert!(!is_index_relevant_event(&EventKind::Access(
+            AccessKind::Open(AccessMode::Read)
+        )));
+        assert!(!is_index_relevant_event(&EventKind::Access(
+            AccessKind::Close(AccessMode::Read)
+        )));
+        assert!(!is_index_relevant_event(&EventKind::Access(
+            AccessKind::Open(AccessMode::Execute)
+        )));
+        assert!(!is_index_relevant_event(&EventKind::Access(
+            AccessKind::Open(AccessMode::Other)
+        )));
+        assert!(!is_index_relevant_event(&EventKind::Modify(
+            ModifyKind::Metadata(MetadataKind::AccessTime)
+        )));
+        assert!(!is_index_relevant_event(&EventKind::Other));
+    }
+
+    #[test]
+    fn index_relevant_event_keeps_mutations_and_close_write() {
+        assert!(is_index_relevant_event(&EventKind::Any));
+        assert!(is_index_relevant_event(&EventKind::Create(
+            CreateKind::File
+        )));
+        assert!(is_index_relevant_event(&EventKind::Remove(
+            RemoveKind::File
+        )));
+        assert!(is_index_relevant_event(&EventKind::Modify(
+            ModifyKind::Data(DataChange::Content)
+        )));
+        assert!(is_index_relevant_event(&EventKind::Modify(
+            ModifyKind::Metadata(MetadataKind::WriteTime)
+        )));
+        assert!(is_index_relevant_event(&EventKind::Modify(
+            ModifyKind::Name(RenameMode::Both)
+        )));
+        assert!(is_index_relevant_event(&EventKind::Access(
+            AccessKind::Open(AccessMode::Write)
+        )));
+        assert!(is_index_relevant_event(&EventKind::Access(
+            AccessKind::Close(AccessMode::Write)
+        )));
     }
 
     #[test]

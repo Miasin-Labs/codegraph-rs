@@ -1136,6 +1136,11 @@ pub fn parse_expr(input: &str) -> Result<Expr, ParseError> {
 }
 
 fn parse_expr_inner(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
+    // Recursion guard — nested set-op / atom expression nesting depth.
+    crate::ensure_sufficient_stack(|| parse_expr_inner_inner(tokens, pos))
+}
+
+fn parse_expr_inner_inner(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
     let mut left = parse_atom(tokens, pos)?;
     loop {
         if *pos >= tokens.len() {
@@ -1159,6 +1164,11 @@ fn parse_expr_inner(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseErro
 }
 
 fn parse_atom(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
+    // Recursion guard — parenthesised group / sub-query operand nesting depth.
+    crate::ensure_sufficient_stack(|| parse_atom_inner(tokens, pos))
+}
+
+fn parse_atom_inner(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
     if *pos >= tokens.len() {
         return Err(ParseError::new(*pos, "expected expression"));
     }
@@ -1203,6 +1213,11 @@ fn parse_atom(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
 /// pipe-chain parser eat `dominators` as an unknown operator. Keeping
 /// `of` explicit also leaves room for future `dominators since N` etc.
 fn parse_dominators_query(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
+    // Recursion guard — nested `dominators of <atom>` operand depth.
+    crate::ensure_sufficient_stack(|| parse_dominators_query_inner(tokens, pos))
+}
+
+fn parse_dominators_query_inner(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
     debug_assert!(matches!(tokens[*pos], Token::Dominators));
     *pos += 1;
     if *pos >= tokens.len() || tokens[*pos] != Token::Of {
@@ -1216,6 +1231,11 @@ fn parse_dominators_query(tokens: &[Token], pos: &mut usize) -> Result<Expr, Par
 /// `dominates <atom>` — no `of` here because `dominates` is naturally a
 /// transitive verb (`X dominates Y`). Mirrors the petgraph API name.
 fn parse_dominates_query(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
+    // Recursion guard — nested `dominates <atom>` operand depth.
+    crate::ensure_sufficient_stack(|| parse_dominates_query_inner(tokens, pos))
+}
+
+fn parse_dominates_query_inner(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
     debug_assert!(matches!(tokens[*pos], Token::Dominates));
     *pos += 1;
     let inner = parse_atom(tokens, pos)?;
@@ -1225,6 +1245,11 @@ fn parse_dominates_query(tokens: &[Token], pos: &mut usize) -> Result<Expr, Pars
 /// `trait_impls of <atom>` — `<atom>` should select `Trait` nodes; non-trait
 /// nodes contribute no implementors and are silently skipped at execution.
 fn parse_trait_impls_query(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
+    // Recursion guard — nested `trait_impls of <atom>` operand depth.
+    crate::ensure_sufficient_stack(|| parse_trait_impls_query_inner(tokens, pos))
+}
+
+fn parse_trait_impls_query_inner(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
     debug_assert!(matches!(tokens[*pos], Token::TraitImpls));
     *pos += 1;
     if *pos >= tokens.len() || tokens[*pos] != Token::Of {
@@ -1243,6 +1268,11 @@ fn parse_trait_impls_query(tokens: &[Token], pos: &mut usize) -> Result<Expr, Pa
 /// and ambiguity around `path fn("a")` (single source) vs.
 /// `path {fn("a")}` (one-element multi source) would surprise the LLM.
 fn parse_multi_path_query(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
+    // Recursion guard — nested multi_path source / target operand depth.
+    crate::ensure_sufficient_stack(|| parse_multi_path_query_inner(tokens, pos))
+}
+
+fn parse_multi_path_query_inner(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
     debug_assert!(matches!(tokens[*pos], Token::MultiPath));
     *pos += 1;
     if *pos >= tokens.len() || tokens[*pos] != Token::LBrace {
@@ -1369,6 +1399,11 @@ fn parse_pipe_chain_atom(tokens: &[Token], pos: &mut usize) -> Result<Vec<DslOp>
 }
 
 fn parse_path_query(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
+    // Recursion guard — nested path-query endpoint operand depth.
+    crate::ensure_sufficient_stack(|| parse_path_query_inner(tokens, pos))
+}
+
+fn parse_path_query_inner(tokens: &[Token], pos: &mut usize) -> Result<Expr, ParseError> {
     let mode = match &tokens[*pos] {
         Token::Path => PathMode::Shortest,
         Token::Paths => PathMode::AllSimple,
@@ -2314,6 +2349,15 @@ impl<'a> QueryEngine<'a> {
         expr: &Expr,
         config: &QueryConfig,
     ) -> Result<QueryResult, QueryError> {
+        // Recursion guard — nested Expr query-tree evaluation depth.
+        crate::ensure_sufficient_stack(|| self.execute_expr_inner(expr, config))
+    }
+
+    pub fn execute_expr_inner(
+        &self,
+        expr: &Expr,
+        config: &QueryConfig,
+    ) -> Result<QueryResult, QueryError> {
         match expr {
             Expr::Pipe(ops) => self.execute(ops, config),
             Expr::Entrypoints(kind_filter) => Ok(self.execute_entrypoints(*kind_filter, config)),
@@ -2737,6 +2781,19 @@ impl<'a> QueryEngine<'a> {
         max_depth: Option<usize>,
         config: &QueryConfig,
     ) -> Result<QueryResult, QueryError> {
+        // Recursion guard — nested source / target sub-expression evaluation depth.
+        crate::ensure_sufficient_stack(|| {
+            self.execute_multi_path_inner(sources, to, max_depth, config)
+        })
+    }
+
+    fn execute_multi_path_inner(
+        &self,
+        sources: &[Expr],
+        to: &Expr,
+        max_depth: Option<usize>,
+        config: &QueryConfig,
+    ) -> Result<QueryResult, QueryError> {
         let mut all_sources: HashSet<NodeId> = HashSet::new();
         for s in sources {
             let r = self.execute_expr(s, config)?;
@@ -2924,6 +2981,15 @@ impl<'a> QueryEngine<'a> {
     /// 4. Union all surviving path nodes into the result and emit the
     ///    on-path edges as `(from, to, edge_kind_debug)`.
     fn execute_path_query(
+        &self,
+        pq: &PathQuery,
+        config: &QueryConfig,
+    ) -> Result<QueryResult, QueryError> {
+        // Recursion guard — nested path endpoint sub-expression evaluation depth.
+        crate::ensure_sufficient_stack(|| self.execute_path_query_inner(pq, config))
+    }
+
+    fn execute_path_query_inner(
         &self,
         pq: &PathQuery,
         config: &QueryConfig,
@@ -3119,7 +3185,28 @@ fn all_simple_paths_bounded(
     on_stack.insert(from.clone(), ());
     let mut total_nodes_emitted: HashSet<NodeId> = HashSet::new();
 
+    #[allow(clippy::too_many_arguments)]
     fn dfs(
+        graph: &CodeGraph,
+        current: &NodeId,
+        target: &NodeId,
+        max_depth: usize,
+        node_budget: usize,
+        stack: &mut Vec<NodeId>,
+        on_stack: &mut HashMap<NodeId, ()>,
+        results: &mut Vec<Vec<NodeId>>,
+        total: &mut HashSet<NodeId>,
+    ) {
+        // Recursion guard — graph simple-path enumeration recursion depth.
+        crate::ensure_sufficient_stack(|| {
+            dfs_inner(
+                graph, current, target, max_depth, node_budget, stack, on_stack, results, total,
+            )
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dfs_inner(
         graph: &CodeGraph,
         current: &NodeId,
         target: &NodeId,

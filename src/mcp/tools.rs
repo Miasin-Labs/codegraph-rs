@@ -4015,6 +4015,29 @@ impl ToolHandler {
             include_metadata: bool,
             lines: &mut Vec<String>,
         ) {
+            // Recursion guard — directory-tree depth drives the recursion.
+            crate::ensure_sufficient_stack(|| {
+                render_node_inner(
+                    node,
+                    prefix,
+                    is_last,
+                    depth,
+                    max_depth,
+                    include_metadata,
+                    lines,
+                )
+            });
+        }
+
+        fn render_node_inner(
+            node: &TreeNode,
+            prefix: &str,
+            is_last: bool,
+            depth: usize,
+            max_depth: Option<usize>,
+            include_metadata: bool,
+            lines: &mut Vec<String>,
+        ) {
             if let Some(md) = max_depth {
                 if depth > md {
                     return;
@@ -4215,6 +4238,7 @@ impl ToolHandler {
     /// Find ALL symbols matching a name. Used by callers/callees/impact to
     /// aggregate results across all matching symbols.
     fn find_all_symbols(&self, cg: &CodeGraph, symbol: &str) -> Result<SymbolMatches> {
+        let is_qualified = symbol.contains('.') || symbol.contains('/') || symbol.contains("::");
         let mut results = cg.search_nodes(
             symbol,
             Some(&SearchOptions {
@@ -4224,9 +4248,7 @@ impl ToolHandler {
         )?;
 
         // Mirror the fallback for qualified queries.
-        if results.is_empty()
-            && (symbol.contains('.') || symbol.contains('/') || symbol.contains("::"))
-        {
+        if results.is_empty() && is_qualified {
             let tail = last_qualifier_part(symbol);
             if !tail.is_empty() && tail != symbol {
                 results = cg.search_nodes(
@@ -4250,6 +4272,13 @@ impl ToolHandler {
             .iter()
             .filter(|r| self.matches_symbol(&r.node, symbol))
             .collect();
+
+        if exact_matches.is_empty() && is_qualified {
+            return Ok(SymbolMatches {
+                nodes: Vec::new(),
+                note: String::new(),
+            });
+        }
 
         if exact_matches.len() <= 1 {
             let node = exact_matches

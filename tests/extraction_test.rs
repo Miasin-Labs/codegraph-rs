@@ -18,6 +18,7 @@ use std::process::Command;
 use codegraph::db::{DatabaseConnection, QueryBuilder};
 use codegraph::extraction::{
     ExtractionOrchestrator,
+    FileStats,
     detect_language,
     extract_from_source,
     get_supported_languages,
@@ -3600,6 +3601,53 @@ fn full_indexing_syncs_and_detects_changes() {
 }
 
 #[test]
+fn full_indexing_sync_refreshes_metadata_when_content_hash_is_unchanged() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let src_dir = temp_dir.path().join("src");
+    fs::create_dir(&src_dir).unwrap();
+    let file_path = src_dir.join("main.ts");
+    let content = "export function kept() { return 1; }\n";
+    fs::write(&file_path, content).unwrap();
+
+    let (_conn, queries) = open_graph(temp_dir.path());
+    let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
+    orch.index_all(None, None, false).expect("index_all");
+
+    let before = queries
+        .get_file_by_path("src/main.ts")
+        .unwrap()
+        .expect("tracked file");
+    let mut current_stats = FileStats::from_metadata(&fs::metadata(&file_path).unwrap());
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        fs::write(&file_path, format!("{content}\n")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        fs::write(&file_path, content).unwrap();
+        current_stats = FileStats::from_metadata(&fs::metadata(&file_path).unwrap());
+        if current_stats.modified_at_ms != before.modified_at {
+            break;
+        }
+    }
+    assert_ne!(
+        current_stats.modified_at_ms, before.modified_at,
+        "test setup failed to change mtime"
+    );
+
+    let sync_result = orch.sync(None).expect("sync");
+
+    assert_eq!(sync_result.files_modified, 0);
+    let after = queries
+        .get_file_by_path("src/main.ts")
+        .unwrap()
+        .expect("tracked file after sync");
+    assert_eq!(after.content_hash, before.content_hash);
+    assert_eq!(after.modified_at, current_stats.modified_at_ms);
+    assert_eq!(after.node_count, before.node_count);
+    let nodes = queries.get_nodes_by_file("src/main.ts").unwrap();
+    assert!(nodes.iter().any(|n| n.name == "kept"));
+}
+
+#[test]
 fn full_indexing_counts_file_level_tracked_yaml_files_as_indexed() {
     let temp_dir = tempfile::tempdir().unwrap();
     fs::write(temp_dir.path().join("app.yaml"), "name: test\n").unwrap();
@@ -3866,6 +3914,84 @@ fn directory_exclusion_returns_forward_slash_paths_on_all_platforms() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0], "src/components/Button.tsx");
     assert!(!files[0].contains('\\'));
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_scan_skips_symlinked_source_files_outside_root() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::create_dir_all(temp_dir.path().join("src")).unwrap();
+    fs::write(outside.path().join("secret.ts"), "export const secret = 1;").unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("secret.ts"),
+        temp_dir.path().join("src").join("secret.ts"),
+    )
+    .unwrap();
+
+    let files = scan_directory(temp_dir.path(), None);
+
+    assert!(!files.contains(&"src/secret.ts".to_string()));
+}
+
+#[cfg(unix)]
+#[test]
+fn git_directory_scan_skips_tracked_symlinked_source_files_outside_root() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "user.email", "test@test.com"]);
+    git(root, &["config", "user.name", "Test"]);
+    fs::write(root.join("real.ts"), "export const real = 1;").unwrap();
+    fs::write(outside.path().join("secret.ts"), "export const secret = 1;").unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret.ts"), root.join("secret.ts")).unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "tracked symlink"]);
+
+    let files = scan_directory(root, None);
+
+    assert!(files.contains(&"real.ts".to_string()));
+    assert!(!files.contains(&"secret.ts".to_string()));
+}
+
+#[cfg(unix)]
+#[test]
+fn index_file_blocks_symlinked_source_files_outside_root() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(
+        outside.path().join("secret.ts"),
+        "export function leakedSecret() { return 1; }",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("secret.ts"),
+        temp_dir.path().join("link.ts"),
+    )
+    .unwrap();
+
+    let (_conn, queries) = open_graph(temp_dir.path());
+    let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
+    let result = orch.index_file("link.ts").unwrap();
+
+    assert!(result.errors.iter().any(|e| {
+        e.code.as_deref() == Some("path_traversal") && e.message.contains("Path traversal blocked")
+    }));
+    assert!(queries.get_file_by_path("link.ts").unwrap().is_none());
+}
+
+#[test]
+fn index_file_reports_read_error_for_missing_files_inside_root() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (_conn, queries) = open_graph(temp_dir.path());
+    let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
+    let result = orch.index_file("missing.ts").unwrap();
+
+    assert!(result.errors.iter().any(|e| {
+        e.code.as_deref() == Some("read_error") && e.message.contains("Failed to read file")
+    }));
+    assert!(queries.get_file_by_path("missing.ts").unwrap().is_none());
 }
 
 // =============================================================================

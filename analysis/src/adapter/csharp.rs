@@ -104,6 +104,20 @@ fn walk_csharp(
     enclosing_class: Option<&str>,
     out: &mut Vec<NodeData>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        walk_csharp_inner(node, source, path, path_str, enclosing_class, out)
+    });
+}
+
+fn walk_csharp_inner(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    path_str: &str,
+    enclosing_class: Option<&str>,
+    out: &mut Vec<NodeData>,
+) {
     match node.kind() {
         "namespace_declaration" | "file_scoped_namespace_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -206,6 +220,17 @@ fn walk_csharp(
 
 /// Extract edges: calls, constructor calls, implements, uses_type.
 fn extract_csharp_edges(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    nodes: &[NodeData],
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
+    // Recursion guard — depth follows the tree-sitter syntax-node nesting.
+    crate::ensure_sufficient_stack(|| extract_csharp_edges_inner(node, source, path, nodes, edges));
+}
+
+fn extract_csharp_edges_inner(
     node: TsNode<'_>,
     source: &str,
     path: &Path,

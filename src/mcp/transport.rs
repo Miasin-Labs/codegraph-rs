@@ -446,7 +446,15 @@ fn queue_or_reject(
 /// connection) spawn failure on stderr instead of swallowing it — a transport
 /// with no reader/dispatcher thread is silently dead otherwise.
 fn spawn_transport_thread<F: FnOnce() + Send + 'static>(name: &str, f: F) {
-    if let Err(err) = std::thread::Builder::new().name(name.to_string()).spawn(f) {
+    // 16 MiB stack: these dispatch threads run the MCP tool handlers, which
+    // include recursive graph traversals (impact, type hierarchy, file-tree
+    // render). Those are individually stacker-guarded, but a roomy base stack
+    // keeps segment switches off the hot path and matches the parse pool.
+    if let Err(err) = std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(f)
+    {
         eprintln!("[CodeGraph MCP] failed to spawn {name} thread: {err}");
     }
 }

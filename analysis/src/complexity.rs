@@ -138,6 +138,17 @@ fn walk_cognitive(
     nesting: u32,
     score: &mut u32,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| walk_cognitive_inner(node, source, rules, nesting, score));
+}
+
+fn walk_cognitive_inner(
+    node: TsNode<'_>,
+    source: &[u8],
+    rules: &LangRules,
+    nesting: u32,
+    score: &mut u32,
+) {
     let kind = node.kind();
 
     // Check if this node is an increment-inducing structure.
@@ -182,6 +193,11 @@ fn compute_cyclomatic(body: TsNode<'_>, source: &[u8], rules: &LangRules) -> u32
 }
 
 fn walk_cyclomatic(node: TsNode<'_>, source: &[u8], rules: &LangRules, count: &mut u32) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| walk_cyclomatic_inner(node, source, rules, count));
+}
+
+fn walk_cyclomatic_inner(node: TsNode<'_>, source: &[u8], rules: &LangRules, count: &mut u32) {
     let kind = node.kind();
 
     // Branch nodes add a decision point.
@@ -224,6 +240,11 @@ fn compute_max_nesting(body: TsNode<'_>, rules: &LangRules) -> u32 {
 }
 
 fn walk_nesting(node: TsNode<'_>, rules: &LangRules, current: u32, max_depth: &mut u32) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| walk_nesting_inner(node, rules, current, max_depth));
+}
+
+fn walk_nesting_inner(node: TsNode<'_>, rules: &LangRules, current: u32, max_depth: &mut u32) {
     let kind = node.kind();
     let new_depth = if rules.nesting_nodes.contains(&kind) {
         let d = current + 1;
@@ -300,6 +321,29 @@ fn compute_halstead(body: TsNode<'_>, source: &[u8], rules: &LangRules) -> Optio
 }
 
 fn walk_halstead(
+    node: TsNode<'_>,
+    source: &[u8],
+    rules: &LangRules,
+    unique_ops: &mut std::collections::HashSet<String>,
+    unique_opnds: &mut std::collections::HashSet<String>,
+    total_ops: &mut u32,
+    total_opnds: &mut u32,
+) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        walk_halstead_inner(
+            node,
+            source,
+            rules,
+            unique_ops,
+            unique_opnds,
+            total_ops,
+            total_opnds,
+        )
+    });
+}
+
+fn walk_halstead_inner(
     node: TsNode<'_>,
     source: &[u8],
     rules: &LangRules,

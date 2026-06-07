@@ -182,6 +182,20 @@ fn extract_nodes_recursive(
     scope: &[&str],
     out: &mut Vec<NodeData>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        extract_nodes_recursive_inner(node, source, file_path, file_path_str, scope, out)
+    });
+}
+
+fn extract_nodes_recursive_inner(
+    node: TsNode<'_>,
+    source: &str,
+    file_path: &Path,
+    file_path_str: &str,
+    scope: &[&str],
+    out: &mut Vec<NodeData>,
+) {
     let mut cursor = node.walk();
 
     for child in node.named_children(&mut cursor) {
@@ -340,6 +354,11 @@ fn extract_function(
 
 fn accessed_field_names(node: TsNode<'_>, source: &str) -> Vec<String> {
     fn walk(node: TsNode<'_>, source: &str, out: &mut Vec<String>) {
+        // Recursion guard — AST nesting depth is bounded only by source size.
+        crate::ensure_sufficient_stack(|| walk_inner(node, source, out));
+    }
+
+    fn walk_inner(node: TsNode<'_>, source: &str, out: &mut Vec<String>) {
         if node.kind() == "field_expression"
             && let Some(field) = node.child_by_field_name("field")
         {
@@ -728,6 +747,15 @@ fn collect_turbofish_calls(
     source: &str,
     map: &mut std::collections::BTreeMap<String, Vec<String>>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| collect_turbofish_calls_inner(node, source, map));
+}
+
+fn collect_turbofish_calls_inner(
+    node: TsNode<'_>,
+    source: &str,
+    map: &mut std::collections::BTreeMap<String, Vec<String>>,
+) {
     if node.kind() == "call_expression" {
         if let Some(gf) = find_child_by_kind(node, "generic_function") {
             if let Some((name, args)) = extract_generic_function_info(gf, source) {
@@ -934,6 +962,17 @@ fn walk_call_sites(
     nodes: &[NodeData],
     out: &mut Vec<CallSite>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| walk_call_sites_inner(node, source, file_path, nodes, out));
+}
+
+fn walk_call_sites_inner(
+    node: TsNode<'_>,
+    source: &str,
+    file_path: &Path,
+    nodes: &[NodeData],
+    out: &mut Vec<CallSite>,
+) {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() == "call_expression" {
@@ -1082,6 +1121,20 @@ fn extract_type_usage_edges(
     name_to_node: &HashMap<&str, &NodeData>,
     edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        extract_type_usage_edges_inner(node, source, file_path, nodes, name_to_node, edges)
+    });
+}
+
+fn extract_type_usage_edges_inner(
+    node: TsNode<'_>,
+    source: &str,
+    file_path: &Path,
+    nodes: &[NodeData],
+    name_to_node: &HashMap<&str, &NodeData>,
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() == "function_item" {
@@ -1138,6 +1191,20 @@ fn collect_type_identifiers(
     name_to_node: &HashMap<&str, &NodeData>,
     edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        collect_type_identifiers_inner(node, source, file_path, func_data, name_to_node, edges)
+    });
+}
+
+fn collect_type_identifiers_inner(
+    node: TsNode<'_>,
+    source: &str,
+    file_path: &Path,
+    func_data: &NodeData,
+    name_to_node: &HashMap<&str, &NodeData>,
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
     if node.kind() == "type_identifier" {
         let type_name = node_text(node, source);
         if let Some(target) = name_to_node.get(type_name.as_str()) {
@@ -1173,6 +1240,19 @@ fn collect_type_identifiers(
 }
 
 fn extract_impl_edges(
+    node: TsNode<'_>,
+    source: &str,
+    file_path: &Path,
+    name_to_node: &HashMap<&str, &NodeData>,
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        extract_impl_edges_inner(node, source, file_path, name_to_node, edges)
+    });
+}
+
+fn extract_impl_edges_inner(
     node: TsNode<'_>,
     source: &str,
     file_path: &Path,

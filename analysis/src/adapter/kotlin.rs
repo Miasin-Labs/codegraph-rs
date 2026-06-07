@@ -99,6 +99,20 @@ fn walk_kotlin(
     out: &mut Vec<NodeData>,
     enclosing: Option<&str>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        walk_kotlin_inner(node, source, file_path, path_str, out, enclosing)
+    });
+}
+
+fn walk_kotlin_inner(
+    node: TsNode,
+    source: &str,
+    file_path: &Path,
+    path_str: &str,
+    out: &mut Vec<NodeData>,
+    enclosing: Option<&str>,
+) {
     match node.kind() {
         "class_declaration" => {
             if let Some(name) = find_name(&node, source) {
@@ -209,6 +223,20 @@ fn walk_children(
     out: &mut Vec<NodeData>,
     enclosing: Option<&str>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        walk_children_inner(node, source, file_path, path_str, out, enclosing)
+    });
+}
+
+fn walk_children_inner(
+    node: TsNode,
+    source: &str,
+    file_path: &Path,
+    path_str: &str,
+    out: &mut Vec<NodeData>,
+    enclosing: Option<&str>,
+) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         walk_kotlin(child, source, file_path, path_str, out, enclosing);
@@ -216,6 +244,20 @@ fn walk_children(
 }
 
 fn extract_calls(
+    node: TsNode,
+    source: &str,
+    file_path: &Path,
+    nodes: &[NodeData],
+    path_str: &str,
+    out: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
+    // Recursion guard — descends every AST child node.
+    crate::ensure_sufficient_stack(|| {
+        extract_calls_inner(node, source, file_path, nodes, path_str, out)
+    });
+}
+
+fn extract_calls_inner(
     node: TsNode,
     source: &str,
     file_path: &Path,
@@ -253,6 +295,20 @@ fn extract_calls(
 }
 
 fn extract_inheritance(
+    node: TsNode,
+    source: &str,
+    file_path: &Path,
+    nodes: &[NodeData],
+    path_str: &str,
+    out: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
+    // Recursion guard — descends every AST child node.
+    crate::ensure_sufficient_stack(|| {
+        extract_inheritance_inner(node, source, file_path, nodes, path_str, out)
+    });
+}
+
+fn extract_inheritance_inner(
     node: TsNode,
     source: &str,
     file_path: &Path,
@@ -337,6 +393,11 @@ fn call_target_name(node: &TsNode, source: &str) -> Option<String> {
 }
 
 fn extract_type_name(node: TsNode, source: &str) -> Option<String> {
+    // Recursion guard — recurses into nested type children.
+    crate::ensure_sufficient_stack(|| extract_type_name_inner(node, source))
+}
+
+fn extract_type_name_inner(node: TsNode, source: &str) -> Option<String> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "user_type"

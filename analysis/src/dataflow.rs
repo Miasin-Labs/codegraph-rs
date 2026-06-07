@@ -268,6 +268,16 @@ fn collect_returns(
     rules: &DataflowRules,
     out: &mut Vec<DataflowReturn>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| collect_returns_inner(node, source, rules, out));
+}
+
+fn collect_returns_inner(
+    node: TsNode<'_>,
+    source: &[u8],
+    rules: &DataflowRules,
+    out: &mut Vec<DataflowReturn>,
+) {
     if node.kind() == rules.return_node {
         // The returned expression is the first named child (for Rust: return_expression's child).
         let expr = if node.named_child_count() > 0 {
@@ -310,6 +320,19 @@ fn extract_assignments(
 }
 
 fn collect_assignments(
+    node: TsNode<'_>,
+    source: &[u8],
+    rules: &DataflowRules,
+    param_names: &[&str],
+    out: &mut Vec<DataflowAssignment>,
+) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        collect_assignments_inner(node, source, rules, param_names, out)
+    });
+}
+
+fn collect_assignments_inner(
     node: TsNode<'_>,
     source: &[u8],
     rules: &DataflowRules,
@@ -382,6 +405,20 @@ fn classify_rhs(
 // ─── Call & Mutation Extraction ──────────────────────────────────────────────
 
 fn extract_calls_and_mutations(
+    node: TsNode<'_>,
+    source: &[u8],
+    rules: &DataflowRules,
+    param_names: &[&str],
+    arg_flows: &mut Vec<DataflowArgFlow>,
+    mutations: &mut Vec<DataflowMutation>,
+) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        extract_calls_and_mutations_inner(node, source, rules, param_names, arg_flows, mutations)
+    });
+}
+
+fn extract_calls_and_mutations_inner(
     node: TsNode<'_>,
     source: &[u8],
     rules: &DataflowRules,

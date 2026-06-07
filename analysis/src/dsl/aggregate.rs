@@ -143,6 +143,11 @@ impl SimpleEdgeKind {
 /// keywords, parse as an `AggExpr`; otherwise fall back to plain
 /// `parse_expr`.
 pub fn parse_aggregate(input: &str) -> Result<AggExpr, ParseError> {
+    // Recursion guard — nested `let … in …` expressions drive parse depth.
+    crate::ensure_sufficient_stack(|| parse_aggregate_inner(input))
+}
+
+pub fn parse_aggregate_inner(input: &str) -> Result<AggExpr, ParseError> {
     let trimmed = input.trim();
 
     // Cheap keyword peek — we only need the first identifier.
@@ -237,6 +242,11 @@ pub fn parse_aggregate(input: &str) -> Result<AggExpr, ParseError> {
 /// Parse `let <name> = <agg> in <agg>` after the literal `let`
 /// keyword has been recognised on the input.
 fn parse_let(input: &str) -> Result<AggExpr, ParseError> {
+    // Recursion guard — nested `let … in …` bodies drive parse depth.
+    crate::ensure_sufficient_stack(|| parse_let_inner(input))
+}
+
+fn parse_let_inner(input: &str) -> Result<AggExpr, ParseError> {
     let rest = input.strip_prefix("let").unwrap_or("").trim_start();
     let (name, rest) = take_ident(rest)?;
     let rest = rest
@@ -358,6 +368,16 @@ pub fn run_aggregate(
 }
 
 pub fn execute_aggregate(
+    agg: &AggExpr,
+    graph: &CodeGraph,
+    config: &QueryConfig,
+    bindings: &HashMap<String, AggregateResult>,
+) -> Result<AggregateResult, QueryError> {
+    // Recursion guard — nested `let … in …` bindings drive evaluation depth.
+    crate::ensure_sufficient_stack(|| execute_aggregate_inner(agg, graph, config, bindings))
+}
+
+pub fn execute_aggregate_inner(
     agg: &AggExpr,
     graph: &CodeGraph,
     config: &QueryConfig,

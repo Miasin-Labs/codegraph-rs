@@ -492,6 +492,19 @@ impl GraphTraverser {
         edges: &mut Vec<Edge>,
         visited: &mut HashSet<String>,
     ) -> Result<()> {
+        // Recursion guard — depth grows with the type-inheritance ancestor chain.
+        crate::ensure_sufficient_stack(|| {
+            self.get_type_ancestors_inner(node_id, nodes, edges, visited)
+        })
+    }
+
+    fn get_type_ancestors_inner(
+        &self,
+        node_id: &str,
+        nodes: &mut HashMap<String, Node>,
+        edges: &mut Vec<Edge>,
+        visited: &mut HashSet<String>,
+    ) -> Result<()> {
         if visited.contains(node_id) {
             return Ok(());
         }
@@ -522,6 +535,19 @@ impl GraphTraverser {
     }
 
     fn get_type_descendants(
+        &self,
+        node_id: &str,
+        nodes: &mut HashMap<String, Node>,
+        edges: &mut Vec<Edge>,
+        visited: &mut HashSet<String>,
+    ) -> Result<()> {
+        // Recursion guard — depth grows with the type-inheritance descendant chain.
+        crate::ensure_sufficient_stack(|| {
+            self.get_type_descendants_inner(node_id, nodes, edges, visited)
+        })
+    }
+
+    fn get_type_descendants_inner(
         &self,
         node_id: &str,
         nodes: &mut HashMap<String, Node>,
@@ -615,6 +641,28 @@ impl GraphTraverser {
     }
 
     fn get_impact_recursive(
+        &self,
+        node_id: &str,
+        max_depth: u32,
+        current_depth: u32,
+        nodes: &mut HashMap<String, Node>,
+        edges: &mut Vec<Edge>,
+        visited: &mut HashSet<String>,
+    ) -> Result<()> {
+        // Recursion guard — depth grows with the dependency fan-out traversal.
+        crate::ensure_sufficient_stack(|| {
+            self.get_impact_recursive_inner(
+                node_id,
+                max_depth,
+                current_depth,
+                nodes,
+                edges,
+                visited,
+            )
+        })
+    }
+
+    fn get_impact_recursive_inner(
         &self,
         node_id: &str,
         max_depth: u32,

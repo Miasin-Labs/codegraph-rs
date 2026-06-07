@@ -14,6 +14,11 @@ use crate::types::{NodeKind, Visibility};
 
 /// Helper to get the root crate/module from a scoped path.
 fn get_root_module(scoped_node: SyntaxNode<'_>, source: &str) -> String {
+    // Recursion guard — depth driven by nested scoped_identifier path segments.
+    crate::ensure_sufficient_stack(|| get_root_module_inner(scoped_node, source))
+}
+
+fn get_root_module_inner(scoped_node: SyntaxNode<'_>, source: &str) -> String {
     let Some(first_child) = scoped_node.named_child(0) else {
         return get_node_text(scoped_node, source).to_string();
     };

@@ -542,6 +542,10 @@ impl EngineHandle {
         let engine_logs = logs.clone();
         let _ = std::thread::Builder::new()
             .name("codegraph-mcp-engine".to_string())
+            // 16 MiB stack: the engine thread executes analysis queries (CFG/
+            // dataflow/IR lowering, DSL traversals) whose recursive walkers are
+            // stacker-guarded; a roomy base stack avoids segment churn.
+            .stack_size(16 * 1024 * 1024)
             .spawn(move || {
                 let engine = MCPEngine::with_log_broadcaster(opts, engine_logs);
                 for cmd in rx {

@@ -91,6 +91,11 @@ impl AbstractLocation {
     /// `Field(Field(Field(...)))` nesting depth. Used to enforce
     /// [`MAX_FIELD_DEPTH`].
     fn depth(&self) -> usize {
+        // Recursion guard — nested Field wrappers drive depth.
+        crate::ensure_sufficient_stack(|| self.depth_inner())
+    }
+
+    fn depth_inner(&self) -> usize {
         match self {
             AbstractLocation::Field(inner, _) => 1 + inner.depth(),
             _ => 0,

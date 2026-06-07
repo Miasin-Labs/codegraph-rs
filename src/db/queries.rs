@@ -971,33 +971,15 @@ impl QueryBuilder {
         // to FTS unchanged. Filters compose with the SearchOptions arg —
         // both are applied (intersection-style).
         let parsed = parse_query(query);
-        let merged_kinds: Option<Vec<NodeKind>> = if !parsed.kinds.is_empty() {
-            let mut v: Vec<NodeKind> = Vec::new();
-            for k in options.kinds.iter().flatten().chain(parsed.kinds.iter()) {
-                if !v.contains(k) {
-                    v.push(*k);
-                }
-            }
-            Some(v)
-        } else {
-            options.kinds.clone()
+        let merged_kinds = match intersect_filter_axis(options.kinds.as_deref(), &parsed.kinds) {
+            Ok(filters) => filters,
+            Err(()) => return Ok(Vec::new()),
         };
-        let merged_languages: Option<Vec<Language>> = if !parsed.languages.is_empty() {
-            let mut v: Vec<Language> = Vec::new();
-            for l in options
-                .languages
-                .iter()
-                .flatten()
-                .chain(parsed.languages.iter())
-            {
-                if !v.contains(l) {
-                    v.push(*l);
-                }
-            }
-            Some(v)
-        } else {
-            options.languages.clone()
-        };
+        let merged_languages =
+            match intersect_filter_axis(options.languages.as_deref(), &parsed.languages) {
+                Ok(filters) => filters,
+                Err(()) => return Ok(Vec::new()),
+            };
         let path_filters = &parsed.path_filters;
         let name_filters = &parsed.name_filters;
         // The text portion drives FTS/LIKE; if all the user typed was
@@ -2239,6 +2221,46 @@ impl QueryBuilder {
 // =============================================================================
 // SQL filter helpers
 // =============================================================================
+
+fn unique_filters<T: Copy + Eq>(filters: &[T]) -> Vec<T> {
+    let mut unique = Vec::new();
+    for filter in filters {
+        if !unique.contains(filter) {
+            unique.push(*filter);
+        }
+    }
+    unique
+}
+
+fn intersect_filter_axis<T: Copy + Eq>(
+    option_filters: Option<&[T]>,
+    query_filters: &[T],
+) -> std::result::Result<Option<Vec<T>>, ()> {
+    let option_filters = option_filters.filter(|filters| !filters.is_empty());
+    let query_filters = if query_filters.is_empty() {
+        None
+    } else {
+        Some(query_filters)
+    };
+
+    match (option_filters, query_filters) {
+        (None, None) => Ok(None),
+        (Some(filters), None) | (None, Some(filters)) => Ok(Some(unique_filters(filters))),
+        (Some(options), Some(query)) => {
+            let mut intersection = Vec::new();
+            for filter in options {
+                if query.contains(filter) && !intersection.contains(filter) {
+                    intersection.push(*filter);
+                }
+            }
+            if intersection.is_empty() {
+                Err(())
+            } else {
+                Ok(Some(intersection))
+            }
+        }
+    }
+}
 
 fn push_kind_filter(
     sql: &mut String,

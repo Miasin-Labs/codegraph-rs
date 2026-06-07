@@ -321,6 +321,20 @@ impl GraphQueryManager {
         visited: &mut HashSet<String>,
         recursion_stack: &mut HashSet<String>,
     ) -> Result<()> {
+        // Recursion guard — depth follows the file dependency chain.
+        crate::ensure_sufficient_stack(|| {
+            self.dfs_cycles_inner(file_path, path, cycles, visited, recursion_stack)
+        })
+    }
+
+    fn dfs_cycles_inner(
+        &self,
+        file_path: &str,
+        path: &[String],
+        cycles: &mut Vec<Vec<String>>,
+        visited: &mut HashSet<String>,
+        recursion_stack: &mut HashSet<String>,
+    ) -> Result<()> {
         if recursion_stack.contains(file_path) {
             // Found a cycle
             if let Some(cycle_start) = path.iter().position(|p| p == file_path) {

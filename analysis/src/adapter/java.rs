@@ -102,6 +102,20 @@ fn walk_java(
     enclosing_class: Option<&str>,
     out: &mut Vec<NodeData>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        walk_java_inner(node, source, path, path_str, enclosing_class, out)
+    });
+}
+
+fn walk_java_inner(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    path_str: &str,
+    enclosing_class: Option<&str>,
+    out: &mut Vec<NodeData>,
+) {
     match node.kind() {
         "package_declaration" => {
             // The package name is the first named child (scoped_identifier or identifier).
@@ -202,6 +216,17 @@ fn walk_java(
 
 /// Extract edges: calls, constructor calls, implements, extends.
 fn extract_java_edges(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    nodes: &[NodeData],
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
+    // Recursion guard — depth tracks tree-sitter AST node nesting.
+    crate::ensure_sufficient_stack(|| extract_java_edges_inner(node, source, path, nodes, edges));
+}
+
+fn extract_java_edges_inner(
     node: TsNode<'_>,
     source: &str,
     path: &Path,

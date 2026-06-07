@@ -113,6 +113,17 @@ impl LanguageAdapter for CAdapter {
 
 /// Recursively walk the tree, extracting function definitions, structs, and enums.
 fn walk_c(node: TsNode<'_>, source: &str, path: &Path, path_str: &str, out: &mut Vec<NodeData>) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| walk_c_inner(node, source, path, path_str, out));
+}
+
+fn walk_c_inner(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    path_str: &str,
+    out: &mut Vec<NodeData>,
+) {
     match node.kind() {
         "function_definition" => {
             // The declarator contains the function name.
@@ -170,6 +181,11 @@ fn extract_function_name(node: TsNode<'_>, source: &str) -> Option<String> {
 /// Recursively extract the identifier from a declarator chain.
 /// Handles: `identifier`, `function_declarator`, `pointer_declarator`, `parenthesized_declarator`.
 fn extract_identifier_from_declarator(node: TsNode<'_>, source: &str) -> Option<String> {
+    // Recursion guard — declarator-chain nesting is bounded only by source size.
+    crate::ensure_sufficient_stack(|| extract_identifier_from_declarator_inner(node, source))
+}
+
+fn extract_identifier_from_declarator_inner(node: TsNode<'_>, source: &str) -> Option<String> {
     match node.kind() {
         "identifier" => Some(text(node, source)),
         "function_declarator" => {
@@ -281,6 +297,17 @@ fn extract_c_calls(
     nodes: &[NodeData],
     edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| extract_c_calls_inner(node, source, path, nodes, edges));
+}
+
+fn extract_c_calls_inner(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    nodes: &[NodeData],
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
     if node.kind() == "call_expression" {
         if let Some(func_node) = node.child_by_field_name("function") {
             let callee_name = text(func_node, source);
@@ -330,6 +357,20 @@ fn extract_c_uses_type(
     nodes: &[NodeData],
     edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        extract_c_uses_type_inner(node, source, path, _path_str, nodes, edges)
+    });
+}
+
+fn extract_c_uses_type_inner(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    _path_str: &str,
+    nodes: &[NodeData],
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
     if node.kind() == "function_definition" {
         if let Some(fn_name) = extract_function_name(node, source) {
             if let Some(fn_node) = nodes
@@ -371,6 +412,11 @@ fn extract_c_uses_type(
 
 /// Collect all `type_identifier` references within a node (for UsesType edges).
 fn collect_type_refs(node: TsNode<'_>, source: &str, out: &mut Vec<String>) {
+    // Recursion guard — type-expression nesting is bounded only by source size.
+    crate::ensure_sufficient_stack(|| collect_type_refs_inner(node, source, out));
+}
+
+fn collect_type_refs_inner(node: TsNode<'_>, source: &str, out: &mut Vec<String>) {
     if node.kind() == "type_identifier" {
         out.push(text(node, source));
     }

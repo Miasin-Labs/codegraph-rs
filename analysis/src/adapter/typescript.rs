@@ -109,6 +109,18 @@ fn walk_ts_node(
     scope: &[&str],
     out: &mut Vec<NodeData>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| walk_ts_node_inner(node, source, path, path_str, scope, out));
+}
+
+fn walk_ts_node_inner(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    path_str: &str,
+    scope: &[&str],
+    out: &mut Vec<NodeData>,
+) {
     match node.kind() {
         "function_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -419,6 +431,15 @@ fn collect_ts_type_arg_calls(
     source: &str,
     map: &mut std::collections::BTreeMap<String, Vec<String>>,
 ) {
+    // Recursion guard — AST node nesting drives depth.
+    crate::ensure_sufficient_stack(|| collect_ts_type_arg_calls_inner(node, source, map));
+}
+
+fn collect_ts_type_arg_calls_inner(
+    node: TsNode<'_>,
+    source: &str,
+    map: &mut std::collections::BTreeMap<String, Vec<String>>,
+) {
     if node.kind() == "call_expression" {
         // In TS, call_expression has: function (identifier), type_arguments, arguments
         let func_node = node.child_by_field_name("function");
@@ -453,6 +474,17 @@ fn collect_ts_type_arg_names(ta_node: TsNode<'_>, source: &str) -> Vec<String> {
 }
 
 fn extract_ts_edges(
+    node: TsNode<'_>,
+    source: &str,
+    path_str: &str,
+    nodes: &[NodeData],
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
+    // Recursion guard — AST node nesting drives depth.
+    crate::ensure_sufficient_stack(|| extract_ts_edges_inner(node, source, path_str, nodes, edges));
+}
+
+fn extract_ts_edges_inner(
     node: TsNode<'_>,
     source: &str,
     path_str: &str,

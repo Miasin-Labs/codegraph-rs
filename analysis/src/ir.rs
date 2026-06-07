@@ -221,6 +221,19 @@ impl RustIrLowering {
         next_label: &mut u32,
         next_temp: &mut usize,
     ) {
+        // Recursion guard — statement nesting is bounded only by source size.
+        crate::ensure_sufficient_stack(|| {
+            Self::lower_stmt_inner(node, source, func, next_label, next_temp)
+        });
+    }
+
+    fn lower_stmt_inner(
+        node: Node,
+        source: &str,
+        func: &mut IrFunction,
+        next_label: &mut u32,
+        next_temp: &mut usize,
+    ) {
         match node.kind() {
             "let_declaration" => {
                 // `let <pattern> = <value>;`
@@ -274,6 +287,19 @@ impl RustIrLowering {
     }
 
     fn lower_expr(
+        node: Node,
+        source: &str,
+        func: &mut IrFunction,
+        next_label: &mut u32,
+        next_temp: &mut usize,
+    ) -> Operand {
+        // Recursion guard — expression nesting is bounded only by source size.
+        crate::ensure_sufficient_stack(|| {
+            Self::lower_expr_inner(node, source, func, next_label, next_temp)
+        })
+    }
+
+    fn lower_expr_inner(
         node: Node,
         source: &str,
         func: &mut IrFunction,
@@ -625,6 +651,17 @@ impl PythonIrLowering {
     }
 
     fn lower_stmt(node: Node, source: &str, func: &mut IrFunction, nl: &mut u32, nt: &mut usize) {
+        // Recursion guard — statement nesting is bounded only by source size.
+        crate::ensure_sufficient_stack(|| Self::lower_stmt_inner(node, source, func, nl, nt));
+    }
+
+    fn lower_stmt_inner(
+        node: Node,
+        source: &str,
+        func: &mut IrFunction,
+        nl: &mut u32,
+        nt: &mut usize,
+    ) {
         match node.kind() {
             "expression_statement" => {
                 if let Some(inner) = node.named_child(0) {
@@ -672,6 +709,17 @@ impl PythonIrLowering {
 
     #[allow(clippy::only_used_in_recursion)]
     fn lower_expr(
+        node: Node,
+        source: &str,
+        func: &mut IrFunction,
+        nl: &mut u32,
+        nt: &mut usize,
+    ) -> Operand {
+        // Recursion guard — expression nesting is bounded only by source size.
+        crate::ensure_sufficient_stack(|| Self::lower_expr_inner(node, source, func, nl, nt))
+    }
+
+    fn lower_expr_inner(
         node: Node,
         source: &str,
         func: &mut IrFunction,
@@ -887,6 +935,17 @@ impl TypeScriptIrLowering {
     }
 
     fn lower_stmt(node: Node, source: &str, func: &mut IrFunction, nl: &mut u32, nt: &mut usize) {
+        // Recursion guard — statement nesting is bounded only by source size.
+        crate::ensure_sufficient_stack(|| Self::lower_stmt_inner(node, source, func, nl, nt));
+    }
+
+    fn lower_stmt_inner(
+        node: Node,
+        source: &str,
+        func: &mut IrFunction,
+        nl: &mut u32,
+        nt: &mut usize,
+    ) {
         match node.kind() {
             "lexical_declaration" | "variable_declaration" => {
                 let mut cursor = node.walk();
@@ -929,6 +988,17 @@ impl TypeScriptIrLowering {
 
     #[allow(clippy::only_used_in_recursion)]
     fn lower_expr(
+        node: Node,
+        source: &str,
+        func: &mut IrFunction,
+        nl: &mut u32,
+        nt: &mut usize,
+    ) -> Operand {
+        // Recursion guard — expression nesting is bounded only by source size.
+        crate::ensure_sufficient_stack(|| Self::lower_expr_inner(node, source, func, nl, nt))
+    }
+
+    fn lower_expr_inner(
         node: Node,
         source: &str,
         func: &mut IrFunction,
@@ -1229,6 +1299,17 @@ impl GoIrLowering {
     }
 
     fn lower_stmt(node: Node, source: &str, func: &mut IrFunction, nl: &mut u32, nt: &mut usize) {
+        // Recursion guard — statement nesting is bounded only by source size.
+        crate::ensure_sufficient_stack(|| Self::lower_stmt_inner(node, source, func, nl, nt));
+    }
+
+    fn lower_stmt_inner(
+        node: Node,
+        source: &str,
+        func: &mut IrFunction,
+        nl: &mut u32,
+        nt: &mut usize,
+    ) {
         match node.kind() {
             "short_var_declaration" => Self::lower_short_var(node, source, func, nl, nt),
             "assignment_statement" => Self::lower_assign(node, source, func, nl, nt),
@@ -1392,6 +1473,17 @@ impl GoIrLowering {
     }
 
     fn lower_expr(
+        node: Node,
+        source: &str,
+        func: &mut IrFunction,
+        nl: &mut u32,
+        nt: &mut usize,
+    ) -> Operand {
+        // Recursion guard — expression nesting is bounded only by source size.
+        crate::ensure_sufficient_stack(|| Self::lower_expr_inner(node, source, func, nl, nt))
+    }
+
+    fn lower_expr_inner(
         node: Node,
         source: &str,
         func: &mut IrFunction,

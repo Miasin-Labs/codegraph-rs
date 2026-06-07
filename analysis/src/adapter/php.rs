@@ -111,6 +111,21 @@ fn walk_php(
     current_class: Option<&str>,
     out: &mut Vec<NodeData>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| {
+        walk_php_inner(node, source, path, path_str, scope, current_class, out)
+    });
+}
+
+fn walk_php_inner(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    path_str: &str,
+    scope: &[&str],
+    current_class: Option<&str>,
+    out: &mut Vec<NodeData>,
+) {
     match node.kind() {
         "namespace_definition" => {
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -253,6 +268,17 @@ fn extract_php_calls(
     nodes: &[NodeData],
     edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
+    // Recursion guard — descends the syntax tree node by node.
+    crate::ensure_sufficient_stack(|| extract_php_calls_inner(node, source, path, nodes, edges));
+}
+
+fn extract_php_calls_inner(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    nodes: &[NodeData],
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
     match node.kind() {
         "function_call_expression" => {
             if let Some(func_node) = node.child_by_field_name("function") {
@@ -311,6 +337,19 @@ fn extract_php_calls(
 // ─── Edge Extraction: Inheritance ───────────────────────────────────────────
 
 fn extract_php_inheritance(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    nodes: &[NodeData],
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
+    // Recursion guard — descends the syntax tree node by node.
+    crate::ensure_sufficient_stack(|| {
+        extract_php_inheritance_inner(node, source, path, nodes, edges)
+    });
+}
+
+fn extract_php_inheritance_inner(
     node: TsNode<'_>,
     source: &str,
     path: &Path,
@@ -401,6 +440,19 @@ fn extract_php_type_usages(
     nodes: &[NodeData],
     edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
+    // Recursion guard — descends the syntax tree node by node.
+    crate::ensure_sufficient_stack(|| {
+        extract_php_type_usages_inner(node, source, path, nodes, edges)
+    });
+}
+
+fn extract_php_type_usages_inner(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    nodes: &[NodeData],
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
     let is_func = node.kind() == "function_definition" || node.kind() == "method_declaration";
     if is_func {
         if let Some(name_node) = node.child_by_field_name("name") {
@@ -428,6 +480,20 @@ fn extract_php_type_usages(
 }
 
 fn collect_php_type_refs(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    func_nd: &NodeData,
+    nodes: &[NodeData],
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
+    // Recursion guard — descends the syntax tree node by node.
+    crate::ensure_sufficient_stack(|| {
+        collect_php_type_refs_inner(node, source, path, func_nd, nodes, edges)
+    });
+}
+
+fn collect_php_type_refs_inner(
     node: TsNode<'_>,
     source: &str,
     path: &Path,

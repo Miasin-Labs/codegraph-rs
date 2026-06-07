@@ -524,9 +524,50 @@ impl CodeGraph {
         if self.file_lock.borrow_mut().acquire().is_err() {
             return Ok(lock_failure_index_result());
         }
-        let result = self.orchestrator().index_files(file_paths);
+        let result = self.index_files_locked(file_paths);
         self.file_lock.borrow_mut().release();
         result
+    }
+
+    fn index_files_locked(&self, file_paths: &[String]) -> Result<IndexResult> {
+        let before = self.queries.get_node_and_edge_count()?;
+        let orchestrator = self.orchestrator();
+        let mut result = orchestrator.index_files(file_paths)?;
+        let touched = result.success && result.files_indexed > 0;
+
+        if touched {
+            orchestrator.reset_detected_frameworks();
+            self.resolver.borrow_mut().initialize();
+            self.resolver.borrow().run_post_extract();
+
+            let mut changed_node_names = Vec::new();
+            for file_path in file_paths {
+                for node in self.queries.get_nodes_by_file(file_path)? {
+                    if !changed_node_names.contains(&node.name) {
+                        changed_node_names.push(node.name);
+                    }
+                }
+            }
+
+            let by_file = self
+                .queries
+                .get_unresolved_references_by_files(file_paths)?;
+            let by_name = self
+                .queries
+                .get_unresolved_references_by_names(&changed_node_names)?;
+            let unresolved_refs = dedupe_unresolved_refs(by_file, by_name);
+            self.resolver
+                .borrow()
+                .resolve_and_persist(&unresolved_refs, None)?;
+
+            self.db.borrow().run_maintenance();
+
+            let after = self.queries.get_node_and_edge_count()?;
+            result.nodes_created = after.nodes.saturating_sub(before.nodes) as usize;
+            result.edges_created = after.edges.saturating_sub(before.edges) as usize;
+        }
+
+        Ok(result)
     }
 
     /// Sync with current file state (incremental update).

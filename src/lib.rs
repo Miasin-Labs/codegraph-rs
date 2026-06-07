@@ -31,3 +31,24 @@ mod codegraph;
 pub use codegraph::*;
 pub use error::{CodeGraphError, Logger, Result, SilentLogger};
 pub use types::*;
+
+/// Grow the stack before another level of recursive descent.
+///
+/// Recursive walkers over unbounded input — AST nesting (extraction), graph
+/// chains (impact/type hierarchy), parsed-query trees (DSL), directory depth
+/// (file-tree rendering) — recurse to a depth set by their input, not by a
+/// fixed bound. On a worker thread with a fixed stack (rayon workers, the MCP
+/// dispatch thread, the file watcher) a pathologically deep input would
+/// otherwise overflow and abort the whole process. Calling this at each
+/// recursive function's head bounds depth by input size, never by thread
+/// stack. Mirrors rustc's `ensure_sufficient_stack`.
+#[inline]
+pub fn ensure_sufficient_stack<R>(f: impl FnOnce() -> R) -> R {
+    /// Trigger a new segment once remaining stack drops below this. Must exceed
+    /// the deepest guard-free run of frames (one recursion level) with margin.
+    const RED_ZONE: usize = 128 * 1024;
+    /// Size of each freshly allocated segment — large enough that segment
+    /// switches stay rare even on deeply nested inputs.
+    const STACK_GROW: usize = 8 * 1024 * 1024;
+    stacker::maybe_grow(RED_ZONE, STACK_GROW, f)
+}

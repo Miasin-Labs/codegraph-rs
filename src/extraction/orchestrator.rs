@@ -23,6 +23,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
@@ -54,6 +55,7 @@ use crate::resolution::frameworks::{
 };
 use crate::resolution::types::{ImportMapping, ResolutionContext};
 use crate::types::{
+    EdgeKind,
     ExtractionError,
     ExtractionResult,
     FileRecord,
@@ -63,11 +65,49 @@ use crate::types::{
     Severity,
     UnresolvedReference,
 };
-use crate::utils::{normalize_path, sha256_hex, validate_path_within_root};
+use crate::utils::{
+    normalize_path,
+    sha256_hex,
+    validate_existing_path_within_root_real,
+    validate_path_within_root,
+};
 
-/// Number of files to read in parallel during indexing.
-/// File reads are I/O-bound; batching overlaps I/O wait with CPU parse work.
-const FILE_IO_BATCH_SIZE: usize = 10;
+/// Number of files to read + parse in parallel per batch during indexing.
+/// Each batch fans out across the rayon pool, then results are stored
+/// serially (SQLite is single-threaded), so the batch size caps effective
+/// parallelism and amortizes the store barrier. Worst-case memory is
+/// `FILE_IO_BATCH_SIZE × MAX_FILE_SIZE` of held content plus extraction
+/// results — 64 MiB of content at the 1 MiB cap.
+const FILE_IO_BATCH_SIZE: usize = 64;
+
+/// How many fully parsed batches the parse producer may run ahead of the
+/// (single-threaded) store loop. Bounds peak memory to
+/// `(PARSE_PIPELINE_DEPTH + 1) × FILE_IO_BATCH_SIZE` files of content +
+/// extraction results while keeping the rayon pool busy during SQLite writes.
+const PARSE_PIPELINE_DEPTH: usize = 2;
+
+/// Build the global rayon pool with named threads and roomy stacks before the
+/// first `par_iter`. Workers otherwise default to 2 MiB stacks — the recursive
+/// AST visitor self-heals via `stacker`, but a larger stack keeps segment
+/// switching off the hot path, and named threads make a future crash
+/// attributable (the llvm-project overflow reported `thread '<unknown>'`).
+fn ensure_worker_pool() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        if let Err(error) = rayon::ThreadPoolBuilder::new()
+            .thread_name(|i| format!("cg-parse-{i}"))
+            .stack_size(16 * 1024 * 1024)
+            .build_global()
+        {
+            // Pool already built (embedding caller beat us to it) — workers
+            // keep their stacks; the stacker guard still prevents overflow.
+            log_debug(
+                "Global rayon pool already initialized",
+                Some(&serde_json::json!({ "error": error.to_string() })),
+            );
+        }
+    });
+}
 
 /// Epoch milliseconds (`Date.now()` parity).
 fn now_ms() -> i64 {
@@ -534,7 +574,9 @@ pub fn scan_directory(
         let mut files: Vec<String> = Vec::new();
         let mut count = 0usize;
         for file_path in git_files {
-            if is_source_file(&file_path) {
+            if is_source_file(&file_path)
+                && validate_existing_path_within_root_real(root_dir, &file_path).is_some()
+            {
                 count += 1;
                 if let Some(cb) = on_progress.as_deref_mut() {
                     cb(count, &file_path);
@@ -682,6 +724,14 @@ fn scan_directory_walk(
             };
 
             if file_type.is_symlink() {
+                if validate_existing_path_within_root_real(root_dir, &relative_path).is_none() {
+                    log_debug(
+                        "Skipping symlink outside project root",
+                        Some(&serde_json::json!({ "path": full_path.to_string_lossy() })),
+                    );
+                    continue;
+                }
+
                 let resolved =
                     fs::canonicalize(&full_path).and_then(|target| fs::metadata(&target));
                 match resolved {
@@ -774,6 +824,7 @@ struct FileDiffResult {
     files_checked: usize,
     added: Vec<String>,
     modified: Vec<String>,
+    metadata_only: Vec<FileRecord>,
     removed: Vec<String>,
 }
 
@@ -792,6 +843,7 @@ fn diff_filesystem_against_index(
 
     let mut added: Vec<String> = Vec::new();
     let mut modified: Vec<String> = Vec::new();
+    let mut metadata_only: Vec<FileRecord> = Vec::new();
     let mut removed: Vec<String> = Vec::new();
 
     for tracked in &tracked_files {
@@ -803,6 +855,7 @@ fn diff_filesystem_against_index(
     for file_path in &current_files {
         let full_path = root_dir.join(file_path);
         let tracked = tracked_map.get(file_path.as_str()).copied();
+        let mut current_stats: Option<FileStats> = None;
 
         if let Some(tracked) = tracked {
             match fs::metadata(&full_path) {
@@ -811,6 +864,7 @@ fn diff_filesystem_against_index(
                     if stats.size == tracked.size && stats.modified_at_ms == tracked.modified_at {
                         continue;
                     }
+                    current_stats = Some(stats);
                 }
                 Err(error) => {
                     log_debug(
@@ -843,7 +897,20 @@ fn diff_filesystem_against_index(
         match tracked {
             None => added.push(file_path.clone()),
             Some(t) if t.content_hash != content_hash => modified.push(file_path.clone()),
-            _ => {}
+            Some(t) => {
+                if let Some(stats) = current_stats {
+                    metadata_only.push(FileRecord {
+                        path: t.path.clone(),
+                        content_hash: t.content_hash.clone(),
+                        language: t.language,
+                        size: stats.size,
+                        modified_at: stats.modified_at_ms,
+                        indexed_at: now_ms(),
+                        node_count: t.node_count,
+                        errors: t.errors.clone(),
+                    });
+                }
+            }
         }
     }
 
@@ -851,6 +918,7 @@ fn diff_filesystem_against_index(
         files_checked: current_files.len(),
         added,
         modified,
+        metadata_only,
         removed,
     })
 }
@@ -895,13 +963,13 @@ impl ResolutionContext for DetectionContext {
         &self.root_str
     }
     fn file_exists(&self, relative_path: &str) -> bool {
-        match validate_path_within_root(&self.root_dir, relative_path) {
+        match validate_existing_path_within_root_real(&self.root_dir, relative_path) {
             Some(full) => full.exists(),
             None => false,
         }
     }
     fn read_file(&self, relative_path: &str) -> Option<String> {
-        let full = validate_path_within_root(&self.root_dir, relative_path)?;
+        let full = validate_existing_path_within_root_real(&self.root_dir, relative_path)?;
         fs::read(&full)
             .ok()
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
@@ -911,10 +979,9 @@ impl ResolutionContext for DetectionContext {
     // packages/<sub>/package.json when the root manifest is just a
     // workspace declaration). Matches the resolver-context shape.
     fn list_directories(&self, relative_path: &str) -> Vec<String> {
-        let target = if relative_path == "." || relative_path.is_empty() {
-            self.root_dir.clone()
-        } else {
-            self.root_dir.join(relative_path)
+        let target = match validate_existing_path_within_root_real(&self.root_dir, relative_path) {
+            Some(target) => target,
+            None => return Vec::new(),
         };
         match fs::read_dir(&target) {
             Ok(entries) => entries
@@ -1053,10 +1120,41 @@ struct BatchItem {
     outcome: BatchOutcome,
 }
 
+fn validate_io_path_within_root(
+    root_dir: &Path,
+    file_path: &str,
+) -> std::result::Result<PathBuf, ()> {
+    let full_path = validate_path_within_root(root_dir, file_path).ok_or(())?;
+    let real_root = match fs::canonicalize(root_dir) {
+        Ok(path) => path,
+        Err(_) => return Ok(full_path),
+    };
+
+    match fs::canonicalize(&full_path) {
+        Ok(real_path) => {
+            if real_path == real_root || real_path.starts_with(&real_root) {
+                Ok(full_path)
+            } else {
+                Err(())
+            }
+        }
+        Err(_) => {
+            if fs::symlink_metadata(&full_path)
+                .map(|meta| meta.file_type().is_symlink())
+                .unwrap_or(false)
+            {
+                Err(())
+            } else {
+                Ok(full_path)
+            }
+        }
+    }
+}
+
 /// Read + size-check + parse a single file. Runs on rayon worker threads, so
 /// it must not touch the orchestrator (the DB handle is not `Sync`).
 fn read_and_parse(root_dir: &Path, file_path: &str, framework_names: &[String]) -> BatchItem {
-    let Some(full_path) = validate_path_within_root(root_dir, file_path) else {
+    let Ok(full_path) = validate_io_path_within_root(root_dir, file_path) else {
         log_warn(
             "Path traversal blocked in batch reader",
             Some(&serde_json::json!({ "filePath": file_path })),
@@ -1137,6 +1235,75 @@ fn extraction_error_result(message: String, file_path: &str, code: &str) -> Extr
         }],
         ..Default::default()
     }
+}
+
+fn reference_kind_for_removed_target(edge_kind: EdgeKind) -> Option<EdgeKind> {
+    match edge_kind {
+        EdgeKind::Contains => None,
+        EdgeKind::Instantiates => Some(EdgeKind::Calls),
+        other => Some(other),
+    }
+}
+
+fn restore_unresolved_refs_for_removed_targets(
+    queries: &QueryBuilder,
+    removed_file_path: &str,
+    removed_nodes: &[Node],
+) -> Result<()> {
+    let target_ids: Vec<String> = removed_nodes.iter().map(|n| n.id.clone()).collect();
+    if target_ids.is_empty() {
+        return Ok(());
+    }
+
+    let incoming = queries.get_incoming_edges_for_targets(&target_ids, None)?;
+    if incoming.is_empty() {
+        return Ok(());
+    }
+
+    let target_by_id: HashMap<&str, &Node> = removed_nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect();
+    let source_ids: Vec<String> = incoming.iter().map(|edge| edge.source.clone()).collect();
+    let source_by_id = queries.get_nodes_by_ids(&source_ids)?;
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut refs = Vec::new();
+    for edge in incoming {
+        let Some(reference_kind) = reference_kind_for_removed_target(edge.kind) else {
+            continue;
+        };
+        let Some(source) = source_by_id.get(&edge.source) else {
+            continue;
+        };
+        if source.file_path == removed_file_path {
+            continue;
+        }
+        let Some(target) = target_by_id.get(edge.target.as_str()) else {
+            continue;
+        };
+        let key = format!(
+            "{}\0{}\0{}",
+            source.id,
+            target.name,
+            reference_kind.as_str()
+        );
+        if !seen.insert(key) {
+            continue;
+        }
+        refs.push(UnresolvedReference {
+            from_node_id: source.id.clone(),
+            reference_name: target.name.clone(),
+            reference_kind,
+            line: edge.line.unwrap_or(source.start_line),
+            column: edge.column.unwrap_or(source.start_column),
+            file_path: Some(source.file_path.clone()),
+            language: Some(source.language),
+            candidates: None,
+        });
+    }
+
+    queries.insert_unresolved_refs_batch(&refs)
 }
 
 fn emit(on_progress: Option<&dyn Fn(&IndexProgress)>, progress: IndexProgress) {
@@ -1238,6 +1405,7 @@ impl<'a> ExtractionOrchestrator<'a> {
         _verbose: bool,
     ) -> Result<IndexResult> {
         init_grammars();
+        ensure_worker_pool();
         let start_time = now_ms();
         let mut errors: Vec<ExtractionError> = Vec::new();
         let mut files_indexed = 0usize;
@@ -1323,8 +1491,40 @@ impl<'a> ExtractionOrchestrator<'a> {
         }
         load_grammars_for_languages(&needed_languages);
 
-        for batch in files.chunks(FILE_IO_BATCH_SIZE) {
+        // Parse/store pipeline: a producer task on the rayon pool parses
+        // batches ahead while this thread stores the previous batch's results
+        // into SQLite — parsing never idles behind the single-threaded store.
+        // The bounded channel caps how far the producer runs ahead; dropping
+        // the receiver (error/abort return paths) stops the producer after
+        // its in-flight batch.
+        let parse_aborted = Arc::new(AtomicBool::new(false));
+        let (batch_tx, batch_rx) = mpsc::sync_channel::<Vec<BatchItem>>(PARSE_PIPELINE_DEPTH);
+        {
+            let files = files.clone();
+            let root_dir = self.root_dir.clone();
+            let framework_names = framework_names.clone();
+            let parse_aborted = Arc::clone(&parse_aborted);
+            rayon::spawn(move || {
+                for batch in files.chunks(FILE_IO_BATCH_SIZE) {
+                    if parse_aborted.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    // Read + parse the batch in parallel (with path validation
+                    // before any I/O); order is preserved.
+                    let items: Vec<BatchItem> = batch
+                        .par_iter()
+                        .map(|fp| read_and_parse(&root_dir, fp, &framework_names))
+                        .collect();
+                    if batch_tx.send(items).is_err() {
+                        return; // consumer dropped the receiver
+                    }
+                }
+            });
+        }
+
+        for batch_items in batch_rx {
             if is_aborted(signal) {
+                parse_aborted.store(true, Ordering::Relaxed);
                 let mut all_errors = vec![aborted_error()];
                 all_errors.extend(errors);
                 return Ok(IndexResult {
@@ -1339,17 +1539,10 @@ impl<'a> ExtractionOrchestrator<'a> {
                 });
             }
 
-            // Read + parse the batch in parallel (with path validation before
-            // any I/O); order is preserved.
-            let root_dir = self.root_dir.clone();
-            let batch_items: Vec<BatchItem> = batch
-                .par_iter()
-                .map(|fp| read_and_parse(&root_dir, fp, &framework_names))
-                .collect();
-
             // Store results on this thread (SQLite is not thread-safe).
             for item in batch_items {
                 if is_aborted(signal) {
+                    parse_aborted.store(true, Ordering::Relaxed);
                     let mut all_errors = vec![aborted_error()];
                     all_errors.extend(errors);
                     return Ok(IndexResult {
@@ -1531,7 +1724,7 @@ impl<'a> ExtractionOrchestrator<'a> {
 
     /// Index a single file.
     pub fn index_file(&self, relative_path: &str) -> Result<ExtractionResult> {
-        let Some(full_path) = validate_path_within_root(&self.root_dir, relative_path) else {
+        let Ok(full_path) = validate_io_path_within_root(&self.root_dir, relative_path) else {
             return Ok(extraction_error_result(
                 format!("Path traversal blocked: {relative_path}"),
                 relative_path,
@@ -1764,12 +1957,18 @@ impl<'a> ExtractionOrchestrator<'a> {
             .collect();
         changed_file_paths.extend(files_to_index.iter().cloned());
 
+        for file_record in &diff.metadata_only {
+            self.queries.upsert_file(file_record)?;
+        }
+
         for file_path in &diff.removed {
-            for node in self.queries.get_nodes_by_file(file_path)? {
+            let removed_nodes = self.queries.get_nodes_by_file(file_path)?;
+            for node in &removed_nodes {
                 if changed_seen.insert(node.name.clone()) {
-                    changed_node_names.push(node.name);
+                    changed_node_names.push(node.name.clone());
                 }
             }
+            restore_unresolved_refs_for_removed_targets(self.queries, file_path, &removed_nodes)?;
             self.queries.delete_file(file_path)?;
         }
 

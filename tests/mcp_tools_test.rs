@@ -745,6 +745,34 @@ fn omits_symbols_that_have_no_dependents_from_the_blast_radius() {
     }
 }
 
+#[test]
+fn callees_do_not_fall_back_to_a_wrong_symbol_for_qualified_misses() {
+    let _env = env_read();
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("src").join("lib.ts"),
+        "export function helper() { return 1; }\nexport function run_index_all() { return helper(); }\n",
+    );
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    let res = handler.execute(
+        "codegraph_callees",
+        &json!({ "symbol": "nope.run_index_all", "limit": 10 }),
+    );
+    assert_ne!(res.is_error, Some(true), "callees errored: {}", res.text());
+    let text = res.text();
+    assert!(
+        text.contains("Symbol \"nope.run_index_all\" not found in the codebase"),
+        "unexpected qualified-miss response:\n{text}"
+    );
+    assert!(
+        !text.contains("helper"),
+        "qualified miss must not fall back to run_index_all:\n{text}"
+    );
+}
+
 // =============================================================================
 // CODEGRAPH_MCP_TOOLS allowlist (__tests__/mcp-tool-allowlist.test.ts)
 // =============================================================================

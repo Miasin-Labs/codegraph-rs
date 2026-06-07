@@ -101,6 +101,18 @@ fn walk_py(
     scope: &[&str],
     out: &mut Vec<NodeData>,
 ) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| walk_py_inner(node, source, path, path_str, scope, out));
+}
+
+fn walk_py_inner(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    path_str: &str,
+    scope: &[&str],
+    out: &mut Vec<NodeData>,
+) {
     match node.kind() {
         "function_definition" => {
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -256,6 +268,17 @@ fn extract_py_class_fields(
 }
 
 fn extract_py_calls(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    nodes: &[NodeData],
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
+    // Recursion guard — depth tracks the tree-sitter AST node nesting.
+    crate::ensure_sufficient_stack(|| extract_py_calls_inner(node, source, path, nodes, edges));
+}
+
+fn extract_py_calls_inner(
     node: TsNode<'_>,
     source: &str,
     path: &Path,

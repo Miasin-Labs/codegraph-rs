@@ -771,6 +771,11 @@ fn parse_routes_array(args: &str) -> Vec<RouteItem> {
 }
 
 fn parse_route_objects(s: &str) -> Vec<RouteItem> {
+    // Recursion guard — nested `children` arrays drive depth.
+    crate::ensure_sufficient_stack(|| parse_route_objects_inner(s))
+}
+
+fn parse_route_objects_inner(s: &str) -> Vec<RouteItem> {
     let mut items = Vec::new();
     for obj in split_top_level_objects(s) {
         let path = parse_string_field(&obj, &PATH_FIELD_RE);
@@ -789,6 +794,15 @@ fn parse_route_objects(s: &str) -> Vec<RouteItem> {
 }
 
 fn walk_routes_tree(items: &[RouteItem], parent_prefix: &str, out: &mut Vec<(String, String)>) {
+    // Recursion guard — nested `children` arrays drive depth.
+    crate::ensure_sufficient_stack(|| walk_routes_tree_inner(items, parent_prefix, out));
+}
+
+fn walk_routes_tree_inner(
+    items: &[RouteItem],
+    parent_prefix: &str,
+    out: &mut Vec<(String, String)>,
+) {
     for item in items {
         let my_prefix = join_http_path(parent_prefix, &item.path);
         if let Some(module_name) = &item.module_name {

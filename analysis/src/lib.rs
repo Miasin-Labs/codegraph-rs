@@ -73,3 +73,24 @@ pub mod traits_hierarchy;
 pub mod traversal;
 pub mod validation;
 pub mod worktree;
+
+/// Grow the stack before another level of recursive descent.
+///
+/// Recursive walkers in this crate (CFG/dataflow/complexity/IR lowering,
+/// language adapters, Tarjan SCC, Bron–Kerbosch, query-tree evaluation) recurse
+/// to a depth set by their input — AST nesting, graph/cycle depth, or query
+/// nesting — none of which is bounded a priori. On a worker thread with a fixed
+/// stack (rayon workers, the MCP engine thread) a pathologically deep input
+/// would otherwise overflow and abort the process. Calling this at each
+/// recursive function's head bounds depth by input size, never by thread stack.
+/// Mirrors rustc's `ensure_sufficient_stack` and the root crate's guard.
+#[inline]
+pub fn ensure_sufficient_stack<R>(f: impl FnOnce() -> R) -> R {
+    /// Trigger a new segment once remaining stack drops below this. Must exceed
+    /// the deepest guard-free run of frames (one recursion level) with margin.
+    const RED_ZONE: usize = 128 * 1024;
+    /// Size of each freshly allocated segment — large enough that segment
+    /// switches stay rare even on deeply nested inputs.
+    const STACK_GROW: usize = 8 * 1024 * 1024;
+    stacker::maybe_grow(RED_ZONE, STACK_GROW, f)
+}

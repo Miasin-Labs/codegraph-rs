@@ -56,6 +56,23 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Grow the stack before another level of AST descent.
+///
+/// Real-world ASTs (LLVM, generated sources) nest deeply enough to blow the
+/// 2 MiB default stack of the rayon workers extraction runs on. Every
+/// recursive tree walker calls this at its head so recursion depth is bounded
+/// by input size, never by thread stack. Mirrors rustc's
+/// `ensure_sufficient_stack`.
+fn ensure_sufficient_stack<R>(f: impl FnOnce() -> R) -> R {
+    /// Remaining-stack threshold that triggers a new segment. Must exceed the
+    /// deepest guard-free run of frames (one visit level) with margin.
+    const RED_ZONE: usize = 128 * 1024;
+    /// Each new segment's size — large enough that segment switches stay rare
+    /// even on pathologically nested files.
+    const STACK_GROW: usize = 8 * 1024 * 1024;
+    stacker::maybe_grow(RED_ZONE, STACK_GROW, f)
+}
+
 /// Collect a node's named children into a Vec (the TS `namedChildren` array).
 fn named_children<'t>(node: SyntaxNode<'t>) -> Vec<SyntaxNode<'t>> {
     let mut cursor = node.walk();
@@ -429,8 +446,16 @@ impl<'a> TreeSitterExtractor<'a> {
         }
     }
 
-    /// Visit a node and extract information
+    /// Visit a node and extract information.
+    ///
+    /// Recursion guard: all `self.visit_node(child)` sites and the
+    /// `ExtractorContext` hook funnel through here, so growing the stack at
+    /// this head covers the whole `extract_*` family.
     fn visit_node(&mut self, node: SyntaxNode<'_>) {
+        ensure_sufficient_stack(|| self.visit_node_inner(node));
+    }
+
+    fn visit_node_inner(&mut self, node: SyntaxNode<'_>) {
         let Some(ext) = self.extractor else { return };
 
         let node_type = node.kind();
@@ -1446,18 +1471,25 @@ impl<'a> TreeSitterExtractor<'a> {
     fn function_returned_object<'t>(&self, fn_node: SyntaxNode<'t>) -> Option<SyntaxNode<'t>> {
         let body = get_child_by_field(fn_node, "body")?;
 
+        // Recursion guard: `(((...)))` parenthesis towers nest as deep as the
+        // source allows, and this descends them off the guarded `visit_node`
+        // path (reached via `extract_variable` → `find_initializer_returned_object`),
+        // so without a guard a pathological initializer overflows the worker
+        // stack — the same failure class as the unguarded walkers above.
         fn as_object<'t>(n: SyntaxNode<'t>) -> Option<SyntaxNode<'t>> {
-            if n.kind() == "object" || n.kind() == "object_expression" {
-                return Some(n);
-            }
-            if n.kind() == "parenthesized_expression" {
-                for inner in named_children(n) {
-                    if let Some(obj) = as_object(inner) {
-                        return Some(obj);
+            ensure_sufficient_stack(|| {
+                if n.kind() == "object" || n.kind() == "object_expression" {
+                    return Some(n);
+                }
+                if n.kind() == "parenthesized_expression" {
+                    for inner in named_children(n) {
+                        if let Some(obj) = as_object(inner) {
+                            return Some(obj);
+                        }
                     }
                 }
-            }
-            None
+                None
+            })
         }
 
         // `(set, get) => ({...})` — body is the (parenthesized) object directly.
@@ -2589,7 +2621,16 @@ impl<'a> TreeSitterExtractor<'a> {
     }
 
     /// The TS `visitForCallsAndStructure` inner closure.
+    ///
+    /// Recursion guard: this is a second walker independent of `visit_node` —
+    /// it descends whole function bodies, whose statement nesting is exactly
+    /// where real-world depth blowups live (the llvm-project overflow
+    /// recursed here).
     fn visit_for_calls_and_structure(&mut self, node: SyntaxNode<'_>) {
+        ensure_sufficient_stack(|| self.visit_for_calls_and_structure_inner(node));
+    }
+
+    fn visit_for_calls_and_structure_inner(&mut self, node: SyntaxNode<'_>) {
         let Some(ext) = self.extractor else { return };
         let node_type = node.kind();
 
@@ -3060,6 +3101,11 @@ impl<'a> TreeSitterExtractor<'a> {
     /// (return type, parameter type, property type, field type, generic
     /// argument). Identifiers here are type names, not parameter names.
     fn walk_csharp_type_position(&mut self, node: SyntaxNode<'_>, from_node_id: &str) {
+        // Recursion guard — generated generic types nest arbitrarily deep.
+        ensure_sufficient_stack(|| self.walk_csharp_type_position_inner(node, from_node_id));
+    }
+
+    fn walk_csharp_type_position_inner(&mut self, node: SyntaxNode<'_>, from_node_id: &str) {
         // `predefined_type` is int/string/bool/etc. — never a project ref.
         if node.kind() == "predefined_type" {
             return;
@@ -3122,18 +3168,21 @@ impl<'a> TreeSitterExtractor<'a> {
     /// Recursively walk a subtree and extract all type_identifier references.
     /// Handles unions, intersections, generics, arrays, etc.
     fn extract_type_refs_from_subtree(&mut self, node: SyntaxNode<'_>, from_node_id: &str) {
-        if node.kind() == "type_identifier" {
-            let type_name = get_node_text(node, self.source).to_string();
-            if !type_name.is_empty() && !BUILTIN_TYPES.contains(&type_name.as_str()) {
-                self.push_ref(from_node_id, type_name, EdgeKind::References, node);
+        // Recursion guard — generated type expressions nest arbitrarily deep.
+        ensure_sufficient_stack(|| {
+            if node.kind() == "type_identifier" {
+                let type_name = get_node_text(node, self.source).to_string();
+                if !type_name.is_empty() && !BUILTIN_TYPES.contains(&type_name.as_str()) {
+                    self.push_ref(from_node_id, type_name, EdgeKind::References, node);
+                }
+                return; // type_identifier is a leaf
             }
-            return; // type_identifier is a leaf
-        }
 
-        // Recurse into children (handles union_type, intersection_type, generic_type, etc.)
-        for child in named_children(node) {
-            self.extract_type_refs_from_subtree(child, from_node_id);
-        }
+            // Recurse into children (handles union_type, intersection_type, generic_type, etc.)
+            for child in named_children(node) {
+                self.extract_type_refs_from_subtree(child, from_node_id);
+            }
+        });
     }
 
     /// Handle Pascal-specific AST structures.
@@ -3538,20 +3587,23 @@ impl<'a> TreeSitterExtractor<'a> {
 
     /// Recursively visit a Pascal block/statement tree for call expressions
     fn visit_pascal_block(&mut self, node: SyntaxNode<'_>) {
-        for child in named_children(node) {
-            if child.kind() == "exprCall" {
-                self.extract_pascal_call(child);
-            } else if child.kind() == "exprDot" {
-                // Check if exprDot contains an exprCall
-                for grandchild in named_children(child) {
-                    if grandchild.kind() == "exprCall" {
-                        self.extract_pascal_call(grandchild);
+        // Recursion guard — statement trees nest arbitrarily deep.
+        ensure_sufficient_stack(|| {
+            for child in named_children(node) {
+                if child.kind() == "exprCall" {
+                    self.extract_pascal_call(child);
+                } else if child.kind() == "exprDot" {
+                    // Check if exprDot contains an exprCall
+                    for grandchild in named_children(child) {
+                        if grandchild.kind() == "exprCall" {
+                            self.extract_pascal_call(grandchild);
+                        }
                     }
+                } else {
+                    self.visit_pascal_block(child);
                 }
-            } else {
-                self.visit_pascal_block(child);
             }
-        }
+        });
     }
 }
 

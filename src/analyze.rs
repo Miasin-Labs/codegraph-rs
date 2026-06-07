@@ -1301,6 +1301,11 @@ fn build_why(graph: &AnalysisGraph, query: &str, config: &DslQueryConfig) -> Opt
 /// Does the parsed query contain the `preconditions` pipe operator
 /// anywhere in its expression tree?
 fn expr_contains_preconditions(expr: &Expr) -> bool {
+    // Recursion guard — depth follows the nested query expression tree.
+    crate::ensure_sufficient_stack(|| expr_contains_preconditions_inner(expr))
+}
+
+fn expr_contains_preconditions_inner(expr: &Expr) -> bool {
     let ops_have = |ops: &[DslOp]| ops.iter().any(|op| matches!(op, DslOp::Preconditions));
     match expr {
         Expr::Pipe(ops) => ops_have(ops),

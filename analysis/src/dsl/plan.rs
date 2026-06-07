@@ -253,6 +253,11 @@ pub fn pick_schedule_for_pipe(ops: &[DslOp]) -> Schedule {
 /// with `Filter`/`Since` are smaller; bare `entrypoints` is larger;
 /// otherwise we leave order alone.
 fn rewrite_expr(expr: Expr) -> Expr {
+    // Recursion guard — nested expression-tree depth.
+    crate::ensure_sufficient_stack(|| rewrite_expr_inner(expr))
+}
+
+fn rewrite_expr_inner(expr: Expr) -> Expr {
     match expr {
         Expr::SetOp { op, left, right } => {
             let l = Box::new(rewrite_expr(*left));
@@ -319,6 +324,11 @@ fn rewrite_expr(expr: Expr) -> Expr {
 /// Heuristic selectivity score — more filters/since = lower (smaller)
 /// expected result. Used to reorder intersect operands.
 fn expr_filter_score(expr: &Expr) -> i32 {
+    // Recursion guard — nested expression-tree depth.
+    crate::ensure_sufficient_stack(|| expr_filter_score_inner(expr))
+}
+
+fn expr_filter_score_inner(expr: &Expr) -> i32 {
     match expr {
         Expr::Pipe(ops) | Expr::PipeFrom { ops, .. } => {
             let mut score = 0i32;

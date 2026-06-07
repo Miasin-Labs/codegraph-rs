@@ -98,6 +98,17 @@ impl LanguageAdapter for GoAdapter {
 }
 
 fn walk_go(node: TsNode<'_>, source: &str, path: &Path, path_str: &str, out: &mut Vec<NodeData>) {
+    // Recursion guard — AST nesting depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| walk_go_inner(node, source, path, path_str, out));
+}
+
+fn walk_go_inner(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    path_str: &str,
+    out: &mut Vec<NodeData>,
+) {
     match node.kind() {
         "function_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -266,6 +277,17 @@ fn extract_go_struct_fields(
 }
 
 fn extract_go_calls(
+    node: TsNode<'_>,
+    source: &str,
+    path: &Path,
+    nodes: &[NodeData],
+    edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
+) {
+    // Recursion guard — recurses over tree-sitter node children depth.
+    crate::ensure_sufficient_stack(|| extract_go_calls_inner(node, source, path, nodes, edges));
+}
+
+fn extract_go_calls_inner(
     node: TsNode<'_>,
     source: &str,
     path: &Path,

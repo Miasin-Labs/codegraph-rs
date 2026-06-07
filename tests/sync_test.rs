@@ -42,6 +42,7 @@ use codegraph::sync::{
     git_worktree_root,
     worktree_mismatch_warning,
 };
+use notify::event::{AccessKind, AccessMode, DataChange, EventKind, ModifyKind};
 use tempfile::TempDir;
 
 static ENV_LOCK: RwLock<()> = RwLock::new(());
@@ -282,6 +283,45 @@ fn drops_ignored_non_source_paths_but_syncs_real_source_edits() {
 
     // A normal source file still schedules sync (positive control).
     watcher.ingest_event_for_tests("src/live.ts");
+    wait_for(|| count.load(Ordering::SeqCst) > 0, 5000);
+
+    watcher.stop();
+}
+
+#[test]
+fn raw_notify_read_events_do_not_mark_source_pending() {
+    let _env = ENV_LOCK.read().unwrap();
+    let dir = test_project();
+    let (sync_fn, count) = counting_sync(WatchSyncResult {
+        files_changed: 1,
+        duration_ms: 10,
+    });
+    let watcher = new_watcher(dir.path(), sync_fn, opts_debounce(200));
+
+    watcher.start();
+    watcher.wait_until_ready(DEFAULT_READY_TIMEOUT_MS).unwrap();
+
+    watcher.ingest_notify_event_for_tests(
+        EventKind::Access(AccessKind::Open(AccessMode::Read)),
+        "src/index.ts",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(watcher.get_pending_files().is_empty());
+    assert_eq!(count.load(Ordering::SeqCst), 0);
+
+    watcher.ingest_notify_event_for_tests(
+        EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+        "src/index.ts",
+    );
+    wait_for(
+        || {
+            watcher
+                .get_pending_files()
+                .iter()
+                .any(|p| p.path == "src/index.ts")
+        },
+        1000,
+    );
     wait_for(|| count.load(Ordering::SeqCst) > 0, 5000);
 
     watcher.stop();
