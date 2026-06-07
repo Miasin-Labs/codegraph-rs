@@ -301,9 +301,14 @@ impl GpuNameJoiner {
     /// Probe for a usable CUDA device and build the names table on it.
     /// Returns `None` (never errors) when no GPU/driver is available.
     pub fn new(known_names: &[&str]) -> Option<Self> {
-        // cudarc's dynamic loader PANICS (rather than erroring) when libcuda
-        // or libnvrtc is absent; contain that so machines without CUDA just
-        // fall back to the CPU path.
+        // cudarc's NVRTC loader ABORTS the process (a destructor panics during
+        // the unwind of its missing-library panic) when CUDA isn't present —
+        // `catch_unwind` cannot contain that. Probe both libraries up-front
+        // with libloading (returns a Result), and only touch cudarc when they
+        // load; catch_unwind then guards any residual runtime panic.
+        if !codegraph_analysis::cuda_runtime_available() {
+            return None;
+        }
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             Self::new_inner(known_names)
         }))

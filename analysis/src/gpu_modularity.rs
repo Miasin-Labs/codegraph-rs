@@ -73,11 +73,7 @@ pub fn modularity_gpu(
     if n == 0 {
         return Some(0.0);
     }
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        modularity_gpu_inner(n, community, esrc, edst, eweight, resolution)
-    }))
-    .ok()
-    .flatten()
+    crate::gpu_probe(|| modularity_gpu_inner(n, community, esrc, edst, eweight, resolution))
 }
 
 fn modularity_gpu_inner(

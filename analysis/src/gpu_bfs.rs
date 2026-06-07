@@ -59,11 +59,7 @@ pub fn reachable_gpu(
     if n == 0 {
         return Some(Vec::new());
     }
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        reachable_gpu_inner(n, offsets, neighbors, seeds)
-    }))
-    .ok()
-    .flatten()
+    crate::gpu_probe(|| reachable_gpu_inner(n, offsets, neighbors, seeds))
 }
 
 fn reachable_gpu_inner(

@@ -44,6 +44,8 @@ pub mod frontier;
 #[cfg(feature = "gpu")]
 pub mod gpu_bfs;
 #[cfg(feature = "gpu")]
+pub mod gpu_dominators;
+#[cfg(feature = "gpu")]
 pub mod gpu_modularity;
 #[cfg(feature = "gpu")]
 pub mod gpu_pagerank;
@@ -101,4 +103,47 @@ pub fn ensure_sufficient_stack<R>(f: impl FnOnce() -> R) -> R {
     /// switches stay rare even on deeply nested inputs.
     const STACK_GROW: usize = 8 * 1024 * 1024;
     stacker::maybe_grow(RED_ZONE, STACK_GROW, f)
+}
+
+/// Whether the CUDA runtime (driver + NVRTC) is actually loadable in this
+/// process. cudarc's NVRTC loader does not just return an error when the
+/// library is missing — it panics, and a destructor in that stack panics
+/// again during the unwind, so the process ABORTS (uncatchable by
+/// `catch_unwind`). We therefore probe both libraries with `libloading`
+/// FIRST — a plain `dlopen` that returns a `Result` — and only let the GPU
+/// path call cudarc when both are present. Cached: the answer is fixed for
+/// the process lifetime.
+#[cfg(feature = "gpu")]
+pub fn cuda_runtime_available() -> bool {
+    use std::sync::OnceLock;
+    static AVAIL: OnceLock<bool> = OnceLock::new();
+    *AVAIL.get_or_init(|| {
+        // Any one name per library is enough (loaders alias them).
+        let cuda = ["libcuda.so", "libcuda.so.1"];
+        let nvrtc = [
+            "libnvrtc.so",
+            "libnvrtc.so.12",
+            "libnvrtc.so.13",
+            "libnvrtc.so.11",
+        ];
+        let loadable = |names: &[&str]| {
+            names
+                .iter()
+                .any(|n| unsafe { libloading::Library::new(n) }.is_ok())
+        };
+        loadable(&cuda) && loadable(&nvrtc)
+    })
+}
+
+/// Run a GPU probe, returning `None` when the CUDA runtime is unavailable
+/// (checked up-front, never triggering cudarc's aborting loader) or when the
+/// inner closure itself fails. Used by every `*_gpu` entry point in this crate.
+#[cfg(feature = "gpu")]
+pub(crate) fn gpu_probe<R>(f: impl FnOnce() -> Option<R>) -> Option<R> {
+    if !cuda_runtime_available() {
+        return None;
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .ok()
+        .flatten()
 }

@@ -64,11 +64,7 @@ pub fn pagerank_gpu(
     if n == 0 {
         return Some(Vec::new());
     }
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        pagerank_gpu_inner(n, in_off, in_pred, out_degrees, damping, iters)
-    }))
-    .ok()
-    .flatten()
+    crate::gpu_probe(|| pagerank_gpu_inner(n, in_off, in_pred, out_degrees, damping, iters))
 }
 
 fn pagerank_gpu_inner(

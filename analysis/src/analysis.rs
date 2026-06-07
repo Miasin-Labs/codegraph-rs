@@ -214,6 +214,15 @@ impl DominatorTree {
 /// build it once and answer any number of chain / dominates queries.
 pub fn dominator_tree(graph: &CodeGraph, root: &NodeId) -> Option<DominatorTree> {
     let root_idx = graph.resolve(root)?;
+
+    // GPU path (feature `gpu`): the immediate-dominator map is unique, so the
+    // GPU result is identical to petgraph's; only the contiguous-index layout
+    // differs, which is irrelevant — we translate back to NodeIds either way.
+    #[cfg(feature = "gpu")]
+    if let Some(tree) = gpu_dominator_tree(graph, root, root_idx) {
+        return Some(tree);
+    }
+
     let doms = dominators_simple_fast(graph.inner(), root_idx);
 
     let mut idom = HashMap::new();
@@ -229,6 +238,84 @@ pub fn dominator_tree(graph: &CodeGraph, root: &NodeId) -> Option<DominatorTree>
         }
     }
 
+    Some(DominatorTree {
+        root: root.clone(),
+        idom,
+    })
+}
+
+/// GPU immediate-dominator computation. Builds a compact 0..k index over the
+/// graph's node indices, the predecessor CSR, and a reverse-postorder
+/// numbering (host DFS), runs the parallel CHK kernel, and translates back to
+/// the stable `NodeId` idom map. Returns `None` on any GPU failure so the
+/// caller falls back to petgraph.
+#[cfg(feature = "gpu")]
+fn gpu_dominator_tree(
+    graph: &CodeGraph,
+    root: &NodeId,
+    root_idx: petgraph::graph::NodeIndex,
+) -> Option<DominatorTree> {
+    use petgraph::Direction;
+    let inner = graph.inner();
+    // Compact node index in petgraph node order.
+    let order: Vec<petgraph::graph::NodeIndex> = inner.node_indices().collect();
+    let n = order.len();
+    let mut pos: HashMap<petgraph::graph::NodeIndex, u32> = HashMap::with_capacity(n);
+    for (i, &ix) in order.iter().enumerate() {
+        pos.insert(ix, i as u32);
+    }
+    let root_c = *pos.get(&root_idx)?;
+
+    // Iterative DFS postorder from root → reverse-postorder numbers.
+    let mut visited = vec![false; n];
+    let mut post: Vec<u32> = Vec::new();
+    let mut stack = vec![(root_c, false)];
+    while let Some((u, processed)) = stack.pop() {
+        if processed {
+            post.push(u);
+            continue;
+        }
+        if visited[u as usize] {
+            continue;
+        }
+        visited[u as usize] = true;
+        stack.push((u, true));
+        for w in inner.neighbors_directed(order[u as usize], Direction::Outgoing) {
+            let wc = pos[&w];
+            if !visited[wc as usize] {
+                stack.push((wc, false));
+            }
+        }
+    }
+    let mut rpo = vec![u32::MAX; n];
+    for (i, &node) in post.iter().rev().enumerate() {
+        rpo[node as usize] = i as u32;
+    }
+
+    // Predecessor CSR over all nodes.
+    let mut pred_off = vec![0u32];
+    let mut pred = Vec::new();
+    for &ix in &order {
+        for w in inner.neighbors_directed(ix, Direction::Incoming) {
+            pred.push(pos[&w]);
+        }
+        pred_off.push(pred.len() as u32);
+    }
+
+    let idom_vec = crate::gpu_dominators::dominators_gpu(n, root_c, &pred_off, &pred, &rpo)?;
+
+    let mut idom = HashMap::new();
+    for (i, &dom) in idom_vec.iter().enumerate() {
+        if dom == u32::MAX {
+            continue; // root or unreachable
+        }
+        if let (Some(node), Some(dom_node)) = (
+            graph.node_id_for(order[i]),
+            graph.node_id_for(order[dom as usize]),
+        ) {
+            idom.insert(node.clone(), dom_node.clone());
+        }
+    }
     Some(DominatorTree {
         root: root.clone(),
         idom,

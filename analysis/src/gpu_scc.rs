@@ -126,9 +126,7 @@ pub fn scc_gpu(n: usize, src: &[u32], dst: &[u32]) -> Option<Vec<u32>> {
     if n == 0 {
         return Some(Vec::new());
     }
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scc_gpu_inner(n, src, dst)))
-        .ok()
-        .flatten()
+    crate::gpu_probe(|| scc_gpu_inner(n, src, dst))
 }
 
 fn scc_gpu_inner(n: usize, src: &[u32], dst: &[u32]) -> Option<Vec<u32>> {
