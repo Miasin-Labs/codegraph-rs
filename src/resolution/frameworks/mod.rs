@@ -34,6 +34,7 @@ pub mod react;
 pub mod react_native;
 pub mod ruby;
 pub mod rust;
+pub mod salesforce;
 pub mod svelte;
 pub mod swift;
 pub mod swift_objc;
@@ -56,6 +57,7 @@ pub use react::ReactResolver;
 pub use react_native::ReactNativeBridgeResolver;
 pub use ruby::RailsResolver;
 pub use rust::RustResolver;
+pub use salesforce::SalesforceResolver;
 pub use svelte::SvelteResolver;
 pub use swift::{SwiftUIResolver, UIKitResolver, VaporResolver};
 pub use swift_objc::SwiftObjcBridgeResolver;
@@ -102,6 +104,8 @@ fn build_framework_resolvers() -> Vec<Box<dyn FrameworkResolver>> {
         Box::new(ExpoModulesResolver),
         // React Native Fabric / Codegen view components — TS spec → component nodes
         Box::new(FabricViewResolver),
+        // Salesforce LWC ↔ Apex bridge (`@salesforce/apex/Class.method` imports)
+        Box::new(SalesforceResolver),
     ]
 }
 

@@ -7,6 +7,8 @@
 //!
 //! Ported from `src/extraction/languages/index.ts`.
 
+pub mod apex;
+pub mod bash;
 pub mod c_cpp;
 pub mod csharp;
 pub mod dart;
@@ -26,6 +28,8 @@ pub mod scala;
 pub mod swift;
 pub mod typescript;
 
+pub use apex::ApexExtractor;
+pub use bash::BashExtractor;
 pub use c_cpp::{CExtractor, CppExtractor};
 pub use csharp::CsharpExtractor;
 pub use dart::DartExtractor;
@@ -83,6 +87,8 @@ pub fn extractor_for(language: Language) -> Option<&'static dyn LanguageExtracto
         Language::Lua => Some(&LuaExtractor),
         Language::Luau => Some(&LuauExtractor),
         Language::Objc => Some(&ObjcExtractor),
+        Language::Apex => Some(&ApexExtractor),
+        Language::Bash => Some(&BashExtractor),
         _ => None,
     }
 }
@@ -94,7 +100,7 @@ mod tests {
 
     #[test]
     fn extractor_map_matches_ts_extractors() {
-        // Exactly the 21 keys of the TS EXTRACTORS map have extractors.
+        // The 21 keys of the TS EXTRACTORS map, plus Rust-native Apex.
         let mapped: Vec<Language> = LANGUAGES
             .iter()
             .copied()
@@ -124,6 +130,8 @@ mod tests {
                 Language::Lua,
                 Language::Luau,
                 Language::Objc,
+                Language::Apex,
+                Language::Bash,
             ]
         );
         // tsx/jsx share the typescript/javascript extractor configs.
@@ -140,6 +148,9 @@ mod tests {
             Language::Svelte,
             Language::Vue,
             Language::Liquid,
+            Language::Html,
+            Language::Visualforce,
+            Language::Aura,
             Language::Yaml,
             Language::Twig,
             Language::Xml,

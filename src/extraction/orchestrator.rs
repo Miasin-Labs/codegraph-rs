@@ -44,7 +44,9 @@ use crate::extraction::grammars::{
 use crate::extraction::ida_c_extractor::{IdaCExtractor, is_ida_generated_c};
 use crate::extraction::languages;
 use crate::extraction::liquid_extractor::LiquidExtractor;
+use crate::extraction::lwc_template::LwcTemplateExtractor;
 use crate::extraction::mybatis_extractor::MyBatisExtractor;
+use crate::extraction::salesforce_markup::SalesforceMarkupExtractor;
 use crate::extraction::svelte_extractor::SvelteExtractor;
 use crate::extraction::tree_sitter_wrapper::TreeSitterExtractor;
 use crate::extraction::vue_extractor::VueExtractor;
@@ -1047,6 +1049,14 @@ pub fn extract_from_source(
         // Custom extractor for MyBatis mapper XML. Non-mapper XML returns just a
         // file node so the watcher tracks it without emitting symbols.
         MyBatisExtractor::new(file_path, source).extract()
+    } else if detected_language == Language::Html {
+        // HTML: file node always; LWC templates additionally emit `{binding}`
+        // references to their component JS class members.
+        LwcTemplateExtractor::new(file_path, source).extract()
+    } else if matches!(detected_language, Language::Visualforce | Language::Aura) {
+        // Salesforce markup: controller/extensions attributes and `{!...}`
+        // bindings become Apex / client-controller references.
+        SalesforceMarkupExtractor::new(file_path, source, detected_language).extract()
     } else if is_file_level_only_language(detected_language) {
         // No symbol extraction at this stage — files are tracked at the file-record
         // level only. Framework extractors (Drupal routing yml, Spring `@Value`
@@ -2142,10 +2152,11 @@ mod tests {
             .iter()
             .map(|r| r.name().to_string())
             .collect();
-        assert_eq!(names.len(), 23);
+        assert_eq!(names.len(), 24);
         assert_eq!(names[0], "laravel");
         assert!(names.contains(&"express".to_string()));
         assert!(names.contains(&"django".to_string()));
         assert!(names.contains(&"fabric-view".to_string()));
+        assert!(names.contains(&"salesforce".to_string()));
     }
 }

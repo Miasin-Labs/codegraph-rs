@@ -12,8 +12,10 @@ pub mod grammars;
 pub mod ida_c_extractor;
 pub mod languages;
 pub mod liquid_extractor;
+pub mod lwc_template;
 pub mod mybatis_extractor;
 pub mod orchestrator;
+pub mod salesforce_markup;
 pub mod svelte_extractor;
 pub mod tree_sitter_helpers;
 pub mod tree_sitter_types;
@@ -31,6 +33,7 @@ pub use grammars::*;
 pub use ida_c_extractor::{IdaCExtractor, is_ida_generated_c};
 pub use languages::extractor_for;
 pub use liquid_extractor::LiquidExtractor;
+pub use lwc_template::LwcTemplateExtractor;
 pub use mybatis_extractor::MyBatisExtractor;
 pub use orchestrator::{
     ChangedFiles,
@@ -46,6 +49,7 @@ pub use orchestrator::{
     hash_content,
     scan_directory,
 };
+pub use salesforce_markup::SalesforceMarkupExtractor;
 pub use svelte_extractor::{ScriptExtractorLookup, SvelteExtractor};
 pub use tree_sitter_helpers::{
     generate_node_id,

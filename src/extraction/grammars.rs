@@ -85,6 +85,27 @@ pub const EXTENSION_MAP: &[(&str, Language)] = &[
     (".luau", Language::Luau),
     (".m", Language::Objc),
     (".mm", Language::Objc),
+    // Salesforce Apex: classes, triggers, and anonymous-execute scripts.
+    // `.cls` is claimed for Apex unconditionally — a stray LaTeX/VB `.cls`
+    // parses with errors and yields ~no symbols, which extraction tolerates.
+    (".cls", Language::Apex),
+    (".trigger", Language::Apex),
+    (".apex", Language::Apex),
+    // Salesforce markup: Visualforce pages/components and Aura bundles.
+    // Custom extractors (no grammar) — controller/extension attributes and
+    // `{!...}` expression bindings become references.
+    (".page", Language::Visualforce),
+    (".component", Language::Visualforce),
+    (".cmp", Language::Aura),
+    (".app", Language::Aura),
+    (".evt", Language::Aura),
+    // HTML: file-level tracking; LWC templates (under `lwc/`) additionally
+    // emit `{binding}` references to their component JS class members.
+    (".html", Language::Html),
+    (".htm", Language::Html),
+    // Shell scripts (tree-sitter-bash).
+    (".sh", Language::Bash),
+    (".bash", Language::Bash),
     // XML: file-level tracking; the MyBatis extractor matches `<mapper namespace="...">`
     // shape and emits SQL-statement nodes (other XML returns empty).
     (".xml", Language::Xml),
@@ -133,6 +154,9 @@ pub fn has_grammar(language: Language) -> bool {
         Language::Svelte
             | Language::Vue
             | Language::Liquid
+            | Language::Html
+            | Language::Visualforce
+            | Language::Aura
             | Language::Yaml
             | Language::Twig
             | Language::Xml
@@ -164,6 +188,8 @@ const GRAMMAR_LANGUAGES: &[Language] = &[
     Language::Lua,
     Language::Luau,
     Language::Objc,
+    Language::Apex,
+    Language::Bash,
 ];
 
 /// The native tree-sitter grammar for a language, or `None` when the
@@ -192,9 +218,14 @@ pub fn grammar_language(language: Language) -> Option<tree_sitter::Language> {
         Language::Lua => tree_sitter_lua::LANGUAGE,
         Language::Luau => tree_sitter_luau::LANGUAGE,
         Language::Objc => tree_sitter_objc::LANGUAGE,
+        Language::Apex => tree_sitter_sfapex::apex::LANGUAGE,
+        Language::Bash => tree_sitter_bash::LANGUAGE,
         Language::Svelte
         | Language::Vue
         | Language::Liquid
+        | Language::Html
+        | Language::Visualforce
+        | Language::Aura
         | Language::Yaml
         | Language::Twig
         | Language::Xml
@@ -282,9 +313,12 @@ pub fn detect_language(file_path: &str, source: Option<&str>) -> Language {
 /// Returns true if the grammar exists, even if not yet loaded.
 pub fn is_language_supported(language: Language) -> bool {
     match language {
-        Language::Svelte => true,     // custom extractor (script block delegation)
-        Language::Vue => true,        // custom extractor (script block delegation)
-        Language::Liquid => true,     // custom regex extractor
+        Language::Svelte => true,      // custom extractor (script block delegation)
+        Language::Vue => true,         // custom extractor (script block delegation)
+        Language::Liquid => true,      // custom regex extractor
+        Language::Html => true,        // file node + LWC template bindings
+        Language::Visualforce => true, // custom regex extractor (controller/bindings)
+        Language::Aura => true,        // custom regex extractor (controller/actions)
         Language::Yaml => true, // file-level tracking only; Drupal routing extraction via framework resolver
         Language::Twig => true, // file-level tracking only
         Language::Xml => true,  // MyBatis mapper extractor
@@ -323,7 +357,14 @@ pub fn is_file_level_only_language(language: Language) -> bool {
 /// Get all supported languages (those with grammar definitions).
 pub fn get_supported_languages() -> Vec<Language> {
     let mut out: Vec<Language> = GRAMMAR_LANGUAGES.to_vec();
-    out.extend([Language::Svelte, Language::Vue, Language::Liquid]);
+    out.extend([
+        Language::Svelte,
+        Language::Vue,
+        Language::Liquid,
+        Language::Html,
+        Language::Visualforce,
+        Language::Aura,
+    ]);
     out
 }
 
@@ -383,6 +424,11 @@ pub fn get_language_display_name(language: Language) -> &'static str {
         Language::Lua => "Lua",
         Language::Luau => "Luau",
         Language::Objc => "Objective-C",
+        Language::Apex => "Apex",
+        Language::Bash => "Shell (Bash)",
+        Language::Html => "HTML",
+        Language::Visualforce => "Visualforce",
+        Language::Aura => "Aura",
         Language::Yaml => "YAML",
         Language::Twig => "Twig",
         Language::Xml => "XML",
@@ -444,6 +490,11 @@ mod tests {
         assert!(is_file_level_only_language(Language::Twig));
         assert!(is_file_level_only_language(Language::Properties));
         assert!(!is_file_level_only_language(Language::Xml));
-        assert_eq!(get_supported_languages().len(), 24);
+        assert!(is_language_supported(Language::Apex));
+        assert!(is_language_supported(Language::Bash));
+        assert!(is_language_supported(Language::Html));
+        assert!(is_language_supported(Language::Visualforce));
+        assert!(is_language_supported(Language::Aura));
+        assert_eq!(get_supported_languages().len(), 29);
     }
 }

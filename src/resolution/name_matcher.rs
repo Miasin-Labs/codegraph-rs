@@ -177,7 +177,20 @@ pub fn match_by_exact_name_ranked(
     context: &dyn ResolutionContext,
     ranked: Option<Option<&Node>>,
 ) -> Option<ResolvedRef> {
-    let candidates = context.get_nodes_by_name(&reference.reference_name);
+    let mut candidates = context.get_nodes_by_name(&reference.reference_name);
+
+    // Apex symbols are case-insensitive — `MyClass` and `myclass` name the
+    // same declaration. When the case-exact lookup finds nothing, retry
+    // through the lowercase index, restricted to Apex nodes so a symbol from
+    // a case-sensitive language that happens to fold equal can't hijack the
+    // match. The exact (case-correct) path above stays untouched.
+    if candidates.is_empty() && reference.language == Language::Apex {
+        candidates = context
+            .get_nodes_by_lower_name(&reference.reference_name.to_lowercase())
+            .into_iter()
+            .filter(|n| n.language == Language::Apex)
+            .collect();
+    }
 
     if candidates.is_empty() {
         return None;
@@ -646,6 +659,18 @@ pub fn match_method_call_hinted(
     let object_or_class = caps.get(1).map(|m| m.as_str()).unwrap_or("");
     let method_name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
 
+    // Apex identifiers are case-insensitive; every method-name comparison in
+    // the strategies below folds case for Apex references and stays exact for
+    // everything else.
+    let apex = reference.language == Language::Apex;
+    let names_eq = |a: &str, b: &str| -> bool {
+        if apex {
+            a.eq_ignore_ascii_case(b)
+        } else {
+            a == b
+        }
+    };
+
     if reference.language == Language::Cpp && is_dot_match {
         if let Some(inferred_type) = infer_cpp_receiver_type(object_or_class, reference, context) {
             let typed_match = resolve_method_on_type(
@@ -716,11 +741,23 @@ pub fn match_method_call_hinted(
     let run_s12_on_cpu = s12.is_none();
 
     // Strategy 1: Direct class name match (existing logic)
-    let class_candidates = if run_s12_on_cpu {
+    let mut class_candidates = if run_s12_on_cpu {
         context.get_nodes_by_name(object_or_class)
     } else {
         Vec::new()
     };
+
+    // Apex: case-folded receiver lookup when the exact one finds nothing
+    // (`accountservice.create` → class `AccountService`). Restricted to Apex
+    // nodes; also subsumes the capitalized-receiver heuristic of strategy 2
+    // for instance variables (`acctService` folds onto `AcctService`).
+    if apex && run_s12_on_cpu && class_candidates.is_empty() {
+        class_candidates = context
+            .get_nodes_by_lower_name(&object_or_class.to_lowercase())
+            .into_iter()
+            .filter(|n| n.language == Language::Apex)
+            .collect();
+    }
 
     for class_node in &class_candidates {
         if class_node.kind == NodeKind::Class
@@ -735,7 +772,7 @@ pub fn match_method_call_hinted(
             let nodes_in_file = context.get_nodes_in_file(&class_node.file_path);
             let method_node = nodes_in_file.iter().find(|n| {
                 n.kind == NodeKind::Method
-                    && n.name == method_name
+                    && names_eq(&n.name, method_name)
                     && n.qualified_name.contains(&class_node.name)
             });
 
@@ -768,7 +805,7 @@ pub fn match_method_call_hinted(
                 let nodes_in_file = context.get_nodes_in_file(&class_node.file_path);
                 let method_node = nodes_in_file.iter().find(|n| {
                     n.kind == NodeKind::Method
-                        && n.name == method_name
+                        && names_eq(&n.name, method_name)
                         && n.qualified_name.contains(&class_node.name)
                 });
 
@@ -788,10 +825,18 @@ pub fn match_method_call_hinted(
     // name similarity with the containing class. Handles abbreviated variable
     // names like permissionEngine → PermissionRuleEngine.
     if !method_name.is_empty() {
-        let method_candidates = context.get_nodes_by_name(method_name);
+        let mut method_candidates = context.get_nodes_by_name(method_name);
+        // Apex case-folded fallback, mirroring the strategy-1 retry above.
+        if apex && method_candidates.is_empty() {
+            method_candidates = context
+                .get_nodes_by_lower_name(&method_name.to_lowercase())
+                .into_iter()
+                .filter(|n| n.language == Language::Apex)
+                .collect();
+        }
         let methods: Vec<&Node> = method_candidates
             .iter()
-            .filter(|n| n.kind == NodeKind::Method && n.name == method_name)
+            .filter(|n| n.kind == NodeKind::Method && names_eq(&n.name, method_name))
             .collect();
 
         // Filter to same-language candidates first
@@ -1901,5 +1946,78 @@ mod tests {
             split_camel_case("HTTPServer"),
             vec!["HTTP".to_string(), "Server".to_string()]
         );
+    }
+
+    // -- Apex case-insensitive resolution -------------------------------------
+
+    #[test]
+    fn apex_exact_name_matches_case_insensitively() {
+        let ctx = Fixture::new(vec![node(
+            "class:AccountService",
+            NodeKind::Class,
+            "AccountService",
+            "AccountService",
+            "classes/AccountService.cls",
+            Language::Apex,
+            1,
+            30,
+        )]);
+        // Case-mismatched Apex reference still lands on the class.
+        let r = make_ref(
+            "accountservice",
+            EdgeKind::References,
+            5,
+            "classes/Caller.cls",
+            Language::Apex,
+        );
+        let result = match_by_exact_name(&r, &ctx).expect("resolved");
+        assert_eq!(result.target_node_id, "class:AccountService");
+        assert_eq!(result.resolved_by, ResolvedBy::ExactMatch);
+
+        // The same lookup from a case-sensitive language stays unresolved.
+        let js = make_ref(
+            "accountservice",
+            EdgeKind::References,
+            5,
+            "src/app.js",
+            Language::Javascript,
+        );
+        assert!(match_by_exact_name(&js, &ctx).is_none());
+    }
+
+    #[test]
+    fn apex_method_call_matches_case_insensitively() {
+        let ctx = Fixture::new(vec![
+            node(
+                "class:AccountService",
+                NodeKind::Class,
+                "AccountService",
+                "AccountService",
+                "classes/AccountService.cls",
+                Language::Apex,
+                1,
+                30,
+            ),
+            node(
+                "method:createAccount",
+                NodeKind::Method,
+                "createAccount",
+                "AccountService::createAccount",
+                "classes/AccountService.cls",
+                Language::Apex,
+                3,
+                10,
+            ),
+        ]);
+        // Receiver and method both case-mismatched.
+        let r = make_ref(
+            "accountservice.CREATEACCOUNT",
+            EdgeKind::Calls,
+            5,
+            "classes/Caller.cls",
+            Language::Apex,
+        );
+        let result = match_method_call(&r, &ctx).expect("resolved");
+        assert_eq!(result.target_node_id, "method:createAccount");
     }
 }

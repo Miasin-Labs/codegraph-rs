@@ -224,6 +224,11 @@ pub enum Language {
     Lua,
     Luau,
     Objc,
+    Apex,
+    Bash,
+    Html,
+    Visualforce,
+    Aura,
     Yaml,
     Twig,
     Xml,
@@ -232,7 +237,7 @@ pub enum Language {
 }
 
 /// Runtime-iterable list of all languages (mirrors `LANGUAGES` in TS).
-pub const LANGUAGES: [Language; 29] = [
+pub const LANGUAGES: [Language; 34] = [
     Language::Typescript,
     Language::Javascript,
     Language::Tsx,
@@ -257,6 +262,11 @@ pub const LANGUAGES: [Language; 29] = [
     Language::Lua,
     Language::Luau,
     Language::Objc,
+    Language::Apex,
+    Language::Bash,
+    Language::Html,
+    Language::Visualforce,
+    Language::Aura,
     Language::Yaml,
     Language::Twig,
     Language::Xml,
@@ -291,6 +301,11 @@ impl Language {
             Language::Lua => "lua",
             Language::Luau => "luau",
             Language::Objc => "objc",
+            Language::Apex => "apex",
+            Language::Bash => "bash",
+            Language::Html => "html",
+            Language::Visualforce => "visualforce",
+            Language::Aura => "aura",
             Language::Yaml => "yaml",
             Language::Twig => "twig",
             Language::Xml => "xml",

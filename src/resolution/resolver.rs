@@ -452,6 +452,240 @@ static PASCAL_BUILT_INS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     ])
 });
 
+/// Shell builtins and ubiquitous commands — `command` nodes extract as
+/// calls, so without this filter every `echo`/`grep` line becomes an
+/// unresolved reference, and names that collide with another language's
+/// symbols (`install`, `test`, `make` as external tools) would wire false
+/// cross-language edges. Unconditional, like the Go/Pascal sets: shadowing
+/// `test` with a shell function loses that edge — same tradeoff.
+static BASH_BUILT_INS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    HashSet::from([
+        // shell builtins / keywords
+        "alias",
+        "bg",
+        "bind",
+        "break",
+        "builtin",
+        "caller",
+        "cd",
+        "command",
+        "compgen",
+        "complete",
+        "continue",
+        "declare",
+        "dirs",
+        "disown",
+        "echo",
+        "enable",
+        "eval",
+        "exec",
+        "exit",
+        "export",
+        "false",
+        "fc",
+        "fg",
+        "getopts",
+        "hash",
+        "help",
+        "history",
+        "jobs",
+        "kill",
+        "let",
+        "local",
+        "logout",
+        "mapfile",
+        "popd",
+        "printf",
+        "pushd",
+        "pwd",
+        "read",
+        "readarray",
+        "readonly",
+        "return",
+        "set",
+        "shift",
+        "shopt",
+        "source",
+        "suspend",
+        "test",
+        "times",
+        "trap",
+        "true",
+        "type",
+        "typeset",
+        "ulimit",
+        "umask",
+        "unalias",
+        "unset",
+        "wait",
+        // coreutils & ubiquitous externals
+        "awk",
+        "basename",
+        "cat",
+        "chmod",
+        "chown",
+        "cp",
+        "curl",
+        "cut",
+        "date",
+        "diff",
+        "dirname",
+        "docker",
+        "env",
+        "find",
+        "git",
+        "grep",
+        "gzip",
+        "head",
+        "install",
+        "ln",
+        "ls",
+        "make",
+        "mkdir",
+        "mktemp",
+        "mv",
+        "realpath",
+        "rm",
+        "rmdir",
+        "rsync",
+        "sed",
+        "seq",
+        "sleep",
+        "sort",
+        "ssh",
+        "stat",
+        "sudo",
+        "tail",
+        "tar",
+        "tee",
+        "touch",
+        "tr",
+        "uniq",
+        "wc",
+        "wget",
+        "which",
+        "xargs",
+    ])
+});
+
+/// Apex system classes/namespaces — receivers of `X.y` references like
+/// `System.debug`, `Database.insert`, `Test.startTest`, `Trigger.new`.
+/// Stored LOWERCASE: Apex identifiers are case-insensitive, so the lookup
+/// folds the receiver before probing. Guarded on `known_has` at the call
+/// site — shadowing a system name with a user class is legal in Apex, and
+/// those references must keep resolving to the user symbol.
+static APEX_SYSTEM_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    HashSet::from([
+        // core namespaces / static utility classes
+        "system",
+        "database",
+        "test",
+        "assert",
+        "schema",
+        "trigger",
+        "limits",
+        "userinfo",
+        "json",
+        "math",
+        "crypto",
+        "encodingutil",
+        "apexpages",
+        "messaging",
+        "search",
+        "eventbus",
+        "site",
+        "network",
+        "auth",
+        "cache",
+        "label",
+        // callout / REST plumbing
+        "http",
+        "httprequest",
+        "httpresponse",
+        "restcontext",
+        "restrequest",
+        "restresponse",
+        "pagereference",
+        "url",
+        // primitive & built-in value types (their statics: String.isBlank,
+        // Integer.valueOf, Id.valueOf, Date.today, Datetime.now, …)
+        "string",
+        "integer",
+        "decimal",
+        "double",
+        "long",
+        "boolean",
+        "date",
+        "datetime",
+        "time",
+        "id",
+        "blob",
+        "type",
+        "sobject",
+        "exception",
+        // generic collection types (List.sort static style is rare but legal)
+        "list",
+        "set",
+        "map",
+    ])
+});
+
+/// Apex built-in instance methods on collections/strings/sObjects —
+/// `accs.add(…)`, `name.substring(…)`, `record.getSObjectType()`. Stored
+/// LOWERCASE (case-insensitive language). Mirrors the Python
+/// built-in-methods guard: only filtered when the capitalized receiver
+/// isn't a known codebase class, so `items.add` on a user class `Items`
+/// still resolves.
+static APEX_BUILT_IN_METHODS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    HashSet::from([
+        // List / Set / Map
+        "add",
+        "addall",
+        "get",
+        "put",
+        "putall",
+        "remove",
+        "clear",
+        "clone",
+        "size",
+        "isempty",
+        "contains",
+        "containskey",
+        "keyset",
+        "values",
+        "sort",
+        "iterator",
+        // String
+        "substring",
+        "split",
+        "trim",
+        "replace",
+        "replaceall",
+        "startswith",
+        "endswith",
+        "touppercase",
+        "tolowercase",
+        "capitalize",
+        "abbreviate",
+        "indexof",
+        "lastindexof",
+        "length",
+        "left",
+        "right",
+        "containsignorecase",
+        "equalsignorecase",
+        // Object / sObject
+        "equals",
+        "hashcode",
+        "tostring",
+        "getsobjecttype",
+        "getdescribe",
+        "adderror",
+        "getrecordtypeid",
+        "format",
+    ])
+});
+
 static C_BUILT_INS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
         // Standard C library functions
@@ -1317,6 +1551,36 @@ impl ReferenceResolver {
         false
     }
 
+    /// Case-insensitive `has_any_possible_match` for Apex references.
+    /// Apex identifiers are case-insensitive (`myclass.dothing` ==
+    /// `MyClass.doThing`), but `known_names` is a case-sensitive set —
+    /// without this escape, a case-mismatched Apex reference is dropped by
+    /// the pre-filter before any case-folding tier can run. Probes go
+    /// through the lowercase node-name index (cached) instead of cloning
+    /// `known_names` into a second folded set.
+    fn has_any_possible_match_ci(&self, name: &str) -> bool {
+        let lower = name.to_lowercase();
+        let probe = |s: &str| !self.context.get_nodes_by_lower_name(s).is_empty();
+        if probe(&lower) {
+            return true;
+        }
+        if let Some(dot_idx) = lower.find('.') {
+            if dot_idx > 0 {
+                let receiver = &lower[..dot_idx];
+                let member = &lower[dot_idx + 1..];
+                if probe(receiver) || probe(member) {
+                    return true;
+                }
+                // FQN-ish names: the last segment is the only useful one.
+                let last_dot = lower.rfind('.').unwrap_or(0);
+                if last_dot > dot_idx && probe(&lower[last_dot + 1..]) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Does `ref.referenceName` match an import declared in its containing
     /// file? Used as a pre-filter escape so re-export chain resolution
     /// still gets a chance when the name has no project-wide declaration.
@@ -1732,13 +1996,25 @@ impl ReferenceResolver {
             return None;
         }
 
+        // GPU hint precomputations mirror the case-SENSITIVE CPU paths; Apex
+        // resolution is case-insensitive, so its references take the CPU
+        // paths (which carry the Apex case-folding fallbacks) unhinted.
+        let (ranked, s12, fuzzy) = if r.language == Language::Apex {
+            (None, None, None)
+        } else {
+            (ranked, s12, fuzzy)
+        };
+
         // Fast pre-filter: skip if no symbol with this name exists anywhere
         // AND the name doesn't match a local import. The import escape is
         // necessary because re-export rename chains (`import { login }
         // from './barrel'` where the barrel has `export { signIn as login }
         // from './auth'`) intentionally call a name that has no
         // declaration anywhere — only the renamed upstream symbol does.
+        // Apex gets a case-insensitive retry before the drop (see
+        // has_any_possible_match_ci).
         if !known_hint.unwrap_or_else(|| self.has_any_possible_match(&r.reference_name))
+            && !(r.language == Language::Apex && self.has_any_possible_match_ci(&r.reference_name))
             && !self.matches_any_import(r)
             && !self
                 .frameworks
@@ -2079,6 +2355,39 @@ impl ReferenceResolver {
             }
         }
 
+        // Shell builtins and ubiquitous commands (`echo`, `grep`, `git`, …).
+        if r.language == Language::Bash && BASH_BUILT_INS.contains(name) {
+            return true;
+        }
+
+        // Apex system classes (`System.debug`, `Database.insert`, `Trigger.new`)
+        // and built-in instance methods (`accs.add`, `name.substring`). Apex is
+        // case-insensitive, so receivers/methods are folded before probing.
+        // Both checks are known_has-guarded: shadowing a system name with a
+        // user class is legal, and those references must keep resolving.
+        if r.language == Language::Apex {
+            if let Some(dot_idx) = name.find('.') {
+                if dot_idx > 0 {
+                    let receiver = &name[..dot_idx];
+                    let method = &name[dot_idx + 1..];
+                    if APEX_SYSTEM_TYPES.contains(receiver.to_lowercase().as_str())
+                        && !self.context.known_has(receiver)
+                        && !self.context.known_has(&capitalize_first(receiver))
+                    {
+                        return true;
+                    }
+                    if APEX_BUILT_IN_METHODS.contains(method.to_lowercase().as_str()) {
+                        let capitalized = capitalize_first(receiver);
+                        if !self.context.known_has(receiver)
+                            && !self.context.known_has(&capitalized)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
         // C/C++ standard library symbols (printf, malloc, std::vector, etc.).
         // Names that collide with user-defined symbols are NOT filtered —
         // C and C++ projects routinely shadow stdlib names (custom allocators
@@ -2190,5 +2499,17 @@ mod tests {
         assert_eq!(PASCAL_BUILT_INS.len(), 87);
         assert_eq!(C_BUILT_INS.len(), 137);
         assert_eq!(CPP_BUILT_INS.len(), 25);
+        assert_eq!(APEX_SYSTEM_TYPES.len(), 46);
+        assert_eq!(APEX_BUILT_IN_METHODS.len(), 42);
+        assert_eq!(BASH_BUILT_INS.len(), 103);
+    }
+
+    #[test]
+    fn apex_built_in_sets_are_lowercase() {
+        // The call sites fold receivers/methods to lowercase before probing —
+        // a mixed-case entry would never match.
+        for s in APEX_SYSTEM_TYPES.iter().chain(APEX_BUILT_IN_METHODS.iter()) {
+            assert_eq!(*s, s.to_lowercase(), "entry {s:?} must be lowercase");
+        }
     }
 }
