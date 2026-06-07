@@ -119,12 +119,43 @@ extern "C" __global__ void probe_names(
     }
     out[i] = flags;
 }
+
+// Tier-2: candidate scoring. One thread per reference. Scans the candidate
+// slice that matches the ref's member-name hash (CSR layout: cand_starts is
+// indexed by a host-computed group id per ref; -1 = no group) and picks the
+// best-scoring candidate: kind weight + same-file bonus. Mirrors the
+// CPU tie-break (first candidate wins on equal score — strict >).
+extern "C" __global__ void score_candidates(
+    const int*  __restrict__ ref_group,    // n_refs: group id or -1
+    const u32*  __restrict__ ref_file,     // n_refs: ref file id
+    const u32*  __restrict__ cand_starts,  // n_groups + 1 (CSR)
+    const u32*  __restrict__ cand_file,    // candidate file ids
+    const u8*   __restrict__ cand_kind_w,  // candidate kind weight (0-100)
+    int*        __restrict__ out_best,     // n_refs: best candidate idx or -1
+    u8*         __restrict__ out_score,    // n_refs: best score
+    u32 n_refs
+) {
+    u32 i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_refs) return;
+    int g = ref_group[i];
+    out_best[i] = -1; out_score[i] = 0;
+    if (g < 0) return;
+    u32 s = cand_starts[g], e = cand_starts[g + 1];
+    u32 rf = ref_file[i];
+    int best = -1; u32 best_score = 0;
+    for (u32 c = s; c < e; c++) {
+        u32 score = (u32)cand_kind_w[c] + (cand_file[c] == rf ? 100u : 0u);
+        if (score > best_score) { best_score = score; best = (int)c; }
+    }
+    out_best[i] = best; out_score[i] = (u8)(best_score > 255 ? 255 : best_score);
+}
 "#;
 
 /// A GPU-resident known-names table plus the compiled probe kernel.
 pub struct GpuNameJoiner {
     stream: Arc<CudaStream>,
     kernel: CudaFunction,
+    score_kernel: CudaFunction,
     table: cudarc::driver::CudaSlice<u64>,
     mask: u64,
 }
@@ -149,6 +180,7 @@ impl GpuNameJoiner {
         let ptx = compile_ptx(KERNEL_SRC).ok()?;
         let module = ctx.load_module(ptx).ok()?;
         let kernel = module.load_function("probe_names").ok()?;
+        let score_kernel = module.load_function("score_candidates").ok()?;
 
         // Host-side table build (linear, ~ms for 1.4M names); GPU does the
         // 5.9M-reference probe side where the parallelism actually is.
@@ -180,6 +212,7 @@ impl GpuNameJoiner {
         Some(Self {
             stream,
             kernel,
+            score_kernel,
             table,
             mask,
         })
@@ -220,6 +253,55 @@ impl GpuNameJoiner {
         // and writes only out[i]; all buffers are sized above.
         unsafe { launch.launch(cfg) }.ok()?;
         self.stream.memcpy_dtov(&d_out).ok()
+    }
+
+    /// Tier-2: pick the best candidate per reference on the GPU.
+    ///
+    /// `ref_group[i]` indexes into the CSR `cand_starts` (or -1 = no
+    /// candidates); candidates carry a file id and a kind weight. Returns
+    /// `(best_candidate_index, score)` per ref (-1 = none). Scoring mirrors
+    /// the CPU candidate ranking: kind weight + 100 same-file bonus, first
+    /// candidate wins ties (strict >).
+    pub fn score_batch(
+        &self,
+        ref_group: &[i32],
+        ref_file: &[u32],
+        cand_starts: &[u32],
+        cand_file: &[u32],
+        cand_kind_w: &[u8],
+    ) -> Option<(Vec<i32>, Vec<u8>)> {
+        if ref_group.is_empty() {
+            return Some((Vec::new(), Vec::new()));
+        }
+        let d_group = self.stream.memcpy_stod(ref_group).ok()?;
+        let d_rfile = self.stream.memcpy_stod(ref_file).ok()?;
+        let d_starts = self.stream.memcpy_stod(cand_starts).ok()?;
+        let d_cfile = self.stream.memcpy_stod(cand_file).ok()?;
+        let d_ckw = self.stream.memcpy_stod(cand_kind_w).ok()?;
+        let mut d_best = self.stream.alloc_zeros::<i32>(ref_group.len()).ok()?;
+        let mut d_score = self.stream.alloc_zeros::<u8>(ref_group.len()).ok()?;
+        let n = ref_group.len() as u32;
+        let cfg = LaunchConfig {
+            grid_dim: (n.div_ceil(256), 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let mut launch = self.stream.launch_builder(&self.score_kernel);
+        launch.arg(&d_group);
+        launch.arg(&d_rfile);
+        launch.arg(&d_starts);
+        launch.arg(&d_cfile);
+        launch.arg(&d_ckw);
+        launch.arg(&mut d_best);
+        launch.arg(&mut d_score);
+        launch.arg(&n);
+        // SAFETY: per-thread writes are confined to index i; CSR bounds are
+        // host-validated (cand_starts is n_groups+1 and monotonic).
+        unsafe { launch.launch(cfg) }.ok()?;
+        Some((
+            self.stream.memcpy_dtov(&d_best).ok()?,
+            self.stream.memcpy_dtov(&d_score).ok()?,
+        ))
     }
 }
 
@@ -338,5 +420,50 @@ mod tests {
             dt,
             0.2 / dt.as_secs_f64()
         );
+    }
+
+    #[test]
+    fn gpu_scoring_matches_cpu_argmax() {
+        let Some(joiner) = GpuNameJoiner::new(&["x"]) else {
+            eprintln!("no CUDA device — skipping");
+            return;
+        };
+        // 3 groups; ref0->g0, ref1->g2, ref2 no candidates, ref3->g1.
+        let ref_group = vec![0i32, 2, -1, 1];
+        let ref_file = vec![7u32, 9, 0, 7];
+        let cand_starts = vec![0u32, 2, 3, 6];
+        let cand_file = vec![1u32, 7, 7, 9, 2, 9];
+        let cand_kind_w = vec![50u8, 40, 10, 30, 90, 30];
+        let (best, score) = joiner
+            .score_batch(
+                &ref_group,
+                &ref_file,
+                &cand_starts,
+                &cand_file,
+                &cand_kind_w,
+            )
+            .expect("score");
+        // CPU mirror
+        for (i, &g) in ref_group.iter().enumerate() {
+            if g < 0 {
+                assert_eq!(best[i], -1);
+                continue;
+            }
+            let (s, e) = (
+                cand_starts[g as usize] as usize,
+                cand_starts[g as usize + 1] as usize,
+            );
+            let mut bb = -1i32;
+            let mut bs = 0u32;
+            for c in s..e {
+                let sc = cand_kind_w[c] as u32 + if cand_file[c] == ref_file[i] { 100 } else { 0 };
+                if sc > bs {
+                    bs = sc;
+                    bb = c as i32;
+                }
+            }
+            assert_eq!(best[i], bb, "ref {i}");
+            assert_eq!(score[i] as u32, bs.min(255), "ref {i}");
+        }
     }
 }
