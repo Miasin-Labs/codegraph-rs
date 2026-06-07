@@ -61,9 +61,11 @@ extern "C" __device__ bool probe(const u64* table, u64 mask, u64 hash) {
     return false;
 }
 
-// One thread per reference. Probes the full name, and when the name contains
-// a '.' or "::" separator, also the head and tail parts (mirrors the CPU
-// pre-filter's split logic). Writes a bitmask: 1=full, 2=head, 4=tail.
+// One thread per reference. Mirrors ReferenceResolver::has_any_possible_match
+// EXACTLY: full name; first-'.' receiver/rest/capitalized-receiver plus
+// last-'.' tail; first-"::" receiver/rest; last-'/' filename. out[i] = 1 when
+// any probe hits, 0 when none can. Bit 0x80 = first receiver byte is
+// non-ASCII (capitalize_first semantics diverge) -> caller re-checks on CPU.
 extern "C" __global__ void probe_names(
     const u8* __restrict__ buf,
     const u32* __restrict__ offsets, // len = n_refs + 1
@@ -78,22 +80,42 @@ extern "C" __global__ void probe_names(
     u32 len = end - start;
     const u8* s = buf + start;
 
+    if (probe(table, mask, fnv1a64(s, len))) { out[i] = 1; return; }
     u8 flags = 0;
-    if (probe(table, mask, fnv1a64(s, len))) flags |= 1;
 
-    // find last '.' or last "::"
-    int dot = -1, colon = -1;
-    for (int j = (int)len - 1; j >= 0; j--) {
-        if (dot < 0 && s[j] == '.') dot = j;
-        if (colon < 0 && j > 0 && s[j] == ':' && s[j - 1] == ':') colon = j;
-        if (dot >= 0 && colon >= 0) break;
+    int first_dot = -1, last_dot = -1, first_colon = -1, last_slash = -1;
+    for (u32 j = 0; j < len; j++) {
+        if (s[j] == '.') { if (first_dot < 0) first_dot = (int)j; last_dot = (int)j; }
+        if (first_colon < 0 && j + 1 < len && s[j] == ':' && s[j+1] == ':') first_colon = (int)j;
+        if (s[j] == '/') last_slash = (int)j;
     }
-    if (dot > 0 && dot < (int)len - 1) {
-        if (probe(table, mask, fnv1a64(s, (u32)dot))) flags |= 2;
-        if (probe(table, mask, fnv1a64(s + dot + 1, len - (u32)dot - 1))) flags |= 4;
-    } else if (colon > 0 && colon < (int)len - 1) {
-        if (probe(table, mask, fnv1a64(s, (u32)colon - 1))) flags |= 2;
-        if (probe(table, mask, fnv1a64(s + colon + 1, len - (u32)colon - 1))) flags |= 4;
+
+    if (first_dot > 0) {
+        u32 d = (u32)first_dot;
+        if (probe(table, mask, fnv1a64(s, d))) { out[i] = 1; return; }          // receiver
+        if (probe(table, mask, fnv1a64(s + d + 1, len - d - 1))) { out[i] = 1; return; } // rest
+        u8 c0 = s[0];
+        if (c0 >= 'a' && c0 <= 'z') {                                            // capitalized recv
+            u64 h = 0xcbf29ce484222325ULL;
+            h ^= (u64)(c0 - 32); h *= 0x100000001b3ULL;
+            for (u32 j = 1; j < d; j++) { h ^= (u64)s[j]; h *= 0x100000001b3ULL; }
+            if (probe(table, mask, h)) { out[i] = 1; return; }
+        } else if (c0 >= 0x80) {
+            flags |= 0x80; // unicode capitalize — defer to CPU
+        }
+        if (last_dot > first_dot && (u32)last_dot + 1 < len) {                   // FQN tail
+            u32 ld = (u32)last_dot;
+            if (probe(table, mask, fnv1a64(s + ld + 1, len - ld - 1))) { out[i] = 1; return; }
+        }
+    }
+    if (first_colon > 0) {
+        u32 c = (u32)first_colon;
+        if (probe(table, mask, fnv1a64(s, c))) { out[i] = 1; return; }
+        if (c + 2 <= len && probe(table, mask, fnv1a64(s + c + 2, len - c - 2))) { out[i] = 1; return; }
+    }
+    if (last_slash > 0 && (u32)last_slash + 1 < len) {
+        u32 sl = (u32)last_slash;
+        if (probe(table, mask, fnv1a64(s + sl + 1, len - sl - 1))) { out[i] = 1; return; }
     }
     out[i] = flags;
 }
@@ -205,30 +227,46 @@ impl GpuNameJoiner {
 mod tests {
     use super::*;
 
-    /// CPU ground truth mirroring the kernel's split + probe semantics.
+    /// CPU ground truth — has_any_possible_match semantics (resolver.rs).
     fn cpu_flags(known: &std::collections::HashSet<&str>, name: &str) -> u8 {
-        let mut flags = 0u8;
         if known.contains(name) {
-            flags |= 1;
+            return 1;
         }
-        let (head, tail) = if let Some(d) = name.rfind('.') {
-            (name.get(..d), name.get(d + 1..))
-        } else if let Some(c) = name.rfind("::") {
-            (name.get(..c), name.get(c + 2..))
-        } else {
-            (None, None)
-        };
-        if let Some(h) = head {
-            if !h.is_empty() && known.contains(h) {
-                flags |= 2;
+        if let Some(d) = name.find('.') {
+            if d > 0 {
+                let receiver = &name[..d];
+                if known.contains(receiver) || known.contains(&name[d + 1..]) {
+                    return 1;
+                }
+                let mut cap = receiver.to_string();
+                if let Some(f) = cap.get_mut(0..1) {
+                    f.make_ascii_uppercase();
+                }
+                if receiver.starts_with(|c: char| c.is_ascii_lowercase())
+                    && known.contains(cap.as_str())
+                {
+                    return 1;
+                }
+                let ld = name.rfind('.').unwrap_or(0);
+                if ld > d && !name[ld + 1..].is_empty() && known.contains(&name[ld + 1..]) {
+                    return 1;
+                }
+                if !receiver.is_ascii() && receiver.starts_with(|c: char| !c.is_ascii()) {
+                    return 0x80;
+                }
             }
         }
-        if let Some(t) = tail {
-            if !t.is_empty() && known.contains(t) {
-                flags |= 4;
+        if let Some(c) = name.find("::") {
+            if c > 0 && (known.contains(&name[..c]) || known.contains(&name[c + 2..])) {
+                return 1;
             }
         }
-        flags
+        if let Some(sl) = name.rfind('/') {
+            if sl > 0 && !name[sl + 1..].is_empty() && known.contains(&name[sl + 1..]) {
+                return 1;
+            }
+        }
+        0
     }
 
     #[test]

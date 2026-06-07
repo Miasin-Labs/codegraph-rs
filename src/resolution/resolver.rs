@@ -1152,8 +1152,31 @@ impl ReferenceResolver {
         let total = refs.len();
         let mut last_reported_percent: i64 = -1;
 
+        // GPU batch pre-filter: probe every reference name (and its
+        // qualified-name parts) against the known-names table in one kernel
+        // launch. Verdicts are exact mirrors of `has_any_possible_match`;
+        // 0x80 marks names the kernel defers to the CPU (non-ASCII
+        // capitalization). On machines without CUDA this is a no-op.
+        #[cfg(feature = "gpu")]
+        let gpu_hints: Option<Vec<u8>> = {
+            let guard = self.context.known_names.borrow();
+            guard.as_ref().and_then(|known| {
+                let names: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+                let joiner = super::gpu::GpuNameJoiner::new(&names)?;
+                let ref_names: Vec<&str> = refs.iter().map(|r| r.reference_name.as_str()).collect();
+                joiner.probe_batch(&ref_names)
+            })
+        };
+        #[cfg(not(feature = "gpu"))]
+        let gpu_hints: Option<Vec<u8>> = None;
+
         for (i, r) in refs.iter().enumerate() {
-            let result = self.resolve_one(r);
+            let hint = gpu_hints.as_ref().map(|h| h[i]).and_then(|f| match f {
+                1 => Some(true),
+                0 => Some(false),
+                _ => None, // kernel deferred — CPU decides
+            });
+            let result = self.resolve_one_hinted(r, hint);
 
             if let Some(result) = result {
                 *by_method
@@ -1276,6 +1299,19 @@ impl ReferenceResolver {
 
     /// Resolve a single reference
     pub fn resolve_one(&self, r: &UnresolvedRef) -> Option<ResolvedRef> {
+        self.resolve_one_hinted(r, None)
+    }
+
+    /// `resolve_one` with an optional precomputed `has_any_possible_match`
+    /// verdict. The GPU batch pre-filter (feature `gpu`) probes every
+    /// reference name in one kernel launch and feeds the verdicts through
+    /// here; `None` falls back to the CPU check (also used for the rare
+    /// names whose capitalization semantics the kernel defers).
+    pub fn resolve_one_hinted(
+        &self,
+        r: &UnresolvedRef,
+        known_hint: Option<bool>,
+    ) -> Option<ResolvedRef> {
         // Skip built-in/external references
         if self.is_built_in_or_external(r) {
             return None;
@@ -1287,7 +1323,7 @@ impl ReferenceResolver {
         // from './barrel'` where the barrel has `export { signIn as login }
         // from './auth'`) intentionally call a name that has no
         // declaration anywhere — only the renamed upstream symbol does.
-        if !self.has_any_possible_match(&r.reference_name)
+        if !known_hint.unwrap_or_else(|| self.has_any_possible_match(&r.reference_name))
             && !self.matches_any_import(r)
             && !self
                 .frameworks
