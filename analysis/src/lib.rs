@@ -45,6 +45,8 @@ pub mod frontier;
 pub mod gpu_bfs;
 #[cfg(feature = "gpu")]
 pub mod gpu_pagerank;
+#[cfg(feature = "gpu")]
+pub mod gpu_scc;
 pub mod graph;
 pub mod history;
 pub mod hll;
