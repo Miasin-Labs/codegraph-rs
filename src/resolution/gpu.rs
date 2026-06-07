@@ -197,6 +197,60 @@ extern "C" __global__ void score_candidates(
     }
     out_best[i] = best;
 }
+
+// Tier-3: match_method_call strategies 1+2 (name_matcher.rs:668-733).
+// For each reference: walk its class-candidate list IN ORDER; for each class,
+// scan the methods of that class's file IN ORDER; first method whose
+// name-hash matches the ref's method name AND whose qualified_name CONTAINS
+// the class name wins (the CPU uses Iterator::find on both levels, so
+// order-preserving first-match = identical selection).
+extern "C" __device__ bool contains_bytes(
+    const u8* hay, u32 hay_len, const u8* needle, u32 needle_len
+) {
+    if (needle_len == 0) return true;
+    if (needle_len > hay_len) return false;
+    for (u32 i = 0; i + needle_len <= hay_len; i++) {
+        u32 j = 0;
+        while (j < needle_len && hay[i + j] == needle[j]) j++;
+        if (j == needle_len) return true;
+    }
+    return false;
+}
+
+extern "C" __global__ void match_class_methods(
+    const u32* __restrict__ ref_cand_starts,   // n_refs+1: CSR into class-candidate arrays
+    const u64* __restrict__ ref_method_hash,   // n_refs: FNV of the method name
+    const u32* __restrict__ cls_file,          // per class-candidate: file id
+    const u32* __restrict__ cls_name_off,      // per class-candidate: offset into name buf
+    const u32* __restrict__ cls_name_len,
+    const u8*  __restrict__ name_buf,
+    const u32* __restrict__ file_starts,       // n_files+1: CSR into method arrays
+    const u64* __restrict__ m_hash,            // per method: FNV of method name
+    const u32* __restrict__ m_qn_off,          // per method: offset into qn buf
+    const u32* __restrict__ m_qn_len,
+    const u8*  __restrict__ qn_buf,
+    int*       __restrict__ out_method,        // n_refs: winning method idx or -1
+    int*       __restrict__ out_cls,           // n_refs: winning class-candidate idx or -1
+    u32 n_refs
+) {
+    u32 i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_refs) return;
+    out_method[i] = -1; out_cls[i] = -1;
+    u64 want = ref_method_hash[i];
+    for (u32 c = ref_cand_starts[i]; c < ref_cand_starts[i + 1]; c++) {
+        u32 f = cls_file[c];
+        const u8* cname = name_buf + cls_name_off[c];
+        u32 clen = cls_name_len[c];
+        for (u32 m = file_starts[f]; m < file_starts[f + 1]; m++) {
+            if (m_hash[m] != want) continue;
+            if (contains_bytes(qn_buf + m_qn_off[m], m_qn_len[m], cname, clen)) {
+                out_method[i] = (int)m;
+                out_cls[i] = (int)c;
+                return; // first match wins, both levels in order
+            }
+        }
+    }
+}
 "#;
 
 /// A GPU-resident known-names table plus the compiled probe kernel.
@@ -204,6 +258,7 @@ pub struct GpuNameJoiner {
     stream: Arc<CudaStream>,
     kernel: CudaFunction,
     score_kernel: CudaFunction,
+    method_kernel: CudaFunction,
     table: cudarc::driver::CudaSlice<u64>,
     mask: u64,
 }
@@ -229,6 +284,7 @@ impl GpuNameJoiner {
         let module = ctx.load_module(ptx).ok()?;
         let kernel = module.load_function("probe_names").ok()?;
         let score_kernel = module.load_function("score_candidates").ok()?;
+        let method_kernel = module.load_function("match_class_methods").ok()?;
 
         // Host-side table build (linear, ~ms for 1.4M names); GPU does the
         // 5.9M-reference probe side where the parallelism actually is.
@@ -261,6 +317,7 @@ impl GpuNameJoiner {
             stream,
             kernel,
             score_kernel,
+            method_kernel,
             table,
             mask,
         })
@@ -372,6 +429,71 @@ impl GpuNameJoiner {
         // host-validated (monotonic, last element = len).
         unsafe { launch.launch(cfg) }.ok()?;
         self.stream.memcpy_dtov(&d_best).ok()
+    }
+
+    /// Tier-3: `match_method_call` strategies 1+2 on the GPU — first method
+    /// in (class-candidate order × file-method order) whose name matches and
+    /// whose qualified_name contains the class name. Returns per-ref
+    /// (method index, class-candidate index), -1 = no match.
+    #[allow(clippy::too_many_arguments)]
+    pub fn match_class_methods(
+        &self,
+        ref_cand_starts: &[u32],
+        ref_method_hash: &[u64],
+        cls_file: &[u32],
+        cls_name_off: &[u32],
+        cls_name_len: &[u32],
+        name_buf: &[u8],
+        file_starts: &[u32],
+        m_hash: &[u64],
+        m_qn_off: &[u32],
+        m_qn_len: &[u32],
+        qn_buf: &[u8],
+    ) -> Option<(Vec<i32>, Vec<i32>)> {
+        let n = ref_method_hash.len();
+        if n == 0 {
+            return Some((Vec::new(), Vec::new()));
+        }
+        let d_rcs = self.stream.memcpy_stod(ref_cand_starts).ok()?;
+        let d_rmh = self.stream.memcpy_stod(ref_method_hash).ok()?;
+        let d_cf = self.stream.memcpy_stod(cls_file).ok()?;
+        let d_cno = self.stream.memcpy_stod(cls_name_off).ok()?;
+        let d_cnl = self.stream.memcpy_stod(cls_name_len).ok()?;
+        let d_nb = self.stream.memcpy_stod(name_buf).ok()?;
+        let d_fs = self.stream.memcpy_stod(file_starts).ok()?;
+        let d_mh = self.stream.memcpy_stod(m_hash).ok()?;
+        let d_mqo = self.stream.memcpy_stod(m_qn_off).ok()?;
+        let d_mql = self.stream.memcpy_stod(m_qn_len).ok()?;
+        let d_qb = self.stream.memcpy_stod(qn_buf).ok()?;
+        let mut d_om = self.stream.alloc_zeros::<i32>(n).ok()?;
+        let mut d_oc = self.stream.alloc_zeros::<i32>(n).ok()?;
+        let n32 = n as u32;
+        let cfg = LaunchConfig {
+            grid_dim: (n32.div_ceil(256), 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let mut launch = self.stream.launch_builder(&self.method_kernel);
+        launch.arg(&d_rcs);
+        launch.arg(&d_rmh);
+        launch.arg(&d_cf);
+        launch.arg(&d_cno);
+        launch.arg(&d_cnl);
+        launch.arg(&d_nb);
+        launch.arg(&d_fs);
+        launch.arg(&d_mh);
+        launch.arg(&d_mqo);
+        launch.arg(&d_mql);
+        launch.arg(&d_qb);
+        launch.arg(&mut d_om);
+        launch.arg(&mut d_oc);
+        launch.arg(&n32);
+        // SAFETY: writes confined to out[i]; CSRs host-validated.
+        unsafe { launch.launch(cfg) }.ok()?;
+        Some((
+            self.stream.memcpy_dtov(&d_om).ok()?,
+            self.stream.memcpy_dtov(&d_oc).ok()?,
+        ))
     }
 }
 
@@ -633,5 +755,97 @@ mod tests {
             assert_eq!(gpu_best[i], expect, "ref {i} (group {})", rg[i]);
         }
         eprintln!("GPU find_best_match parity: {n_refs} refs OK");
+    }
+
+    #[test]
+    #[allow(clippy::needless_range_loop)] // absolute indices ARE the kernel's output contract
+    fn gpu_method_match_matches_cpu_find_semantics() {
+        let Some(joiner) = GpuNameJoiner::new(&["x"]) else {
+            eprintln!("no CUDA device — skipping");
+            return;
+        };
+        let mut state = 0xdeadbeefu64;
+        let mut rnd = move |m: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) % m
+        };
+        // methods per file: name from a small vocab, qn embeds a class name
+        let n_files = 10u32;
+        let vocab = ["run", "init", "draw", "save"];
+        let classes = ["Renderer", "Engine", "Store", "Widget"];
+        let mut file_starts = vec![0u32];
+        let (mut m_hash, mut m_qn_off, mut m_qn_len) = (Vec::new(), Vec::new(), Vec::new());
+        let mut qn_buf: Vec<u8> = Vec::new();
+        let mut m_meta: Vec<(u32, String, String)> = Vec::new(); // (file, name, qn)
+        for f in 0..n_files {
+            for _ in 0..rnd(7) {
+                let name = vocab[rnd(4) as usize];
+                let cls = classes[rnd(4) as usize];
+                let qn = format!("{cls}.{name}");
+                m_hash.push(fnv1a64(name.as_bytes()));
+                m_qn_off.push(qn_buf.len() as u32);
+                m_qn_len.push(qn.len() as u32);
+                qn_buf.extend_from_slice(qn.as_bytes());
+                m_meta.push((f, name.to_string(), qn));
+            }
+            file_starts.push(m_hash.len() as u32);
+        }
+        // refs: each with a method name + class-candidate list
+        let n_refs = 300usize;
+        let mut ref_cand_starts = vec![0u32];
+        let (mut cls_file, mut cls_name_off, mut cls_name_len) =
+            (Vec::new(), Vec::new(), Vec::new());
+        let mut name_buf: Vec<u8> = Vec::new();
+        let (mut ref_mh, mut ref_meta) = (Vec::new(), Vec::new());
+        let mut cls_meta: Vec<(u32, String)> = Vec::new();
+        for _ in 0..n_refs {
+            let mname = vocab[rnd(4) as usize];
+            ref_mh.push(fnv1a64(mname.as_bytes()));
+            for _ in 0..rnd(4) {
+                let cls = classes[rnd(4) as usize];
+                let f = rnd(n_files as u64) as u32;
+                cls_file.push(f);
+                cls_name_off.push(name_buf.len() as u32);
+                cls_name_len.push(cls.len() as u32);
+                name_buf.extend_from_slice(cls.as_bytes());
+                cls_meta.push((f, cls.to_string()));
+            }
+            ref_cand_starts.push(cls_file.len() as u32);
+            ref_meta.push(mname.to_string());
+        }
+        let (gm, gc) = joiner
+            .match_class_methods(
+                &ref_cand_starts,
+                &ref_mh,
+                &cls_file,
+                &cls_name_off,
+                &cls_name_len,
+                &name_buf,
+                &file_starts,
+                &m_hash,
+                &m_qn_off,
+                &m_qn_len,
+                &qn_buf,
+            )
+            .expect("kernel");
+        // CPU mirror: ordered double-find
+        for i in 0..n_refs {
+            let mut em = -1i32;
+            let mut ec = -1i32;
+            'outer: for c in ref_cand_starts[i] as usize..ref_cand_starts[i + 1] as usize {
+                let (f, cls) = &cls_meta[c];
+                for m in file_starts[*f as usize] as usize..file_starts[*f as usize + 1] as usize {
+                    if m_meta[m].1 == ref_meta[i] && m_meta[m].2.contains(cls.as_str()) {
+                        em = m as i32;
+                        ec = c as i32;
+                        break 'outer;
+                    }
+                }
+            }
+            assert_eq!((gm[i], gc[i]), (em, ec), "ref {i} method={}", ref_meta[i]);
+        }
+        eprintln!("GPU method-match parity: {n_refs} refs OK");
     }
 }
