@@ -120,34 +120,82 @@ extern "C" __global__ void probe_names(
     out[i] = flags;
 }
 
-// Tier-2: candidate scoring. One thread per reference. Scans the candidate
-// slice that matches the ref's member-name hash (CSR layout: cand_starts is
-// indexed by a host-computed group id per ref; -1 = no group) and picks the
-// best-scoring candidate: kind weight + same-file bonus. Mirrors the
-// CPU tie-break (first candidate wins on equal score — strict >).
+// Tier-2: full find_best_match scoring (name_matcher.rs:833-913), exact in
+// scaled x10 integers (order-preserving vs the CPU's f64: every CPU term is a
+// multiple of 0.1 except the line-distance term, which scales exactly).
+// One thread per reference scans its CSR candidate slice IN ORDER (CPU
+// tie-break is strict-> first-wins, so identical order = identical pick):
+//   same file            +1000
+//   dir-prefix proximity +150/shared segment, cap 800
+//   same language        +500 else -800
+//   Calls -> Fn|Method   +250
+//   Instantiates -> Class|Struct|Interface +250
+//   Decorates -> Fn|Method +250, Class|Interface +150
+//   exported             +100
+//   same-file line dist  max(0, 200 - |dline|)   [cand line != 0]
 extern "C" __global__ void score_candidates(
-    const int*  __restrict__ ref_group,    // n_refs: group id or -1
-    const u32*  __restrict__ ref_file,     // n_refs: ref file id
+    const int*  __restrict__ ref_group,    // n_refs: CSR group id or -1
+    const u32*  __restrict__ ref_file,     // n_refs: interned file id
+    const u8*   __restrict__ ref_lang,     // n_refs
+    const u8*   __restrict__ ref_kind,     // n_refs: 1=Calls 2=Instantiates 3=Decorates 0=other
+    const u32*  __restrict__ ref_line,     // n_refs
     const u32*  __restrict__ cand_starts,  // n_groups + 1 (CSR)
-    const u32*  __restrict__ cand_file,    // candidate file ids
-    const u8*   __restrict__ cand_kind_w,  // candidate kind weight (0-100)
+    const u32*  __restrict__ cand_file,
+    const u8*   __restrict__ cand_lang,
+    const u8*   __restrict__ cand_kind,    // 1=Fn 2=Method 3=Class 4=Struct 5=Interface 0=other
+    const u8*   __restrict__ cand_exported,
+    const u32*  __restrict__ cand_line,
+    const u32*  __restrict__ dir_starts,   // n_files + 1: per-file dir-hash CSR
+    const u64*  __restrict__ dir_hashes,
     int*        __restrict__ out_best,     // n_refs: best candidate idx or -1
-    u8*         __restrict__ out_score,    // n_refs: best score
     u32 n_refs
 ) {
     u32 i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_refs) return;
     int g = ref_group[i];
-    out_best[i] = -1; out_score[i] = 0;
+    out_best[i] = -1;
     if (g < 0) return;
     u32 s = cand_starts[g], e = cand_starts[g + 1];
     u32 rf = ref_file[i];
-    int best = -1; u32 best_score = 0;
+    u32 rds = dir_starts[rf], rde = dir_starts[rf + 1];
+    // CPU best_score starts at -1.0 with strict > : a candidate scoring
+    // below that (cross-language -800 dominating) is NEVER selected. x10
+    // scale -> initialize to -10 for exact parity.
+    long long best_score = -10;
+    int best = -1;
     for (u32 c = s; c < e; c++) {
-        u32 score = (u32)cand_kind_w[c] + (cand_file[c] == rf ? 100u : 0u);
+        long long score = 0;
+        u32 cf = cand_file[c];
+        if (cf == rf) score += 1000;
+        // proximity: shared leading dir-hash segments
+        u32 cds = dir_starts[cf], cde = dir_starts[cf + 1];
+        u32 n1 = rde - rds, n2 = cde - cds;
+        u32 lim = n1 < n2 ? n1 : n2;
+        long long shared = 0;
+        for (u32 k = 0; k < lim; k++) {
+            if (dir_hashes[rds + k] == dir_hashes[cds + k]) shared++;
+            else break;
+        }
+        long long prox = shared * 150; if (prox > 800) prox = 800;
+        score += prox;
+        score += (cand_lang[c] == ref_lang[i]) ? 500 : -800;
+        u8 rk = ref_kind[i], ck = cand_kind[c];
+        if (rk == 1 && (ck == 1 || ck == 2)) score += 250;
+        if (rk == 2 && (ck == 3 || ck == 4 || ck == 5)) score += 250;
+        if (rk == 3) {
+            if (ck == 1 || ck == 2) score += 250;
+            else if (ck == 3 || ck == 5) score += 150;
+        }
+        if (cand_exported[c]) score += 100;
+        if (cf == rf && cand_line[c] != 0) {
+            long long d = (long long)cand_line[c] - (long long)ref_line[i];
+            if (d < 0) d = -d;
+            long long lt = 200 - d; if (lt < 0) lt = 0;
+            score += lt;
+        }
         if (score > best_score) { best_score = score; best = (int)c; }
     }
-    out_best[i] = best; out_score[i] = (u8)(best_score > 255 ? 255 : best_score);
+    out_best[i] = best;
 }
 "#;
 
@@ -255,31 +303,49 @@ impl GpuNameJoiner {
         self.stream.memcpy_dtov(&d_out).ok()
     }
 
-    /// Tier-2: pick the best candidate per reference on the GPU.
+    /// Tier-2: full `find_best_match` candidate ranking on the GPU.
     ///
-    /// `ref_group[i]` indexes into the CSR `cand_starts` (or -1 = no
-    /// candidates); candidates carry a file id and a kind weight. Returns
-    /// `(best_candidate_index, score)` per ref (-1 = none). Scoring mirrors
-    /// the CPU candidate ranking: kind weight + 100 same-file bonus, first
-    /// candidate wins ties (strict >).
+    /// Inputs are interned/flattened on the host: refs carry (CSR group or
+    /// -1, file id, language, kind class, line); candidates carry (file id,
+    /// language, kind class, exported, line) in `get_nodes_by_name` order
+    /// (the CPU tie-break is strict-`>` first-wins, so preserving order
+    /// gives identical selection); `dir_*` is the per-file CSR of cumulative
+    /// directory-prefix hashes powering the proximity term. Returns the best
+    /// candidate index per ref, -1 = none beat the CPU's -1.0 floor.
+    #[allow(clippy::too_many_arguments)]
     pub fn score_batch(
         &self,
         ref_group: &[i32],
         ref_file: &[u32],
+        ref_lang: &[u8],
+        ref_kind: &[u8],
+        ref_line: &[u32],
         cand_starts: &[u32],
         cand_file: &[u32],
-        cand_kind_w: &[u8],
-    ) -> Option<(Vec<i32>, Vec<u8>)> {
+        cand_lang: &[u8],
+        cand_kind: &[u8],
+        cand_exported: &[u8],
+        cand_line: &[u32],
+        dir_starts: &[u32],
+        dir_hashes: &[u64],
+    ) -> Option<Vec<i32>> {
         if ref_group.is_empty() {
-            return Some((Vec::new(), Vec::new()));
+            return Some(Vec::new());
         }
         let d_group = self.stream.memcpy_stod(ref_group).ok()?;
         let d_rfile = self.stream.memcpy_stod(ref_file).ok()?;
+        let d_rlang = self.stream.memcpy_stod(ref_lang).ok()?;
+        let d_rkind = self.stream.memcpy_stod(ref_kind).ok()?;
+        let d_rline = self.stream.memcpy_stod(ref_line).ok()?;
         let d_starts = self.stream.memcpy_stod(cand_starts).ok()?;
         let d_cfile = self.stream.memcpy_stod(cand_file).ok()?;
-        let d_ckw = self.stream.memcpy_stod(cand_kind_w).ok()?;
+        let d_clang = self.stream.memcpy_stod(cand_lang).ok()?;
+        let d_ckind = self.stream.memcpy_stod(cand_kind).ok()?;
+        let d_cexp = self.stream.memcpy_stod(cand_exported).ok()?;
+        let d_cline = self.stream.memcpy_stod(cand_line).ok()?;
+        let d_dstarts = self.stream.memcpy_stod(dir_starts).ok()?;
+        let d_dhash = self.stream.memcpy_stod(dir_hashes).ok()?;
         let mut d_best = self.stream.alloc_zeros::<i32>(ref_group.len()).ok()?;
-        let mut d_score = self.stream.alloc_zeros::<u8>(ref_group.len()).ok()?;
         let n = ref_group.len() as u32;
         let cfg = LaunchConfig {
             grid_dim: (n.div_ceil(256), 1, 1),
@@ -289,19 +355,23 @@ impl GpuNameJoiner {
         let mut launch = self.stream.launch_builder(&self.score_kernel);
         launch.arg(&d_group);
         launch.arg(&d_rfile);
+        launch.arg(&d_rlang);
+        launch.arg(&d_rkind);
+        launch.arg(&d_rline);
         launch.arg(&d_starts);
         launch.arg(&d_cfile);
-        launch.arg(&d_ckw);
+        launch.arg(&d_clang);
+        launch.arg(&d_ckind);
+        launch.arg(&d_cexp);
+        launch.arg(&d_cline);
+        launch.arg(&d_dstarts);
+        launch.arg(&d_dhash);
         launch.arg(&mut d_best);
-        launch.arg(&mut d_score);
         launch.arg(&n);
-        // SAFETY: per-thread writes are confined to index i; CSR bounds are
-        // host-validated (cand_starts is n_groups+1 and monotonic).
+        // SAFETY: per-thread writes confined to out_best[i]; CSR arrays are
+        // host-validated (monotonic, last element = len).
         unsafe { launch.launch(cfg) }.ok()?;
-        Some((
-            self.stream.memcpy_dtov(&d_best).ok()?,
-            self.stream.memcpy_dtov(&d_score).ok()?,
-        ))
+        self.stream.memcpy_dtov(&d_best).ok()
     }
 }
 
@@ -423,47 +493,145 @@ mod tests {
     }
 
     #[test]
-    fn gpu_scoring_matches_cpu_argmax() {
+    fn gpu_scoring_matches_cpu_find_best_match() {
         let Some(joiner) = GpuNameJoiner::new(&["x"]) else {
             eprintln!("no CUDA device — skipping");
             return;
         };
-        // 3 groups; ref0->g0, ref1->g2, ref2 no candidates, ref3->g1.
-        let ref_group = vec![0i32, 2, -1, 1];
-        let ref_file = vec![7u32, 9, 0, 7];
-        let cand_starts = vec![0u32, 2, 3, 6];
-        let cand_file = vec![1u32, 7, 7, 9, 2, 9];
-        let cand_kind_w = vec![50u8, 40, 10, 30, 90, 30];
-        let (best, score) = joiner
+        // Deterministic pseudo-random scenario sweep across the whole input
+        // space: files with shared dir prefixes, languages, kinds, exported,
+        // line distances — mirrored exactly against the CPU formula.
+        let n_files = 12u32;
+        // dir CSR: file f has f%4 dir segments drawn from 2 alternatives.
+        let mut dir_starts = vec![0u32];
+        let mut dir_hashes = Vec::new();
+        for f in 0..n_files {
+            let depth = (f % 4) as u64;
+            let mut h = 0xabcdefu64;
+            for d in 0..depth {
+                // files with the same f%2 share prefixes; others diverge at d
+                h = h
+                    .wrapping_mul(31)
+                    .wrapping_add(if f % 2 == 0 { d } else { d + 100 });
+                dir_hashes.push(h);
+            }
+            dir_starts.push(dir_hashes.len() as u32);
+        }
+        let mut state = 0x12345678u64;
+        let mut rnd = move |m: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) % m
+        };
+        let n_groups = 40usize;
+        let mut cand_starts = vec![0u32];
+        let (mut cand_file, mut cand_lang, mut cand_kind, mut cand_exp, mut cand_line) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..n_groups {
+            let k = rnd(6); // 0..5 candidates
+            for _ in 0..k {
+                cand_file.push(rnd(n_files as u64) as u32);
+                cand_lang.push(rnd(4) as u8);
+                cand_kind.push(rnd(6) as u8);
+                cand_exp.push(rnd(2) as u8);
+                cand_line.push(rnd(400) as u32); // incl. 0 = "no line"
+            }
+            cand_starts.push(cand_file.len() as u32);
+        }
+        let n_refs = 600usize;
+        let (mut rg, mut rf, mut rl, mut rk, mut rline) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for i in 0..n_refs {
+            rg.push(if i % 17 == 0 {
+                -1
+            } else {
+                rnd(n_groups as u64) as i32
+            });
+            rf.push(rnd(n_files as u64) as u32);
+            rl.push(rnd(4) as u8);
+            rk.push(rnd(4) as u8);
+            rline.push(rnd(400) as u32);
+        }
+        let gpu_best = joiner
             .score_batch(
-                &ref_group,
-                &ref_file,
+                &rg,
+                &rf,
+                &rl,
+                &rk,
+                &rline,
                 &cand_starts,
                 &cand_file,
-                &cand_kind_w,
+                &cand_lang,
+                &cand_kind,
+                &cand_exp,
+                &cand_line,
+                &dir_starts,
+                &dir_hashes,
             )
-            .expect("score");
-        // CPU mirror
-        for (i, &g) in ref_group.iter().enumerate() {
-            if g < 0 {
-                assert_eq!(best[i], -1);
-                continue;
-            }
-            let (s, e) = (
-                cand_starts[g as usize] as usize,
-                cand_starts[g as usize + 1] as usize,
+            .expect("score_batch");
+
+        // CPU mirror of find_best_match (name_matcher.rs:833) in x10 integers.
+        let prox = |f1: u32, f2: u32| -> i64 {
+            let (s1, e1) = (
+                dir_starts[f1 as usize] as usize,
+                dir_starts[f1 as usize + 1] as usize,
             );
-            let mut bb = -1i32;
-            let mut bs = 0u32;
-            for c in s..e {
-                let sc = cand_kind_w[c] as u32 + if cand_file[c] == ref_file[i] { 100 } else { 0 };
-                if sc > bs {
-                    bs = sc;
-                    bb = c as i32;
+            let (s2, e2) = (
+                dir_starts[f2 as usize] as usize,
+                dir_starts[f2 as usize + 1] as usize,
+            );
+            let mut shared = 0i64;
+            for k in 0..(e1 - s1).min(e2 - s2) {
+                if dir_hashes[s1 + k] == dir_hashes[s2 + k] {
+                    shared += 1;
+                } else {
+                    break;
                 }
             }
-            assert_eq!(best[i], bb, "ref {i}");
-            assert_eq!(score[i] as u32, bs.min(255), "ref {i}");
+            (shared * 150).min(800)
+        };
+        for i in 0..n_refs {
+            let mut expect = -1i32;
+            let mut best_score = -10i64;
+            if rg[i] >= 0 {
+                let g = rg[i] as usize;
+                for c in cand_starts[g] as usize..cand_starts[g + 1] as usize {
+                    let mut score = 0i64;
+                    if cand_file[c] == rf[i] {
+                        score += 1000;
+                    }
+                    score += prox(rf[i], cand_file[c]);
+                    score += if cand_lang[c] == rl[i] { 500 } else { -800 };
+                    let (rk_i, ck) = (rk[i], cand_kind[c]);
+                    if rk_i == 1 && (ck == 1 || ck == 2) {
+                        score += 250;
+                    }
+                    if rk_i == 2 && (ck == 3 || ck == 4 || ck == 5) {
+                        score += 250;
+                    }
+                    if rk_i == 3 {
+                        if ck == 1 || ck == 2 {
+                            score += 250;
+                        } else if ck == 3 || ck == 5 {
+                            score += 150;
+                        }
+                    }
+                    if cand_exp[c] != 0 {
+                        score += 100;
+                    }
+                    if cand_file[c] == rf[i] && cand_line[c] != 0 {
+                        let d = (cand_line[c] as i64 - rline[i] as i64).abs();
+                        score += (200 - d).max(0);
+                    }
+                    if score > best_score {
+                        best_score = score;
+                        expect = c as i32;
+                    }
+                }
+            }
+            assert_eq!(gpu_best[i], expect, "ref {i} (group {})", rg[i]);
         }
+        eprintln!("GPU find_best_match parity: {n_refs} refs OK");
     }
 }
