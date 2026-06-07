@@ -251,6 +251,39 @@ extern "C" __global__ void match_class_methods(
         }
     }
 }
+
+// Tier-4: match_fuzzy (name_matcher.rs:916) — lowercase-name candidates,
+// callable kinds only (Function=1, Method=2, Class=3), prefer same-language;
+// a winner exists ONLY when the preferred set has exactly one member.
+// out: candidate idx or -1; out_cross: 1 when the winner is cross-language.
+extern "C" __global__ void fuzzy_unique(
+    const int* __restrict__ ref_group,   // n_refs: CSR group or -1
+    const u8*  __restrict__ ref_lang,
+    const u32* __restrict__ cand_starts, // n_groups + 1
+    const u8*  __restrict__ cand_lang,
+    const u8*  __restrict__ cand_kind,   // kind classes as in score_candidates
+    int*       __restrict__ out_idx,
+    u8*        __restrict__ out_cross,
+    u32 n_refs
+) {
+    u32 i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_refs) return;
+    out_idx[i] = -1; out_cross[i] = 0;
+    int g = ref_group[i];
+    if (g < 0) return;
+    u32 s = cand_starts[g], e = cand_starts[g + 1];
+    u8 rl = ref_lang[i];
+    int same = -1, any = -1;
+    u32 same_n = 0, any_n = 0;
+    for (u32 c = s; c < e; c++) {
+        u8 k = cand_kind[c];
+        if (!(k == 1 || k == 2 || k == 3)) continue; // callable only
+        any_n++; any = (int)c;
+        if (cand_lang[c] == rl) { same_n++; same = (int)c; }
+    }
+    if (same_n == 1) { out_idx[i] = same; out_cross[i] = 0; }
+    else if (same_n == 0 && any_n == 1) { out_idx[i] = any; out_cross[i] = 1; }
+}
 "#;
 
 /// A GPU-resident known-names table plus the compiled probe kernel.
@@ -259,6 +292,7 @@ pub struct GpuNameJoiner {
     kernel: CudaFunction,
     score_kernel: CudaFunction,
     method_kernel: CudaFunction,
+    fuzzy_kernel: CudaFunction,
     table: cudarc::driver::CudaSlice<u64>,
     mask: u64,
 }
@@ -285,6 +319,7 @@ impl GpuNameJoiner {
         let kernel = module.load_function("probe_names").ok()?;
         let score_kernel = module.load_function("score_candidates").ok()?;
         let method_kernel = module.load_function("match_class_methods").ok()?;
+        let fuzzy_kernel = module.load_function("fuzzy_unique").ok()?;
 
         // Host-side table build (linear, ~ms for 1.4M names); GPU does the
         // 5.9M-reference probe side where the parallelism actually is.
@@ -318,6 +353,7 @@ impl GpuNameJoiner {
             kernel,
             score_kernel,
             method_kernel,
+            fuzzy_kernel,
             table,
             mask,
         })
@@ -492,6 +528,50 @@ impl GpuNameJoiner {
         unsafe { launch.launch(cfg) }.ok()?;
         Some((
             self.stream.memcpy_dtov(&d_om).ok()?,
+            self.stream.memcpy_dtov(&d_oc).ok()?,
+        ))
+    }
+
+    /// Tier-4: `match_fuzzy` uniqueness selection on the GPU. Returns per-ref
+    /// (candidate index or -1, cross_language flag).
+    pub fn fuzzy_unique(
+        &self,
+        ref_group: &[i32],
+        ref_lang: &[u8],
+        cand_starts: &[u32],
+        cand_lang: &[u8],
+        cand_kind: &[u8],
+    ) -> Option<(Vec<i32>, Vec<u8>)> {
+        let n = ref_group.len();
+        if n == 0 {
+            return Some((Vec::new(), Vec::new()));
+        }
+        let d_g = self.stream.memcpy_stod(ref_group).ok()?;
+        let d_rl = self.stream.memcpy_stod(ref_lang).ok()?;
+        let d_cs = self.stream.memcpy_stod(cand_starts).ok()?;
+        let d_cl = self.stream.memcpy_stod(cand_lang).ok()?;
+        let d_ck = self.stream.memcpy_stod(cand_kind).ok()?;
+        let mut d_oi = self.stream.alloc_zeros::<i32>(n).ok()?;
+        let mut d_oc = self.stream.alloc_zeros::<u8>(n).ok()?;
+        let n32 = n as u32;
+        let cfg = LaunchConfig {
+            grid_dim: (n32.div_ceil(256), 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let mut launch = self.stream.launch_builder(&self.fuzzy_kernel);
+        launch.arg(&d_g);
+        launch.arg(&d_rl);
+        launch.arg(&d_cs);
+        launch.arg(&d_cl);
+        launch.arg(&d_ck);
+        launch.arg(&mut d_oi);
+        launch.arg(&mut d_oc);
+        launch.arg(&n32);
+        // SAFETY: writes confined to out[i]; CSR host-validated.
+        unsafe { launch.launch(cfg) }.ok()?;
+        Some((
+            self.stream.memcpy_dtov(&d_oi).ok()?,
             self.stream.memcpy_dtov(&d_oc).ok()?,
         ))
     }
@@ -847,5 +927,64 @@ mod tests {
             assert_eq!((gm[i], gc[i]), (em, ec), "ref {i} method={}", ref_meta[i]);
         }
         eprintln!("GPU method-match parity: {n_refs} refs OK");
+    }
+
+    #[test]
+    fn gpu_fuzzy_matches_cpu_uniqueness() {
+        let Some(joiner) = GpuNameJoiner::new(&["x"]) else {
+            eprintln!("no CUDA device — skipping");
+            return;
+        };
+        let mut state = 0xfeedfaceu64;
+        let mut rnd = move |m: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) % m
+        };
+        let n_groups = 60usize;
+        let mut cand_starts = vec![0u32];
+        let (mut cl, mut ck) = (Vec::new(), Vec::new());
+        for _ in 0..n_groups {
+            for _ in 0..rnd(5) {
+                cl.push(rnd(3) as u8);
+                ck.push(rnd(7) as u8);
+            }
+            cand_starts.push(cl.len() as u32);
+        }
+        let n_refs = 400usize;
+        let (mut rg, mut rl) = (Vec::new(), Vec::new());
+        for i in 0..n_refs {
+            rg.push(if i % 13 == 0 {
+                -1
+            } else {
+                rnd(n_groups as u64) as i32
+            });
+            rl.push(rnd(3) as u8);
+        }
+        let (gi, gc) = joiner
+            .fuzzy_unique(&rg, &rl, &cand_starts, &cl, &ck)
+            .expect("fuzzy");
+        for i in 0..n_refs {
+            let (mut ei, mut ec) = (-1i32, 0u8);
+            if rg[i] >= 0 {
+                let g = rg[i] as usize;
+                let rng = cand_starts[g] as usize..cand_starts[g + 1] as usize;
+                let callable: Vec<usize> = rng.filter(|&c| matches!(ck[c], 1..=3)).collect();
+                let same: Vec<usize> = callable
+                    .iter()
+                    .copied()
+                    .filter(|&c| cl[c] == rl[i])
+                    .collect();
+                if same.len() == 1 {
+                    ei = same[0] as i32;
+                } else if same.is_empty() && callable.len() == 1 {
+                    ei = callable[0] as i32;
+                    ec = 1;
+                }
+            }
+            assert_eq!((gi[i], gc[i]), (ei, ec), "ref {i}");
+        }
+        eprintln!("GPU fuzzy parity: {n_refs} refs OK");
     }
 }

@@ -988,6 +988,25 @@ pub fn match_fuzzy(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
 ) -> Option<ResolvedRef> {
+    match_fuzzy_hinted(reference, context, None)
+}
+
+/// `match_fuzzy` with an optional GPU-precomputed uniqueness verdict:
+/// `Some(None)` = the kernel proved no unique callable candidate exists;
+/// `Some(Some((node, cross_language)))` = the unique winner.
+pub fn match_fuzzy_hinted(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+    fuzzy: Option<Option<(&Node, bool)>>,
+) -> Option<ResolvedRef> {
+    if let Some(precomputed) = fuzzy {
+        return precomputed.map(|(node, cross)| ResolvedRef {
+            original: reference.clone(),
+            target_node_id: node.id.clone(),
+            confidence: if cross { 0.3 } else { 0.5 },
+            resolved_by: ResolvedBy::Fuzzy,
+        });
+    }
     let lower_name = reference.reference_name.to_lowercase();
 
     // Use pre-built lowercase index for O(1) lookup instead of scanning all nodes
@@ -1052,6 +1071,17 @@ pub fn match_reference_hinted(
     ranked: Option<Option<&Node>>,
     s12: Option<Option<(&Node, bool)>>,
 ) -> Option<ResolvedRef> {
+    match_reference_full_hints(reference, context, ranked, s12, None)
+}
+
+/// Full hint surface incl. the strategy-4 fuzzy verdict.
+pub fn match_reference_full_hints(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+    ranked: Option<Option<&Node>>,
+    s12: Option<Option<(&Node, bool)>>,
+    fuzzy: Option<Option<(&Node, bool)>>,
+) -> Option<ResolvedRef> {
     // Try strategies in order of confidence
 
     // 0. File path match (e.g., "snippets/drawer-menu.liquid" → file node)
@@ -1075,7 +1105,7 @@ pub fn match_reference_hinted(
     }
 
     // 4. Fuzzy match (lowest confidence)
-    if let Some(result) = match_fuzzy(reference, context) {
+    if let Some(result) = match_fuzzy_hinted(reference, context, fuzzy) {
         return Some(result);
     }
 

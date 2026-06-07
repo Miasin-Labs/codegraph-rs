@@ -1158,9 +1158,10 @@ impl ReferenceResolver {
         // capitalization). On machines without CUDA this is a no-op.
         #[cfg(feature = "gpu")]
         #[allow(clippy::type_complexity)]
-        let (gpu_hints, gpu_ranked, gpu_s12): (
+        let (gpu_hints, gpu_ranked, gpu_s12, gpu_fuzzy): (
             Option<Vec<u8>>,
             Option<HashMap<usize, Option<Node>>>,
+            Option<HashMap<usize, Option<(Node, bool)>>>,
             Option<HashMap<usize, Option<(Node, bool)>>>,
         ) = {
             let joiner = {
@@ -1171,7 +1172,7 @@ impl ReferenceResolver {
                 })
             };
             match joiner {
-                None => (None, None, None),
+                None => (None, None, None, None),
                 Some(joiner) => {
                     let ref_names: Vec<&str> =
                         refs.iter().map(|r| r.reference_name.as_str()).collect();
@@ -1182,17 +1183,19 @@ impl ReferenceResolver {
                     // strategy 3, so don't pay to rank them.
                     let ranked = self.gpu_rank_exact_name(&joiner, &refs, hints.as_deref());
                     let s12 = self.gpu_match_s12(&joiner, &refs, hints.as_deref());
-                    (hints, ranked, s12)
+                    let fuzzy = self.gpu_fuzzy(&joiner, &refs, hints.as_deref());
+                    (hints, ranked, s12, fuzzy)
                 }
             }
         };
         #[cfg(not(feature = "gpu"))]
         #[allow(clippy::type_complexity)]
-        let (gpu_hints, gpu_ranked, gpu_s12): (
+        let (gpu_hints, gpu_ranked, gpu_s12, gpu_fuzzy): (
             Option<Vec<u8>>,
             Option<HashMap<usize, Option<Node>>>,
             Option<HashMap<usize, Option<(Node, bool)>>>,
-        ) = (None, None, None);
+            Option<HashMap<usize, Option<(Node, bool)>>>,
+        ) = (None, None, None, None);
 
         for (i, r) in refs.iter().enumerate() {
             let hint = gpu_hints.as_ref().map(|h| h[i]).and_then(|f| match f {
@@ -1208,7 +1211,11 @@ impl ReferenceResolver {
                 .as_ref()
                 .and_then(|m| m.get(&i))
                 .map(|w| w.as_ref().map(|(n, s1)| (n, *s1)));
-            let result = self.resolve_one_hinted(r, hint, ranked_hint, s12_hint);
+            let fuzzy_hint = gpu_fuzzy
+                .as_ref()
+                .and_then(|m| m.get(&i))
+                .map(|w| w.as_ref().map(|(n, x)| (n, *x)));
+            let result = self.resolve_one_hinted(r, hint, ranked_hint, s12_hint, fuzzy_hint);
 
             if let Some(result) = result {
                 *by_method
@@ -1330,6 +1337,81 @@ impl ReferenceResolver {
     }
 
     /// Resolve a single reference
+    /// Batch-precompute `match_fuzzy` uniqueness verdicts on the GPU.
+    #[cfg(feature = "gpu")]
+    #[allow(clippy::type_complexity)]
+    fn gpu_fuzzy(
+        &self,
+        joiner: &super::gpu::GpuNameJoiner,
+        refs: &[UnresolvedRef],
+        prefilter: Option<&[u8]>,
+    ) -> Option<HashMap<usize, Option<(Node, bool)>>> {
+        fn kind_class(k: NodeKind) -> u8 {
+            match k {
+                NodeKind::Function => 1,
+                NodeKind::Method => 2,
+                NodeKind::Class => 3,
+                _ => 0,
+            }
+        }
+        let mut lang_ids: HashMap<Language, u8> = HashMap::new();
+        let mut intern_lang = |l: Language| -> u8 {
+            let next = lang_ids.len() as u8;
+            *lang_ids.entry(l).or_insert(next)
+        };
+        let mut groups: HashMap<String, i32> = HashMap::new();
+        let mut cand_starts: Vec<u32> = vec![0];
+        let (mut cand_lang, mut cand_kind) = (Vec::new(), Vec::new());
+        let mut group_nodes: Vec<Vec<Node>> = Vec::new();
+        let (mut ref_group, mut ref_lang) = (
+            Vec::with_capacity(refs.len()),
+            Vec::with_capacity(refs.len()),
+        );
+        for (idx, r) in refs.iter().enumerate() {
+            if prefilter.is_some_and(|f| f[idx] == 0) {
+                ref_group.push(-1);
+                ref_lang.push(0);
+                continue;
+            }
+            let lower = r.reference_name.to_lowercase();
+            let g = *groups.entry(lower.clone()).or_insert_with(|| {
+                let candidates = self.context.get_nodes_by_lower_name(&lower);
+                if candidates.is_empty() {
+                    -1
+                } else {
+                    for c in &candidates {
+                        cand_lang.push(intern_lang(c.language));
+                        cand_kind.push(kind_class(c.kind));
+                    }
+                    cand_starts.push(cand_lang.len() as u32);
+                    group_nodes.push(candidates);
+                    (group_nodes.len() - 1) as i32
+                }
+            });
+            ref_group.push(g);
+            ref_lang.push(intern_lang(r.language));
+        }
+        if group_nodes.is_empty() {
+            return Some(HashMap::new());
+        }
+        let (best, cross) =
+            joiner.fuzzy_unique(&ref_group, &ref_lang, &cand_starts, &cand_lang, &cand_kind)?;
+        let mut out = HashMap::new();
+        for (i, &g) in ref_group.iter().enumerate() {
+            if g < 0 {
+                continue;
+            }
+            let winner = if best[i] < 0 {
+                None
+            } else {
+                let local = (best[i] as u32 - cand_starts[g as usize]) as usize;
+                Some((group_nodes[g as usize][local].clone(), cross[i] != 0))
+            };
+            out.insert(i, winner);
+        }
+        Some(out)
+    }
+
     /// Batch-precompute `match_method_call` strategy-1/2 winners on the GPU.
     /// Mirrors the CPU block exactly: per dot/colon reference, class
     /// candidates from `get_nodes_by_name(receiver)` (strategy 1) then
@@ -1629,7 +1711,7 @@ impl ReferenceResolver {
     }
 
     pub fn resolve_one(&self, r: &UnresolvedRef) -> Option<ResolvedRef> {
-        self.resolve_one_hinted(r, None, None, None)
+        self.resolve_one_hinted(r, None, None, None, None)
     }
 
     /// `resolve_one` with an optional precomputed `has_any_possible_match`
@@ -1643,6 +1725,7 @@ impl ReferenceResolver {
         known_hint: Option<bool>,
         ranked: Option<Option<&Node>>,
         s12: Option<Option<(&Node, bool)>>,
+        fuzzy: Option<Option<(&Node, bool)>>,
     ) -> Option<ResolvedRef> {
         // Skip built-in/external references
         if self.is_built_in_or_external(r) {
@@ -1695,7 +1778,7 @@ impl ReferenceResolver {
 
         // Strategy 3: Try name matching
         if let Some(name_result) =
-            super::name_matcher::match_reference_hinted(r, &self.context, ranked, s12)
+            super::name_matcher::match_reference_full_hints(r, &self.context, ranked, s12, fuzzy)
         {
             candidates.push(name_result);
         }
