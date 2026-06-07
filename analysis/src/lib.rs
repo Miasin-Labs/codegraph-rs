@@ -44,6 +44,8 @@ pub mod frontier;
 #[cfg(feature = "gpu")]
 pub mod gpu_bfs;
 #[cfg(feature = "gpu")]
+pub mod gpu_modularity;
+#[cfg(feature = "gpu")]
 pub mod gpu_pagerank;
 #[cfg(feature = "gpu")]
 pub mod gpu_scc;
