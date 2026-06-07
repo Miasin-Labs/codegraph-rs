@@ -225,6 +225,18 @@ where
         return out;
     }
 
+    // GPU path (feature `gpu`): on large graphs, run the depth-bounded BFS as
+    // a level-synchronous kernel. The slice is `{v : dist(seed,v) <= depth}`,
+    // order-independent, so it's bit-identical to the loop below. Gated on
+    // node count — building the CSR from the oracle costs O(V) oracle calls,
+    // only worth it when the graph (hence the potential slice) is large.
+    #[cfg(feature = "gpu")]
+    if graph.node_count() >= 20_000 {
+        if let Some(slice) = gpu_bfs_slice(graph, seed, max_depth, &neighbors) {
+            return slice;
+        }
+    }
+
     let mut frontier: VecDeque<(NodeId, usize)> = VecDeque::new();
     frontier.push_back((seed.clone(), 0));
 
@@ -247,6 +259,52 @@ where
     }
 
     out
+}
+
+/// GPU depth-bounded slice: intern all graph nodes 0..k, build the oracle's
+/// adjacency CSR (skipping edges to pruned nodes, exactly like the CPU loop),
+/// run the bounded BFS kernel from the seed, and translate the visited bitmap
+/// back to a `NodeId` set. Returns `None` on any GPU failure so the caller
+/// falls back to the CPU BFS.
+#[cfg(feature = "gpu")]
+fn gpu_bfs_slice<F>(
+    graph: &CodeGraph,
+    seed: &NodeId,
+    max_depth: usize,
+    neighbors: &F,
+) -> Option<BTreeSet<NodeId>>
+where
+    F: Fn(&NodeId) -> Vec<NodeId>,
+{
+    use std::collections::HashMap;
+    let ids: Vec<&NodeId> = graph.all_node_ids();
+    let n = ids.len();
+    let mut pos: HashMap<&NodeId, u32> = HashMap::with_capacity(n);
+    for (i, &id) in ids.iter().enumerate() {
+        pos.insert(id, i as u32);
+    }
+    let seed_idx = *pos.get(seed)?;
+
+    let mut offsets = Vec::with_capacity(n + 1);
+    let mut flat = Vec::new();
+    offsets.push(0u32);
+    for &id in &ids {
+        for next in neighbors(id) {
+            // Same "drop unknown neighbours" rule as the CPU loop.
+            if let Some(&j) = pos.get(&next) {
+                flat.push(j);
+            }
+        }
+        offsets.push(flat.len() as u32);
+    }
+
+    let bitmap = crate::gpu_bfs::reachable_bounded_gpu(n, &offsets, &flat, &[seed_idx], max_depth)?;
+    Some(
+        (0..n)
+            .filter(|&i| bitmap[i] == 1)
+            .map(|i| ids[i].clone())
+            .collect(),
+    )
 }
 
 #[cfg(test)]

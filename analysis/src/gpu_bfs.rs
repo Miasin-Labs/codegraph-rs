@@ -62,6 +62,80 @@ pub fn reachable_gpu(
     crate::gpu_probe(|| reachable_gpu_inner(n, offsets, neighbors, seeds))
 }
 
+/// Depth-bounded reachable SET: every node within `max_depth` BFS levels of a
+/// seed, INCLUDING the seeds (a program slice, Weiser 1981). Because BFS
+/// levels are shortest-path distances, the result is exactly
+/// `{v : dist(seed, v) <= max_depth}` — order-independent, so bit-identical to
+/// the CPU `bfs_slice`. Runs exactly `max_depth` level-synchronous sweeps.
+pub fn reachable_bounded_gpu(
+    n: usize,
+    offsets: &[u32],
+    neighbors: &[u32],
+    seeds: &[u32],
+    max_depth: usize,
+) -> Option<Vec<u8>> {
+    if n == 0 {
+        return Some(Vec::new());
+    }
+    crate::gpu_probe(|| reachable_bounded_inner(n, offsets, neighbors, seeds, max_depth))
+}
+
+fn reachable_bounded_inner(
+    n: usize,
+    offsets: &[u32],
+    neighbors: &[u32],
+    seeds: &[u32],
+    max_depth: usize,
+) -> Option<Vec<u8>> {
+    let ctx = CudaContext::new(0).ok()?;
+    let stream = ctx.default_stream();
+    let module = ctx.load_module(compile_ptx(KERNEL_SRC).ok()?).ok()?;
+    let kernel: CudaFunction = module.load_function("bfs_step").ok()?;
+
+    // `visited` is the slice set (seeds included from the start).
+    let mut visited = vec![0u32; n];
+    let mut frontier = vec![0u32; n];
+    for &s in seeds {
+        if (s as usize) < n {
+            visited[s as usize] = 1;
+            frontier[s as usize] = 1;
+        }
+    }
+    let d_off = stream.memcpy_stod(offsets).ok()?;
+    let d_nb = stream.memcpy_stod(neighbors).ok()?;
+    let mut d_frontier = stream.memcpy_stod(&frontier).ok()?;
+    let mut d_visited = stream.memcpy_stod(&visited).ok()?;
+    let mut d_reached = stream.alloc_zeros::<u32>(n).ok()?;
+    let cfg = LaunchConfig {
+        grid_dim: ((n as u32).div_ceil(256), 1, 1),
+        block_dim: (256, 1, 1),
+        shared_mem_bytes: 0,
+    };
+    // Exactly max_depth level expansions (stop early if a level adds nothing).
+    for _ in 0..max_depth {
+        let mut d_next = stream.alloc_zeros::<u32>(n).ok()?;
+        let mut d_changed = stream.memcpy_stod(&[0i32]).ok()?;
+        let nu = n as u32;
+        let mut launch = stream.launch_builder(&kernel);
+        launch.arg(&d_off);
+        launch.arg(&d_nb);
+        launch.arg(&d_frontier);
+        launch.arg(&mut d_next);
+        launch.arg(&mut d_visited);
+        launch.arg(&mut d_reached);
+        launch.arg(&mut d_changed);
+        launch.arg(&nu);
+        // SAFETY: buffers sized n / n+1; atomics guard writes.
+        unsafe { launch.launch(cfg) }.ok()?;
+        if stream.memcpy_dtov(&d_changed).ok()?[0] == 0 {
+            break;
+        }
+        d_frontier = d_next;
+    }
+    let v = stream.memcpy_dtov(&d_visited).ok()?;
+    Some(v.into_iter().map(|x| x as u8).collect())
+}
+
 fn reachable_gpu_inner(
     n: usize,
     offsets: &[u32],
@@ -176,5 +250,58 @@ mod tests {
             .collect();
         assert_eq!(gpu_set, reached, "GPU reachable set differs from CPU");
         eprintln!("GPU BFS: {} reached, identical to CPU", gpu_set.len());
+    }
+
+    #[test]
+    fn gpu_bounded_bfs_matches_cpu_slice() {
+        let n = 1500usize;
+        let mut state = 0x51ce_0007u64;
+        let mut rnd = |m: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) % m
+        };
+        let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
+        for u in 0..n {
+            for _ in 0..rnd(4) {
+                adj[u].push(rnd(n as u64) as u32);
+            }
+        }
+        let mut offsets = vec![0u32];
+        let mut neighbors = Vec::new();
+        for u in 0..n {
+            neighbors.extend_from_slice(&adj[u]);
+            offsets.push(neighbors.len() as u32);
+        }
+        let seed = rnd(n as u64) as u32;
+        for max_depth in [1usize, 2, 3, 5] {
+            // CPU mirror of bfs_slice (set of nodes within max_depth levels).
+            let mut out: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+            out.insert(seed);
+            let mut frontier = std::collections::VecDeque::new();
+            frontier.push_back((seed, 0usize));
+            while let Some((cur, d)) = frontier.pop_front() {
+                if d >= max_depth {
+                    continue;
+                }
+                for &nx in &adj[cur as usize] {
+                    if out.insert(nx) {
+                        frontier.push_back((nx, d + 1));
+                    }
+                }
+            }
+            let Some(bitmap) = reachable_bounded_gpu(n, &offsets, &neighbors, &[seed], max_depth)
+            else {
+                eprintln!("no CUDA device — skipping bounded BFS test");
+                return;
+            };
+            let gpu: std::collections::BTreeSet<u32> = (0..n)
+                .filter(|&i| bitmap[i] == 1)
+                .map(|i| i as u32)
+                .collect();
+            assert_eq!(gpu, out, "depth {max_depth}: GPU slice != CPU");
+        }
+        eprintln!("GPU bounded BFS: slices identical to CPU for depths 1,2,3,5");
     }
 }
