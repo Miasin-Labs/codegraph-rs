@@ -694,6 +694,15 @@ enum Commands {
         #[arg(value_name = "path")]
         path: Option<String>,
     },
+    /// Benchmark the reference-resolution pass (dry run, no writes)
+    #[command(hide = true, name = "resolve-bench")]
+    ResolveBench {
+        #[arg(value_name = "path")]
+        path: Option<String>,
+        /// Maximum number of pending unresolved references to resolve
+        #[arg(short = 'l', long, default_value = "100000")]
+        limit: usize,
+    },
     /// Find all functions/methods that call a specific symbol
     Callers {
         #[arg(value_name = "symbol")]
@@ -1389,6 +1398,7 @@ fn main() {
             no_watch,
         } => cmd_serve(path.as_deref(), mcp, no_watch),
         Commands::Unlock { path } => cmd_unlock(path.as_deref()),
+        Commands::ResolveBench { path, limit } => cmd_resolve_bench(path.as_deref(), limit),
         Commands::Callers {
             symbol,
             path,
@@ -2388,6 +2398,35 @@ fn cmd_serve(path_arg: Option<&str>, mcp: bool, no_watch: bool) {
 }
 
 /// codegraph unlock [path]
+/// codegraph resolve-bench [path] --limit N (hidden)
+///
+/// Dry-runs the resolver over pending unresolved refs and prints throughput.
+/// Measurement harness for resolver optimization work — no writes.
+fn cmd_resolve_bench(path_arg: Option<&str>, limit: usize) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        if !is_initialized(&project_path) {
+            error_msg(&format!(
+                "CodeGraph not initialized in {}",
+                project_path.display()
+            ));
+            process::exit(1);
+        }
+        let cg =
+            CodeGraph::open(&project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
+        let report = cg.resolve_bench(limit).map_err(|e| e.to_string())?;
+        println!("{report}");
+        cg.close();
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("resolve-bench failed: {msg}"));
+        process::exit(1);
+    }
+}
+
 fn cmd_unlock(path_arg: Option<&str>) {
     let project_path = resolve_project_path(path_arg);
 

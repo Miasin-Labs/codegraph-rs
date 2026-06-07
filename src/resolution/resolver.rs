@@ -664,6 +664,8 @@ pub struct ResolverContext {
     qualified_name_cache: RefCell<LRUCache<String, Vec<Node>>>, // qualified_name → nodes cache
     known_names: RefCell<Option<HashSet<String>>>, // all known symbol names for fast pre-filtering
     known_files: RefCell<Option<HashSet<String>>>,
+    /// Memoized `get_all_files` result (frameworks call it repeatedly).
+    files_list: RefCell<Option<std::sync::Arc<Vec<String>>>>,
     caches_warmed: Cell<bool>,
     // tsconfig/jsconfig path-alias map. `OnceCell` empty = not yet computed,
     // `Some(None)` = computed and absent. Treated as immutable for the
@@ -701,6 +703,7 @@ impl ResolverContext {
             qualified_name_cache: RefCell::new(LRUCache::new(limit)),
             known_names: RefCell::new(None),
             known_files: RefCell::new(None),
+            files_list: RefCell::new(None),
             caches_warmed: Cell::new(false),
             project_aliases: OnceCell::new(),
             go_module: OnceCell::new(),
@@ -718,6 +721,7 @@ impl ResolverContext {
         self.qualified_name_cache.borrow_mut().clear();
         *self.known_names.borrow_mut() = None;
         *self.known_files.borrow_mut() = None;
+        *self.files_list.borrow_mut() = None;
         self.caches_warmed.set(false);
     }
 
@@ -850,13 +854,21 @@ impl ResolutionContext for ResolverContext {
     }
 
     fn get_all_files(&self) -> Vec<String> {
-        self.queries.get_all_file_paths().unwrap_or_else(|e| {
+        // Memoized: every framework's `detect()` (and several post-extract
+        // passes) calls this, and an uncached full table scan of 70k+ paths
+        // per call made `CodeGraph::open` take ~25s on llvm-sized indexes.
+        if let Some(cached) = self.files_list.borrow().as_ref() {
+            return cached.as_ref().clone();
+        }
+        let files = self.queries.get_all_file_paths().unwrap_or_else(|e| {
             log_warn(
                 "Failed to load file paths during resolution",
                 Some(&serde_json::json!({ "error": e.to_string() })),
             );
             Vec::new()
-        })
+        });
+        *self.files_list.borrow_mut() = Some(std::sync::Arc::new(files.clone()));
+        files
     }
 
     fn list_directories(&self, relative_path: &str) -> Vec<String> {

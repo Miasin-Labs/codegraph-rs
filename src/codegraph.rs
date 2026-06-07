@@ -858,6 +858,62 @@ impl CodeGraph {
     }
 
     // =========================================================================
+    // Resolution benchmarking
+    // =========================================================================
+
+    /// Run the resolution pass over up to `limit` pending unresolved
+    /// references WITHOUT persisting edges or deleting refs, and return a
+    /// throughput report. Hidden harness behind `codegraph resolve-bench` so
+    /// resolver changes (memoization, parallelism, GPU offload) are measured
+    /// against real project databases instead of microbenchmarks.
+    pub fn resolve_bench(&self, limit: usize) -> Result<String> {
+        let _guard = self.lock_index_mutex();
+
+        // Page refs in stable id order, exactly like the real resolve pass.
+        let mut refs = Vec::new();
+        let mut last_id = 0i64;
+        while refs.len() < limit {
+            let page_size = (limit - refs.len()).min(5000);
+            let page = self
+                .queries
+                .get_unresolved_references_batch_after_id(last_id, page_size)?;
+            if page.refs.is_empty() {
+                break;
+            }
+            last_id = page.last_id;
+            refs.extend(page.refs);
+        }
+        if refs.is_empty() {
+            return Ok("no pending unresolved references in this index".to_string());
+        }
+
+        // Same setup the real pass performs (framework detection + caches).
+        self.resolver.borrow_mut().initialize();
+        let load_start = std::time::Instant::now();
+        self.resolver.borrow().warm_caches();
+        let warm_ms = load_start.elapsed().as_millis();
+
+        let start = std::time::Instant::now();
+        let result = self.resolver.borrow().resolve_all(&refs, None);
+        let elapsed = start.elapsed();
+
+        let per_ref_us = elapsed.as_micros() as f64 / refs.len() as f64;
+        let mut by_method: Vec<(String, usize)> = result.stats.by_method.into_iter().collect();
+        by_method.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        Ok(format!(
+            "refs: {} | warm: {} ms | resolve: {:.2} s | {:.1} µs/ref | {:.0} refs/s\nresolved: {} | unresolved: {}\nby_method: {:?}",
+            refs.len(),
+            warm_ms,
+            elapsed.as_secs_f64(),
+            per_ref_us,
+            refs.len() as f64 / elapsed.as_secs_f64(),
+            result.stats.resolved,
+            result.stats.unresolved,
+            by_method
+        ))
+    }
+
+    // =========================================================================
     // Node Operations
     // =========================================================================
 

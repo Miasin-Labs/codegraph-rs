@@ -405,10 +405,34 @@ fn infer_cpp_receiver_type(
 
     let lines = split_lines(&source);
     let call_line_index = ((reference.line as i64) - 1).clamp(0, lines.len() as i64 - 1) as usize;
-    let escaped_receiver = regex::escape(receiver_name);
-    let receiver_pattern =
-        Regex::new(&format!(r"\b{escaped_receiver}\b")).expect("valid receiver regex");
-    let declarator_regex = build_declarator_regex(&escaped_receiver);
+
+    // Receiver names repeat constantly across a codebase's references
+    // (`this`, `ctx`, `builder`, ...), and `Regex::new` costs tens of µs —
+    // compiling two regexes PER REFERENCE was ~10% of the entire llvm
+    // resolution pass. Memoize per receiver in a thread-local map (bounded:
+    // distinct receiver identifiers are vocabulary-sized, not ref-sized).
+    thread_local! {
+        static RECEIVER_REGEX_CACHE: std::cell::RefCell<std::collections::HashMap<String, (Regex, Regex)>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    let (receiver_pattern, declarator_regex) = RECEIVER_REGEX_CACHE.with(|cache| {
+        if let Some(pair) = cache.borrow().get(receiver_name) {
+            return pair.clone();
+        }
+        let escaped_receiver = regex::escape(receiver_name);
+        let pair = (
+            Regex::new(&format!(r"\b{escaped_receiver}\b")).expect("valid receiver regex"),
+            build_declarator_regex(&escaped_receiver),
+        );
+        let mut map = cache.borrow_mut();
+        // Safety valve: a pathological generated file with millions of
+        // distinct receivers must not grow the cache unboundedly.
+        if map.len() >= 65536 {
+            map.clear();
+        }
+        map.insert(receiver_name.to_string(), pair.clone());
+        pair
+    });
 
     for i in (0..=call_line_index).rev() {
         let line = lines[i];
