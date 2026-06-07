@@ -9,6 +9,8 @@
 pub mod callback_synthesizer;
 pub mod frameworks;
 pub mod go_module;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod import_resolver;
 pub mod lru_cache;
 pub mod name_matcher;
