@@ -22,7 +22,6 @@ use super::import_resolver::{
     resolve_via_import,
 };
 use super::lru_cache::LRUCache;
-use super::name_matcher::match_reference;
 use super::path_aliases::load_project_aliases;
 use super::types::{
     AliasMap,
@@ -1158,17 +1157,37 @@ impl ReferenceResolver {
         // 0x80 marks names the kernel defers to the CPU (non-ASCII
         // capitalization). On machines without CUDA this is a no-op.
         #[cfg(feature = "gpu")]
-        let gpu_hints: Option<Vec<u8>> = {
-            let guard = self.context.known_names.borrow();
-            guard.as_ref().and_then(|known| {
-                let names: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
-                let joiner = super::gpu::GpuNameJoiner::new(&names)?;
-                let ref_names: Vec<&str> = refs.iter().map(|r| r.reference_name.as_str()).collect();
-                joiner.probe_batch(&ref_names)
-            })
+        let (gpu_hints, gpu_ranked): (
+            Option<Vec<u8>>,
+            Option<HashMap<usize, Option<Node>>>,
+        ) = {
+            let joiner = {
+                let guard = self.context.known_names.borrow();
+                guard.as_ref().and_then(|known| {
+                    let names: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+                    super::gpu::GpuNameJoiner::new(&names)
+                })
+            };
+            match joiner {
+                None => (None, None),
+                Some(joiner) => {
+                    let ref_names: Vec<&str> =
+                        refs.iter().map(|r| r.reference_name.as_str()).collect();
+                    let hints = joiner.probe_batch(&ref_names);
+                    // Tier-2: precompute find_best_match winners for every
+                    // multi-candidate exact-name group in one kernel launch.
+                    // Refs the tier-1 verdict already rules out never reach
+                    // strategy 3, so don't pay to rank them.
+                    let ranked = self.gpu_rank_exact_name(&joiner, &refs, hints.as_deref());
+                    (hints, ranked)
+                }
+            }
         };
         #[cfg(not(feature = "gpu"))]
-        let gpu_hints: Option<Vec<u8>> = None;
+        let (gpu_hints, gpu_ranked): (
+            Option<Vec<u8>>,
+            Option<HashMap<usize, Option<Node>>>,
+        ) = (None, None);
 
         for (i, r) in refs.iter().enumerate() {
             let hint = gpu_hints.as_ref().map(|h| h[i]).and_then(|f| match f {
@@ -1176,7 +1195,11 @@ impl ReferenceResolver {
                 0 => Some(false),
                 _ => None, // kernel deferred — CPU decides
             });
-            let result = self.resolve_one_hinted(r, hint);
+            let ranked_hint = gpu_ranked
+                .as_ref()
+                .and_then(|m| m.get(&i))
+                .map(|winner| winner.as_ref());
+            let result = self.resolve_one_hinted(r, hint, ranked_hint);
 
             if let Some(result) = result {
                 *by_method
@@ -1298,8 +1321,161 @@ impl ReferenceResolver {
     }
 
     /// Resolve a single reference
+    /// Batch-precompute `find_best_match` winners on the GPU for every
+    /// reference whose exact-name candidate set has 2+ entries (the only
+    /// case where `match_by_exact_name` ranks). Candidates are flattened in
+    /// `get_nodes_by_name` order, so the kernel's strict-`>` scan reproduces
+    /// the CPU tie-break exactly. Returns ref-index → winner (None = no
+    /// candidate beat the CPU's -1.0 selection floor).
+    #[cfg(feature = "gpu")]
+    fn gpu_rank_exact_name(
+        &self,
+        joiner: &super::gpu::GpuNameJoiner,
+        refs: &[UnresolvedRef],
+        prefilter: Option<&[u8]>,
+    ) -> Option<HashMap<usize, Option<Node>>> {
+        fn kind_class(k: NodeKind) -> u8 {
+            match k {
+                NodeKind::Function => 1,
+                NodeKind::Method => 2,
+                NodeKind::Class => 3,
+                NodeKind::Struct => 4,
+                NodeKind::Interface => 5,
+                _ => 0,
+            }
+        }
+        fn ref_kind_class(k: EdgeKind) -> u8 {
+            match k {
+                EdgeKind::Calls => 1,
+                EdgeKind::Instantiates => 2,
+                EdgeKind::Decorates => 3,
+                _ => 0,
+            }
+        }
+        // FNV-1a over a dir segment, chained with the previous prefix hash —
+        // equal cumulative hashes <=> equal leading segment lists.
+        fn chain_hash(prev: u64, seg: &str) -> u64 {
+            let mut h = prev ^ 0xcbf2_9ce4_8422_2325;
+            for &b in seg.as_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            h
+        }
+
+        let mut file_ids: HashMap<String, u32> = HashMap::new();
+        let mut dir_starts: Vec<u32> = vec![0];
+        let mut dir_hashes: Vec<u64> = Vec::new();
+        let mut intern_file =
+            |path: &str, dir_starts: &mut Vec<u32>, dir_hashes: &mut Vec<u64>| -> u32 {
+                if let Some(&id) = file_ids.get(path) {
+                    return id;
+                }
+                let id = file_ids.len() as u32;
+                file_ids.insert(path.to_string(), id);
+                let mut segs: Vec<&str> = path.split('/').collect();
+                segs.pop(); // drop the filename — proximity compares directories
+                let mut h = 0u64;
+                for seg in segs {
+                    h = chain_hash(h, seg);
+                    dir_hashes.push(h);
+                }
+                dir_starts.push(dir_hashes.len() as u32);
+                id
+            };
+
+        let mut lang_ids: HashMap<Language, u8> = HashMap::new();
+        let mut intern_lang = |l: Language| -> u8 {
+            let next = lang_ids.len() as u8;
+            *lang_ids.entry(l).or_insert(next)
+        };
+
+        // Group refs by name; fetch each name's candidates once (context
+        // cache backs this). Only multi-candidate names go to the GPU.
+        let mut groups: HashMap<&str, i32> = HashMap::new();
+        let mut cand_starts: Vec<u32> = vec![0];
+        let (mut cand_file, mut cand_lang, mut cand_kind, mut cand_exp, mut cand_line) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut group_nodes: Vec<Vec<Node>> = Vec::new();
+        let mut ref_group: Vec<i32> = Vec::with_capacity(refs.len());
+        let (mut ref_file, mut ref_lang, mut ref_kind, mut ref_line) = (
+            Vec::with_capacity(refs.len()),
+            Vec::with_capacity(refs.len()),
+            Vec::with_capacity(refs.len()),
+            Vec::with_capacity(refs.len()),
+        );
+        for (idx, r) in refs.iter().enumerate() {
+            // Tier-1 said "no possible match" — resolve_one exits before
+            // strategy 3, so ranking would be pure waste.
+            if prefilter.is_some_and(|f| f[idx] == 0) {
+                ref_group.push(-1);
+                ref_file.push(0);
+                ref_lang.push(0);
+                ref_kind.push(0);
+                ref_line.push(0);
+                continue;
+            }
+            let g = *groups.entry(r.reference_name.as_str()).or_insert_with(|| {
+                let candidates = self.context.get_nodes_by_name(&r.reference_name);
+                if candidates.len() < 2 {
+                    -1
+                } else {
+                    for c in &candidates {
+                        cand_file.push(intern_file(&c.file_path, &mut dir_starts, &mut dir_hashes));
+                        cand_lang.push(intern_lang(c.language));
+                        cand_kind.push(kind_class(c.kind));
+                        cand_exp.push(u8::from(c.is_exported == Some(true)));
+                        cand_line.push(c.start_line);
+                    }
+                    cand_starts.push(cand_file.len() as u32);
+                    group_nodes.push(candidates);
+                    (group_nodes.len() - 1) as i32
+                }
+            });
+            ref_group.push(g);
+            ref_file.push(intern_file(&r.file_path, &mut dir_starts, &mut dir_hashes));
+            ref_lang.push(intern_lang(r.language));
+            ref_kind.push(ref_kind_class(r.reference_kind));
+            ref_line.push(r.line);
+        }
+        if group_nodes.is_empty() {
+            return Some(HashMap::new());
+        }
+
+        let best = joiner.score_batch(
+            &ref_group,
+            &ref_file,
+            &ref_lang,
+            &ref_kind,
+            &ref_line,
+            &cand_starts,
+            &cand_file,
+            &cand_lang,
+            &cand_kind,
+            &cand_exp,
+            &cand_line,
+            &dir_starts,
+            &dir_hashes,
+        )?;
+
+        let mut out: HashMap<usize, Option<Node>> = HashMap::new();
+        for (i, (&g, &b)) in ref_group.iter().zip(best.iter()).enumerate() {
+            if g < 0 {
+                continue;
+            }
+            let winner = if b < 0 {
+                None
+            } else {
+                let local = (b as u32 - cand_starts[g as usize]) as usize;
+                Some(group_nodes[g as usize][local].clone())
+            };
+            out.insert(i, winner);
+        }
+        Some(out)
+    }
+
     pub fn resolve_one(&self, r: &UnresolvedRef) -> Option<ResolvedRef> {
-        self.resolve_one_hinted(r, None)
+        self.resolve_one_hinted(r, None, None)
     }
 
     /// `resolve_one` with an optional precomputed `has_any_possible_match`
@@ -1311,6 +1487,7 @@ impl ReferenceResolver {
         &self,
         r: &UnresolvedRef,
         known_hint: Option<bool>,
+        ranked: Option<Option<&Node>>,
     ) -> Option<ResolvedRef> {
         // Skip built-in/external references
         if self.is_built_in_or_external(r) {
@@ -1362,7 +1539,9 @@ impl ReferenceResolver {
         }
 
         // Strategy 3: Try name matching
-        if let Some(name_result) = match_reference(r, &self.context) {
+        if let Some(name_result) =
+            super::name_matcher::match_reference_ranked(r, &self.context, ranked)
+        {
             candidates.push(name_result);
         }
 

@@ -163,6 +163,20 @@ pub fn match_by_exact_name(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
 ) -> Option<ResolvedRef> {
+    match_by_exact_name_ranked(reference, context, None)
+}
+
+/// `match_by_exact_name` with an optional GPU-precomputed `find_best_match`
+/// outcome for this reference's candidate set (feature `gpu`): `Some(None)` =
+/// the kernel determined no candidate beats the selection floor,
+/// `Some(Some(node))` = the kernel's winner (identical to the CPU pick by
+/// construction — the kernel mirrors the scoring formula exactly and scans
+/// candidates in `get_nodes_by_name` order). `None` = compute on CPU.
+pub fn match_by_exact_name_ranked(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+    ranked: Option<Option<&Node>>,
+) -> Option<ResolvedRef> {
     let candidates = context.get_nodes_by_name(&reference.reference_name);
 
     if candidates.is_empty() {
@@ -181,7 +195,11 @@ pub fn match_by_exact_name(
     }
 
     // Multiple matches - try to narrow down
-    if let Some(best_match) = find_best_match(reference, &candidates, context) {
+    let best = match ranked {
+        Some(precomputed) => precomputed,
+        None => find_best_match(reference, &candidates, context),
+    };
+    if let Some(best_match) = best {
         // Lower confidence when the match is from a distant/unrelated module
         let proximity = compute_path_proximity(&reference.file_path, &best_match.file_path);
         let confidence = if proximity >= 30 { 0.7 } else { 0.4 };
@@ -960,6 +978,16 @@ pub fn match_reference(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
 ) -> Option<ResolvedRef> {
+    match_reference_ranked(reference, context, None)
+}
+
+/// `match_reference` with an optional GPU-precomputed exact-name ranking
+/// (consulted only by strategy 3 — earlier strategies are unaffected).
+pub fn match_reference_ranked(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+    ranked: Option<Option<&Node>>,
+) -> Option<ResolvedRef> {
     // Try strategies in order of confidence
 
     // 0. File path match (e.g., "snippets/drawer-menu.liquid" → file node)
@@ -978,7 +1006,7 @@ pub fn match_reference(
     }
 
     // 3. Exact name match
-    if let Some(result) = match_by_exact_name(reference, context) {
+    if let Some(result) = match_by_exact_name_ranked(reference, context, ranked) {
         return Some(result);
     }
 
