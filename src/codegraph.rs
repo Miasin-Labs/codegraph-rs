@@ -531,6 +531,20 @@ impl CodeGraph {
 
     fn index_files_locked(&self, file_paths: &[String]) -> Result<IndexResult> {
         let before = self.queries.get_node_and_edge_count()?;
+
+        // Symbol names present BEFORE re-indexing. A symbol that the edit
+        // removed or renamed only exists in this pre-state — collecting names
+        // after the re-index alone would skip it, leaving stale references to
+        // the old name unrepaired.
+        let mut changed_node_names = Vec::new();
+        for file_path in file_paths {
+            for node in self.queries.get_nodes_by_file(file_path)? {
+                if !changed_node_names.contains(&node.name) {
+                    changed_node_names.push(node.name);
+                }
+            }
+        }
+
         let orchestrator = self.orchestrator();
         let mut result = orchestrator.index_files(file_paths)?;
         let touched = result.success && result.files_indexed > 0;
@@ -540,7 +554,9 @@ impl CodeGraph {
             self.resolver.borrow_mut().initialize();
             self.resolver.borrow().run_post_extract();
 
-            let mut changed_node_names = Vec::new();
+            // Union in the post-index names (newly added or renamed-to
+            // symbols) so both sides of a rename get their references
+            // re-resolved.
             for file_path in file_paths {
                 for node in self.queries.get_nodes_by_file(file_path)? {
                     if !changed_node_names.contains(&node.name) {

@@ -3200,7 +3200,15 @@ fn all_simple_paths_bounded(
         // Recursion guard — graph simple-path enumeration recursion depth.
         crate::ensure_sufficient_stack(|| {
             dfs_inner(
-                graph, current, target, max_depth, node_budget, stack, on_stack, results, total,
+                graph,
+                current,
+                target,
+                max_depth,
+                node_budget,
+                stack,
+                on_stack,
+                results,
+                total,
             )
         });
     }

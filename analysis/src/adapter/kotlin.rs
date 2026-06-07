@@ -267,7 +267,10 @@ fn extract_calls_inner(
 ) {
     if node.kind() == "call_expression" {
         if let Some(callee_name) = call_target_name(&node, source) {
-            if let Some(caller_id) = enclosing_fn(node, source, nodes) {
+            if let Some(caller_id) =
+                crate::adapter::find_enclosing_function_by_span(nodes, node.start_byte())
+                    .map(|n| n.id.clone())
+            {
                 let callee_id = nodes
                     .iter()
                     .find(|n| {
@@ -331,19 +334,24 @@ fn extract_inheritance_inner(
             for child in node.children(&mut cursor) {
                 if child.kind() == "delegation_specifier" {
                     if let Some(type_name) = extract_type_name(child, source) {
-                        let target_id = nodes
-                            .iter()
-                            .find(|n| {
-                                n.name == type_name
-                                    && matches!(n.kind, NodeKind::Struct | NodeKind::Trait)
-                            })
+                        let target = nodes.iter().find(|n| {
+                            n.name == type_name
+                                && matches!(n.kind, NodeKind::Struct | NodeKind::Trait)
+                        });
+                        let edge_kind = match target.map(|n| &n.kind) {
+                            Some(NodeKind::Trait | NodeKind::Interface) | None => {
+                                EdgeKind::Implements
+                            }
+                            Some(_) => EdgeKind::Extends,
+                        };
+                        let target_id = target
                             .map(|n| n.id.clone())
                             .unwrap_or_else(|| NodeId::new(path_str, &type_name, NodeKind::Trait));
                         out.push((
                             src_id.clone(),
                             target_id,
                             EdgeData {
-                                kind: EdgeKind::Implements,
+                                kind: edge_kind,
                                 source_span: span_from(child, file_path),
                                 weight: 1.0,
                             },
@@ -412,22 +420,6 @@ fn extract_type_name_inner(node: TsNode, source: &str) -> Option<String> {
         if let Some(name) = extract_type_name(child, source) {
             return Some(name);
         }
-    }
-    None
-}
-
-fn enclosing_fn(node: TsNode, source: &str, nodes: &[NodeData]) -> Option<NodeId> {
-    let mut current = node.parent();
-    while let Some(parent) = current {
-        if parent.kind() == "function_declaration" {
-            if let Some(name) = find_name(&parent, source) {
-                return nodes
-                    .iter()
-                    .find(|n| n.kind == NodeKind::Function && n.qualified_name.ends_with(&name))
-                    .map(|n| n.id.clone());
-            }
-        }
-        current = parent.parent();
     }
     None
 }

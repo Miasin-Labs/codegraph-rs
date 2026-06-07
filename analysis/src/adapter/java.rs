@@ -5,8 +5,8 @@
 //!
 //! - Classes (`class_declaration`) → `NodeKind::Struct`.
 //! - Interfaces (`interface_declaration`) → `NodeKind::Trait`.
-//! - Methods (`method_declaration`) → `NodeKind::Function` (qualified as `ClassName.method_name`).
-//! - Constructors (`constructor_declaration`) → `NodeKind::Function` (qualified as `ClassName.ClassName`).
+//! - Methods (`method_declaration`) → `NodeKind::Function` (qualified as `ClassName.method_name/arity`).
+//! - Constructors (`constructor_declaration`) → `NodeKind::Function` (qualified as `ClassName.ClassName/arity`).
 //! - Enums (`enum_declaration`) → `NodeKind::Enum`.
 //! - Packages (`package_declaration`) → `NodeKind::Module`.
 //!
@@ -183,9 +183,12 @@ fn walk_java_inner(
         "method_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = text(name_node, source);
+                // Java overloads share a bare name; append the parameter arity
+                // so overloads don't collide on NodeId (file + qn + kind hash).
+                let arity = param_arity(node);
                 let qn = match enclosing_class {
-                    Some(cls) => format!("{cls}.{name}"),
-                    None => name.clone(),
+                    Some(cls) => format!("{cls}.{name}/{arity}"),
+                    None => format!("{name}/{arity}"),
                 };
                 let mut nd = build_nd(&name, NodeKind::Function, node, path, path_str, &qn);
                 nd.complexity = compute_complexity(node, source.as_bytes(), "java");
@@ -195,9 +198,11 @@ fn walk_java_inner(
         "constructor_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = text(name_node, source);
+                // Overloaded constructors collide on NodeId without the arity.
+                let arity = param_arity(node);
                 let qn = match enclosing_class {
-                    Some(cls) => format!("{cls}.{name}"),
-                    None => name.clone(),
+                    Some(cls) => format!("{cls}.{name}/{arity}"),
+                    None => format!("{name}/{arity}"),
                 };
                 let mut nd = build_nd(&name, NodeKind::Function, node, path, path_str, &qn);
                 nd.complexity = compute_complexity(node, source.as_bytes(), "java");
@@ -212,6 +217,14 @@ fn walk_java_inner(
     for child in node.named_children(&mut cursor) {
         walk_java(child, source, path, path_str, enclosing_class, out);
     }
+}
+
+/// Number of formal parameters declared by a method/constructor node
+/// (the `formal_parameters` child's named-child count; 0 when absent).
+fn param_arity(node: TsNode<'_>) -> usize {
+    node.child_by_field_name("parameters")
+        .map(|p| p.named_child_count())
+        .unwrap_or(0)
 }
 
 /// Extract edges: calls, constructor calls, implements, extends.
@@ -238,7 +251,7 @@ fn extract_java_edges_inner(
             // The method name is in field "name".
             if let Some(name_node) = node.child_by_field_name("name") {
                 let callee_name = text(name_node, source);
-                if let Some(caller_id) = find_enclosing_function(node, source, nodes) {
+                if let Some(caller_id) = find_enclosing_function(node, nodes) {
                     // Try to find the callee among known functions.
                     if let Some(callee) = nodes
                         .iter()
@@ -261,7 +274,7 @@ fn extract_java_edges_inner(
             // `new Foo(...)` — the type is in field "type".
             if let Some(type_node) = node.child_by_field_name("type") {
                 let type_name = text(type_node, source);
-                if let Some(caller_id) = find_enclosing_function(node, source, nodes) {
+                if let Some(caller_id) = find_enclosing_function(node, nodes) {
                     // Constructor call: look for a Function node named same as type.
                     if let Some(ctor) = nodes
                         .iter()
@@ -370,22 +383,14 @@ fn extract_type_list_edges(
     }
 }
 
-/// Walk up from a node to find the enclosing method/constructor and return its NodeId.
-fn find_enclosing_function(node: TsNode<'_>, source: &str, nodes: &[NodeData]) -> Option<NodeId> {
-    let mut parent = node.parent();
-    while let Some(p) = parent {
-        if matches!(p.kind(), "method_declaration" | "constructor_declaration") {
-            if let Some(n) = p.child_by_field_name("name") {
-                let name = text(n, source);
-                return nodes
-                    .iter()
-                    .find(|nd| nd.name == name && nd.kind == NodeKind::Function)
-                    .map(|nd| nd.id.clone());
-            }
-        }
-        parent = p.parent();
-    }
-    None
+/// Resolve the enclosing method/constructor for a call site by span
+/// containment (smallest `Function` span containing the call's start byte).
+/// Name-based lookup attached edges to the wrong function whenever two classes
+/// declared a method with the same bare name, and would also break against the
+/// arity-suffixed qualified names.
+fn find_enclosing_function(node: TsNode<'_>, nodes: &[NodeData]) -> Option<NodeId> {
+    crate::adapter::find_enclosing_function_by_span(nodes, node.start_byte())
+        .map(|nd| nd.id.clone())
 }
 
 use super::{build_nd, build_span, node_text as text};
@@ -432,14 +437,20 @@ public class UserService {
 
         // Methods with qualified names
         assert!(
-            nodes.iter().any(|n| n.qualified_name == "UserService.findById" && n.kind == NodeKind::Function),
+            nodes
+                .iter()
+                .any(|n| n.qualified_name == "UserService.findById/1"
+                    && n.kind == NodeKind::Function),
             "expected findById method, got: {:?}",
-            nodes.iter().filter(|n| n.kind == NodeKind::Function).collect::<Vec<_>>()
+            nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::Function)
+                .collect::<Vec<_>>()
         );
         assert!(
             nodes
                 .iter()
-                .any(|n| n.qualified_name == "UserService.save" && n.kind == NodeKind::Function),
+                .any(|n| n.qualified_name == "UserService.save/1" && n.kind == NodeKind::Function),
             "expected save method"
         );
     }
@@ -500,7 +511,7 @@ public class Foo {
         assert!(
             nodes
                 .iter()
-                .any(|n| n.qualified_name == "Foo.Foo" && n.kind == NodeKind::Function),
+                .any(|n| n.qualified_name == "Foo.Foo/1" && n.kind == NodeKind::Function),
             "expected constructor node, got: {:?}",
             nodes
                 .iter()
@@ -602,7 +613,7 @@ public class Logic {
 
         let compute = nodes
             .iter()
-            .find(|n| n.qualified_name == "Logic.compute")
+            .find(|n| n.qualified_name == "Logic.compute/1")
             .expect("compute method not found");
         let cx = compute
             .complexity

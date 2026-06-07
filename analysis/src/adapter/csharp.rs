@@ -242,13 +242,14 @@ fn extract_csharp_edges_inner(
             // The callee is the first child (member_access_expression or identifier).
             // Extract the method name from the rightmost identifier.
             if let Some(callee_name) = extract_invocation_name(node, source) {
-                if let Some(caller_id) = find_enclosing_function(node, source, nodes) {
-                    if let Some(callee) = nodes
-                        .iter()
-                        .find(|n| n.kind == NodeKind::Function && n.name == callee_name)
+                if let Some(caller) =
+                    crate::adapter::find_enclosing_function_by_span(nodes, node.start_byte())
+                {
+                    if let Some(callee) =
+                        resolve_callee(nodes, &caller.qualified_name, &callee_name)
                     {
                         edges.push((
-                            caller_id,
+                            caller.id.clone(),
                             callee.id.clone(),
                             EdgeData {
                                 kind: EdgeKind::Calls,
@@ -261,17 +262,20 @@ fn extract_csharp_edges_inner(
             }
         }
         "object_creation_expression" => {
-            // `new Foo(...)` — the type is in field "type".
+            // `new Foo(...)` — the type is in field "type". Normalize the raw
+            // type text so `new Ns.Foo<T>(...)` matches the constructor `Foo`.
             if let Some(type_node) = node.child_by_field_name("type") {
-                let type_name = text(type_node, source);
-                if let Some(caller_id) = find_enclosing_function(node, source, nodes) {
+                let type_name = normalize_type_name(&text(type_node, source));
+                if let Some(caller) =
+                    crate::adapter::find_enclosing_function_by_span(nodes, node.start_byte())
+                {
                     // Constructor call: look for a Function node named same as type.
                     if let Some(ctor) = nodes
                         .iter()
                         .find(|n| n.kind == NodeKind::Function && n.name == type_name)
                     {
                         edges.push((
-                            caller_id,
+                            caller.id.clone(),
                             ctor.id.clone(),
                             EdgeData {
                                 kind: EdgeKind::Calls,
@@ -400,22 +404,49 @@ fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
     node.named_children(&mut cursor).find(|c| c.kind() == kind)
 }
 
-/// Walk up from a node to find the enclosing method/constructor and return its NodeId.
-fn find_enclosing_function(node: TsNode<'_>, source: &str, nodes: &[NodeData]) -> Option<NodeId> {
-    let mut parent = node.parent();
-    while let Some(p) = parent {
-        if matches!(p.kind(), "method_declaration" | "constructor_declaration") {
-            if let Some(n) = p.child_by_field_name("name") {
-                let name = text(n, source);
-                return nodes
-                    .iter()
-                    .find(|nd| nd.name == name && nd.kind == NodeKind::Function)
-                    .map(|nd| nd.id.clone());
-            }
+/// Resolve a callee by name relative to the caller's class.
+///
+/// Preference order:
+/// 1. A Function whose qualified name is `{caller_class}.{callee_name}`,
+///    where `caller_class` is the caller's qualified name up to the last `.`
+///    (same-class method).
+/// 2. The unique Function named `callee_name`, if exactly one exists.
+/// 3. None — an ambiguous name is better left unlinked than mislinked.
+fn resolve_callee<'a>(
+    nodes: &'a [NodeData],
+    caller_qualified_name: &str,
+    callee_name: &str,
+) -> Option<&'a NodeData> {
+    if let Some((caller_class, _)) = caller_qualified_name.rsplit_once('.') {
+        let qualified = format!("{caller_class}.{callee_name}");
+        if let Some(same_class) = nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Function && n.qualified_name == qualified)
+        {
+            return Some(same_class);
         }
-        parent = p.parent();
     }
-    None
+    let mut candidates = nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function && n.name == callee_name);
+    let first = candidates.next()?;
+    if candidates.next().is_some() {
+        return None; // ambiguous across classes — skip the edge
+    }
+    Some(first)
+}
+
+/// Normalize a type's source text for constructor matching: strip generic
+/// arguments (everything from the first `<`) and namespace qualifiers
+/// (everything up to the last `.`), so `Ns.Foo<T>` matches `Foo`.
+fn normalize_type_name(raw: &str) -> String {
+    let no_generics = raw.split('<').next().unwrap_or(raw);
+    no_generics
+        .rsplit('.')
+        .next()
+        .unwrap_or(no_generics)
+        .trim()
+        .to_string()
 }
 
 /// Extract visibility from modifier nodes preceding a declaration.
@@ -433,8 +464,25 @@ fn extract_visibility(node: TsNode<'_>, source: &str) -> Visibility {
             }
         }
     }
-    // Default: C# members without explicit modifier are private (in classes).
-    Visibility::Private
+    // Default: C# members without explicit modifier are private in classes,
+    // but implicitly public inside interfaces.
+    if has_interface_ancestor(node) {
+        Visibility::Public
+    } else {
+        Visibility::Private
+    }
+}
+
+/// Whether `node` is declared inside an `interface_declaration`.
+fn has_interface_ancestor(node: TsNode<'_>) -> bool {
+    let mut parent = node.parent();
+    while let Some(p) = parent {
+        if p.kind() == "interface_declaration" {
+            return true;
+        }
+        parent = p.parent();
+    }
+    false
 }
 
 use super::{build_nd, build_span, node_text as text};

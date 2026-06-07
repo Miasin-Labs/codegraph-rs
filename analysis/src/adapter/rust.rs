@@ -132,9 +132,13 @@ impl LanguageAdapter for RustAdapter {
         // file.
         let mut edges = Vec::new();
 
-        let mut name_to_node: HashMap<&str, &NodeData> = HashMap::new();
+        // Bare names collide (a trait and a struct, or same-named items
+        // in different modules), so keep ALL nodes per name and let each
+        // use site pick a kind-appropriate candidate instead of letting
+        // an arbitrary last-inserted node win.
+        let mut name_to_nodes: HashMap<&str, Vec<&NodeData>> = HashMap::new();
         for node in nodes {
-            name_to_node.insert(&node.name, node);
+            name_to_nodes.entry(&node.name).or_default().push(node);
         }
 
         let root = parsed.tree.root_node();
@@ -144,7 +148,7 @@ impl LanguageAdapter for RustAdapter {
             &parsed.source,
             &parsed.path,
             nodes,
-            &name_to_node,
+            &name_to_nodes,
             &mut edges,
         );
 
@@ -152,7 +156,7 @@ impl LanguageAdapter for RustAdapter {
             root,
             &parsed.source,
             &parsed.path,
-            &name_to_node,
+            &name_to_nodes,
             &mut edges,
         );
 
@@ -1113,17 +1117,69 @@ fn find_enclosing_function<'a>(
     None
 }
 
+/// Resolve a bare name in "trait position" (the `X` side of
+/// `impl X for Y`, i.e. an `Implements` target). Only an unambiguous
+/// single `Trait` candidate resolves; zero or multiple traits sharing
+/// the name yield `None` so the caller skips the edge instead of
+/// guessing.
+fn resolve_trait_position<'a>(
+    name_to_nodes: &HashMap<&str, Vec<&'a NodeData>>,
+    name: &str,
+) -> Option<&'a NodeData> {
+    let candidates = name_to_nodes.get(name)?;
+    let mut traits = candidates
+        .iter()
+        .copied()
+        .filter(|n| n.kind == NodeKind::Trait);
+    let first = traits.next()?;
+    if traits.next().is_some() {
+        // Ambiguous: multiple traits share this bare name.
+        return None;
+    }
+    Some(first)
+}
+
+/// Resolve a bare name in "type position" (a `UsesType` target, the
+/// `Y` side of `impl X for Y`, or any type reference). Prefers
+/// `Struct | Enum | TypeAlias` candidates: exactly one resolves,
+/// multiple are ambiguous and yield `None`. When no preferred
+/// candidate exists, a sole candidate of another kind (e.g. a trait
+/// referenced in a signature) resolves so callers' own kind filters
+/// keep working; multiple yield `None`.
+fn resolve_type_position<'a>(
+    name_to_nodes: &HashMap<&str, Vec<&'a NodeData>>,
+    name: &str,
+) -> Option<&'a NodeData> {
+    let candidates = name_to_nodes.get(name)?;
+    let mut preferred = candidates.iter().copied().filter(|n| {
+        matches!(
+            n.kind,
+            NodeKind::Struct | NodeKind::Enum | NodeKind::TypeAlias
+        )
+    });
+    match (preferred.next(), preferred.next()) {
+        (Some(only), None) => Some(only),
+        // Ambiguous: multiple preferred types share this bare name.
+        (Some(_), Some(_)) => None,
+        (None, _) => match candidates.as_slice() {
+            &[only] => Some(only),
+            // Ambiguous: no preferred kind to break the tie.
+            _ => None,
+        },
+    }
+}
+
 fn extract_type_usage_edges(
     node: TsNode<'_>,
     source: &str,
     file_path: &Path,
     nodes: &[NodeData],
-    name_to_node: &HashMap<&str, &NodeData>,
+    name_to_nodes: &HashMap<&str, Vec<&NodeData>>,
     edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
     // Recursion guard — AST nesting depth is bounded only by source size.
     crate::ensure_sufficient_stack(|| {
-        extract_type_usage_edges_inner(node, source, file_path, nodes, name_to_node, edges)
+        extract_type_usage_edges_inner(node, source, file_path, nodes, name_to_nodes, edges)
     });
 }
 
@@ -1132,7 +1188,7 @@ fn extract_type_usage_edges_inner(
     source: &str,
     file_path: &Path,
     nodes: &[NodeData],
-    name_to_node: &HashMap<&str, &NodeData>,
+    name_to_nodes: &HashMap<&str, Vec<&NodeData>>,
     edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
     let mut cursor = node.walk();
@@ -1144,12 +1200,12 @@ fn extract_type_usage_edges_inner(
                     source,
                     file_path,
                     func_node,
-                    name_to_node,
+                    name_to_nodes,
                     edges,
                 );
             }
         } else {
-            extract_type_usage_edges(child, source, file_path, nodes, name_to_node, edges);
+            extract_type_usage_edges(child, source, file_path, nodes, name_to_nodes, edges);
         }
     }
 }
@@ -1172,14 +1228,14 @@ fn collect_type_refs_in_function(
     source: &str,
     file_path: &Path,
     func_data: &NodeData,
-    name_to_node: &HashMap<&str, &NodeData>,
+    name_to_nodes: &HashMap<&str, Vec<&NodeData>>,
     edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
     if let Some(params) = func_node.child_by_field_name("parameters") {
-        collect_type_identifiers(params, source, file_path, func_data, name_to_node, edges);
+        collect_type_identifiers(params, source, file_path, func_data, name_to_nodes, edges);
     }
     if let Some(ret) = func_node.child_by_field_name("return_type") {
-        collect_type_identifiers(ret, source, file_path, func_data, name_to_node, edges);
+        collect_type_identifiers(ret, source, file_path, func_data, name_to_nodes, edges);
     }
 }
 
@@ -1188,12 +1244,12 @@ fn collect_type_identifiers(
     source: &str,
     file_path: &Path,
     func_data: &NodeData,
-    name_to_node: &HashMap<&str, &NodeData>,
+    name_to_nodes: &HashMap<&str, Vec<&NodeData>>,
     edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
     // Recursion guard — AST nesting depth is bounded only by source size.
     crate::ensure_sufficient_stack(|| {
-        collect_type_identifiers_inner(node, source, file_path, func_data, name_to_node, edges)
+        collect_type_identifiers_inner(node, source, file_path, func_data, name_to_nodes, edges)
     });
 }
 
@@ -1202,12 +1258,12 @@ fn collect_type_identifiers_inner(
     source: &str,
     file_path: &Path,
     func_data: &NodeData,
-    name_to_node: &HashMap<&str, &NodeData>,
+    name_to_nodes: &HashMap<&str, Vec<&NodeData>>,
     edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
     if node.kind() == "type_identifier" {
         let type_name = node_text(node, source);
-        if let Some(target) = name_to_node.get(type_name.as_str()) {
+        if let Some(target) = resolve_type_position(name_to_nodes, type_name.as_str()) {
             if matches!(
                 target.kind,
                 NodeKind::Struct | NodeKind::Enum | NodeKind::Trait
@@ -1235,7 +1291,7 @@ fn collect_type_identifiers_inner(
 
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_type_identifiers(child, source, file_path, func_data, name_to_node, edges);
+        collect_type_identifiers(child, source, file_path, func_data, name_to_nodes, edges);
     }
 }
 
@@ -1243,12 +1299,12 @@ fn extract_impl_edges(
     node: TsNode<'_>,
     source: &str,
     file_path: &Path,
-    name_to_node: &HashMap<&str, &NodeData>,
+    name_to_nodes: &HashMap<&str, Vec<&NodeData>>,
     edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
     // Recursion guard — AST nesting depth is bounded only by source size.
     crate::ensure_sufficient_stack(|| {
-        extract_impl_edges_inner(node, source, file_path, name_to_node, edges)
+        extract_impl_edges_inner(node, source, file_path, name_to_nodes, edges)
     });
 }
 
@@ -1256,7 +1312,7 @@ fn extract_impl_edges_inner(
     node: TsNode<'_>,
     source: &str,
     file_path: &Path,
-    name_to_node: &HashMap<&str, &NodeData>,
+    name_to_nodes: &HashMap<&str, Vec<&NodeData>>,
     edges: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
     let mut cursor = node.walk();
@@ -1270,19 +1326,22 @@ fn extract_impl_edges_inner(
                 let trait_name = node_text(trait_ts, source);
 
                 if let (Some(struct_data), Some(trait_data)) = (
-                    name_to_node.get(type_name.as_str()),
-                    name_to_node.get(trait_name.as_str()),
+                    resolve_type_position(name_to_nodes, type_name.as_str()),
+                    resolve_trait_position(name_to_nodes, trait_name.as_str()),
                 ) {
-                    // `name_to_node` is keyed by bare name (last-write-wins),
-                    // so when a trait's name collides with an enum variant (or
-                    // any other symbol) the lookup can return the wrong node
-                    // kind — e.g. resolving the trait to an `EnumVariant`. The
-                    // graph's `Implements` invariant (Struct|Enum → Trait|
-                    // Interface) then rejects the edge as malformed, logging
-                    // "edge rejected by graph invariant". Validate the resolved
-                    // kinds here and only emit a well-formed edge; a name
-                    // collision drops the (unrecoverable-from-this-map) edge
-                    // instead of attempting a corrupt insert.
+                    // `name_to_nodes` is keyed by bare name, so duplicate
+                    // names (a trait colliding with a struct or enum
+                    // variant, or same-named items in different modules)
+                    // are disambiguated kind-aware above: the trait
+                    // position only accepts a unique `Trait` candidate
+                    // and the type position prefers a unique `Struct |
+                    // Enum | TypeAlias`; ambiguity skips the edge instead
+                    // of guessing. Still validate the resolved kinds
+                    // against the graph's `Implements` invariant
+                    // (Struct|Enum → Trait|Interface) and only emit a
+                    // well-formed edge — e.g. a `TypeAlias` resolved in
+                    // type position must not become an `Implements`
+                    // source the builder would reject as malformed.
                     let source_ok = matches!(struct_data.kind, NodeKind::Struct | NodeKind::Enum);
                     let target_ok =
                         matches!(trait_data.kind, NodeKind::Trait | NodeKind::Interface);
@@ -1300,7 +1359,7 @@ fn extract_impl_edges_inner(
                 }
             }
         } else {
-            extract_impl_edges(child, source, file_path, name_to_node, edges);
+            extract_impl_edges(child, source, file_path, name_to_nodes, edges);
         }
     }
 }

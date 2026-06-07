@@ -10,7 +10,8 @@
 //! - `namespace_definition` → `NodeKind::Module`
 //! - Methods inside classes: qualified as `ClassName::method`
 //! - Call edges (`call_expression` → `EdgeKind::Calls`)
-//! - Base class specifiers → `EdgeKind::Implements`
+//! - Base class specifiers → `EdgeKind::Extends` (`Implements` when the base
+//!   resolves to a Trait/Interface)
 //! - Type references → `EdgeKind::UsesType`
 
 use std::path::Path;
@@ -175,7 +176,13 @@ fn walk_cpp_inner(
         "function_definition" => {
             let name = extract_function_name(node, source);
             if !name.is_empty() {
-                let qn = qualify(scope, &name);
+                // Out-of-class member definitions (`void Renderer::draw() {}`)
+                // carry the class qualifier in the declarator; keep it in the
+                // qualified name while `name` stays the bare identifier.
+                let qn = match extract_qualified_declarator_path(node, source) {
+                    Some(path) => qualify(scope, &path),
+                    None => qualify(scope, &name),
+                };
                 let mut nd = build_nd(&name, NodeKind::Function, node, path, path_str, &qn);
                 nd.complexity = compute_complexity(node, source.as_bytes(), "cpp");
                 out.push(nd);
@@ -264,7 +271,11 @@ fn extract_cpp_edges_inner(
     }
 }
 
-/// Extract base class names from a base_class_clause and create Implements edges.
+/// Extract base class names from a base_class_clause and create inheritance edges.
+///
+/// The edge kind follows the resolved base node's kind: `Implements` only when
+/// the base is a Trait/Interface (per the edge invariant), otherwise `Extends`.
+/// C++ bases are extracted as Structs, so in practice this emits `Extends`.
 fn extract_base_classes(
     clause: TsNode<'_>,
     source: &str,
@@ -284,16 +295,24 @@ fn extract_base_classes(
             // Look for type_identifier or qualified_identifier in base specifiers.
             let base_name = extract_type_name_from_node(child, source);
             if !base_name.is_empty() {
-                // Try to find the base class as a Struct node (closest C++ representation).
-                if let Some(base_node) = nodes
-                    .iter()
-                    .find(|n| n.name == base_name && n.kind == NodeKind::Struct)
-                {
+                // Resolve the base as a type-like node (C++ bases are Structs;
+                // a mixed graph may surface Trait/Interface bases).
+                if let Some(base_node) = nodes.iter().find(|n| {
+                    n.name == base_name
+                        && matches!(
+                            n.kind,
+                            NodeKind::Struct | NodeKind::Trait | NodeKind::Interface
+                        )
+                }) {
+                    let kind = match base_node.kind {
+                        NodeKind::Trait | NodeKind::Interface => EdgeKind::Implements,
+                        _ => EdgeKind::Extends,
+                    };
                     edges.push((
                         derived_node.id.clone(),
                         base_node.id.clone(),
                         EdgeData {
-                            kind: EdgeKind::Implements,
+                            kind,
                             source_span: build_span(clause, path),
                             weight: 1.0,
                         },
@@ -414,6 +433,41 @@ fn extract_declarator_name_inner(node: TsNode<'_>, source: &str) -> String {
             }
             String::new()
         }
+    }
+}
+
+/// Return the full "::"-qualified declarator path of a `function_definition`
+/// when its function name node is a qualified_identifier — e.g.
+/// `void Renderer::draw() {}` → `Some("Renderer::draw")`. Returns `None`
+/// for unqualified names so callers fall back to the bare name.
+fn extract_qualified_declarator_path(node: TsNode<'_>, source: &str) -> Option<String> {
+    let declarator = node.child_by_field_name("declarator")?;
+    qualified_path_in_declarator(declarator, source)
+}
+
+/// Recursively descend declarator wrappers looking for a qualified_identifier.
+fn qualified_path_in_declarator(node: TsNode<'_>, source: &str) -> Option<String> {
+    // Recursion guard — nested declarator depth is bounded only by source size.
+    crate::ensure_sufficient_stack(|| qualified_path_in_declarator_inner(node, source))
+}
+
+fn qualified_path_in_declarator_inner(node: TsNode<'_>, source: &str) -> Option<String> {
+    match node.kind() {
+        "qualified_identifier" => {
+            let full = text(node, source);
+            if full.contains("::") {
+                Some(full)
+            } else {
+                None
+            }
+        }
+        "function_declarator" | "pointer_declarator" | "reference_declarator" => node
+            .child_by_field_name("declarator")
+            .and_then(|d| qualified_path_in_declarator(d, source)),
+        "template_function" => node
+            .child_by_field_name("name")
+            .and_then(|n| qualified_path_in_declarator(n, source)),
+        _ => None,
     }
 }
 
@@ -722,9 +776,11 @@ public:
         let parsed = adapter.parse_file(Path::new("test.cpp"), src).unwrap();
         let nodes = adapter.extract_nodes(&parsed);
         let edges = adapter.extract_edges(&parsed, &nodes);
+        // A struct/class base must produce Extends (Implements requires a
+        // Trait/Interface target and would be dropped by the builder).
         assert!(
-            edges.iter().any(|(_, _, e)| e.kind == EdgeKind::Implements),
-            "Expected Implements edge for inheritance, got: {edges:?}"
+            edges.iter().any(|(_, _, e)| e.kind == EdgeKind::Extends),
+            "Expected Extends edge for inheritance, got: {edges:?}"
         );
     }
 

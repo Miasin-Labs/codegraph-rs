@@ -5,8 +5,10 @@
 //! debounce/throttle, MemoryMonitor) are intentionally NOT ported — Rust code
 //! uses `std::sync` primitives, rayon, and the watcher's own debounce instead.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// Check whether a process is alive (mirrors `isProcessAlive`).
 ///
@@ -110,17 +112,44 @@ pub fn validate_path_within_root(project_root: &Path, file_path: &str) -> Option
     }
 }
 
+/// Process-wide cache of canonicalized project roots, keyed by the root path
+/// as given. Caching is sound because a project root's real path is stable for
+/// the lifetime of the process; if a root directory is replaced mid-run, the
+/// worst case for newly cached entries equals today's uncached behavior.
+/// Canonicalization failures are NOT cached, so transient errors are retried.
+static REAL_ROOT_CACHE: OnceLock<Mutex<HashMap<PathBuf, PathBuf>>> = OnceLock::new();
+
+/// Canonicalize `project_root`, memoizing the result in [`REAL_ROOT_CACHE`].
+///
+/// Returns `None` (without caching) when canonicalization fails.
+fn canonicalized_root_cached(project_root: &Path) -> Option<PathBuf> {
+    let cache = REAL_ROOT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(map) = cache.lock() {
+        if let Some(real_root) = map.get(project_root) {
+            return Some(real_root.clone());
+        }
+    }
+    // Miss: canonicalize outside the lock (syscall), then insert.
+    let real_root = fs::canonicalize(project_root).ok()?;
+    if let Ok(mut map) = cache.lock() {
+        map.insert(project_root.to_path_buf(), real_root.clone());
+    }
+    Some(real_root)
+}
+
 /// Validate an existing filesystem path using both lexical and realpath checks.
 ///
 /// This is stricter than [`validate_path_within_root`]: symlinks are resolved
-/// and the final target must still be under the canonical project root.
+/// and the final target must still be under the canonical project root. The
+/// canonical root is memoized per process (see [`REAL_ROOT_CACHE`]) to avoid
+/// re-canonicalizing the invariant root on every validated file.
 pub fn validate_existing_path_within_root_real(
     project_root: &Path,
     file_path: &str,
 ) -> Option<PathBuf> {
     let resolved = validate_path_within_root(project_root, file_path)?;
     let real_path = fs::canonicalize(&resolved).ok()?;
-    let real_root = fs::canonicalize(project_root).ok()?;
+    let real_root = canonicalized_root_cached(project_root)?;
 
     if real_path == real_root || real_path.starts_with(&real_root) {
         Some(resolved)

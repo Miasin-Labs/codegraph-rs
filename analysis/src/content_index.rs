@@ -12,12 +12,16 @@
 //!    lookup becomes a binary search instead of an O(N) scan over *every*
 //!    graph node for *every* match (the old `enclosing_symbol` was O(M×N)).
 //!
-//! The index uses `DashMap` for interior mutability through `&self`, matching
-//! the `QueryCache` pattern in [`crate::incremental`], so it slots into the
-//! `Arc<GraphSession>` read path without a `&mut` borrow.
+//! The line cache uses `DashMap` for interior mutability through `&self`,
+//! matching the `QueryCache` pattern in [`crate::incremental`], so it slots
+//! into the `Arc<GraphSession>` read path without a `&mut` borrow. The span
+//! index is a whole-graph `file → spans` map behind a `Mutex`, rebuilt in a
+//! single O(N) pass whenever the graph revision advances (rebuilding per
+//! file cost O(F×N) over a cold cache).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use dashmap::DashMap;
@@ -39,17 +43,21 @@ struct SymbolSpan {
     name: String,
 }
 
-/// One file's symbol spans plus the graph revision they were built at.
-struct SpanEntry {
+/// Every file's symbol spans plus the graph revision they were built at.
+/// Built for ALL files in one O(N) pass over the graph, so a cold cache
+/// over F files costs O(N) instead of O(F×N).
+struct SpanCache {
     revision: u64,
-    spans: Arc<Vec<SymbolSpan>>,
+    by_file: HashMap<PathBuf, Arc<Vec<SymbolSpan>>>,
+    /// Shared empty list returned for files with no Function/Struct spans.
+    empty: Arc<Vec<SymbolSpan>>,
 }
 
 /// Caches file content + symbol spans for fast repeated content search.
 #[derive(Default)]
 pub struct ContentIndex {
     lines: DashMap<PathBuf, LineEntry>,
-    spans: DashMap<PathBuf, SpanEntry>,
+    spans: Mutex<Option<SpanCache>>,
 }
 
 impl ContentIndex {
@@ -115,45 +123,62 @@ impl ContentIndex {
     }
 
     /// Get (or build) the start-sorted span list for `file`.
+    ///
+    /// The whole `file → spans` map is rebuilt in a single O(N) pass over
+    /// the graph when the revision advances; per-file lookups are then
+    /// hash-map hits. (Previously each cold file ran its own O(N)
+    /// full-graph scan, so a cold cache over F files cost O(F×N).)
     fn spans_for(&self, graph: &CodeGraph, file: &Path) -> Arc<Vec<SymbolSpan>> {
         let rev = graph.current_revision();
-        if let Some(entry) = self.spans.get(file)
-            && entry.revision == rev
-        {
-            return Arc::clone(&entry.spans);
+        let mut guard = self.spans.lock().unwrap_or_else(|e| e.into_inner());
+
+        if guard.as_ref().is_none_or(|cache| cache.revision != rev) {
+            let mut grouped: HashMap<PathBuf, Vec<SymbolSpan>> = HashMap::new();
+            for id in graph.all_node_ids() {
+                let Some(n) = graph.get_node(id) else {
+                    continue;
+                };
+                if !matches!(n.kind, NodeKind::Function | NodeKind::Struct) {
+                    continue;
+                }
+                grouped
+                    .entry(n.file_path.clone())
+                    .or_default()
+                    .push(SymbolSpan {
+                        start: n.span.start_line,
+                        end: n.span.end_line,
+                        name: n.name.clone(),
+                    });
+            }
+            let by_file = grouped
+                .into_iter()
+                .map(|(path, mut spans)| {
+                    spans.sort_by_key(|s| s.start);
+                    (path, Arc::new(spans))
+                })
+                .collect();
+            *guard = Some(SpanCache {
+                revision: rev,
+                by_file,
+                empty: Arc::new(Vec::new()),
+            });
         }
 
-        let mut spans: Vec<SymbolSpan> = graph
-            .all_node_ids()
-            .iter()
-            .filter_map(|id| graph.get_node(id))
-            .filter(|n| {
-                n.file_path == file && matches!(n.kind, NodeKind::Function | NodeKind::Struct)
-            })
-            .map(|n| SymbolSpan {
-                start: n.span.start_line,
-                end: n.span.end_line,
-                name: n.name.clone(),
-            })
-            .collect();
-        spans.sort_by_key(|s| s.start);
-        let spans = Arc::new(spans);
-        self.spans.insert(
-            file.to_path_buf(),
-            SpanEntry {
-                revision: rev,
-                spans: Arc::clone(&spans),
-            },
-        );
-        spans
+        let cache = guard.as_ref().expect("span cache rebuilt above");
+        cache
+            .by_file
+            .get(file)
+            .map_or_else(|| Arc::clone(&cache.empty), Arc::clone)
     }
 
     /// Drop cached state for one file (called when a file changes). The span
-    /// cache is also revision-gated, so this is belt-and-suspenders for the
-    /// line cache whose validity is mtime-based.
+    /// cache is revision-gated and whole-graph — absence of a file in it
+    /// means "no spans" — so it is cleared outright to force a one-pass
+    /// rebuild rather than removing a single entry, which would be misread
+    /// as an empty span list.
     pub fn invalidate(&self, file: &Path) {
         self.lines.remove(file);
-        self.spans.remove(file);
+        *self.spans.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Number of files with cached lines (diagnostics / tests).

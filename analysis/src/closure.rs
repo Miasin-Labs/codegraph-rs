@@ -41,7 +41,8 @@ pub enum ClosureDirection {
 /// Compute the transitive closure of `seed` under edges matching
 /// `edge_kind` in the given direction. Returns every node reachable
 /// from any seed (excluding the seeds themselves unless they're
-/// reachable from another seed).
+/// reachable via an edge — i.e. from another seed, or through a cycle
+/// that loops back, including a self-loop).
 ///
 /// Cost: O(V + E) worst case. Allocates a `HashSet<NodeId>` for the
 /// visited set.
@@ -51,7 +52,14 @@ pub fn closure(
     edge_kind_match: impl Fn(&EdgeKind) -> bool,
     direction: ClosureDirection,
 ) -> Vec<NodeId> {
+    // `visited` dedupes traversal (pre-seeded so seeds aren't re-expanded);
+    // `reached` records nodes arrived at VIA AN EDGE. Tracking them
+    // separately is what lets a seed appear in the result when another seed
+    // reaches it — with only `visited`, the edge into a seed is invisible
+    // (the insert fails) and the final filter used to drop it
+    // unconditionally, contradicting the documented semantics.
     let mut visited: HashSet<NodeId> = HashSet::new();
+    let mut reached: HashSet<NodeId> = HashSet::new();
     let mut frontier: Vec<NodeId> = Vec::new();
 
     for seed in seeds {
@@ -71,20 +79,17 @@ pub fn closure(
             if !edge_kind_match(&edge.kind) {
                 continue;
             }
+            reached.insert(other.clone());
             if visited.insert(other.clone()) {
                 frontier.push(other.clone());
             }
         }
     }
 
-    // Strip the seeds out — by convention `closure` returns
-    // everything *transitively* reachable, not the seeds themselves.
-    // Callers who want them included should `chain` them in.
-    let seed_set: HashSet<&NodeId> = seeds.iter().collect();
-    visited
-        .into_iter()
-        .filter(|n| !seed_set.contains(n))
-        .collect()
+    // Non-seed nodes only ever enter via an edge, so `reached` is exactly
+    // "the transitive closure, minus seeds nobody points back to". Callers
+    // who always want the seeds included should `chain` them in.
+    reached.into_iter().collect()
 }
 
 /// Convenience: closure over `Calls` edges only (the most common

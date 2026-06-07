@@ -1,5 +1,9 @@
 # codegraph-analysis Enhancement Plan
 
+> **Status (2026-06-07): HISTORICAL — fully implemented.** Every phase below has shipped
+> (see `codegraph analyze --help` for the live subcommand surface). This document is kept as
+> design rationale; do not treat the "What's missing" sections as a to-do list.
+
 ## Goal
 
 Implement the features present in `codegraph` (optave/ops-codegraph-tool) that

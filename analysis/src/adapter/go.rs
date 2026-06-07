@@ -296,23 +296,26 @@ fn extract_go_calls_inner(
 ) {
     if node.kind() == "call_expression" {
         if let Some(func_node) = node.child_by_field_name("function") {
-            let callee_name = text(func_node, source);
-            // Find enclosing function.
-            let mut parent = node.parent();
-            let mut caller_id = None;
-            while let Some(p) = parent {
-                if matches!(p.kind(), "function_declaration" | "method_declaration") {
-                    if let Some(n) = p.child_by_field_name("name") {
-                        let name = text(n, source);
-                        caller_id = nodes
-                            .iter()
-                            .find(|nd| nd.name == name && nd.kind == NodeKind::Function)
-                            .map(|nd| nd.id.clone());
-                    }
-                    break;
-                }
-                parent = p.parent();
-            }
+            // Qualified calls (`obj.Do()` / `pkg.Fn()`) parse as a
+            // `selector_expression`, but function nodes store bare names —
+            // match on the last segment.
+            let callee_name = if func_node.kind() == "selector_expression" {
+                func_node
+                    .child_by_field_name("field")
+                    .map(|f| text(f, source))
+                    .unwrap_or_else(|| {
+                        let full = text(func_node, source);
+                        full.rsplit('.').next().unwrap_or(full.as_str()).to_string()
+                    })
+            } else {
+                text(func_node, source)
+            };
+            // Find enclosing function by span containment — name-based lookup
+            // attaches edges to the wrong function when methods on different
+            // receivers share a bare name.
+            let caller_id =
+                crate::adapter::find_enclosing_function_by_span(nodes, node.start_byte())
+                    .map(|nd| nd.id.clone());
             if let Some(caller) = caller_id {
                 if let Some(callee) = nodes
                     .iter()

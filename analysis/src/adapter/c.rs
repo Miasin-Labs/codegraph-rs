@@ -326,18 +326,6 @@ fn extract_c_calls_inner(
                             weight: 1.0,
                         },
                     ));
-                } else {
-                    // Unresolved call (e.g. library function like printf).
-                    edges.push((
-                        caller_id,
-                        // Use a synthetic node id for unresolved targets.
-                        NodeId::new("", &callee_name, NodeKind::Function),
-                        EdgeData {
-                            kind: EdgeKind::Calls,
-                            source_span: build_span(node, path),
-                            weight: 1.0,
-                        },
-                    ));
                 }
             }
         }
@@ -611,13 +599,13 @@ void print_point(struct Point p) {
             "expected print_point → distance edge"
         );
 
-        // print_point → printf (unresolved, points to synthetic id)
-        let printf_id = NodeId::new("", "printf", NodeKind::Function);
+        // printf is unresolved (library function): no edge is emitted here —
+        // cross-file calls are the resolver pass's job via extract_call_sites.
         assert!(
             call_edges
                 .iter()
-                .any(|(src, tgt, _)| *src == print_point_id && *tgt == printf_id),
-            "expected print_point → printf edge"
+                .all(|(_, tgt, _)| nodes.iter().any(|n| n.id == *tgt)),
+            "expected no Calls edges to unresolved targets"
         );
     }
 

@@ -1,0 +1,84 @@
+# No `msrv` pin: clippy then targets the active toolchain (nightly here), so
+# `incompatible_msrv` never fires as nightly stabilizes new APIs.
+cognitive-complexity-threshold = 30
+too-many-arguments-threshold = 10
+type-complexity-threshold = 300
+single-char-binding-names-threshold = 5
+too-many-lines-threshold = 150
+trivial-copy-size-limit = 16
+pass-by-value-size-limit = 256
+large-error-threshold = 256
+enum-variant-size-threshold = 200
+vec-box-size-threshold = 4096
+
+avoid-breaking-exported-api = true
+check-private-items = false
+enforced-import-renames = []
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+
+allowed-idents-below-min-chars = ["i", "j", "k", "n", "x", "y", "z", "id", "ok", "db", "tx", "rx", "fs"]
+allowed-prefixes = ["to_", "as_", "into_", "from_", "try_", "is_", "has_", "get_", "set_"]
+
+doc-valid-idents = [
+    "TL;DR",
+    "OAuth",
+    "GraphQL",
+    "OpenGL",
+    "WebGL",
+    "JavaScript",
+    "TypeScript",
+    "GitHub",
+    "GitLab",
+    "WebSocket",
+    "WebAssembly",
+    "PostgreSQL",
+    "MySQL",
+    "SQLite",
+    "MongoDB",
+    "SurrealDB",
+    "macOS",
+    "iOS",
+    "iPadOS",
+    "FreeBSD",
+    "OpenBSD",
+    "NetBSD",
+    "MinGW",
+    "CamelCase",
+    "NaN",
+    "TODO",
+    "FIXME",
+    "XXX",
+    "ASCII",
+    "UTF-8",
+    "UTF-16",
+    "HTTPS",
+    "HTTP/2",
+    "HTTP/3",
+    "gRPC",
+    "WebRTC",
+]
+
+standard-macro-braces = [
+    { name = "vec", brace = "[" },
+    { name = "format", brace = "(" },
+    { name = "print", brace = "(" },
+    { name = "println", brace = "(" },
+    { name = "eprint", brace = "(" },
+    { name = "eprintln", brace = "(" },
+    { name = "write", brace = "(" },
+    { name = "writeln", brace = "(" },
+    { name = "format_args", brace = "(" },
+    { name = "panic", brace = "(" },
+    { name = "todo", brace = "(" },
+    { name = "unimplemented", brace = "(" },
+    { name = "unreachable", brace = "(" },
+    { name = "assert", brace = "(" },
+    { name = "assert_eq", brace = "(" },
+    { name = "assert_ne", brace = "(" },
+    { name = "debug_assert", brace = "(" },
+    { name = "debug_assert_eq", brace = "(" },
+    { name = "debug_assert_ne", brace = "(" },
+]

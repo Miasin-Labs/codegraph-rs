@@ -64,7 +64,15 @@ pub trait LanguageAdapter: Send + Sync {
     /// this for better partial-recovery semantics.
     fn parse_file_lenient(&self, path: &Path, content: &str) -> Result<ParseOutcome, AdapterError> {
         match self.parse_file(path, content) {
-            Ok(parsed) => Ok(ParseOutcome::ok(parsed)),
+            // Even when `parse_file` succeeds, the tree may contain ERROR /
+            // missing nodes (tree-sitter recovers and keeps parsing). Surface
+            // that as the outcome's error so broken files are never silently
+            // indexed as clean — no individual adapter has to remember to
+            // check `has_error` itself.
+            Ok(parsed) => {
+                let error = first_syntax_error(&parsed.tree, path, content);
+                Ok(ParseOutcome { parsed, error })
+            }
             // Only `SyntaxError` is recoverable here — the tree was produced,
             // we just want the caller to know it has ERROR nodes. Hard
             // failures (e.g. tree-sitter returned None) bubble up unchanged.
@@ -216,6 +224,25 @@ pub fn first_syntax_error(
 /// Extract the source text spanned by `node`, returning an owned `String`.
 pub(super) fn node_text(node: TsNode<'_>, source: &str) -> String {
     source[node.byte_range()].to_string()
+}
+
+/// Resolve the function `NodeData` that lexically encloses `byte_offset` —
+/// the SMALLEST `Function` span containing the offset (innermost wins for
+/// nested/local functions).
+///
+/// This replaces name-based caller lookup (`nodes.iter().find(|n| n.name ==
+/// enclosing_name)`), which attaches call edges to the WRONG function whenever
+/// two classes/receivers declare a method with the same bare name. Spans are
+/// per-file and `extract_edges` only ever sees one file's nodes, so byte
+/// containment is unambiguous.
+pub(super) fn find_enclosing_function_by_span(
+    nodes: &[NodeData],
+    byte_offset: usize,
+) -> Option<&NodeData> {
+    nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function && n.span.byte_range.contains(&byte_offset))
+        .min_by_key(|n| n.span.byte_range.end - n.span.byte_range.start)
 }
 
 /// Build a [`Span`] from a tree-sitter node and the file path it came from.

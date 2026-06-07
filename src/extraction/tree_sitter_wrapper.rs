@@ -56,22 +56,12 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Grow the stack before another level of AST descent.
-///
-/// Real-world ASTs (LLVM, generated sources) nest deeply enough to blow the
-/// 2 MiB default stack of the rayon workers extraction runs on. Every
-/// recursive tree walker calls this at its head so recursion depth is bounded
-/// by input size, never by thread stack. Mirrors rustc's
-/// `ensure_sufficient_stack`.
-fn ensure_sufficient_stack<R>(f: impl FnOnce() -> R) -> R {
-    /// Remaining-stack threshold that triggers a new segment. Must exceed the
-    /// deepest guard-free run of frames (one visit level) with margin.
-    const RED_ZONE: usize = 128 * 1024;
-    /// Each new segment's size — large enough that segment switches stay rare
-    /// even on pathologically nested files.
-    const STACK_GROW: usize = 8 * 1024 * 1024;
-    stacker::maybe_grow(RED_ZONE, STACK_GROW, f)
-}
+// Recursion guard for every tree walker in this module: real-world ASTs
+// (LLVM, generated sources) nest deeply enough to blow the 2 MiB default
+// stack of the rayon workers extraction runs on. The single shared
+// implementation lives in the analysis crate (re-exported at the crate root)
+// so the red-zone/segment configuration can't drift between subsystems.
+use crate::ensure_sufficient_stack;
 
 /// Collect a node's named children into a Vec (the TS `namedChildren` array).
 fn named_children<'t>(node: SyntaxNode<'t>) -> Vec<SyntaxNode<'t>> {

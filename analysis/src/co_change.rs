@@ -101,6 +101,16 @@ pub fn parse_git_log(output: &str) -> Vec<CommitInfo> {
     commits
 }
 
+/// Maximum number of deduplicated nodes in a single commit for which pairwise
+/// co-change accounting is performed. Pair generation is O(N^2) per commit, so
+/// a giant commit (mass rename, codemod, vendored import) would explode both
+/// memory and time. Such commits are also noise for temporal coupling — they
+/// touch everything at once and carry no signal about which nodes genuinely
+/// evolve together — so skipping them is standard practice in co-change
+/// mining. Per-node change counters are still updated for these commits since
+/// that accounting is linear.
+const MAX_COCHANGE_NODES_PER_COMMIT: usize = 200;
+
 /// Compute co-change pairs from commit history and a code graph.
 ///
 /// `min_support`: minimum number of co-occurrences to include a pair in the
@@ -140,6 +150,13 @@ pub fn compute_co_changes(
         // Increment per-node change counter.
         for node in &commit_nodes {
             *node_changes.entry(node.clone()).or_insert(0) += 1;
+        }
+
+        // Skip pairwise accounting for giant commits: O(N^2) pair generation
+        // would blow up on mass renames/codemods, and such commits are noise
+        // for temporal coupling anyway. Per-node counters above still apply.
+        if commit_nodes.len() > MAX_COCHANGE_NODES_PER_COMMIT {
+            continue;
         }
 
         // Increment co-occurrence for all pairs (ordered by NodeId).

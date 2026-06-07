@@ -19,6 +19,8 @@
 //! Source-annotation is "serialize-slice-to-source": the agent sees *where*
 //! each slice/flow node lives without a follow-up `Read`.
 
+use std::collections::HashSet;
+
 use crate::graph::CodeGraph;
 use crate::ir_map::build_ir_map;
 use crate::nodes::{NodeId, NodeKind};
@@ -108,6 +110,7 @@ pub fn program_slice(graph: &CodeGraph, symbol: &str, backward: bool, max_nodes:
 
     let direction = if backward { "backward" } else { "forward" };
     let mut all: Vec<NodeId> = Vec::new();
+    let mut seen: HashSet<NodeId> = HashSet::new();
     for seed in &seeds {
         let slice = if backward {
             backward_slice(graph, &oracle, seed, DEFAULT_SLICE_DEPTH)
@@ -115,7 +118,7 @@ pub fn program_slice(graph: &CodeGraph, symbol: &str, backward: bool, max_nodes:
             forward_slice(graph, &oracle, seed, DEFAULT_SLICE_DEPTH)
         };
         for n in slice {
-            if !all.contains(&n) {
+            if seen.insert(n.clone()) {
                 all.push(n);
             }
         }
@@ -151,9 +154,10 @@ pub fn data_dependencies(graph: &CodeGraph, symbol: &str, max_nodes: usize) -> S
     use crate::slicing::DataflowOracle;
 
     let mut deps: Vec<NodeId> = Vec::new();
+    let mut seen: HashSet<NodeId> = HashSet::new();
     for seed in &seeds {
         for d in oracle.def_uses(seed) {
-            if !deps.contains(&d) {
+            if seen.insert(d.clone()) {
                 deps.push(d);
             }
         }
@@ -194,9 +198,10 @@ pub fn taint_flow(
 ) -> String {
     let resolve_all = |names: &[String]| -> Vec<NodeId> {
         let mut ids = Vec::new();
+        let mut seen: HashSet<NodeId> = HashSet::new();
         for name in names {
             for id in resolve(graph, name) {
-                if !ids.contains(&id) {
+                if seen.insert(id.clone()) {
                     ids.push(id);
                 }
             }
