@@ -1,0 +1,58 @@
+name: Continuous AI Review
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: continuous-ai-review-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  trigger-review-bots:
+    name: Trigger full-codebase review bots
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment review commands on full-codebase review PR
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prs = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: 'open',
+              base: 'code-review-base',
+              head: `${owner}:main`,
+              per_page: 100,
+            });
+
+            if (prs.length === 0) {
+              core.warning('No open main -> code-review-base PR found for full-codebase review.');
+              return;
+            }
+
+            const sha = context.sha;
+            const body = [
+              `Automated full-codebase review trigger for main push ${sha}.`,
+              '',
+              '@CodeAnt-AI : review',
+              '@coderabbitai review',
+              '@gemini-code-assist review',
+              '@kusari-inspector rerun',
+            ].join('\n');
+
+            for (const pr of prs) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr.number,
+                body,
+              });
+            }
