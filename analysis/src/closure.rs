@@ -188,7 +188,11 @@ mod tests {
         g.add_edge(&c, &a, ed(EdgeKind::Calls)).unwrap();
 
         let res = calls_closure(&g, std::slice::from_ref(&a), ClosureDirection::Outgoing);
-        assert_eq!(res.len(), 2);
+        // The cycle c → a loops back into the seed, so `a` is reachable VIA
+        // AN EDGE and is included per the documented semantics (a seed is
+        // only excluded when nothing points back to it).
+        assert_eq!(res.len(), 3);
+        assert!(res.contains(&a));
         assert!(res.contains(&b));
         assert!(res.contains(&c));
     }
