@@ -605,6 +605,37 @@ pub fn match_method_call(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
 ) -> Option<ResolvedRef> {
+    match_method_call_hinted(reference, context, None)
+}
+
+/// The exact `obj.method` / `Class::method` split `match_method_call` uses
+/// (single-segment receivers only). Shared with the GPU marshal so both
+/// sides gate on identical references.
+#[cfg(feature = "gpu")]
+pub(crate) fn split_method_call(name: &str) -> Option<(&str, &str)> {
+    let caps = dot_call_re()
+        .captures(name)
+        .or_else(|| colon_call_re().captures(name))?;
+    Some((caps.get(1)?.as_str(), caps.get(2)?.as_str()))
+}
+
+/// Shared with the GPU marshal (strategy-2 capitalized-receiver parity).
+#[cfg(feature = "gpu")]
+pub(crate) fn capitalize_first_shared(s: &str) -> String {
+    capitalize_first(s)
+}
+
+/// `match_method_call` with an optional GPU-precomputed strategy-1/2 outcome
+/// (feature `gpu`): the language-specific inference chain always runs first
+/// (host-bound — file-content scans); only the class-candidate × file-method
+/// scan block is replaced by the kernel's winner. `Some(None)` = the kernel
+/// proved strategies 1+2 find nothing (fall through to strategy 3);
+/// `Some(Some((method, via_strategy1)))` = the kernel's first-match winner.
+pub fn match_method_call_hinted(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+    s12: Option<Option<(&Node, bool)>>,
+) -> Option<ResolvedRef> {
     // Parse method call patterns like "obj.method" or "Class::method"
     let dot_match = dot_call_re().captures(&reference.reference_name);
     let is_dot_match = dot_match.is_some();
@@ -666,8 +697,30 @@ pub fn match_method_call(
         }
     }
 
+    // GPU fast path: strategies 1+2 were precomputed by the containment-join
+    // kernel in candidate order — identical selection to the loops below.
+    // `Some(None)` = kernel proved no S1/S2 match — both loops are skipped
+    // below via `run_s12_on_cpu`.
+    if let Some(Some((method_node, via_strategy1))) = s12 {
+        return Some(ResolvedRef {
+            original: reference.clone(),
+            target_node_id: method_node.id.clone(),
+            confidence: if via_strategy1 { 0.85 } else { 0.8 },
+            resolved_by: if via_strategy1 {
+                ResolvedBy::QualifiedName
+            } else {
+                ResolvedBy::InstanceMethod
+            },
+        });
+    }
+    let run_s12_on_cpu = s12.is_none();
+
     // Strategy 1: Direct class name match (existing logic)
-    let class_candidates = context.get_nodes_by_name(object_or_class);
+    let class_candidates = if run_s12_on_cpu {
+        context.get_nodes_by_name(object_or_class)
+    } else {
+        Vec::new()
+    };
 
     for class_node in &class_candidates {
         if class_node.kind == NodeKind::Class
@@ -700,7 +753,7 @@ pub fn match_method_call(
     // Strategy 2: Instance variable receiver - try capitalized form to find class
     // e.g., "permissionEngine" → look for classes containing "PermissionEngine"
     let capitalized_receiver = capitalize_first(object_or_class);
-    if capitalized_receiver != object_or_class {
+    if run_s12_on_cpu && capitalized_receiver != object_or_class {
         let fuzzy_class_candidates = context.get_nodes_by_name(&capitalized_receiver);
         for class_node in &fuzzy_class_candidates {
             if class_node.kind == NodeKind::Class
@@ -988,6 +1041,17 @@ pub fn match_reference_ranked(
     context: &dyn ResolutionContext,
     ranked: Option<Option<&Node>>,
 ) -> Option<ResolvedRef> {
+    match_reference_hinted(reference, context, ranked, None)
+}
+
+/// Full hint surface: `ranked` feeds strategy 3 (exact-name), `s12` feeds
+/// the method-call strategies 1+2.
+pub fn match_reference_hinted(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+    ranked: Option<Option<&Node>>,
+    s12: Option<Option<(&Node, bool)>>,
+) -> Option<ResolvedRef> {
     // Try strategies in order of confidence
 
     // 0. File path match (e.g., "snippets/drawer-menu.liquid" → file node)
@@ -1001,7 +1065,7 @@ pub fn match_reference_ranked(
     }
 
     // 2. Method call pattern
-    if let Some(result) = match_method_call(reference, context) {
+    if let Some(result) = match_method_call_hinted(reference, context, s12) {
         return Some(result);
     }
 

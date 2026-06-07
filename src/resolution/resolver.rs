@@ -1157,9 +1157,11 @@ impl ReferenceResolver {
         // 0x80 marks names the kernel defers to the CPU (non-ASCII
         // capitalization). On machines without CUDA this is a no-op.
         #[cfg(feature = "gpu")]
-        let (gpu_hints, gpu_ranked): (
+        #[allow(clippy::type_complexity)]
+        let (gpu_hints, gpu_ranked, gpu_s12): (
             Option<Vec<u8>>,
             Option<HashMap<usize, Option<Node>>>,
+            Option<HashMap<usize, Option<(Node, bool)>>>,
         ) = {
             let joiner = {
                 let guard = self.context.known_names.borrow();
@@ -1169,7 +1171,7 @@ impl ReferenceResolver {
                 })
             };
             match joiner {
-                None => (None, None),
+                None => (None, None, None),
                 Some(joiner) => {
                     let ref_names: Vec<&str> =
                         refs.iter().map(|r| r.reference_name.as_str()).collect();
@@ -1179,15 +1181,18 @@ impl ReferenceResolver {
                     // Refs the tier-1 verdict already rules out never reach
                     // strategy 3, so don't pay to rank them.
                     let ranked = self.gpu_rank_exact_name(&joiner, &refs, hints.as_deref());
-                    (hints, ranked)
+                    let s12 = self.gpu_match_s12(&joiner, &refs, hints.as_deref());
+                    (hints, ranked, s12)
                 }
             }
         };
         #[cfg(not(feature = "gpu"))]
-        let (gpu_hints, gpu_ranked): (
+        #[allow(clippy::type_complexity)]
+        let (gpu_hints, gpu_ranked, gpu_s12): (
             Option<Vec<u8>>,
             Option<HashMap<usize, Option<Node>>>,
-        ) = (None, None);
+            Option<HashMap<usize, Option<(Node, bool)>>>,
+        ) = (None, None, None);
 
         for (i, r) in refs.iter().enumerate() {
             let hint = gpu_hints.as_ref().map(|h| h[i]).and_then(|f| match f {
@@ -1199,7 +1204,11 @@ impl ReferenceResolver {
                 .as_ref()
                 .and_then(|m| m.get(&i))
                 .map(|winner| winner.as_ref());
-            let result = self.resolve_one_hinted(r, hint, ranked_hint);
+            let s12_hint = gpu_s12
+                .as_ref()
+                .and_then(|m| m.get(&i))
+                .map(|w| w.as_ref().map(|(n, s1)| (n, *s1)));
+            let result = self.resolve_one_hinted(r, hint, ranked_hint, s12_hint);
 
             if let Some(result) = result {
                 *by_method
@@ -1321,6 +1330,151 @@ impl ReferenceResolver {
     }
 
     /// Resolve a single reference
+    /// Batch-precompute `match_method_call` strategy-1/2 winners on the GPU.
+    /// Mirrors the CPU block exactly: per dot/colon reference, class
+    /// candidates from `get_nodes_by_name(receiver)` (strategy 1) then
+    /// `get_nodes_by_name(Capitalized)` (strategy 2), filtered to
+    /// Class|Struct|Interface of the same language IN ORDER; the kernel scans
+    /// each candidate file's methods in `get_nodes_in_file` order for the
+    /// first name+containment match. Returns ref-index → winner
+    /// (`None` = strategies 1+2 provably find nothing).
+    #[cfg(feature = "gpu")]
+    #[allow(clippy::type_complexity)]
+    fn gpu_match_s12(
+        &self,
+        joiner: &super::gpu::GpuNameJoiner,
+        refs: &[UnresolvedRef],
+        prefilter: Option<&[u8]>,
+    ) -> Option<HashMap<usize, Option<(Node, bool)>>> {
+        use super::name_matcher::{capitalize_first_shared, split_method_call};
+
+        fn fnv(s: &str) -> u64 {
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            for &b in s.as_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            h
+        }
+
+        // Per-file method tables, built once per distinct candidate file in
+        // get_nodes_in_file order (= CPU scan order).
+        let mut file_ids: HashMap<String, u32> = HashMap::new();
+        let mut file_starts: Vec<u32> = vec![0];
+        let (mut m_hash, mut m_qn_off, mut m_qn_len) = (Vec::new(), Vec::new(), Vec::new());
+        let mut qn_buf: Vec<u8> = Vec::new();
+        let mut method_nodes: Vec<Node> = Vec::new();
+
+        let mut ref_cand_starts: Vec<u32> = vec![0];
+        let (mut cls_file, mut cls_name_off, mut cls_name_len) =
+            (Vec::new(), Vec::new(), Vec::new());
+        let mut name_buf: Vec<u8> = Vec::new();
+        let mut ref_method_hash: Vec<u64> = Vec::new();
+        let mut ref_idx_map: Vec<usize> = Vec::new();
+        let mut s1_boundary: Vec<u32> = Vec::new();
+
+        for (idx, r) in refs.iter().enumerate() {
+            if prefilter.is_some_and(|f| f[idx] == 0) {
+                continue;
+            }
+            let Some((obj, method)) = split_method_call(&r.reference_name) else {
+                continue;
+            };
+            let mut push_classes = |name: &str,
+                                    cls_file: &mut Vec<u32>,
+                                    cls_name_off: &mut Vec<u32>,
+                                    cls_name_len: &mut Vec<u32>,
+                                    name_buf: &mut Vec<u8>| {
+                for c in self.context.get_nodes_by_name(name) {
+                    if !(c.kind == NodeKind::Class
+                        || c.kind == NodeKind::Struct
+                        || c.kind == NodeKind::Interface)
+                        || c.language != r.language
+                    {
+                        continue;
+                    }
+                    let fid = match file_ids.get(&c.file_path) {
+                        Some(&id) => id,
+                        None => {
+                            let id = file_ids.len() as u32;
+                            file_ids.insert(c.file_path.clone(), id);
+                            for n in self.context.get_nodes_in_file(&c.file_path) {
+                                if n.kind == NodeKind::Method {
+                                    m_hash.push(fnv(&n.name));
+                                    m_qn_off.push(qn_buf.len() as u32);
+                                    m_qn_len.push(n.qualified_name.len() as u32);
+                                    qn_buf.extend_from_slice(n.qualified_name.as_bytes());
+                                    method_nodes.push(n);
+                                }
+                            }
+                            file_starts.push(m_hash.len() as u32);
+                            id
+                        }
+                    };
+                    cls_file.push(fid);
+                    cls_name_off.push(name_buf.len() as u32);
+                    cls_name_len.push(c.name.len() as u32);
+                    name_buf.extend_from_slice(c.name.as_bytes());
+                }
+            };
+            push_classes(
+                obj,
+                &mut cls_file,
+                &mut cls_name_off,
+                &mut cls_name_len,
+                &mut name_buf,
+            );
+            let boundary = cls_file.len() as u32;
+            let cap = capitalize_first_shared(obj);
+            if cap != obj {
+                push_classes(
+                    &cap,
+                    &mut cls_file,
+                    &mut cls_name_off,
+                    &mut cls_name_len,
+                    &mut name_buf,
+                );
+            }
+            if cls_file.len() as u32 == *ref_cand_starts.last().unwrap() {
+                // no candidates at all — CPU loops would find nothing
+                continue;
+            }
+            ref_cand_starts.push(cls_file.len() as u32);
+            ref_method_hash.push(fnv(method));
+            ref_idx_map.push(idx);
+            s1_boundary.push(boundary);
+        }
+        if ref_method_hash.is_empty() {
+            return Some(HashMap::new());
+        }
+
+        let (best_m, best_c) = joiner.match_class_methods(
+            &ref_cand_starts,
+            &ref_method_hash,
+            &cls_file,
+            &cls_name_off,
+            &cls_name_len,
+            &name_buf,
+            &file_starts,
+            &m_hash,
+            &m_qn_off,
+            &m_qn_len,
+            &qn_buf,
+        )?;
+
+        let mut out: HashMap<usize, Option<(Node, bool)>> = HashMap::new();
+        for (k, &orig_idx) in ref_idx_map.iter().enumerate() {
+            let winner = if best_m[k] < 0 {
+                None
+            } else {
+                let via_s1 = (best_c[k] as u32) < s1_boundary[k];
+                Some((method_nodes[best_m[k] as usize].clone(), via_s1))
+            };
+            out.insert(orig_idx, winner);
+        }
+        Some(out)
+    }
+
     /// Batch-precompute `find_best_match` winners on the GPU for every
     /// reference whose exact-name candidate set has 2+ entries (the only
     /// case where `match_by_exact_name` ranks). Candidates are flattened in
@@ -1475,7 +1629,7 @@ impl ReferenceResolver {
     }
 
     pub fn resolve_one(&self, r: &UnresolvedRef) -> Option<ResolvedRef> {
-        self.resolve_one_hinted(r, None, None)
+        self.resolve_one_hinted(r, None, None, None)
     }
 
     /// `resolve_one` with an optional precomputed `has_any_possible_match`
@@ -1488,6 +1642,7 @@ impl ReferenceResolver {
         r: &UnresolvedRef,
         known_hint: Option<bool>,
         ranked: Option<Option<&Node>>,
+        s12: Option<Option<(&Node, bool)>>,
     ) -> Option<ResolvedRef> {
         // Skip built-in/external references
         if self.is_built_in_or_external(r) {
@@ -1540,7 +1695,7 @@ impl ReferenceResolver {
 
         // Strategy 3: Try name matching
         if let Some(name_result) =
-            super::name_matcher::match_reference_ranked(r, &self.context, ranked)
+            super::name_matcher::match_reference_hinted(r, &self.context, ranked, s12)
         {
             candidates.push(name_result);
         }
