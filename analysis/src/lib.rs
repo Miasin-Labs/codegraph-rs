@@ -44,6 +44,8 @@ pub mod frontier;
 #[cfg(feature = "gpu")]
 pub mod gpu_bfs;
 #[cfg(feature = "gpu")]
+pub mod gpu_cochange;
+#[cfg(feature = "gpu")]
 pub mod gpu_dominators;
 #[cfg(feature = "gpu")]
 pub mod gpu_modularity;
