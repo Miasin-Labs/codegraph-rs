@@ -475,18 +475,22 @@ impl ToolResult {
     }
 }
 
-/// Build a `{ type, description }` property schema (ordered keys:
+/// Build a `{ type, description }` property schema map (ordered keys:
 /// type, description, enum?, default? — matching the TS literal order).
-fn prop(prop_type: &str, description: &str) -> Value {
+fn prop_map(prop_type: &str, description: &str) -> Map<String, Value> {
     let mut m = Map::new();
     m.insert("type".into(), Value::String(prop_type.into()));
     m.insert("description".into(), Value::String(description.into()));
-    Value::Object(m)
+    m
 }
 
-fn prop_enum(prop_type: &str, description: &str, enum_values: &[&str]) -> Value {
-    let mut v = prop(prop_type, description);
-    v.as_object_mut().unwrap().insert(
+fn prop(prop_type: &str, description: &str) -> Value {
+    Value::Object(prop_map(prop_type, description))
+}
+
+fn prop_enum_map(prop_type: &str, description: &str, enum_values: &[&str]) -> Map<String, Value> {
+    let mut m = prop_map(prop_type, description);
+    m.insert(
         "enum".into(),
         Value::Array(
             enum_values
@@ -495,13 +499,17 @@ fn prop_enum(prop_type: &str, description: &str, enum_values: &[&str]) -> Value 
                 .collect(),
         ),
     );
-    v
+    m
+}
+
+fn prop_enum(prop_type: &str, description: &str, enum_values: &[&str]) -> Value {
+    Value::Object(prop_enum_map(prop_type, description, enum_values))
 }
 
 fn prop_default(prop_type: &str, description: &str, default: Value) -> Value {
-    let mut v = prop(prop_type, description);
-    v.as_object_mut().unwrap().insert("default".into(), default);
-    v
+    let mut m = prop_map(prop_type, description);
+    m.insert("default".into(), default);
+    Value::Object(m)
 }
 
 fn prop_enum_default(
@@ -510,9 +518,9 @@ fn prop_enum_default(
     enum_values: &[&str],
     default: Value,
 ) -> Value {
-    let mut v = prop_enum(prop_type, description, enum_values);
-    v.as_object_mut().unwrap().insert("default".into(), default);
-    v
+    let mut m = prop_enum_map(prop_type, description, enum_values);
+    m.insert("default".into(), default);
+    Value::Object(m)
 }
 
 /// Common projectPath property for cross-project queries.
@@ -2014,10 +2022,9 @@ impl ToolHandler {
             return Ok(FlowInfo::empty());
         }
         let mut out: Vec<String> = Vec::new();
-        if has_main {
+        if let Some(best) = best.as_ref().filter(|_| has_main) {
             out.push("## Flow (call path among the symbols you queried)".to_string());
             out.push(String::new());
-            let best = best.as_ref().unwrap();
             for (i, (node, edge)) in best.iter().enumerate() {
                 if let Some(e) = edge {
                     let sy = self.synth_edge_note(Some(e));
@@ -2456,15 +2463,13 @@ impl ToolHandler {
             }
             if !file_groups.contains_key(&node.file_path) {
                 file_order.push(node.file_path.clone());
-                file_groups.insert(
-                    node.file_path.clone(),
-                    FileGroup {
-                        nodes: Vec::new(),
-                        score: 0,
-                    },
-                );
             }
-            let group = file_groups.get_mut(&node.file_path).unwrap();
+            let group = file_groups
+                .entry(node.file_path.clone())
+                .or_insert_with(|| FileGroup {
+                    nodes: Vec::new(),
+                    score: 0,
+                });
             group.nodes.push(node.clone());
             // Definition ≫ reference: a NAMED-SEED node is worth far more.
             if named_seed_ids.contains(&node.id) {
@@ -2515,7 +2520,7 @@ impl ToolHandler {
             let mut seen = HashSet::new();
             query_terms
                 .iter()
-                .filter(|t| t.chars().count() >= 3 && seen.insert((*t).clone()))
+                .filter(|t| t.chars().count() >= 3 && seen.insert(t.as_str()))
                 .cloned()
                 .collect()
         };
