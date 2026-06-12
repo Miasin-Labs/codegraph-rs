@@ -111,8 +111,9 @@ fn modularity_gpu_inner(
     let mut d_cdeg = stream.alloc_zeros::<i64>(n).ok()?;
     let mut d_cint = stream.alloc_zeros::<i64>(n).ok()?;
 
-    let nu = n as u32;
-    let mu = esrc.len() as u32;
+    // Index types in the kernel are u32; refuse to wrap on huge graphs.
+    let nu = u32::try_from(n).ok()?;
+    let mu = u32::try_from(esrc.len()).ok()?;
     let vcfg = LaunchConfig {
         grid_dim: (nu.div_ceil(256).max(1), 1, 1),
         block_dim: (256, 1, 1),

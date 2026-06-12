@@ -725,16 +725,16 @@ impl GraphSession {
                     source.push_str("\n... (trimmed) ...\n");
                     any_file_trimmed = true;
                 }
-                body.push_str(source.trim_end());
-                body.push('\n');
+                // Separator BEFORE each cluster except the first — the exact
+                // string the budgeting loop above accounted for. (Previously
+                // appended AFTER every cluster — `if !body.is_empty()` was
+                // always true there — then stripped post-hoc, and the
+                // appended bytes never matched the budgeted separator_len.)
                 if !body.is_empty() {
-                    body.push_str("\n... (gap) ...\n\n");
+                    body.push_str("\n\n... (gap) ...\n\n");
                 }
+                body.push_str(source.trim_end());
                 symbols.extend(cluster.symbols.iter().cloned());
-            }
-            while body.ends_with("\n... (gap) ...\n\n") {
-                let new_len = body.len() - "\n... (gap) ...\n\n".len();
-                body.truncate(new_len);
             }
             if body.is_empty() {
                 continue;

@@ -1668,26 +1668,59 @@ impl<'a> QueryEngine<'a> {
         for op in ops {
             match op {
                 DslOp::SelectFn(name) => {
-                    working_set = self
-                        .graph
-                        .find_by_name(name)
+                    let matches = self.graph.find_by_name(name);
+                    let total = matches.len();
+                    working_set = matches
                         .into_iter()
                         .filter(|n| n.kind == NodeKind::Function)
                         .map(|n| n.id.clone())
                         .collect();
+                    // A name that resolves but to the WRONG KIND is the #1
+                    // silent-empty cause in real sessions (`fn("CodeGraph")`
+                    // where CodeGraph is a struct) — say so.
+                    if working_set.is_empty() {
+                        if total > 0 {
+                            metadata.push(format!(
+                                "fn(\"{name}\"): \"{name}\" exists but is not a function \
+                                 ({total} match(es) of other kinds) — try type(\"{name}\")"
+                            ));
+                        } else {
+                            metadata
+                                .push(format!("fn(\"{name}\"): no symbol named \"{name}\" found"));
+                        }
+                    }
                 }
                 DslOp::SelectType(name) => {
-                    working_set = self
-                        .graph
-                        .find_by_name(name)
+                    let matches = self.graph.find_by_name(name);
+                    let total = matches.len();
+                    working_set = matches
                         .into_iter()
                         .filter(|n| {
                             matches!(n.kind, NodeKind::Struct | NodeKind::Enum | NodeKind::Trait)
                         })
                         .map(|n| n.id.clone())
                         .collect();
+                    if working_set.is_empty() {
+                        if total > 0 {
+                            metadata.push(format!(
+                                "type(\"{name}\"): \"{name}\" exists but is not a \
+                                 struct/enum/trait ({total} match(es) of other kinds) — \
+                                 try fn(\"{name}\")"
+                            ));
+                        } else {
+                            metadata.push(format!(
+                                "type(\"{name}\"): no symbol named \"{name}\" found"
+                            ));
+                        }
+                    }
                 }
                 DslOp::Callers => {
+                    let seed_count = working_set.len();
+                    let non_fn_seeds = working_set
+                        .iter()
+                        .filter_map(|id| self.graph.get_node(id))
+                        .filter(|n| n.kind != NodeKind::Function)
+                        .count();
                     let mut new_set = HashSet::new();
                     for node_id in &working_set {
                         for (source_id, edge) in self.graph.get_edges_to(node_id) {
@@ -1696,15 +1729,48 @@ impl<'a> QueryEngine<'a> {
                             }
                         }
                     }
+                    if new_set.is_empty() && seed_count > 0 {
+                        if non_fn_seeds == seed_count {
+                            metadata.push(format!(
+                                "callers: all {seed_count} seed(s) are types, not functions — \
+                                 types have no call edges. Use fn(\"name\") | callers, or \
+                                 follow uses-type edges instead."
+                            ));
+                        } else {
+                            metadata.push(format!(
+                                "callers: {seed_count} seed(s) resolved but none has callers \
+                                 (entry point, dead code, or dynamic dispatch)"
+                            ));
+                        }
+                    }
                     working_set = new_set;
                 }
                 DslOp::Callees => {
+                    let seed_count = working_set.len();
+                    let non_fn_seeds = working_set
+                        .iter()
+                        .filter_map(|id| self.graph.get_node(id))
+                        .filter(|n| n.kind != NodeKind::Function)
+                        .count();
                     let mut new_set = HashSet::new();
                     for node_id in &working_set {
                         for (target_id, edge) in self.graph.get_edges_from(node_id) {
                             if matches!(edge.kind, EdgeKind::Calls | EdgeKind::UnresolvedCall(_)) {
                                 new_set.insert(target_id.clone());
                             }
+                        }
+                    }
+                    if new_set.is_empty() && seed_count > 0 {
+                        if non_fn_seeds == seed_count {
+                            metadata.push(format!(
+                                "callees: all {seed_count} seed(s) are types, not functions — \
+                                 types have no call edges. Use fn(\"name\") | callees."
+                            ));
+                        } else {
+                            metadata.push(format!(
+                                "callees: {seed_count} seed(s) resolved but none calls \
+                                 anything (leaf function or unresolved external calls)"
+                            ));
                         }
                     }
                     working_set = new_set;

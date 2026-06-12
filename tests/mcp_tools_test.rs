@@ -298,6 +298,44 @@ fn keeps_total_output_under_the_small_project_cap() {
 }
 
 #[test]
+fn final_output_never_exceeds_the_absolute_inline_ceiling() {
+    // Regression for the >25K leak: flow.text was prepended after budget
+    // accounting and the truncation suffix was appended after the ceiling
+    // cut, so real sessions saw outputs up to 27,064 chars against the
+    // 25,000 inline cap.
+    let _env = env_read();
+    let dir = TempDir::new().unwrap();
+    let src_dir = dir.path().join("src");
+    for f in 0..12 {
+        let mut lines: Vec<String> = vec![format!("export class Service{f} {{")];
+        for i in 0..40 {
+            lines.push(format!("  process{f}x{i}(arg: string): string {{"));
+            lines.push(format!(
+                "    return this.transform{f}x{i}(arg) + \"suffix-{f}-{i}\";"
+            ));
+            lines.push("  }".to_string());
+            lines.push(format!("  transform{f}x{i}(arg: string): string {{"));
+            lines.push(format!("    return arg.repeat({});", i + 1));
+            lines.push("  }".to_string());
+        }
+        lines.push("}".to_string());
+        write(&src_dir.join(format!("service{f}.ts")), &lines.join("\n"));
+    }
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+    let text = explore(
+        &handler,
+        "Service0 Service1 Service2 Service3 Service4 Service5 process transform",
+    );
+    assert!(
+        text.len() <= 25_000,
+        "explore output exceeds absolute inline ceiling: {} chars",
+        text.len()
+    );
+}
+
+#[test]
 fn omits_the_meta_text_gated_off_for_small_projects() {
     let _env = env_read();
     let dir = TempDir::new().unwrap();

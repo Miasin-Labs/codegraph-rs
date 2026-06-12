@@ -113,7 +113,7 @@ fn cooccurrence_gpu_inner(
     let mut d_keys = stream.memcpy_stod(&vec![EMPTY; capacity]).ok()?;
     let mut d_counts = stream.alloc_zeros::<u32>(capacity).ok()?;
 
-    let total = commit_nodes.len() as u32;
+    let total = u32::try_from(commit_nodes.len()).ok()?; // kernel index is u32
     let cfg = LaunchConfig {
         grid_dim: (total.div_ceil(256).max(1), 1, 1),
         block_dim: (256, 1, 1),

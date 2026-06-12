@@ -2733,7 +2733,11 @@ impl ToolHandler {
         lines.push("> The code below is the **verbatim, current on-disk source** of these files — re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.".to_string());
         lines.push(String::new());
 
-        let mut total_chars: usize = lines.join("\n").len();
+        // Count the flow spine in the running total — it is PREPENDED to the
+        // final output (line ~3420), so leaving it out makes every budget check
+        // below optimistic by `flow.text.len()` chars (the >25K leak seen in
+        // session telemetry: p90 ~26K, max 27,064 against a 25,000 cap).
+        let mut total_chars: usize = lines.join("\n").len() + flow.text.len();
         let mut files_included: usize = 0;
         let mut any_file_trimmed = false;
 
@@ -3336,8 +3340,20 @@ impl ToolHandler {
             };
             let file_header = format!("#### {file_path} — {header_suffix}");
 
-            // The total cap bounds INCIDENTAL files only.
+            // The total cap bounds INCIDENTAL files only — but NECESSARY files
+            // must still respect the absolute inline ceiling, otherwise a few
+            // large spine files push the output past 25K and the hard-ceiling
+            // cut throws the overflow away anyway (worse: mid-file).
+            let abs_ceiling =
+                (((budget.max_output_chars as f64) * 1.5).round() as usize).min(25000);
             if !file_necessary && total_chars + file_section.len() + 200 > budget.max_output_chars {
+                any_file_trimmed = true;
+                continue;
+            }
+            if file_necessary
+                && files_included > 0
+                && total_chars + file_section.len() + 200 > abs_ceiling
+            {
                 any_file_trimmed = true;
                 continue;
             }
@@ -3416,16 +3432,20 @@ impl ToolHandler {
             }
         }
 
-        // Final ceiling — an ABSOLUTE inline cap.
+        // Final ceiling — an ABSOLUTE inline cap. Reserve room for the
+        // truncation suffix so the FINAL output (cut + suffix) stays under the
+        // ceiling instead of overshooting it by ~220 chars.
+        const TRUNCATION_SUFFIX_RESERVE: usize = 250;
         let output = format!("{}{}", flow.text, lines.join("\n"));
         let hard_ceiling = (((budget.max_output_chars as f64) * 1.5).round() as usize).min(25000);
         if output.len() > hard_ceiling {
             // Cut at a FILE-SECTION boundary (the last `#### ` header before
             // the ceiling); fall back to a line boundary.
-            let cut = &output[..floor_char_boundary(&output, hard_ceiling)];
+            let cut_at = hard_ceiling.saturating_sub(TRUNCATION_SUFFIX_RESERVE);
+            let cut = &output[..floor_char_boundary(&output, cut_at)];
             let last_section = cut.rfind("\n#### ");
             let boundary = match last_section {
-                Some(pos) if (pos as f64) > hard_ceiling as f64 * 0.5 => Some(pos),
+                Some(pos) if (pos as f64) > cut_at as f64 * 0.5 => Some(pos),
                 _ => cut.rfind('\n'),
             };
             let safe = match boundary {

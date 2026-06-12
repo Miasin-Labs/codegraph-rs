@@ -83,6 +83,23 @@ pub fn format_query_result_with_capabilities(
         lines.push(format!("... and {} more nodes", remaining));
     }
 
+    // Surface the engine's diagnostic metadata (seed-resolution notes,
+    // kind-mismatch hints, SCC/hot cluster descriptions). Previously this
+    // was dropped entirely, so empty result sets rendered as "" — 36% of
+    // real GraphQuery calls returned a blank string with status=complete.
+    for note in &result.metadata {
+        token_count += note.len() / 4;
+        lines.push(note.clone());
+    }
+    if lines.is_empty() {
+        lines.push(
+            "No nodes matched. The seed may not exist, may be a different kind (fn() matches \
+             functions only; type() matches structs/enums/traits), or the traversal found no \
+             call edges (types have no callers/callees)."
+                .to_string(),
+        );
+    }
+
     FormattedOutput {
         text: lines.join("\n"),
         token_estimate: token_count,
@@ -226,7 +243,9 @@ mod tests {
     }
 
     #[test]
-    fn test_format_empty() {
+    fn test_format_empty_is_never_blank() {
+        // Regression: empty result sets used to render as "" with
+        // status=complete — indistinguishable from a tool failure.
         let graph = CodeGraph::new();
         let result = QueryResult {
             nodes: vec![],
@@ -241,6 +260,34 @@ mod tests {
         assert_eq!(output.nodes_shown, 0);
         assert_eq!(output.nodes_total, 0);
         assert!(!output.was_truncated);
-        assert!(output.text.is_empty());
+        assert!(!output.text.is_empty());
+        assert!(output.text.contains("No nodes matched"));
+    }
+
+    #[test]
+    fn test_format_empty_surfaces_metadata() {
+        let graph = CodeGraph::new();
+        let result = QueryResult {
+            nodes: vec![],
+            edges: vec![],
+            was_truncated: false,
+            total_before_truncation: 0,
+            cycles_detected: vec![],
+            metadata: vec![
+                "fn(\"CodeGraph\"): \"CodeGraph\" exists but is not a function".to_string(),
+            ],
+        };
+
+        let output = format_query_result(&result, &graph, None, 1000);
+        assert!(output.text.contains("not a function"));
+    }
+
+    #[test]
+    fn test_format_metadata_shown_with_nodes() {
+        let (graph, mut result) = build_test_graph_and_result();
+        result.metadata.push("hot top=3 bare=true".to_string());
+        let output = format_query_result(&result, &graph, None, 1000);
+        assert!(output.text.contains("alpha"));
+        assert!(output.text.contains("hot top=3"));
     }
 }

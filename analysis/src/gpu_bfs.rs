@@ -106,8 +106,9 @@ fn reachable_bounded_inner(
     let mut d_frontier = stream.memcpy_stod(&frontier).ok()?;
     let mut d_visited = stream.memcpy_stod(&visited).ok()?;
     let mut d_reached = stream.alloc_zeros::<u32>(n).ok()?;
+    let nu = u32::try_from(n).ok()?; // CSR indices are u32; refuse to wrap
     let cfg = LaunchConfig {
-        grid_dim: ((n as u32).div_ceil(256), 1, 1),
+        grid_dim: (nu.div_ceil(256), 1, 1),
         block_dim: (256, 1, 1),
         shared_mem_bytes: 0,
     };
@@ -115,7 +116,6 @@ fn reachable_bounded_inner(
     for _ in 0..max_depth {
         let mut d_next = stream.alloc_zeros::<u32>(n).ok()?;
         let mut d_changed = stream.memcpy_stod(&[0i32]).ok()?;
-        let nu = n as u32;
         let mut launch = stream.launch_builder(&kernel);
         launch.arg(&d_off);
         launch.arg(&d_nb);
@@ -162,9 +162,10 @@ fn reachable_gpu_inner(
     let mut d_frontier = stream.memcpy_stod(&frontier).ok()?;
     let mut d_visited = stream.memcpy_stod(&visited).ok()?;
     let mut d_reached = stream.alloc_zeros::<u32>(n).ok()?;
+    let nu = u32::try_from(n).ok()?; // CSR indices are u32; refuse to wrap
 
     let cfg = LaunchConfig {
-        grid_dim: ((n as u32).div_ceil(256), 1, 1),
+        grid_dim: (nu.div_ceil(256), 1, 1),
         block_dim: (256, 1, 1),
         shared_mem_bytes: 0,
     };
@@ -172,7 +173,6 @@ fn reachable_gpu_inner(
     loop {
         let mut d_next = stream.alloc_zeros::<u32>(n).ok()?;
         let mut d_changed = stream.memcpy_stod(&[0i32]).ok()?;
-        let nu = n as u32;
         let mut launch = stream.launch_builder(&kernel);
         launch.arg(&d_off);
         launch.arg(&d_nb);

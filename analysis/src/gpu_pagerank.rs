@@ -90,8 +90,9 @@ fn pagerank_gpu_inner(
     let mut d_r = stream.memcpy_stod(&ranks).ok()?;
     let mut d_pi = stream.alloc_zeros::<f32>(n).ok()?;
 
+    let nu = u32::try_from(n).ok()?; // CSR indices are u32; refuse to wrap
     let cfg = LaunchConfig {
-        grid_dim: ((n as u32).div_ceil(256), 1, 1),
+        grid_dim: (nu.div_ceil(256), 1, 1),
         block_dim: (256, 1, 1),
         shared_mem_bytes: 0,
     };
@@ -111,7 +112,6 @@ fn pagerank_gpu_inner(
         let base = damping / nb * dangling_sum + (1.0 - damping) / nb * live_sum;
 
         let mut launch = stream.launch_builder(&kernel);
-        let nu = n as u32;
         launch.arg(&d_off);
         launch.arg(&d_pred);
         launch.arg(&d_r);

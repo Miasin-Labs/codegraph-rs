@@ -99,7 +99,7 @@ fn dominators_gpu_inner(
     let mut d_in = stream.memcpy_stod(&idom).ok()?;
     let mut d_out = stream.memcpy_stod(&idom).ok()?;
 
-    let nu = n as u32;
+    let nu = u32::try_from(n).ok()?; // CSR indices are u32; refuse to wrap
     let cfg = LaunchConfig {
         grid_dim: (nu.div_ceil(256).max(1), 1, 1),
         block_dim: (256, 1, 1),

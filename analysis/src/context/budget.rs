@@ -61,10 +61,13 @@ impl ExploreBudget {
                 recommended_call_budget: Self::call_budget(file_count),
             }
         } else if file_count < 5_000 {
+            // Mirrors the main crate's tier (24_000 / 6_500). Was 13_000 /
+            // 2_500, which INVERTED the budget: a 2_000-file project got
+            // less output than a 100-file one (13K < 18K, 2.5K < 3.8K).
             Self {
-                max_output_chars: 13_000,
+                max_output_chars: 24_000,
                 default_max_files: 6,
-                max_chars_per_file: 2_500,
+                max_chars_per_file: 6_500,
                 gap_threshold: 10,
                 max_symbols_in_file_header: 8,
                 max_edges_per_relationship_kind: 8,
@@ -175,5 +178,29 @@ mod tests {
         let b = ExploreBudget::for_file_count(500);
         assert_eq!(b.default_max_files, 6);
         assert!(b.include_additional_files);
+    }
+
+    #[test]
+    fn budgets_are_monotonic_across_tiers() {
+        // Regression: tier 2 (500..5000) used to get max_output_chars=13_000
+        // and max_chars_per_file=2_500 — LESS than tier 1's 18_000/3_800.
+        let tiers = [100, 499, 500, 4_999, 5_000, 14_999, 15_000, 50_000];
+        let mut prev_out = 0usize;
+        let mut prev_per_file = 0usize;
+        for t in tiers {
+            let b = ExploreBudget::for_file_count(t);
+            assert!(
+                b.max_output_chars >= prev_out,
+                "max_output_chars regressed at tier {t}: {} < {prev_out}",
+                b.max_output_chars
+            );
+            assert!(
+                b.max_chars_per_file >= prev_per_file,
+                "max_chars_per_file regressed at tier {t}: {} < {prev_per_file}",
+                b.max_chars_per_file
+            );
+            prev_out = b.max_output_chars;
+            prev_per_file = b.max_chars_per_file;
+        }
     }
 }

@@ -652,7 +652,6 @@ fn roots_list_changed_re_arms_the_one_shot_roots_query() {
 
 #[cfg(unix)]
 mod degraded_proxy {
-    use std::io::Write as _;
     use std::os::unix::net::UnixListener;
 
     use codegraph::mcp::daemon_paths::get_daemon_socket_path;
