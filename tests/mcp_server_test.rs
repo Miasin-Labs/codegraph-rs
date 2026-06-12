@@ -964,11 +964,10 @@ fn rejects_non_string_query_in_codegraph_explore() {
 }
 
 #[test]
-fn truncates_oversized_tool_output() {
-    let _lock = env_read();
-    // The TS test fakes searchNodes returning 3000 rows; with no mocking
-    // allowed we build a real project whose top-100 search hits format past
-    // the 15000-char response cap, which forces the same truncation path.
+fn truncates_oversized_tool_output_only_when_cap_env_is_set() {
+    let _lock = env_write();
+    // Server-side truncation is opt-in via CODEGRAPH_MAX_OUTPUT_CHARS; by
+    // default the host owns inline-size policy and output is complete.
     let tmp = TempDir::new().unwrap();
     let src = tmp.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -984,11 +983,20 @@ fn truncates_oversized_tool_output() {
     let cg = Rc::new(CodeGraph::init_sync(tmp.path()).unwrap());
     cg.index_all(&IndexOptions::default()).unwrap();
     let handler = ToolHandler::new(Some(Rc::clone(&cg)));
+    let args = json!({ "query": "trunc", "limit": 999999 });
 
-    let res = handler.execute(
-        "codegraph_search",
-        &json!({ "query": "trunc", "limit": 999999 }),
+    // Default: complete output, no sentinel.
+    let res = handler.execute("codegraph_search", &args);
+    assert_ne!(res.is_error, Some(true));
+    assert!(
+        !first_text(&res).contains("... (output truncated)"),
+        "expected complete output without a cap set"
     );
+
+    // Opt-in cap: sentinel appears and size honors the cap.
+    unsafe { std::env::set_var("CODEGRAPH_MAX_OUTPUT_CHARS", "15000") };
+    let res = handler.execute("codegraph_search", &args);
+    unsafe { std::env::remove_var("CODEGRAPH_MAX_OUTPUT_CHARS") };
     assert_ne!(res.is_error, Some(true));
     assert!(
         first_text(&res).contains("... (output truncated)"),

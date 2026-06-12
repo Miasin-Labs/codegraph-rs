@@ -298,11 +298,10 @@ fn keeps_total_output_under_the_small_project_cap() {
 }
 
 #[test]
-fn final_output_never_exceeds_the_absolute_inline_ceiling() {
-    // Regression for the >25K leak: flow.text was prepended after budget
-    // accounting and the truncation suffix was appended after the ceiling
-    // cut, so real sessions saw outputs up to 27,064 chars against the
-    // 25,000 inline cap.
+fn explore_returns_complete_output_without_destructive_cuts() {
+    // Server-side destructive truncation is opt-in (CODEGRAPH_MAX_OUTPUT_CHARS);
+    // by default explore returns every included file section complete — no
+    // mid-file cuts, no "output truncated to budget" sentinel.
     let _env = env_read();
     let dir = TempDir::new().unwrap();
     let src_dir = dir.path().join("src");
@@ -329,10 +328,11 @@ fn final_output_never_exceeds_the_absolute_inline_ceiling() {
         "Service0 Service1 Service2 Service3 Service4 Service5 process transform",
     );
     assert!(
-        text.len() <= 25_000,
-        "explore output exceeds absolute inline ceiling: {} chars",
-        text.len()
+        !text.contains("output truncated to budget"),
+        "explore destructively truncated without an opt-in cap"
     );
+    // Every opened code fence is closed — no mid-file cut.
+    assert_eq!(text.matches("```").count() % 2, 0, "unbalanced code fences");
 }
 
 #[test]

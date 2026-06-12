@@ -39,7 +39,17 @@ use crate::types::{
 use crate::utils::{clamp, lexical_resolve, validate_path_within_root, validate_project_path};
 
 /// Maximum output length to prevent context bloat (characters)
-const MAX_OUTPUT_LENGTH: usize = 15000;
+/// Optional server-side destructive output cap, in chars. UNSET (the
+/// default) means the server NEVER truncates tool output — the host owns
+/// inline-size policy (Claude Code rejects results over
+/// `MAX_MCP_OUTPUT_TOKENS` ≈ 25K tokens ≈ 100K chars; jfc head/tail-trims at
+/// 50KB and spills >400KB to disk). Set `CODEGRAPH_MAX_OUTPUT_CHARS=N` to
+/// re-enable a cap for hosts that need one; 0/unset disables.
+fn output_char_cap() -> Option<usize> {
+    let v = std::env::var("CODEGRAPH_MAX_OUTPUT_CHARS").ok()?;
+    let n: usize = v.trim().parse().ok()?;
+    (n > 0).then_some(n)
+}
 
 /// Maximum length for free-form string inputs (query, task, symbol).
 /// Bounds memory and CPU when a buggy or hostile MCP client sends a
@@ -3340,20 +3350,10 @@ impl ToolHandler {
             };
             let file_header = format!("#### {file_path} — {header_suffix}");
 
-            // The total cap bounds INCIDENTAL files only — but NECESSARY files
-            // must still respect the absolute inline ceiling, otherwise a few
-            // large spine files push the output past 25K and the hard-ceiling
-            // cut throws the overflow away anyway (worse: mid-file).
-            let abs_ceiling =
-                (((budget.max_output_chars as f64) * 1.5).round() as usize).min(25000);
+            // The inclusion budget bounds INCIDENTAL files only. NECESSARY
+            // files (they define a symbol the agent named) are always
+            // returned in full — the host owns inline-size policy.
             if !file_necessary && total_chars + file_section.len() + 200 > budget.max_output_chars {
-                any_file_trimmed = true;
-                continue;
-            }
-            if file_necessary
-                && files_included > 0
-                && total_chars + file_section.len() + 200 > abs_ceiling
-            {
                 any_file_trimmed = true;
                 continue;
             }
@@ -3432,29 +3432,33 @@ impl ToolHandler {
             }
         }
 
-        // Final ceiling — an ABSOLUTE inline cap. Reserve room for the
-        // truncation suffix so the FINAL output (cut + suffix) stays under the
-        // ceiling instead of overshooting it by ~220 chars.
-        const TRUNCATION_SUFFIX_RESERVE: usize = 250;
+        // No destructive ceiling: the relevance gates above already bound
+        // what gets INCLUDED; once included, source is returned complete.
+        // A destructive cut here threw away verbatim source mid-file while
+        // the host (Claude Code: ~25K TOKENS; jfc: 50KB head/tail) allows
+        // far more than the old 25K-char ceiling. Opt back in with
+        // CODEGRAPH_MAX_OUTPUT_CHARS for hosts that need a server-side cap.
         let output = format!("{}{}", flow.text, lines.join("\n"));
-        let hard_ceiling = (((budget.max_output_chars as f64) * 1.5).round() as usize).min(25000);
-        if output.len() > hard_ceiling {
-            // Cut at a FILE-SECTION boundary (the last `#### ` header before
-            // the ceiling); fall back to a line boundary.
-            let cut_at = hard_ceiling.saturating_sub(TRUNCATION_SUFFIX_RESERVE);
-            let cut = &output[..floor_char_boundary(&output, cut_at)];
-            let last_section = cut.rfind("\n#### ");
-            let boundary = match last_section {
-                Some(pos) if (pos as f64) > cut_at as f64 * 0.5 => Some(pos),
-                _ => cut.rfind('\n'),
-            };
-            let safe = match boundary {
-                Some(pos) if pos > 0 => &cut[..pos],
-                _ => cut,
-            };
-            return Ok(self.text_result(&format!(
-                "{safe}\n\n... (output truncated to budget; the source above is complete and verbatim — treat it as already Read. For any area not covered, run another codegraph_explore with the specific names — do NOT Read these files.)"
-            )));
+        if let Some(cap) = output_char_cap() {
+            if output.len() > cap {
+                const TRUNCATION_SUFFIX_RESERVE: usize = 250;
+                // Cut at a FILE-SECTION boundary (the last `#### ` header
+                // before the ceiling); fall back to a line boundary.
+                let cut_at = cap.saturating_sub(TRUNCATION_SUFFIX_RESERVE);
+                let cut = &output[..floor_char_boundary(&output, cut_at)];
+                let last_section = cut.rfind("\n#### ");
+                let boundary = match last_section {
+                    Some(pos) if (pos as f64) > cut_at as f64 * 0.5 => Some(pos),
+                    _ => cut.rfind('\n'),
+                };
+                let safe = match boundary {
+                    Some(pos) if pos > 0 => &cut[..pos],
+                    _ => cut,
+                };
+                return Ok(self.text_result(&format!(
+                    "{safe}\n\n... (output truncated to budget; the source above is complete and verbatim — treat it as already Read. For any area not covered, run another codegraph_explore with the specific names — do NOT Read these files.)"
+                )));
+            }
         }
         Ok(self.text_result(&output))
     }
@@ -3564,24 +3568,18 @@ impl ToolHandler {
             return Ok(self.text_result(&self.truncate_output(&out.join("\n"))));
         }
 
-        const BODY_BUDGET: usize = 12000; // room under MAX_OUTPUT_LENGTH for header + list
+        // Render every definition in full up to a RELEVANCE cap (how many
+        // overloads are plausibly useful), not a size budget — size policy
+        // belongs to the host.
         const HARD_CAP: usize = 16;
         let mut rendered: Vec<String> = Vec::new();
         let mut listed: Vec<Node> = Vec::new();
-        let mut used: usize = 0;
         for n in &matches {
             if rendered.len() >= HARD_CAP {
                 listed.push(n.clone());
                 continue;
             }
-            let section = self.render_node_section(&cg, n, true)?;
-            // Always emit the first; emit the rest only while within budget.
-            if rendered.is_empty() || used + section.len() <= BODY_BUDGET {
-                used += section.len();
-                rendered.push(section);
-            } else {
-                listed.push(n.clone());
-            }
+            rendered.push(self.render_node_section(&cg, n, true)?);
         }
 
         let mut out: Vec<String> = vec![
@@ -4337,15 +4335,20 @@ impl ToolHandler {
         })
     }
 
-    /// Truncate output if it exceeds the maximum length.
+    /// Apply the OPTIONAL `CODEGRAPH_MAX_OUTPUT_CHARS` cap. By default this
+    /// is a no-op: the server returns complete output and the host applies
+    /// its own inline-size policy.
     fn truncate_output(&self, text: &str) -> String {
-        if text.len() <= MAX_OUTPUT_LENGTH {
+        let Some(cap) = output_char_cap() else {
+            return text.to_string();
+        };
+        if text.len() <= cap {
             return text.to_string();
         }
-        let truncated = &text[..floor_char_boundary(text, MAX_OUTPUT_LENGTH)];
+        let truncated = &text[..floor_char_boundary(text, cap)];
         let last_newline = truncated.rfind('\n');
         let cut_point = match last_newline {
-            Some(pos) if (pos as f64) > MAX_OUTPUT_LENGTH as f64 * 0.8 => pos,
+            Some(pos) if (pos as f64) > cap as f64 * 0.8 => pos,
             _ => truncated.len(),
         };
         format!("{}\n\n... (output truncated)", &truncated[..cut_point])
