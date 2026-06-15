@@ -10,6 +10,7 @@ pub mod dfm_extractor;
 pub mod generated_detection;
 pub mod grammars;
 pub mod ida_c_extractor;
+pub mod ida_manifest;
 pub mod languages;
 pub mod liquid_extractor;
 pub mod lwc_template;
@@ -20,6 +21,7 @@ pub mod svelte_extractor;
 pub mod tree_sitter_helpers;
 pub mod tree_sitter_types;
 pub mod tree_sitter_wrapper;
+pub mod unlace_extractor;
 pub mod vue_extractor;
 
 // ---- src/extraction/index.ts exports ----
@@ -31,6 +33,7 @@ pub use generated_detection::is_generated_file;
 //  from './grammars'` — the whole grammar surface is re-exported (superset).
 pub use grammars::*;
 pub use ida_c_extractor::{IdaCExtractor, is_ida_generated_c};
+pub use ida_manifest::{FuncManifest, parse_failed_addrs, synthesize_stub_nodes};
 pub use languages::extractor_for;
 pub use liquid_extractor::LiquidExtractor;
 pub use lwc_template::LwcTemplateExtractor;
@@ -59,4 +62,5 @@ pub use tree_sitter_helpers::{
 };
 pub use tree_sitter_types::*;
 pub use tree_sitter_wrapper::TreeSitterExtractor;
+pub use unlace_extractor::{UnlaceCExtractor, is_unlace_c};
 pub use vue_extractor::VueExtractor;

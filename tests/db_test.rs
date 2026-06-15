@@ -252,8 +252,8 @@ fn gets_schema_version() {
     let (_dir, db, _q) = setup();
     let version = db.get_schema_version().unwrap();
     assert!(version.is_some());
-    assert_eq!(version.unwrap().version, 5);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 5);
+    assert_eq!(version.unwrap().version, 6);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 6);
 }
 
 #[test]
@@ -707,7 +707,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 5);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 6);
 
     let handle = db.get_db().unwrap();
     // Migration 2 added columns + project_metadata
@@ -747,7 +747,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     // History records each applied migration
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
 }
 
 #[test]
@@ -758,13 +758,13 @@ fn open_does_not_rerun_migrations_on_current_database() {
         let _db = DatabaseConnection::initialize(&db_path).unwrap();
     }
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 5);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 6);
     let handle = db.get_db().unwrap();
     assert!(!codegraph::db::needs_migration(&handle));
-    // initialize() recorded versions 1 + 5 only; open() added nothing.
+    // initialize() recorded versions 1 + 6 only; open() added nothing.
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 5]);
+    assert_eq!(versions, vec![1, 6]);
 }
 
 #[test]
@@ -820,7 +820,7 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 5);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 6);
     let handle = db.get_db().unwrap();
 
     // v5 added the nullable byte-offset columns.
@@ -836,6 +836,9 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
     };
     assert!(node_cols.iter().any(|c| c == "start_byte"));
     assert!(node_cols.iter().any(|c| c == "end_byte"));
+    // v6 added the nullable binary address / size columns.
+    assert!(node_cols.iter().any(|c| c == "address"));
+    assert!(node_cols.iter().any(|c| c == "size"));
 
     // The pre-existing row was backfilled with NULL and reads back gracefully.
     let q = QueryBuilder::new(handle.clone());
@@ -843,21 +846,27 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
     assert_eq!(legacy.start_byte, None);
     assert_eq!(legacy.end_byte, None);
     assert_eq!(legacy.byte_range(), None);
+    assert_eq!(legacy.address, None);
+    assert_eq!(legacy.size, None);
 
-    // New writes round-trip byte offsets through the migrated database.
+    // New writes round-trip byte offsets + address/size through the migration.
     let mut node = make_node("new1", "fresh");
     node.start_byte = Some(10);
     node.end_byte = Some(42);
+    node.address = Some(0x1719D0);
+    node.size = Some(308);
     q.insert_node(&node).unwrap();
     q.clear_cache();
     let fresh = q.get_node_by_id("new1").unwrap().expect("fresh row");
     assert_eq!(fresh.start_byte, Some(10));
     assert_eq!(fresh.end_byte, Some(42));
     assert_eq!(fresh.byte_range(), Some(10..42));
+    assert_eq!(fresh.address, Some(0x1719D0));
+    assert_eq!(fresh.size, Some(308));
 
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
 }
 
 // =============================================================================

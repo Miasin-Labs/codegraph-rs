@@ -17,6 +17,7 @@ pub mod directory;
 pub mod error;
 pub mod extraction;
 pub mod graph;
+pub mod history;
 pub mod installer;
 pub mod mcp;
 pub mod resolution;

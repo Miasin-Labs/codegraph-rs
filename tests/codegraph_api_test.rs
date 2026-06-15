@@ -543,13 +543,14 @@ mod git_based_sync {
     }
 
     #[test]
-    fn removes_stale_symbols_when_a_tracked_file_becomes_too_large_to_index() {
+    fn indexes_a_tracked_file_that_grows_large_instead_of_dropping_it() {
         let dir = TempDir::new().unwrap();
         let cg = setup_git_indexed(dir.path());
 
         assert!(search_count(&cg, "hello") > 0);
 
-        // Exceed MAX_FILE_SIZE (1 MiB): the file is purged, not re-extracted.
+        // There is no size cap: a file that grows past 1 MiB is re-indexed
+        // (not purged), so its new symbol appears and the old one is gone.
         let mut oversized = String::from("export function replacement() { return 1; }\n");
         oversized.push_str(&"x".repeat(2 * 1024 * 1024));
         write(&dir.path().join("src/index.ts"), &oversized);
@@ -557,7 +558,7 @@ mod git_based_sync {
         let result = cg.sync(&IndexOptions::default()).unwrap();
         assert_eq!(result.files_modified, 1);
         assert_eq!(search_count(&cg, "hello"), 0);
-        assert_eq!(search_count(&cg, "replacement"), 0);
+        assert!(search_count(&cg, "replacement") > 0);
     }
 
     #[test]

@@ -156,6 +156,30 @@ impl LanguageExtractor for RustExtractor {
         None
     }
 
+    /// `let fold_pass = ConstantFoldPass;` — a bare PascalCase path initializer
+    /// is a unit-struct construction (or enum-variant / associated-const
+    /// reference). The generic variable path records the binding but drops the
+    /// link to the referenced type, so value-assembled pipelines (unit-struct
+    /// passes wired by value, not by call) are invisible as edges. Returns the
+    /// referenced symbol so the core emits a `References` edge.
+    fn extract_value_reference(&self, node: SyntaxNode<'_>, source: &str) -> Option<String> {
+        if node.kind() != "let_declaration" {
+            return None;
+        }
+        let value = get_child_by_field(node, "value")?;
+        if !matches!(value.kind(), "identifier" | "scoped_identifier") {
+            return None;
+        }
+        let path = get_node_text(value, source);
+        let last = path.rsplit("::").next().unwrap_or(path);
+        // PascalCase / SCREAMING_CASE → a type, variant, or const (lowercase
+        // initializers are locals — not worth an edge).
+        last.chars()
+            .next()
+            .is_some_and(|c| c.is_uppercase())
+            .then(|| last.to_string())
+    }
+
     fn extract_import(&self, node: SyntaxNode<'_>, source: &str) -> ImportOutcome {
         let import_text = get_node_text(node, source).trim();
 

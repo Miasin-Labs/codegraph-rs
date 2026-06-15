@@ -101,6 +101,10 @@ fn node_from_row(row: &Row<'_>) -> rusqlite::Result<Node> {
         end_column: row.get("end_column")?,
         start_byte: row.get("start_byte")?,
         end_byte: row.get("end_byte")?,
+        // SQLite INTEGER is i64; addresses are stored as i64 and read back as
+        // u64 (real virtual addresses fit in 48 bits, so the cast is lossless).
+        address: row.get::<_, Option<i64>>("address")?.map(|v| v as u64),
+        size: row.get("size")?,
         docstring: row.get("docstring")?,
         signature: row.get("signature")?,
         visibility: parse_visibility(visibility),
@@ -396,14 +400,14 @@ impl QueryBuilder {
             "INSERT OR REPLACE INTO nodes (
               id, kind, name, qualified_name, file_path, language,
               start_line, end_line, start_column, end_column,
-              start_byte, end_byte,
+              start_byte, end_byte, address, size,
               docstring, signature, visibility,
               is_exported, is_async, is_static, is_abstract,
               decorators, type_parameters, updated_at
             ) VALUES (
               @id, @kind, @name, @qualifiedName, @filePath, @language,
               @startLine, @endLine, @startColumn, @endColumn,
-              @startByte, @endByte,
+              @startByte, @endByte, @address, @size,
               @docstring, @signature, @visibility,
               @isExported, @isAsync, @isStatic, @isAbstract,
               @decorators, @typeParameters, @updatedAt
@@ -442,6 +446,8 @@ impl QueryBuilder {
             "@endColumn": node.end_column,
             "@startByte": node.start_byte,
             "@endByte": node.end_byte,
+            "@address": node.address.map(|a| a as i64),
+            "@size": node.size,
             "@docstring": node.docstring,
             "@signature": node.signature,
             "@visibility": node.visibility.map(visibility_str),
@@ -493,6 +499,8 @@ impl QueryBuilder {
               end_column = @endColumn,
               start_byte = @startByte,
               end_byte = @endByte,
+              address = @address,
+              size = @size,
               docstring = @docstring,
               signature = @signature,
               visibility = @visibility,
@@ -538,6 +546,8 @@ impl QueryBuilder {
             "@endColumn": node.end_column,
             "@startByte": node.start_byte,
             "@endByte": node.end_byte,
+            "@address": node.address.map(|a| a as i64),
+            "@size": node.size,
             "@docstring": node.docstring,
             "@signature": node.signature,
             "@visibility": node.visibility.map(visibility_str),

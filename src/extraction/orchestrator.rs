@@ -49,6 +49,7 @@ use crate::extraction::mybatis_extractor::MyBatisExtractor;
 use crate::extraction::salesforce_markup::SalesforceMarkupExtractor;
 use crate::extraction::svelte_extractor::SvelteExtractor;
 use crate::extraction::tree_sitter_wrapper::TreeSitterExtractor;
+use crate::extraction::unlace_extractor::{self, UnlaceCExtractor};
 use crate::extraction::vue_extractor::VueExtractor;
 use crate::resolution::frameworks::{
     detect_frameworks,
@@ -78,8 +79,9 @@ use crate::utils::{
 /// Each batch fans out across the rayon pool, then results are stored
 /// serially (SQLite is single-threaded), so the batch size caps effective
 /// parallelism and amortizes the store barrier. Worst-case memory is
-/// `FILE_IO_BATCH_SIZE × MAX_FILE_SIZE` of held content plus extraction
-/// results — 64 MiB of content at the 1 MiB cap.
+/// `FILE_IO_BATCH_SIZE` files of held content (plus extraction results) — there
+/// is no per-file size cap, so a batch's footprint scales with its largest
+/// files.
 const FILE_IO_BATCH_SIZE: usize = 64;
 
 /// How many fully parsed batches the parse producer may run ahead of the
@@ -227,12 +229,6 @@ impl FileStats {
 pub fn hash_content(content: &str) -> String {
     sha256_hex(content.as_bytes())
 }
-
-/// Skip files larger than this (bytes). Generated bundles, minified JS, and
-/// vendored blobs produce no useful symbols. 1 MB covers essentially all
-/// hand-written source.
-const MAX_FILE_SIZE: u64 = 1024 * 1024;
-const MAX_IDA_FILE_SIZE: u64 = 5 * 1024 * 1024;
 
 /// Directory names that are dependency, build, cache, or tooling output across the
 /// languages/frameworks CodeGraph supports — curated from the canonical
@@ -1030,9 +1026,19 @@ pub fn extract_from_source(
         .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
         .unwrap_or_default();
 
-    // IDA/Hex-Rays decompiler output is C-like but often not valid C
-    // (`.name` thunk symbols, IDA typedefs, huge one-function dumps).
+    // Whole-program decompiled C: one `.c` per binary, either unlace's
+    // `/* Function: */` blocks or IDA `decompile_many()`'s `//----- (addr) -----`
+    // boundaries. Split into per-function units (checked before the IDA
+    // single-function path, which these aggregate files would otherwise
+    // truncate to their first function).
     let mut result = if (detected_language == Language::C || detected_language == Language::Cpp)
+        && (unlace_extractor::is_unlace_c(file_path, source)
+            || unlace_extractor::is_ida_decompile_many(source))
+    {
+        UnlaceCExtractor::new(file_path, source, detected_language).extract()
+    } else if (detected_language == Language::C || detected_language == Language::Cpp)
+        // IDA/Hex-Rays decompiler output is C-like but often not valid C
+        // (`.name` thunk symbols, IDA typedefs, huge one-function dumps).
         && is_ida_generated_c(file_path, source)
     {
         IdaCExtractor::new(file_path, source, detected_language).extract()
@@ -1114,10 +1120,6 @@ pub fn extract_from_source(
 /// Outcome of the parallel read+parse stage for one file.
 enum BatchOutcome {
     ReadError(String),
-    SizeExceeded {
-        size: u64,
-        max: u64,
-    },
     Parsed {
         content: String,
         stats: FileStats,
@@ -1192,24 +1194,10 @@ fn read_and_parse(root_dir: &Path, file_path: &str, framework_names: &[String]) 
         }
     };
 
-    // Honour MAX_FILE_SIZE. IDA dumps get a higher cap because they are
-    // commonly one generated function per file and use a lightweight
-    // extractor that does not feed the full text to tree-sitter.
-    let max_file_size = if is_ida_generated_c(file_path, &content) {
-        MAX_IDA_FILE_SIZE
-    } else {
-        MAX_FILE_SIZE
-    };
-    if stats.size > max_file_size {
-        return BatchItem {
-            file_path: file_path.to_string(),
-            outcome: BatchOutcome::SizeExceeded {
-                size: stats.size,
-                max: max_file_size,
-            },
-        };
-    }
-
+    // No size cap: every file is indexed regardless of size (large
+    // hand-written sources — e.g. a 1.2 MiB expression printer — must not be
+    // silently dropped). Pathological inputs are excluded by .gitignore /
+    // ignore-dir / generated-file detection, not by a byte threshold.
     let language = detect_language(file_path, Some(&content));
     let result = extract_from_source(file_path, &content, Some(language), Some(framework_names));
     BatchItem {
@@ -1591,27 +1579,6 @@ impl<'a> ExtractionOrchestrator<'a> {
                             code: Some("read_error".to_string()),
                         });
                     }
-                    BatchOutcome::SizeExceeded { size, max } => {
-                        processed += 1;
-                        files_skipped += 1;
-                        errors.push(ExtractionError {
-                            message: format!("File exceeds max size ({size} > {max})"),
-                            file_path: Some(item.file_path),
-                            line: None,
-                            column: None,
-                            severity: Severity::Warning,
-                            code: Some("size_exceeded".to_string()),
-                        });
-                        emit(
-                            on_progress,
-                            IndexProgress {
-                                phase: IndexPhase::Parsing,
-                                current: processed,
-                                total,
-                                current_file: None,
-                            },
-                        );
-                    }
                     BatchOutcome::Parsed {
                         content,
                         stats,
@@ -1785,26 +1752,9 @@ impl<'a> ExtractionOrchestrator<'a> {
             ));
         }
 
-        // Check file size. IDA dumps get a higher cap because the custom extractor
-        // handles large one-function files without tree-sitter.
-        let max_file_size = if is_ida_generated_c(relative_path, content) {
-            MAX_IDA_FILE_SIZE
-        } else {
-            MAX_FILE_SIZE
-        };
-        if stats.size > max_file_size {
-            return Ok(ExtractionResult {
-                errors: vec![ExtractionError {
-                    message: format!("File exceeds max size ({} > {})", stats.size, max_file_size),
-                    file_path: Some(relative_path.to_string()),
-                    line: None,
-                    column: None,
-                    severity: Severity::Warning,
-                    code: Some("size_exceeded".to_string()),
-                }],
-                ..Default::default()
-            });
-        }
+        // No size cap — files are indexed regardless of size (see the parallel
+        // batch path). Exclusion is by ignore rules / generated detection, not
+        // by a byte threshold.
 
         // Detect language
         let language = detect_language(relative_path, Some(content));

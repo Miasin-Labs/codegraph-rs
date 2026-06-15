@@ -1,0 +1,88 @@
+{
+  "next_id": 7,
+  "tasks": {
+    "t6": {
+      "id": "t6",
+      "subject": "SARIF output for vuln scan",
+      "description": "Add a SARIF 2.1.0 emitter that converts VulnReport into SARIF JSON, and wire a --sarif <path> (or --format sarif) flag into `codegraph analyze vuln`. This unlocks the GitHub Advanced Security integration story from the MDASH demo. Add a functional test asserting valid SARIF shape (runs[].tool.driver.rules + results[] with ruleId, level, message, locations).",
+      "status": "completed",
+      "blocks": [],
+      "blockedBy": [],
+      "created_at_ms": 1781558925215,
+      "acceptance_criteria": "cargo test passes a sarif serialization test; `codegraph analyze vuln --sarif out.sarif` writes a file with runs[0].results populated and tool.driver.rules listing the template kinds.",
+      "verification_command": "cargo test -p codegraph-rs --lib sarif",
+      "priority": 0
+    },
+    "t3": {
+      "id": "t3",
+      "subject": "Analyze ~/.config/jfc/sessions for anomalies (161 consecutive identical calls)",
+      "description": "Dig into session JSONs: characterize the consecutive-identical tool calls (retries? truncated outputs causing re-calls?), failed Edit/TaskDone rates, pending tool calls.",
+      "activeForm": "Analyzing session files",
+      "status": "completed",
+      "blocks": [],
+      "blockedBy": [],
+      "created_at_ms": 1781276419296
+    },
+    "t5": {
+      "id": "t5",
+      "subject": "Wire MustFollow template (kill dead enum)",
+      "description": "TemplateKind::MustFollow and DeviantFrequency are defined but never emitted. Map the concurrency must-follow-shaped findings (LossySend, SplitStateTransition, LossyThenCommitted = operation-A-without-follow-B) onto TemplateKind::MustFollow so the taxonomy matches MDASH's \"operation A occurs but required follow B is absent\" and the template is no longer dead. Keep the human-facing rule id but tag the template/class.",
+      "status": "completed",
+      "blocks": [],
+      "blockedBy": [],
+      "created_at_ms": 1781558925214,
+      "acceptance_criteria": "vuln findings from concurrency carry MustFollow template semantics; existing vuln tests still pass; count/pin tests updated if needed.",
+      "verification_command": "cargo test -p codegraph-rs --lib vuln",
+      "priority": 2
+    },
+    "t4": {
+      "id": "t4",
+      "subject": "MCP classify/verify loop (model proposes, graph proves)",
+      "description": "Realize the unbuilt LLM half of the vuln engine through the MCP/agent layer (which has model access) rather than adding live HTTP deps to the core crate — matching the design doc in vuln/classify.rs. Add an MCP tool that (a) surfaces candidate functions for role classification, and/or (b) accepts agent-supplied RoleProposals, runs them through the existing GraphVerifier, and emits verified findings tagged InferenceOrigin::Llm. Turns the dead GraphVerifier (0 callers) and InferenceOrigin::Llm into a production path.",
+      "status": "completed",
+      "blocks": [],
+      "blockedBy": [],
+      "created_at_ms": 1781558925212,
+      "acceptance_criteria": "A new MCP tool is registered (count/name guard updated), a handler bridges to GraphVerifier, and a tests/mcp_tools_test.rs case exercises propose->verify->finding. cargo test --workspace green.",
+      "verification_command": "cargo test -p codegraph-rs --test mcp_tools_test",
+      "priority": 3
+    },
+    "t7": {
+      "id": "t7",
+      "subject": "HTML report for vuln scan",
+      "description": "Add an HTML report emitter rendering VulnReport (summary counts by domain/severity + per-finding table with file:line, class, confidence, message) and wire a --html <path> flag into `codegraph analyze vuln`. Mirrors the MDASH \"HTML report I can give to management\" demo beat.",
+      "status": "completed",
+      "blocks": [],
+      "blockedBy": [],
+      "created_at_ms": 1781558925215,
+      "acceptance_criteria": "`codegraph analyze vuln --html out.html` writes a self-contained HTML file containing the finding count and a table row per finding; a unit test asserts the HTML contains expected summary + escaping.",
+      "verification_command": "cargo test -p codegraph-rs --lib html_report",
+      "priority": 1
+    },
+    "t1": {
+      "id": "t1",
+      "subject": "General bug hunt in codegraph MCP server hot paths",
+      "description": "Audit explore/search/node handlers for correctness bugs: unwraps, panics, lossy UTF-8 slicing, bad caps, error swallowing.",
+      "activeForm": "Hunting bugs in MCP hot paths",
+      "status": "completed",
+      "owner": "jfc-factory",
+      "blocks": [],
+      "blockedBy": [],
+      "created_at_ms": 1781276419296
+    },
+    "t2": {
+      "id": "t2",
+      "subject": "Audit MCP output truncation/capping logic in codegraph-rs",
+      "description": "Find where MCP tool responses are built/capped/truncated in codegraph-rs and look for bugs (off-by-one, byte vs char truncation, silent drops, missing staleness banners).",
+      "activeForm": "Auditing MCP truncation logic",
+      "status": "completed",
+      "blocks": [],
+      "blockedBy": [],
+      "metadata": {
+        "agent_task_id": "toolu_01JUNjkC1NtSwcYjGHxW6fNk",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "created_at_ms": 1781276419296
+    }
+  }
+}

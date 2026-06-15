@@ -256,7 +256,7 @@ fn language_support_lists_all_supported_languages() {
 // =============================================================================
 
 #[test]
-fn ida_c_extracts_leading_dot_thunk_functions_and_resolved_target_calls() {
+fn ida_c_extracts_leading_dot_thunk_functions_and_alias_target() {
     let code = r#"
 // ============================================================
 // THUNK / TRAMPOLINE
@@ -282,8 +282,11 @@ void .mysql_init(/* see target signature */)
     let thunk = find_kind(&result, NodeKind::Function);
     assert_eq!(thunk.map(|n| n.name.as_str()), Some(".mysql_init"));
 
+    // The thunk's forwarding target is an `Aliases` edge, not a `Calls`.
+    let aliases = refs_of_kind(&result, EdgeKind::Aliases);
+    assert!(aliases.iter().any(|r| r.reference_name == "mysql_init"));
     let calls = refs_of_kind(&result, EdgeKind::Calls);
-    assert!(calls.iter().any(|r| r.reference_name == "mysql_init"));
+    assert!(!calls.iter().any(|r| r.reference_name == "mysql_init"));
 }
 
 #[test]
@@ -1119,6 +1122,61 @@ impl Counter {
     // Should have no implements references (no trait involved)
     let impl_refs = refs_of_kind(&result, EdgeKind::Implements);
     assert_eq!(impl_refs.len(), 0);
+}
+
+#[test]
+fn rust_derive_attributes_become_implements_edges() {
+    let code = r#"
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct Config {
+    pub name: String,
+}
+
+#[derive(Default)]
+enum Mode {
+    A,
+    B,
+}
+"#;
+    let result = extract("config.rs", code);
+    let implements = ref_names(&refs_of_kind(&result, EdgeKind::Implements));
+    for t in ["Clone", "Debug", "PartialEq", "Default"] {
+        assert!(
+            implements.contains(&t.to_string()),
+            "missing derive {t}: {implements:?}"
+        );
+    }
+    // A path trait resolves to its last segment.
+    assert!(
+        implements.contains(&"Serialize".to_string()),
+        "path-derive Serialize missing: {implements:?}"
+    );
+    assert!(
+        !implements.contains(&"serde".to_string()),
+        "path qualifier leaked: {implements:?}"
+    );
+}
+
+#[test]
+fn rust_unit_struct_value_bindings_become_references() {
+    let code = r#"
+struct ConstantFoldPass;
+
+fn build_pipeline() {
+    let fold_pass = ConstantFoldPass;
+    let count = 5;
+    let name = some_local;
+}
+"#;
+    let result = extract("pipeline.rs", code);
+    let refs = ref_names(&refs_of_kind(&result, EdgeKind::References));
+    // The unit-struct binding links to the struct.
+    assert!(
+        refs.contains(&"ConstantFoldPass".to_string()),
+        "value-path ref missing: {refs:?}"
+    );
+    // Lowercase locals and literals are not referenced (no edge noise).
+    assert!(!refs.contains(&"some_local".to_string()), "{refs:?}");
 }
 
 // =============================================================================

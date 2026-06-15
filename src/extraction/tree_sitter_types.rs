@@ -325,6 +325,15 @@ pub trait LanguageExtractor: Send + Sync {
         None
     }
 
+    /// Detect a value-path reference in a declaration — e.g. Rust
+    /// `let p = UnitStruct;` / `let v = Enum::Variant;`, where a bare path
+    /// initializer constructs/aliases a symbol the variable walk doesn't link.
+    /// Returns the referenced symbol name (the core emits a `References` edge
+    /// from the enclosing scope), or `None`.
+    fn extract_value_reference(&self, _node: SyntaxNode<'_>, _source: &str) -> Option<String> {
+        None
+    }
+
     /// Node types representing a file-level package/namespace declaration
     /// (e.g. Kotlin `package_header`, Java `package_declaration`). When set,
     /// the core wraps every top-level declaration in an implicit `namespace`

@@ -188,6 +188,8 @@ impl<'a> VueExtractor<'a> {
             // The component node spans the whole .vue file by definition.
             start_byte: Some(0),
             end_byte: Some(self.source.len() as u32),
+            address: None,
+            size: None,
             docstring: None,
             signature: None,
             visibility: None,

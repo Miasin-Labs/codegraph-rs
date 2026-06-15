@@ -382,6 +382,8 @@ impl<'a> TreeSitterExtractor<'a> {
                     // The file node spans the whole source by definition.
                     start_byte: Some(0),
                     end_byte: Some(self.source.len() as u32),
+                    address: None,
+                    size: None,
                     docstring: None,
                     signature: None,
                     visibility: None,
@@ -641,6 +643,8 @@ impl<'a> TreeSitterExtractor<'a> {
             end_column: node.end_position().column as u32,
             start_byte: Some(node.start_byte() as u32),
             end_byte: Some(end_byte),
+            address: None,
+            size: None,
             docstring: extra.docstring,
             signature: extra.signature,
             visibility: extra.visibility,
@@ -1080,6 +1084,8 @@ impl<'a> TreeSitterExtractor<'a> {
 
         // Extract inheritance (e.g. Swift: struct HTTPMethod: RawRepresentable)
         self.extract_inheritance(node, &struct_node.id);
+        // Rust `#[derive(Clone, Serialize, …)]` → Implements edges.
+        self.extract_rust_derives(node, &struct_node.id);
 
         // Push to stack for field extraction
         self.node_stack.push(struct_node.id.clone());
@@ -1122,6 +1128,8 @@ impl<'a> TreeSitterExtractor<'a> {
 
         // Extract inheritance (e.g. Swift: enum AFError: Error)
         self.extract_inheritance(node, &enum_node.id);
+        // Rust `#[derive(Clone, Serialize, …)]` → Implements edges.
+        self.extract_rust_derives(node, &enum_node.id);
 
         // Push to stack and visit body children (enum members, nested types, methods)
         self.node_stack.push(enum_node.id.clone());
@@ -2656,6 +2664,23 @@ impl<'a> TreeSitterExtractor<'a> {
             }
         }
 
+        // Value-path reference (Rust `let p = UnitStruct;`) → a `References`
+        // edge from the enclosing scope to the referenced symbol.
+        if let Some(value_ref) = ext.extract_value_reference(node, self.source) {
+            if let Some(scope_id) = self.node_stack.last().cloned() {
+                self.unresolved_references.push(UnresolvedReference {
+                    from_node_id: scope_id,
+                    reference_name: value_ref,
+                    reference_kind: EdgeKind::References,
+                    line: node.start_position().row as u32 + 1,
+                    column: node.start_position().column as u32,
+                    file_path: None,
+                    language: None,
+                    candidates: None,
+                });
+            }
+        }
+
         // Nested NAMED functions inside a body — function declarations and named
         // function expressions like `.on('mount', function onmount(){})` — become
         // their own nodes so the graph can link to them (callback handlers, local
@@ -2938,6 +2963,76 @@ impl<'a> TreeSitterExtractor<'a> {
 
     /// Rust `impl Trait for Type` — creates an implements edge from Type to Trait.
     /// For plain `impl Type { ... }` (no trait), no inheritance edge is needed.
+    /// Emit `Implements` edges for a Rust `#[derive(Trait, …)]` attribute on a
+    /// struct/enum. Derive macros generate real trait impls (`Clone`,
+    /// `PartialEq`, `serde::Serialize`, thiserror's `Error`→`Display`), which
+    /// the literal-`impl` path never sees — so "what implements Serialize?"
+    /// otherwise misses every derive site (~1k in a typical Rust crate).
+    fn extract_rust_derives(&mut self, decl_node: SyntaxNode<'_>, type_id: &str) {
+        if self.language != Language::Rust {
+            return;
+        }
+        // `#[derive(...)]` parses as `attribute_item` PRECEDING siblings of the
+        // declaration. Walk backwards over the contiguous attribute run.
+        let Some(parent) = decl_node.parent() else {
+            return;
+        };
+        let decl_start = decl_node.start_byte();
+        let siblings = named_children(parent);
+        let Some(idx) = siblings.iter().position(|s| s.start_byte() == decl_start) else {
+            return;
+        };
+        for j in (0..idx).rev() {
+            let sib = siblings[j];
+            if sib.kind() != "attribute_item" {
+                break; // a non-attribute separator ends this declaration's run
+            }
+            self.collect_rust_derives(sib, type_id);
+        }
+    }
+
+    /// Pull trait names out of one `#[derive(...)]` `attribute_item` and emit an
+    /// `Implements` ref per trait. For path traits (`serde::Serialize`) the
+    /// last path segment is used (`Serialize`).
+    fn collect_rust_derives(&mut self, attr_item: SyntaxNode<'_>, type_id: &str) {
+        let Some(attribute) = find_named_child(attr_item, "attribute") else {
+            return;
+        };
+        // The attribute name (first child identifier) must be `derive`.
+        let is_derive = attribute
+            .named_child(0)
+            .map(|c| get_node_text(c, self.source) == "derive")
+            .unwrap_or(false);
+        if !is_derive {
+            return;
+        }
+        let Some(token_tree) = find_named_child(attribute, "token_tree") else {
+            return;
+        };
+        // token_tree children are raw tokens: `(`, identifiers, `::`, `,`, `)`.
+        // Group by `,`; each group's last identifier is the trait name.
+        let mut last_ident: Option<SyntaxNode<'_>> = None;
+        for i in 0..token_tree.child_count() as u32 {
+            let Some(tok) = token_tree.child(i) else {
+                continue;
+            };
+            match tok.kind() {
+                "identifier" | "type_identifier" => last_ident = Some(tok),
+                "," => {
+                    if let Some(id) = last_ident.take() {
+                        let name = get_node_text(id, self.source).to_string();
+                        self.push_ref(type_id, name, EdgeKind::Implements, id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(id) = last_ident {
+            let name = get_node_text(id, self.source).to_string();
+            self.push_ref(type_id, name, EdgeKind::Implements, id);
+        }
+    }
+
     fn extract_rust_impl_item(&mut self, node: SyntaxNode<'_>) {
         // Check if this is `impl Trait for Type` by looking for a `for` keyword
         let mut has_for = false;

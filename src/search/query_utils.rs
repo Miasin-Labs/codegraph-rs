@@ -568,6 +568,10 @@ pub fn kind_bonus(kind: NodeKind) -> i32 {
         NodeKind::File => 0,
         NodeKind::Protocol => 9,
         NodeKind::EnumMember => 3,
+        // Decompiled-binary data symbols / string literals: searchable but
+        // lower-signal than callable code.
+        NodeKind::DataSymbol => 2,
+        NodeKind::StringLiteral => 1,
     }
 }
 

@@ -315,7 +315,9 @@ pub fn map_node_kind(kind: NodeKind) -> Option<ANodeKind> {
         | NodeKind::Import
         | NodeKind::Export
         | NodeKind::Route
-        | NodeKind::Component => None,
+        | NodeKind::Component
+        | NodeKind::DataSymbol
+        | NodeKind::StringLiteral => None,
     }
 }
 
@@ -368,6 +370,9 @@ pub fn map_edge_kind(kind: EdgeKind, source: ANodeKind, target: ANodeKind) -> Op
         } else {
             AEdgeKind::References
         }),
+        // Decompiled-binary data/aliasing edges have no place in the analysis
+        // engine's structural (call/type/impl) graph.
+        EdgeKind::Reads | EdgeKind::Writes | EdgeKind::Aliases => None,
     }
 }
 

@@ -40,10 +40,15 @@ pub enum NodeKind {
     Export,
     Route,
     Component,
+    /// A named global data symbol in decompiled binary output — IDA's
+    /// `off_`/`dword_`/`qword_`/`byte_`/`stru_`/`unk_`/`asc_`/`*_vtable` etc.
+    DataSymbol,
+    /// A string / format literal in decompiled binary output.
+    StringLiteral,
 }
 
 /// Runtime-iterable list of all node kinds (mirrors `NODE_KINDS` in TS).
-pub const NODE_KINDS: [NodeKind; 22] = [
+pub const NODE_KINDS: [NodeKind; 24] = [
     NodeKind::File,
     NodeKind::Module,
     NodeKind::Class,
@@ -66,6 +71,8 @@ pub const NODE_KINDS: [NodeKind; 22] = [
     NodeKind::Export,
     NodeKind::Route,
     NodeKind::Component,
+    NodeKind::DataSymbol,
+    NodeKind::StringLiteral,
 ];
 
 impl NodeKind {
@@ -93,6 +100,8 @@ impl NodeKind {
             NodeKind::Export => "export",
             NodeKind::Route => "route",
             NodeKind::Component => "component",
+            NodeKind::DataSymbol => "data_symbol",
+            NodeKind::StringLiteral => "string_literal",
         }
     }
 }
@@ -142,10 +151,16 @@ pub enum EdgeKind {
     Overrides,
     /// Decorator applied to symbol
     Decorates,
+    /// Symbol reads a data symbol (decompiled binary: load from `dword_`/…)
+    Reads,
+    /// Symbol writes a data symbol (decompiled binary: store to `qword_`/…)
+    Writes,
+    /// Thunk/trampoline forwards to its real target (alias, not a real call)
+    Aliases,
 }
 
 /// Runtime-iterable list of all edge kinds.
-pub const EDGE_KINDS: [EdgeKind; 12] = [
+pub const EDGE_KINDS: [EdgeKind; 15] = [
     EdgeKind::Contains,
     EdgeKind::Calls,
     EdgeKind::Imports,
@@ -158,6 +173,9 @@ pub const EDGE_KINDS: [EdgeKind; 12] = [
     EdgeKind::Instantiates,
     EdgeKind::Overrides,
     EdgeKind::Decorates,
+    EdgeKind::Reads,
+    EdgeKind::Writes,
+    EdgeKind::Aliases,
 ];
 
 impl EdgeKind {
@@ -175,6 +193,9 @@ impl EdgeKind {
             EdgeKind::Instantiates => "instantiates",
             EdgeKind::Overrides => "overrides",
             EdgeKind::Decorates => "decorates",
+            EdgeKind::Reads => "reads",
+            EdgeKind::Writes => "writes",
+            EdgeKind::Aliases => "aliases",
         }
     }
 }
@@ -415,6 +436,16 @@ pub struct Node {
     /// `end_byte()`). Present iff [`Self::start_byte`] is present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_byte: Option<u32>,
+    /// Virtual address of the symbol in the binary, when known. Populated from
+    /// decompiled IDA/Hex-Rays output (the `// Address:` header or the
+    /// `sub_<HEX>` name); `None` for source-language nodes. This is the
+    /// binary-level join key for manifests and cross-decompiler parity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<u64>,
+    /// Size in bytes of the symbol in the binary, when known (IDA `// Size:` /
+    /// `// Function size:`). Pairs with [`Self::address`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u32>,
     /// Documentation string if present
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docstring: Option<String>,
@@ -472,6 +503,8 @@ impl Node {
             end_column: 0,
             start_byte: None,
             end_byte: None,
+            address: None,
+            size: None,
             docstring: None,
             signature: None,
             visibility: None,

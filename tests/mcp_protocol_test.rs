@@ -301,14 +301,14 @@ fn static_tools_fn_carries_annotations_too() {
 fn emits_tools_list_changed_when_a_late_project_open_changes_the_list() {
     let _guard = env_read();
     let tmp = TempDir::new().unwrap();
-    // NO project yet: tools/list serves the full static surface (8 tools).
+    // NO project yet: tools/list serves the full static surface (13 tools).
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
     server.send(&initialize_msg(None, "2025-06-18", json!({})));
     wait_for_message(&server, Duration::from_secs(5), |m| m["id"] == 0);
 
     server.send(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }));
     let first = wait_for_message(&server, Duration::from_secs(8), |m| m["id"] == 1);
-    assert_eq!(first["result"]["tools"].as_array().unwrap().len(), 8);
+    assert_eq!(first["result"]["tools"].as_array().unwrap().len(), 13);
 
     // The project appears AFTER the server started (and after the client
     // listed). The next tool call resolves it (retry_initialize_sync), the
@@ -735,7 +735,7 @@ mod degraded_proxy {
         server.send(&json!({ "jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": {} }));
         let listed = wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 5);
         let tools = listed["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 8);
+        assert_eq!(tools.len(), 13);
         for tool in tools {
             assert_eq!(tool["annotations"], expected_annotations());
         }

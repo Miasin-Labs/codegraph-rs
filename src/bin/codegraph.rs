@@ -59,6 +59,7 @@ use codegraph::context_analysis::{self, AnalysisContextOptions};
 use codegraph::db::{DatabaseConnection, QueryBuilder, get_database_path};
 use codegraph::directory::{get_codegraph_dir, is_initialized};
 use codegraph::extraction::is_generated_file;
+use codegraph::history::{HistoryDb, default_history_path, default_jfc_logs_dir, parse_logs_dir};
 use codegraph::installer::targets::{Location, get_target, list_target_ids};
 use codegraph::installer::{
     RunInstallerOptions,
@@ -836,6 +837,43 @@ enum Commands {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+    /// Tool-call history: ingest agent logs, query usage (hot files/tools, co-access)
+    History {
+        #[command(subcommand)]
+        command: HistoryCommands,
+    },
+}
+
+/// `codegraph history` — the global, redacted tool-call history flywheel.
+#[derive(Subcommand)]
+enum HistoryCommands {
+    /// Parse JFC logs into the redacted history database
+    Ingest {
+        /// Log directory (default: ~/.config/jfc/logs)
+        #[arg(long, value_name = "dir")]
+        logs: Option<String>,
+        /// History DB path (default: ~/.codegraph/history.db)
+        #[arg(long, value_name = "path")]
+        db: Option<String>,
+        /// Tag ingested events with this project path
+        #[arg(short = 'p', long, value_name = "path")]
+        project: Option<String>,
+    },
+    /// Show usage rankings from the history database
+    Show {
+        /// History DB path (default: ~/.codegraph/history.db)
+        #[arg(long, value_name = "path")]
+        db: Option<String>,
+        /// Scope file rankings to a project path substring
+        #[arg(short = 'p', long, value_name = "path")]
+        project: Option<String>,
+        /// Show top N per section
+        #[arg(short = 't', long, value_name = "number", default_value = "20")]
+        top: String,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
 }
 
 /// `codegraph analyze` — the analysis engine (`codegraph-analysis`) running
@@ -1315,6 +1353,35 @@ per-function complexity so the NEXT diff reports full before/after deltas."
         #[arg(short = 'j', long)]
         json: bool,
     },
+    /// Inference-based vulnerability scan: missing-auth (BAC/IDOR), unsanitized
+    /// flows, and the concurrency/control-plane lint — rules inferred from the
+    /// graph, not hardcoded
+    #[command(
+        after_help = "Discovers guards/sinks/sanitizers from the codebase itself \
+(deviant-frequency mining over the call graph + name-lexicon taint seeds) and \
+flags the call sites that deviate, plus a tree-sitter concurrency lint for \
+lossy best-effort sends. Findings below --min-confidence are dropped."
+    )]
+    Vuln {
+        /// Drop findings below this confidence (0.0–1.0)
+        #[arg(long = "min-confidence", value_name = "number", default_value = "0.5")]
+        min_confidence: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        /// Write a SARIF 2.1.0 log to this path (for GitHub Advanced Security, Defender, etc.)
+        #[arg(long = "sarif", value_name = "path")]
+        sarif: Option<String>,
+        /// Write a standalone HTML report to this path
+        #[arg(long = "html", value_name = "path")]
+        html: Option<String>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
 }
 
 fn main() {
@@ -1464,6 +1531,7 @@ fn main() {
             verbose,
         ),
         Commands::Analyze { command } => cmd_analyze(command),
+        Commands::History { command } => cmd_history(command),
         Commands::Install {
             target,
             location,
@@ -3517,6 +3585,21 @@ fn cmd_analyze(command: AnalyzeCommands) {
             no_cache,
             json,
         } => cmd_analyze_diff(&base, &depth, &top, path.as_deref(), no_cache, json),
+        AnalyzeCommands::Vuln {
+            min_confidence,
+            path,
+            no_cache,
+            sarif,
+            html,
+            json,
+        } => cmd_analyze_vuln(
+            &min_confidence,
+            path.as_deref(),
+            no_cache,
+            sarif.as_deref(),
+            html.as_deref(),
+            json,
+        ),
     }
 }
 
@@ -4575,6 +4658,158 @@ fn cmd_analyze_co_change(
 }
 
 /// codegraph analyze coverage --lcov <path> [--untested]
+fn cmd_history(command: HistoryCommands) {
+    match command {
+        HistoryCommands::Ingest { logs, db, project } => {
+            cmd_history_ingest(logs.as_deref(), db.as_deref(), project.as_deref())
+        }
+        HistoryCommands::Show {
+            db,
+            project,
+            top,
+            json,
+        } => cmd_history_show(db.as_deref(), project.as_deref(), &top, json),
+    }
+}
+
+fn cmd_history_ingest(logs: Option<&str>, db: Option<&str>, project: Option<&str>) {
+    let logs_dir = logs.map(PathBuf::from).unwrap_or_else(default_jfc_logs_dir);
+    let db_path = db.map(PathBuf::from).unwrap_or_else(default_history_path);
+
+    let body = || -> Result<(), String> {
+        let mut events = parse_logs_dir(&logs_dir);
+        if let Some(p) = project {
+            for e in &mut events {
+                e.project = Some(p.to_string());
+            }
+        }
+        let mut hdb = HistoryDb::open(&db_path).map_err(|e| e.to_string())?;
+        let n = hdb.ingest(&events).map_err(|e| e.to_string())?;
+        println!(
+            "Ingested {} tool event(s) from {} into {}",
+            format_number(n as u64),
+            logs_dir.display(),
+            db_path.display(),
+        );
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("history ingest failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+fn cmd_history_show(db: Option<&str>, project: Option<&str>, top_arg: &str, json: bool) {
+    let db_path = db.map(PathBuf::from).unwrap_or_else(default_history_path);
+    let top = parse_int_js(top_arg).unwrap_or(20).max(1) as usize;
+
+    let body = || -> Result<(), String> {
+        let hdb = HistoryDb::open(&db_path).map_err(|e| e.to_string())?;
+        let total = hdb.count().map_err(|e| e.to_string())?;
+        let tools = hdb.hot_tools(top).map_err(|e| e.to_string())?;
+        let files = hdb.hot_files(project, top).map_err(|e| e.to_string())?;
+        let chains = hdb.hot_chains(top).map_err(|e| e.to_string())?;
+        let co = hdb.co_access(top).map_err(|e| e.to_string())?;
+
+        if json {
+            let val = serde_json::json!({
+                "total": total,
+                "hot_tools": tools,
+                "hot_files": files,
+                "hot_chains": chains,
+                "co_access": co,
+            });
+            return print_json(&val);
+        }
+
+        println!(
+            "{}",
+            bold(&format!(
+                "\nTool-call history — {} event(s)\n",
+                format_number(total as u64)
+            ))
+        );
+        println!("{}", bold("Hot tools:"));
+        for (k, c) in &tools {
+            println!("  {c:>7}  {k}");
+        }
+        println!("{}", bold("\nHot files:"));
+        for (p, c) in &files {
+            println!("  {c:>7}  {p}");
+        }
+        println!("{}", bold("\nHot command chains:"));
+        for (chain, c) in &chains {
+            println!("  {c:>7}  {chain}");
+        }
+        println!("{}", bold("\nCo-accessed file pairs (same session):"));
+        for (a, b, c) in &co {
+            println!("  {c:>7}  {a}  +  {b}");
+        }
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("history show failed: {msg}"));
+        process::exit(1);
+    }
+}
+
+fn cmd_analyze_vuln(
+    min_confidence_arg: &str,
+    path_arg: Option<&str>,
+    no_cache: bool,
+    sarif_path: Option<&str>,
+    html_path: Option<&str>,
+    json: bool,
+) {
+    let project_path = resolve_project_path(path_arg);
+
+    let body = || -> Result<(), String> {
+        let bridged = bridge_project(&project_path, no_cache, json)?;
+        let min_confidence = min_confidence_arg
+            .parse::<f64>()
+            .unwrap_or(0.5)
+            .clamp(0.0, 1.0);
+        let report = analyze::vuln_report(&bridged.graph, &project_path, min_confidence);
+
+        // Side-channel exports run regardless of stdout format.
+        if let Some(p) = sarif_path {
+            let sarif = serde_json::to_string_pretty(&report.to_sarif())
+                .map_err(|e| format!("serialize SARIF: {e}"))?;
+            std::fs::write(p, sarif).map_err(|e| format!("write SARIF to {p}: {e}"))?;
+            if !json {
+                info(&format!(
+                    "Wrote SARIF log ({} finding(s)) to {p}",
+                    report.findings.len()
+                ));
+            }
+        }
+        if let Some(p) = html_path {
+            std::fs::write(p, report.to_html()).map_err(|e| format!("write HTML to {p}: {e}"))?;
+            if !json {
+                info(&format!("Wrote HTML report to {p}"));
+            }
+        }
+
+        if json {
+            return print_report_json("vuln", &report);
+        }
+        print!("{}", report.render_human());
+        if report.findings.is_empty() {
+            info(
+                "No findings at or above the confidence threshold (lower --min-confidence to widen)",
+            );
+        }
+        Ok(())
+    };
+
+    if let Err(msg) = body() {
+        error_msg(&format!("analyze vuln failed: {msg}"));
+        process::exit(1);
+    }
+}
+
 fn cmd_analyze_coverage(
     lcov: &str,
     untested_only: bool,

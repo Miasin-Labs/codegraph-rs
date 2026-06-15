@@ -26,6 +26,8 @@ pub mod co_change;
 pub mod communities;
 pub mod complexity;
 pub mod complexity_rules;
+pub mod concurrency;
+pub mod concurrency_rules;
 pub mod content_index;
 pub mod context;
 pub mod coverage;
@@ -84,6 +86,7 @@ pub mod taint_v2;
 pub mod traits_hierarchy;
 pub mod traversal;
 pub mod validation;
+pub mod vuln;
 pub mod worktree;
 
 /// Grow the stack before another level of recursive descent.

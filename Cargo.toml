@@ -70,6 +70,7 @@ tree-sitter-luau = "1.2"
 # Salesforce Apex (also ships SOQL/SOSL grammars; only Apex is wired up)
 tree-sitter-sfapex = "3"
 tree-sitter-bash = "0.25"
+cpp_demangle = "0.5.1"
 
 [features]
 default = []

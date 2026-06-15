@@ -34,6 +34,11 @@ CREATE TABLE IF NOT EXISTS nodes (
     -- backfills NULL; offsets appear on re-index).
     start_byte INTEGER,
     end_byte INTEGER,
+    -- Binary virtual address + size of the symbol (decompiled IDA/Hex-Rays
+    -- output). Nullable: source-language nodes and rows indexed before schema
+    -- v6 store NULL. The join key for manifests and cross-decompiler parity.
+    address INTEGER,
+    size INTEGER,
     docstring TEXT,
     signature TEXT,
     visibility TEXT,

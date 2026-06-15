@@ -14,7 +14,9 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use crate::analysis_bridge::{BridgeOptions, build_analysis_graph_cached_with_options};
 use crate::codegraph::CodeGraph;
+use crate::db::{DatabaseConnection, QueryBuilder, get_database_path};
 use crate::directory::find_nearest_codegraph_root;
 use crate::error::{CodeGraphError, Result};
 use crate::extraction::is_generated_file;
@@ -818,6 +820,186 @@ pub fn tools() -> Vec<ToolDefinition> {
         });
     }
 
+    // codegraph_vuln
+    {
+        let mut props = Map::new();
+        props.insert(
+            "minConfidence".into(),
+            prop_default(
+                "number",
+                "Drop findings below this confidence, 0.0-1.0 (default: 0.5)",
+                Value::from(0.5),
+            ),
+        );
+        props.insert("projectPath".into(), project_path_property());
+        out.push(ToolDefinition {
+            name: "codegraph_vuln".into(),
+            description: "Scan the project for likely vulnerabilities and bug-class anomalies (missing-guard / BAC / IDOR, unsanitized taint flows, concurrency lints), each with a confidence score. Inferred from corpus consistency, taint seeds, and concurrency analysis — no config needed.".into(),
+            input_schema: InputSchema {
+                schema_type: "object".into(),
+                properties: props,
+                required: None,
+            },
+            annotations: read_only_annotations(),
+        });
+    }
+
+    // codegraph_verify_roles
+    {
+        let mut props = Map::new();
+        // `roles`: array of {symbol, role, confidence?, rationale?} objects.
+        let mut item_props = Map::new();
+        item_props.insert(
+            "symbol".into(),
+            prop(
+                "string",
+                "Function name to classify (resolved in the graph)",
+            ),
+        );
+        item_props.insert(
+            "role".into(),
+            prop_enum(
+                "string",
+                "The role you believe this symbol plays",
+                &["sink", "guard", "source", "sanitizer"],
+            ),
+        );
+        item_props.insert(
+            "confidence".into(),
+            prop(
+                "number",
+                "Your confidence in this role, 0.0–1.0 (default 0.6)",
+            ),
+        );
+        item_props.insert(
+            "rationale".into(),
+            prop("string", "Why you assigned this role (free text)"),
+        );
+        let mut item_schema = Map::new();
+        item_schema.insert("type".into(), Value::from("object"));
+        item_schema.insert("properties".into(), Value::Object(item_props));
+        item_schema.insert(
+            "required".into(),
+            Value::Array(vec![Value::from("symbol"), Value::from("role")]),
+        );
+        let mut roles_schema = prop_map(
+            "array",
+            "Model-proposed roles to verify against the call graph. Each is \
+             {symbol, role, confidence?, rationale?}.",
+        );
+        roles_schema.insert("items".into(), Value::Object(item_schema));
+        props.insert("roles".into(), Value::Object(roles_schema));
+        props.insert(
+            "minCallers".into(),
+            prop_default(
+                "number",
+                "A proposed sink must have at least this many distinct callers to be \
+                 believable (default: 4)",
+                Value::from(4),
+            ),
+        );
+        props.insert("projectPath".into(), project_path_property());
+        out.push(ToolDefinition {
+            name: "codegraph_verify_roles".into(),
+            description: "Verify model-proposed predicate roles (sinks/guards/sanitizers/sources) against the call graph, then emit only the missing-guard findings the graph corroborates — the 'model proposes, graph proves' boundary. Hallucinated sinks/guards are dropped before any finding is produced; survivors are tagged with the `llm` inference origin.".into(),
+            input_schema: InputSchema {
+                schema_type: "object".into(),
+                properties: props,
+                required: Some(vec!["roles".into()]),
+            },
+            annotations: read_only_annotations(),
+        });
+    }
+
+    // codegraph_arch
+    {
+        let mut props = Map::new();
+        props.insert(
+            "path".into(),
+            prop(
+                "string",
+                "Subsystem path/prefix to map, e.g. \"src/ast_deobfuscate\" (omit for whole project)",
+            ),
+        );
+        props.insert(
+            "maxSymbolsPerFile".into(),
+            prop_default(
+                "number",
+                "Max definitions listed per file (default: 12)",
+                Value::from(12),
+            ),
+        );
+        props.insert("projectPath".into(), project_path_property());
+        out.push(ToolDefinition {
+            name: "codegraph_arch".into(),
+            description: "Architecture overview of a subsystem: its modules with their key definitions (functions/types) plus the external module dependencies in and out. Use INSTEAD of grep+read to map an area's shape.".into(),
+            input_schema: InputSchema {
+                schema_type: "object".into(),
+                properties: props,
+                required: None,
+            },
+            annotations: read_only_annotations(),
+        });
+    }
+
+    // codegraph_xref
+    {
+        let mut props = Map::new();
+        props.insert(
+            "symbol".into(),
+            prop(
+                "string",
+                "Symbol to cross-reference (find all references to)",
+            ),
+        );
+        props.insert(
+            "maxRefs".into(),
+            prop_default(
+                "number",
+                "Max references listed per reference kind (default: 50)",
+                Value::from(50),
+            ),
+        );
+        props.insert("projectPath".into(), project_path_property());
+        out.push(ToolDefinition {
+            name: "codegraph_xref".into(),
+            description: "All incoming references to a symbol in one shot (callers, reads/writes, type refs, impls), grouped by reference kind. IDA-style xref — use instead of separate callers/impact calls.".into(),
+            input_schema: InputSchema {
+                schema_type: "object".into(),
+                properties: props,
+                required: Some(vec!["symbol".into()]),
+            },
+            annotations: read_only_annotations(),
+        });
+    }
+
+    // codegraph_paths
+    {
+        let mut props = Map::new();
+        props.insert(
+            "from".into(),
+            prop(
+                "string",
+                "Source symbol (e.g. an entrypoint or tainted input)",
+            ),
+        );
+        props.insert(
+            "to".into(),
+            prop("string", "Sink symbol (e.g. a dangerous function)"),
+        );
+        props.insert("projectPath".into(), project_path_property());
+        out.push(ToolDefinition {
+            name: "codegraph_paths".into(),
+            description: "Find a call/reference path from a source symbol to a sink symbol — the reachability chain that connects them. Use to prove 'does X reach Y' for taint and impact reasoning.".into(),
+            input_schema: InputSchema {
+                schema_type: "object".into(),
+                properties: props,
+                required: Some(vec!["from".into(), "to".into()]),
+            },
+            annotations: read_only_annotations(),
+        });
+    }
+
     out
 }
 
@@ -1534,6 +1716,11 @@ impl ToolHandler {
                 };
             }
             "codegraph_files" => self.handle_files(args),
+            "codegraph_vuln" => self.handle_vuln(args),
+            "codegraph_verify_roles" => self.handle_verify_roles(args),
+            "codegraph_arch" => self.handle_arch(args),
+            "codegraph_xref" => self.handle_xref(args),
+            "codegraph_paths" => self.handle_paths(args),
             _ => return self.error_result(&format!("Unknown tool: {tool_name}")),
         };
         let result = match result {
@@ -1730,6 +1917,468 @@ impl ToolHandler {
             all_matches.note
         );
         Ok(self.text_result(&self.truncate_output(&formatted)))
+    }
+
+    /// codegraph_vuln — run the project's vulnerability scan (missing-guard
+    /// deviations, unsanitized taint flows, concurrency lints) and return the
+    /// human report. Mirrors the `codegraph analyze vuln` CLI path, but bridged
+    /// lib-side so it runs inside the MCP server. Opening a fresh read
+    /// connection is safe under WAL and matches the CLI's `bridge_project`.
+    fn handle_vuln(&self, args: &Map<String, Value>) -> Result<ToolResult> {
+        let cg = self.get_code_graph(args.get("projectPath").and_then(|v| v.as_str()))?;
+        let root = cg.get_project_root().to_path_buf();
+        let min_confidence = clamp(num_or(args, "minConfidence", 0.5), 0.0, 1.0);
+
+        let conn = DatabaseConnection::open(get_database_path(&root))
+            .map_err(|e| CodeGraphError::other(format!("vuln: open db: {e}")))?;
+        let db = conn
+            .get_db()
+            .map_err(|e| CodeGraphError::other(format!("vuln: db handle: {e}")))?;
+        let queries = QueryBuilder::new(db);
+        let cached = build_analysis_graph_cached_with_options(
+            &queries,
+            &root,
+            true,
+            &BridgeOptions::default(),
+        )
+        .map_err(|e| CodeGraphError::other(format!("vuln: bridge analysis graph: {e}")))?;
+
+        let report = crate::analyze::vuln_report(&cached.result.graph, &root, min_confidence);
+        Ok(self.text_result(&self.truncate_output(&report.render_human())))
+    }
+
+    /// codegraph_verify_roles — the "model proposes, graph proves" boundary.
+    ///
+    /// The agent layer (which has model access) supplies role proposals naming
+    /// suspected sinks and guards; this tool resolves each name against the
+    /// bridged analysis graph, runs the proposals through the sound
+    /// [`GraphVerifier`], and emits only the missing-guard findings the call
+    /// graph actually corroborates — tagged with the `llm` inference origin. A
+    /// hallucinated sink (too few callers) or guard (never precedes the sink) is
+    /// dropped before any finding is produced, so the model supplies semantic
+    /// judgment while the graph supplies ground truth.
+    fn handle_verify_roles(&self, args: &Map<String, Value>) -> Result<ToolResult> {
+        use codegraph_analysis::context::resolver::resolve_symbol;
+        use codegraph_analysis::vuln::classify::{
+            PredicateRole,
+            RoleProposal,
+            findings_from_verified_roles,
+        };
+
+        let Some(raw) = args.get("roles").and_then(|v| v.as_array()) else {
+            return Ok(self.text_result(
+                "codegraph_verify_roles: `roles` must be an array of \
+                 {symbol, role, confidence?, rationale?} objects \
+                 (role ∈ sink|guard|source|sanitizer).",
+            ));
+        };
+        if raw.is_empty() {
+            return Ok(self.text_result("codegraph_verify_roles: `roles` was empty."));
+        }
+        let min_callers = clamp(num_or(args, "minCallers", 4.0), 1.0, 1_000.0).round() as usize;
+
+        let cg = self.get_code_graph(args.get("projectPath").and_then(|v| v.as_str()))?;
+        let root = cg.get_project_root().to_path_buf();
+        let conn = DatabaseConnection::open(get_database_path(&root))
+            .map_err(|e| CodeGraphError::other(format!("verify_roles: open db: {e}")))?;
+        let db = conn
+            .get_db()
+            .map_err(|e| CodeGraphError::other(format!("verify_roles: db handle: {e}")))?;
+        let queries = QueryBuilder::new(db);
+        let cached = build_analysis_graph_cached_with_options(
+            &queries,
+            &root,
+            true,
+            &BridgeOptions::default(),
+        )
+        .map_err(|e| CodeGraphError::other(format!("verify_roles: bridge graph: {e}")))?;
+        let graph = &cached.result.graph;
+
+        let mut proposals: Vec<RoleProposal> = Vec::new();
+        let mut unresolved: Vec<String> = Vec::new();
+        for item in raw {
+            let Some(symbol) = item.get("symbol").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let role = match item.get("role").and_then(|v| v.as_str()) {
+                Some(r) => match r.to_ascii_lowercase().as_str() {
+                    "sink" => PredicateRole::Sink,
+                    "guard" => PredicateRole::Guard,
+                    "source" => PredicateRole::Source,
+                    "sanitizer" => PredicateRole::Sanitizer,
+                    other => {
+                        return Ok(self.text_result(&format!(
+                            "codegraph_verify_roles: unknown role \"{other}\" for \"{symbol}\" \
+                             (expected sink|guard|source|sanitizer)."
+                        )));
+                    }
+                },
+                None => continue,
+            };
+            let confidence = item
+                .get("confidence")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.6)
+                .clamp(0.0, 1.0);
+            let rationale = item
+                .get("rationale")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+
+            let matches = resolve_symbol(graph, symbol);
+            if matches.is_empty() {
+                unresolved.push(symbol.to_owned());
+                continue;
+            }
+            // A common name may resolve to several nodes; propose the role for
+            // each so verification can keep whichever the graph corroborates.
+            for node in matches.into_iter().take(5) {
+                proposals.push(RoleProposal {
+                    node,
+                    role,
+                    confidence,
+                    rationale: rationale.clone(),
+                });
+            }
+        }
+
+        if proposals.is_empty() {
+            return Ok(self.text_result(&format!(
+                "codegraph_verify_roles: none of the proposed symbols resolved in the \
+                 graph ({} unresolved: {}).",
+                unresolved.len(),
+                unresolved.join(", ")
+            )));
+        }
+
+        let findings = findings_from_verified_roles(graph, &proposals, min_callers);
+
+        let mut out = format!(
+            "Role verification — {} proposal(s) → {} verified finding(s)\n  \
+             (model proposes, graph proves; origin: llm)\n",
+            proposals.len(),
+            findings.len(),
+        );
+        if !unresolved.is_empty() {
+            out.push_str(&format!(
+                "  unresolved symbols (skipped): {}\n",
+                unresolved.join(", ")
+            ));
+        }
+        const CAP: usize = 60;
+        for f in findings.iter().take(CAP) {
+            let (file, line, symbol) = match graph.get_node(&f.site) {
+                Some(n) => (
+                    n.file_path.to_string_lossy().into_owned(),
+                    n.span.start_line,
+                    n.name.clone(),
+                ),
+                None => (String::new(), 0, format!("node#{}", f.site.0)),
+            };
+            let class = f
+                .class
+                .as_ref()
+                .map(|c| format!(" [{c}]"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "  - {}:{} ({}{}, {:.0}% via llm) {}\n    {}\n",
+                file,
+                line,
+                f.template.id(),
+                class,
+                f.confidence * 100.0,
+                symbol,
+                f.message,
+            ));
+        }
+        if findings.len() > CAP {
+            out.push_str(&format!("  ... and {} more\n", findings.len() - CAP));
+        }
+        if findings.is_empty() {
+            out.push_str(
+                "  No proposal survived graph verification — the call graph contradicted \
+                 every proposed sink/guard, so nothing was emitted.\n",
+            );
+        }
+        Ok(self.text_result(&self.truncate_output(&out)))
+    }
+
+    /// codegraph_arch — architecture overview of a subsystem (path prefix):
+    /// its modules with their key definitions, plus the external module
+    /// dependencies in and out. Built on the db graph directly (no bridge), so
+    /// it replaces the grep+read burst the agent uses to map an area's shape.
+    fn handle_arch(&self, args: &Map<String, Value>) -> Result<ToolResult> {
+        let cg = self.get_code_graph(args.get("projectPath").and_then(|v| v.as_str()))?;
+        let raw = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let prefix = raw.replace('\\', "/");
+        let prefix = prefix
+            .trim_start_matches("./")
+            .trim_end_matches('/')
+            .to_string();
+        let max_syms = clamp(num_or(args, "maxSymbolsPerFile", 12.0), 1.0, 100.0) as usize;
+
+        let mut files: Vec<_> = cg
+            .get_files()?
+            .into_iter()
+            .filter(|f| {
+                if prefix.is_empty() {
+                    return true;
+                }
+                let p = f.path.replace('\\', "/");
+                p == prefix || p.starts_with(&format!("{prefix}/"))
+            })
+            .collect();
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        if files.is_empty() {
+            return Ok(self.text_result(&format!(
+                "No indexed files under \"{}\". Try a different path or run `codegraph index`.",
+                if prefix.is_empty() {
+                    "<project root>"
+                } else {
+                    &prefix
+                }
+            )));
+        }
+
+        let in_scope: HashSet<String> = files.iter().map(|f| f.path.replace('\\', "/")).collect();
+        let is_def = |k: &NodeKind| {
+            matches!(
+                k,
+                NodeKind::Function
+                    | NodeKind::Method
+                    | NodeKind::Struct
+                    | NodeKind::Enum
+                    | NodeKind::Trait
+                    | NodeKind::Class
+                    | NodeKind::Interface
+                    | NodeKind::TypeAlias
+            )
+        };
+
+        let mut body = String::new();
+        let mut total_defs = 0usize;
+        let mut ext_deps: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut ext_dependents: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+
+        for f in &files {
+            let nodes = cg.get_nodes_in_file(&f.path)?;
+            let mut defs: Vec<&Node> = nodes.iter().filter(|n| is_def(&n.kind)).collect();
+            defs.sort_by_key(|n| n.start_line);
+            total_defs += defs.len();
+
+            body.push_str(&format!(
+                "\n{} [{}] — {} symbols\n",
+                f.path,
+                f.language.as_str(),
+                f.node_count
+            ));
+            for n in defs.iter().take(max_syms) {
+                let exported = if n.is_exported == Some(true) {
+                    " (pub)"
+                } else {
+                    ""
+                };
+                body.push_str(&format!(
+                    "  {} {}{}  :{}\n",
+                    n.kind.as_str(),
+                    n.name,
+                    exported,
+                    n.start_line
+                ));
+            }
+            if defs.len() > max_syms {
+                body.push_str(&format!("  … +{} more\n", defs.len() - max_syms));
+            }
+
+            for dep in cg.get_file_dependencies(&f.path)? {
+                let d = dep.replace('\\', "/");
+                if !in_scope.contains(&d) {
+                    ext_deps.insert(d);
+                }
+            }
+            for dep in cg.get_file_dependents(&f.path)? {
+                let d = dep.replace('\\', "/");
+                if !in_scope.contains(&d) {
+                    ext_dependents.insert(d);
+                }
+            }
+        }
+
+        let scope_label = if prefix.is_empty() {
+            "<project root>".to_string()
+        } else {
+            prefix.clone()
+        };
+        let mut report = format!(
+            "Architecture overview: {}\n{} file(s), {} top-level definitions\n\n── Modules & key symbols ──{}",
+            scope_label,
+            files.len(),
+            total_defs,
+            body
+        );
+        report.push_str(&format!(
+            "\n── Depends on (external, {}) ──\n",
+            ext_deps.len()
+        ));
+        if ext_deps.is_empty() {
+            report.push_str("  (none — self-contained)\n");
+        } else {
+            for d in ext_deps.iter().take(40) {
+                report.push_str(&format!("  → {d}\n"));
+            }
+        }
+        report.push_str(&format!(
+            "\n── Depended on by (external, {}) ──\n",
+            ext_dependents.len()
+        ));
+        if ext_dependents.is_empty() {
+            report.push_str("  (none — leaf subsystem)\n");
+        } else {
+            for d in ext_dependents.iter().take(40) {
+                report.push_str(&format!("  ← {d}\n"));
+            }
+        }
+
+        Ok(self.text_result(&self.truncate_output(&report)))
+    }
+
+    /// codegraph_xref — all INCOMING references to a symbol in one shot
+    /// (callers, reads/writes, type refs, impls), grouped by edge kind. The
+    /// IDA-style xref: replaces separate callers/impact calls.
+    fn handle_xref(&self, args: &Map<String, Value>) -> Result<ToolResult> {
+        let symbol = match self.validate_string(args.get("symbol"), "symbol") {
+            Ok(s) => s,
+            Err(r) => return Ok(r),
+        };
+        let cg = self.get_code_graph(args.get("projectPath").and_then(|v| v.as_str()))?;
+        let max_refs = clamp(num_or(args, "maxRefs", 50.0), 1.0, 500.0) as usize;
+
+        let matches = self.find_all_symbols(&cg, &symbol)?;
+        if matches.nodes.is_empty() {
+            return Ok(self.text_result(&format!("Symbol \"{symbol}\" not found in the codebase")));
+        }
+
+        let mut out = String::new();
+        for node in &matches.nodes {
+            out.push_str(&format!(
+                "\n{} {} — {}:{}\n",
+                node.kind.as_str(),
+                node.name,
+                node.file_path,
+                node.start_line
+            ));
+            let incoming = cg.get_incoming_edges(&node.id)?;
+            if incoming.is_empty() {
+                out.push_str("  (no incoming references)\n");
+                continue;
+            }
+            let mut by_kind: std::collections::BTreeMap<&str, Vec<String>> =
+                std::collections::BTreeMap::new();
+            for e in &incoming {
+                let loc = match cg.get_node(&e.source)? {
+                    Some(s) => format!(
+                        "{} {} — {}:{}",
+                        s.kind.as_str(),
+                        s.name,
+                        s.file_path,
+                        e.line.unwrap_or(s.start_line)
+                    ),
+                    None => e.source.clone(),
+                };
+                by_kind.entry(e.kind.as_str()).or_default().push(loc);
+            }
+            for (kind, refs) in &by_kind {
+                out.push_str(&format!("  {} ({}):\n", kind, refs.len()));
+                for r in refs.iter().take(max_refs) {
+                    out.push_str(&format!("    {r}\n"));
+                }
+                if refs.len() > max_refs {
+                    out.push_str(&format!("    … +{} more\n", refs.len() - max_refs));
+                }
+            }
+        }
+        out.push_str(&matches.note);
+        Ok(self.text_result(&self.truncate_output(&out)))
+    }
+
+    /// codegraph_paths — find a call/reference reachability chain from a source
+    /// symbol to a sink symbol. This is the "does X reach Y / chain things
+    /// together" query for taint and impact reasoning.
+    fn handle_paths(&self, args: &Map<String, Value>) -> Result<ToolResult> {
+        let from = match self.validate_string(args.get("from"), "from") {
+            Ok(s) => s,
+            Err(r) => return Ok(r),
+        };
+        let to = match self.validate_string(args.get("to"), "to") {
+            Ok(s) => s,
+            Err(r) => return Ok(r),
+        };
+        let cg = self.get_code_graph(args.get("projectPath").and_then(|v| v.as_str()))?;
+
+        let from_m = self.find_all_symbols(&cg, &from)?;
+        if from_m.nodes.is_empty() {
+            return Ok(self.text_result(&format!("Source symbol \"{from}\" not found")));
+        }
+        let to_m = self.find_all_symbols(&cg, &to)?;
+        if to_m.nodes.is_empty() {
+            return Ok(self.text_result(&format!("Sink symbol \"{to}\" not found")));
+        }
+
+        let edge_kinds = [
+            EdgeKind::Calls,
+            EdgeKind::References,
+            EdgeKind::Instantiates,
+        ];
+        // Bound the pairwise search so a common name can't explode it.
+        let froms: Vec<&Node> = from_m.nodes.iter().take(5).collect();
+        let tos: Vec<&Node> = to_m.nodes.iter().take(5).collect();
+        for fnode in &froms {
+            for tnode in &tos {
+                if fnode.id == tnode.id {
+                    continue;
+                }
+                let Some(path) = cg.find_path(&fnode.id, &tnode.id, Some(&edge_kinds))? else {
+                    continue;
+                };
+                if path.is_empty() {
+                    continue;
+                }
+                let mut s = format!(
+                    "Path from {} to {} ({} hops):\n\n",
+                    from,
+                    to,
+                    path.len().saturating_sub(1)
+                );
+                for (i, step) in path.iter().enumerate() {
+                    if i == 0 {
+                        s.push_str(&format!(
+                            "{} {} — {}:{}\n",
+                            step.node.kind.as_str(),
+                            step.node.name,
+                            step.node.file_path,
+                            step.node.start_line
+                        ));
+                    } else {
+                        let via = step.edge.as_ref().map_or("?", |e| e.kind.as_str());
+                        s.push_str(&format!(
+                            "  └─{via}→ {} {} — {}:{}\n",
+                            step.node.kind.as_str(),
+                            step.node.name,
+                            step.node.file_path,
+                            step.node.start_line
+                        ));
+                    }
+                }
+                return Ok(self.text_result(&self.truncate_output(&s)));
+            }
+        }
+        Ok(self.text_result(&format!(
+            "No path found from \"{from}\" to \"{to}\" over calls/references (searched {}×{} symbol matches). They may be unreachable, or connected only via dynamic dispatch.",
+            froms.len(),
+            tos.len()
+        )))
     }
 
     /// Describe a synthesized (dynamic-dispatch) edge for human output.
@@ -4714,7 +5363,7 @@ mod tests {
         // literal order, per-property keys in (type, description, enum?,
         // default?) order, required present.
         let defs = tools();
-        assert_eq!(defs.len(), 8);
+        assert_eq!(defs.len(), 13);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(
             names,
@@ -4726,7 +5375,12 @@ mod tests {
                 "codegraph_node",
                 "codegraph_explore",
                 "codegraph_status",
-                "codegraph_files"
+                "codegraph_files",
+                "codegraph_vuln",
+                "codegraph_verify_roles",
+                "codegraph_arch",
+                "codegraph_xref",
+                "codegraph_paths"
             ]
         );
         let json = serde_json::to_string(&defs[0]).unwrap();

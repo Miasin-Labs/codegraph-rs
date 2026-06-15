@@ -95,7 +95,10 @@ use codegraph_analysis::slicing::{DataflowOracle, backward_slice, forward_slice}
 use codegraph_analysis::taint_naming::{classify_name, flow_priority};
 use codegraph_analysis::traversal::{TraversalConfig, TraversalDirection, traverse};
 use codegraph_analysis::validation::VirtualValidator;
-use codegraph_analysis::{analysis, analysis_tools};
+use codegraph_analysis::vuln::TemplateKind;
+use codegraph_analysis::vuln::mining::{MineConfig, mine_missing_guards};
+use codegraph_analysis::vuln::taint_seed::scan_unsanitized_flows;
+use codegraph_analysis::{analysis, analysis_tools, concurrency};
 use serde::Serialize;
 use tree_sitter::{Node as TsNode, Point, Tree};
 
@@ -3783,6 +3786,426 @@ pub fn diff_report(
     }
 }
 
+// =============================================================================
+// Vulnerability scan (inference-based engine + concurrency lint)
+// =============================================================================
+
+/// One rendered vulnerability finding, unified across the inference engine
+/// (missing-guard / unsanitized-flow) and the concurrency lint.
+#[derive(Debug, Clone, Serialize)]
+pub struct VulnFindingOut {
+    /// Template / rule id (e.g. `missing_dominator_check`, `lossy_send`).
+    pub kind: String,
+    /// The vulnerability *property* template this finding instantiates
+    /// (`missing_dominator_check`, `reaches_without_sanitizer`, `must_follow`,
+    /// `deviant_frequency`). Stable across the human rule id so concurrency
+    /// must-follow-shaped findings (lossy-send-without-delivery) and the
+    /// inference-engine findings share one taxonomy.
+    pub template: String,
+    /// Heuristic class label when one applies (e.g. `BAC`, `IDOR`, `SQL injection`).
+    pub class: Option<String>,
+    /// How the signature was inferred (`frequency`, `name`, `concurrency`).
+    pub origin: String,
+    pub file: String,
+    pub line: u32,
+    /// The function the finding sits in (or the source symbol for taint).
+    pub symbol: String,
+    pub confidence: f64,
+    /// SARIF/severity bucket derived from confidence (`error`/`warning`/`note`).
+    pub severity: String,
+    pub message: String,
+}
+
+/// Map a confidence score to a SARIF `level` / severity bucket. High-confidence
+/// findings (inferred norms shared by most call sites, or the fixed-precision
+/// concurrency lint) escalate to `error`; mid-band to `warning`; the long tail
+/// to `note`.
+fn severity_for(confidence: f64) -> &'static str {
+    if confidence >= 0.85 {
+        "error"
+    } else if confidence >= 0.6 {
+        "warning"
+    } else {
+        "note"
+    }
+}
+
+/// Result of a whole-project vulnerability scan.
+#[derive(Debug, Clone, Serialize)]
+pub struct VulnReport {
+    pub findings: Vec<VulnFindingOut>,
+    pub missing_guard_count: usize,
+    pub taint_count: usize,
+    pub concurrency_count: usize,
+    pub scanned_functions: usize,
+}
+
+impl VulnReport {
+    /// Human-readable rendering for non-JSON CLI output.
+    pub fn render_human(&self) -> String {
+        let mut out = format!(
+            "Vulnerability scan — {} finding(s) across {} function(s)\n  \
+             missing-guard: {}  unsanitized-flow: {}  concurrency: {}\n",
+            self.findings.len(),
+            self.scanned_functions,
+            self.missing_guard_count,
+            self.taint_count,
+            self.concurrency_count,
+        );
+        const RENDER_CAP: usize = 60;
+        for f in self.findings.iter().take(RENDER_CAP) {
+            let class = f
+                .class
+                .as_ref()
+                .map(|c| format!(" [{c}]"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "  - {}:{} ({}{}, {:.0}% via {}) {}\n    {}\n",
+                f.file,
+                f.line,
+                f.kind,
+                class,
+                f.confidence * 100.0,
+                f.origin,
+                f.symbol,
+                f.message,
+            ));
+        }
+        if self.findings.len() > RENDER_CAP {
+            out.push_str(&format!(
+                "  ... and {} more (use --json for the full list, or raise --min-confidence)\n",
+                self.findings.len() - RENDER_CAP,
+            ));
+        }
+        out
+    }
+
+    /// Render the scan as a [SARIF 2.1.0] log — the interchange format GitHub
+    /// Advanced Security, Defender, and most code-scanning dashboards ingest.
+    ///
+    /// One `reportingDescriptor` (rule) per distinct template kind seen, and one
+    /// `result` per finding with `ruleId`, a confidence→`level` mapping, the
+    /// message, and a physical `artifactLocation`/`region`. Confidence is also
+    /// carried verbatim under `properties` so downstream tools can re-rank.
+    ///
+    /// [SARIF 2.1.0]: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
+    pub fn to_sarif(&self) -> serde_json::Value {
+        use serde_json::json;
+
+        // Distinct templates → SARIF rule descriptors (stable, sorted).
+        let mut rule_ids: Vec<&str> = self.findings.iter().map(|f| f.template.as_str()).collect();
+        rule_ids.sort_unstable();
+        rule_ids.dedup();
+        let rules: Vec<serde_json::Value> = rule_ids
+            .iter()
+            .map(|id| {
+                json!({
+                    "id": id,
+                    "name": id,
+                    "shortDescription": { "text": template_description(id) },
+                })
+            })
+            .collect();
+
+        let results: Vec<serde_json::Value> = self
+            .findings
+            .iter()
+            .map(|f| {
+                json!({
+                    "ruleId": f.template,
+                    "level": f.severity,
+                    "message": { "text": f.message },
+                    "locations": [{
+                        "physicalLocation": {
+                            "artifactLocation": { "uri": f.file },
+                            "region": { "startLine": f.line.max(1) }
+                        },
+                        "logicalLocations": [{ "fullyQualifiedName": f.symbol }]
+                    }],
+                    "properties": {
+                        "kind": f.kind,
+                        "class": f.class,
+                        "origin": f.origin,
+                        "confidence": f.confidence,
+                    }
+                })
+            })
+            .collect();
+
+        json!({
+            "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.json",
+            "version": "2.1.0",
+            "runs": [{
+                "tool": {
+                    "driver": {
+                        "name": "codegraph",
+                        "informationUri": "https://github.com/coleleavitt/codegraph-rs",
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "rules": rules,
+                    }
+                },
+                "results": results,
+            }]
+        })
+    }
+
+    /// Render the scan as a standalone HTML report (no external assets) — the
+    /// "hand it to management" artifact. Summary counts up top, then a
+    /// severity-ordered table with file:line, template, class, confidence, and
+    /// message. All dynamic text is HTML-escaped.
+    pub fn to_html(&self) -> String {
+        let mut rows = String::new();
+        for f in &self.findings {
+            let class = f.class.as_deref().unwrap_or("");
+            rows.push_str(&format!(
+                "<tr class=\"sev-{sev}\">\
+                 <td class=\"sev\">{sev}</td>\
+                 <td class=\"loc\">{file}:{line}</td>\
+                 <td>{template}</td>\
+                 <td>{class}</td>\
+                 <td class=\"sym\">{symbol}</td>\
+                 <td class=\"conf\">{conf:.0}%</td>\
+                 <td>{msg}</td></tr>\n",
+                sev = html_escape(&f.severity),
+                file = html_escape(&f.file),
+                line = f.line,
+                template = html_escape(&f.template),
+                class = html_escape(class),
+                symbol = html_escape(&f.symbol),
+                conf = f.confidence * 100.0,
+                msg = html_escape(&f.message),
+            ));
+        }
+        if self.findings.is_empty() {
+            rows.push_str(
+                "<tr><td colspan=\"7\" class=\"empty\">No findings at or above the \
+                 confidence threshold.</td></tr>\n",
+            );
+        }
+
+        format!(
+            "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+<title>codegraph vulnerability report</title>\n<style>\
+:root{{color-scheme:light dark}}\
+body{{font:14px/1.5 system-ui,sans-serif;margin:2rem;max-width:1100px}}\
+h1{{font-size:1.4rem;margin:0 0 .25rem}}\
+.sub{{color:#888;margin:0 0 1.5rem}}\
+.cards{{display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1.5rem}}\
+.card{{border:1px solid #8884;border-radius:8px;padding:.75rem 1rem;min-width:7rem}}\
+.card .n{{font-size:1.6rem;font-weight:700}}\
+.card .l{{color:#888;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}}\
+table{{border-collapse:collapse;width:100%;font-size:13px}}\
+th,td{{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #8883;vertical-align:top}}\
+th{{position:sticky;top:0;background:#8881;font-weight:600}}\
+.loc,.sym{{font-family:ui-monospace,monospace;white-space:nowrap}}\
+.conf{{text-align:right;font-variant-numeric:tabular-nums}}\
+td.sev{{text-transform:uppercase;font-size:.7rem;font-weight:700}}\
+.sev-error td.sev{{color:#d33}}.sev-warning td.sev{{color:#e90}}.sev-note td.sev{{color:#39c}}\
+.empty{{color:#888;text-align:center;padding:1.5rem}}\
+</style></head><body>\n\
+<h1>codegraph vulnerability report</h1>\n\
+<p class=\"sub\">{total} finding(s) across {fns} scanned function(s) · codegraph {ver}</p>\n\
+<div class=\"cards\">\
+<div class=\"card\"><div class=\"n\">{total}</div><div class=\"l\">Findings</div></div>\
+<div class=\"card\"><div class=\"n\">{mg}</div><div class=\"l\">Missing-guard</div></div>\
+<div class=\"card\"><div class=\"n\">{taint}</div><div class=\"l\">Unsanitized-flow</div></div>\
+<div class=\"card\"><div class=\"n\">{conc}</div><div class=\"l\">Concurrency</div></div>\
+</div>\n\
+<table><thead><tr><th>Sev</th><th>Location</th><th>Template</th><th>Class</th>\
+<th>Symbol</th><th>Conf</th><th>Message</th></tr></thead>\n<tbody>\n{rows}</tbody></table>\n\
+</body></html>\n",
+            total = self.findings.len(),
+            fns = self.scanned_functions,
+            ver = env!("CARGO_PKG_VERSION"),
+            mg = self.missing_guard_count,
+            taint = self.taint_count,
+            conc = self.concurrency_count,
+            rows = rows,
+        )
+    }
+}
+
+/// Human-readable one-liner for a SARIF rule descriptor, keyed by template id.
+fn template_description(template_id: &str) -> &'static str {
+    match template_id {
+        "missing_dominator_check" => {
+            "A sink reached on a path that skips a guard most sibling call sites pass \
+             (missing authorization / validation; BAC, IDOR)."
+        }
+        "reaches_without_sanitizer" => {
+            "A tainted source reaches a sink with no sanitizer on the path \
+             (IDOR, SSRF, injection)."
+        }
+        "must_follow" => {
+            "An operation occurs but a required follow-up is absent on some path \
+             (lossy-send-without-delivery, lock-without-unlock)."
+        }
+        "deviant_frequency" => "Statistical deviation from a learned norm.",
+        _ => "Inferred vulnerability finding.",
+    }
+}
+
+/// Minimal HTML text escaper for report cell contents.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Whether a finding sits in test code (excluded from a security scan).
+fn is_test_site(file: &str, symbol: &str) -> bool {
+    let f = file.replace('\\', "/");
+    f.starts_with("tests/")
+        || f.contains("/tests/")
+        || f.ends_with("_test.rs")
+        || f.ends_with("_tests.rs")
+        || f.contains("/test_")
+        || symbol.starts_with("test_")
+        || symbol.starts_with("test ")
+}
+
+/// Resolve an analysis node to `(file, line, name)` for rendering.
+fn render_site(graph: &AnalysisGraph, id: &ANodeId) -> (String, u32, String) {
+    match graph.get_node(id) {
+        Some(n) => (
+            n.file_path.to_string_lossy().into_owned(),
+            n.span.start_line,
+            n.name.clone(),
+        ),
+        None => (String::new(), 0, format!("node#{}", id.0)),
+    }
+}
+
+/// Run the full inference engine + concurrency lint over the bridged graph.
+///
+/// * missing-guard mining and unsanitized-flow taint run over the call/dataflow
+///   graph (no source needed);
+/// * the concurrency lint re-parses each distinct on-disk source file (only
+///   Rust is wired in the walker today).
+///
+/// Findings below `min_confidence` are dropped (concurrency findings are
+/// high-precision and assigned a fixed 0.9). Sorted by confidence descending.
+pub fn vuln_report(
+    graph: &AnalysisGraph,
+    workspace_root: &Path,
+    min_confidence: f64,
+) -> VulnReport {
+    let mut findings: Vec<VulnFindingOut> = Vec::new();
+
+    // 1. Missing-guard deviation (BAC / IDOR), inferred from corpus consistency.
+    let guard_findings = mine_missing_guards(graph, &MineConfig::default());
+    let missing_guard_count = guard_findings.len();
+    for f in guard_findings {
+        let (file, line, symbol) = render_site(graph, &f.site);
+        findings.push(VulnFindingOut {
+            kind: f.template.id().to_owned(),
+            template: f.template.id().to_owned(),
+            class: f.class,
+            origin: f.origin.id().to_owned(),
+            file,
+            line,
+            symbol,
+            confidence: f.confidence,
+            severity: severity_for(f.confidence).to_owned(),
+            message: f.message,
+        });
+    }
+
+    // 2. Unsanitized taint flows (IDOR / SSRF / injection), inferred seeds.
+    let taint_findings = scan_unsanitized_flows(graph, &[]);
+    let taint_count = taint_findings.len();
+    for f in taint_findings {
+        let (file, line, symbol) = render_site(graph, &f.site);
+        findings.push(VulnFindingOut {
+            kind: f.template.id().to_owned(),
+            template: f.template.id().to_owned(),
+            class: f.class,
+            origin: f.origin.id().to_owned(),
+            file,
+            line,
+            symbol,
+            confidence: f.confidence,
+            severity: severity_for(f.confidence).to_owned(),
+            message: f.message,
+        });
+    }
+
+    // 3. Concurrency / control-plane lint over distinct on-disk source files.
+    let mut seen_files: HashSet<PathBuf> = HashSet::new();
+    for func in graph.nodes_by_kind(ANodeKind::Function) {
+        seen_files.insert(func.file_path.clone());
+    }
+    let mut concurrency_count = 0usize;
+    let mut files: Vec<PathBuf> = seen_files.into_iter().collect();
+    files.sort();
+    for rel in files {
+        let lang = match rel.extension().and_then(|e| e.to_str()) {
+            Some("rs") => "rust",
+            _ => continue,
+        };
+        let Ok(source) = std::fs::read_to_string(workspace_root.join(&rel)) else {
+            continue;
+        };
+        for c in concurrency::analyze_source(lang, &source) {
+            concurrency_count += 1;
+            // A concurrency lint hit (lossy-send-without-delivery,
+            // remove-then-best-effort-resend) is structurally an operation-A
+            // that requires a follow-B which is absent on some path — i.e. the
+            // `MustFollow` property template. Tagging it here is what wires that
+            // otherwise-unemitted template into the taxonomy.
+            findings.push(VulnFindingOut {
+                kind: c.rule.id().to_owned(),
+                template: TemplateKind::MustFollow.id().to_owned(),
+                class: None,
+                origin: "concurrency".to_owned(),
+                file: rel.to_string_lossy().into_owned(),
+                line: c.line as u32,
+                symbol: c.function.unwrap_or_else(|| "<module>".to_owned()),
+                confidence: 0.9,
+                severity: severity_for(0.9).to_owned(),
+                message: c.message,
+            });
+        }
+    }
+
+    let scanned_functions = graph.nodes_by_kind(ANodeKind::Function).len();
+    // Test code dominates false positives (fixtures named `test_*`, `tests/`
+    // helpers reaching `open`/`remove`); drop it from a security scan.
+    findings.retain(|f| !is_test_site(&f.file, &f.symbol));
+    // A missing-guard deviation is only a *security* finding when the inferred
+    // guard reads like a security control (auth/validation → a class label).
+    // Deviations around benign helpers (`new`, `default`, `builder`) are real
+    // structural variation, not vulnerabilities — keep them out of a vuln scan.
+    // Discovery stays rule-free; the label only decides security relevance.
+    findings.retain(|f| f.kind != "missing_dominator_check" || f.class.is_some());
+    findings.retain(|f| f.confidence >= min_confidence);
+    findings.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.line.cmp(&b.line))
+    });
+
+    VulnReport {
+        findings,
+        missing_guard_count,
+        taint_count,
+        concurrency_count,
+        scanned_functions,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -4400,5 +4823,100 @@ mod tests {
         assert_eq!(report.edges_removed_count, 0);
         assert!(report.changed_functions.is_empty());
         assert_eq!(report.impact.impacted_count, 0);
+    }
+
+    fn sample_vuln_report() -> VulnReport {
+        VulnReport {
+            findings: vec![
+                VulnFindingOut {
+                    kind: "missing_dominator_check".to_owned(),
+                    template: "missing_dominator_check".to_owned(),
+                    class: Some("BAC".to_owned()),
+                    origin: "frequency".to_owned(),
+                    file: "src/handlers/order.rs".to_owned(),
+                    line: 42,
+                    symbol: "delete_order".to_owned(),
+                    confidence: 0.91,
+                    severity: severity_for(0.91).to_owned(),
+                    message: "reaches `db_delete` without `check_auth` & <tag>".to_owned(),
+                },
+                VulnFindingOut {
+                    kind: "lossy_send".to_owned(),
+                    template: "must_follow".to_owned(),
+                    class: None,
+                    origin: "concurrency".to_owned(),
+                    file: "src/queue.rs".to_owned(),
+                    line: 7,
+                    symbol: "enqueue".to_owned(),
+                    confidence: 0.9,
+                    severity: severity_for(0.9).to_owned(),
+                    message: "best-effort send result discarded".to_owned(),
+                },
+            ],
+            missing_guard_count: 1,
+            taint_count: 0,
+            concurrency_count: 1,
+            scanned_functions: 12,
+        }
+    }
+
+    #[test]
+    fn sarif_has_rules_results_and_levels() {
+        let sarif = sample_vuln_report().to_sarif();
+        assert_eq!(sarif["version"], "2.1.0");
+        let run = &sarif["runs"][0];
+        assert_eq!(run["tool"]["driver"]["name"], "codegraph");
+
+        // One rule per distinct template, sorted & deduped.
+        let rules = run["tool"]["driver"]["rules"].as_array().unwrap();
+        let rule_ids: Vec<&str> = rules.iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(rule_ids, vec!["missing_dominator_check", "must_follow"]);
+
+        let results = run["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        // High confidence (0.91) escalates to SARIF `error`.
+        assert_eq!(results[0]["ruleId"], "missing_dominator_check");
+        assert_eq!(results[0]["level"], "error");
+        assert_eq!(
+            results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "src/handlers/order.rs"
+        );
+        assert_eq!(
+            results[0]["locations"][0]["physicalLocation"]["region"]["startLine"],
+            42
+        );
+        assert_eq!(results[0]["properties"]["confidence"], 0.91);
+        // The MustFollow template is now emitted (was dead) from concurrency.
+        assert_eq!(results[1]["ruleId"], "must_follow");
+    }
+
+    #[test]
+    fn html_report_has_summary_and_escapes() {
+        let html = sample_vuln_report().to_html();
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("codegraph vulnerability report"));
+        // Summary cards reflect the counts.
+        assert!(html.contains("12 scanned function(s)"));
+        assert!(html.contains("delete_order"));
+        // Raw angle brackets in a message must be escaped, not emitted verbatim.
+        assert!(html.contains("&lt;tag&gt;"));
+        assert!(!html.contains("& <tag>"));
+        // Both findings rendered as rows.
+        assert!(html.contains("src/handlers/order.rs:42"));
+        assert!(html.contains("src/queue.rs:7"));
+    }
+
+    #[test]
+    fn empty_vuln_report_html_is_well_formed() {
+        let report = VulnReport {
+            findings: vec![],
+            missing_guard_count: 0,
+            taint_count: 0,
+            concurrency_count: 0,
+            scanned_functions: 3,
+        };
+        let html = report.to_html();
+        assert!(html.contains("No findings at or above"));
+        assert!(html.trim_end().ends_with("</html>"));
     }
 }
