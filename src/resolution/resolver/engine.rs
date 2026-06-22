@@ -1,15 +1,11 @@
+#[cfg(not(feature = "gpu"))]
 use std::collections::HashMap;
 
 use crate::resolution::import_resolver::{resolve_jvm_import, resolve_via_import};
 use crate::resolution::name_matcher;
-use crate::resolution::types::{
-    FrameworkResolver,
-    ResolutionContext,
-    ResolutionResult,
-    ResolutionStats,
-    ResolvedRef,
-    UnresolvedRef,
-};
+use crate::resolution::types::{FrameworkResolver, ResolutionContext, ResolvedRef, UnresolvedRef};
+#[cfg(not(feature = "gpu"))]
+use crate::resolution::types::{ResolutionResult, ResolutionStats};
 use crate::types::{Language, Node};
 
 pub(super) trait ResolutionPolicy {
@@ -92,6 +88,7 @@ where
     })
 }
 
+#[cfg(not(feature = "gpu"))]
 pub(super) fn result_from_parts(
     total: usize,
     resolved: Vec<ResolvedRef>,
