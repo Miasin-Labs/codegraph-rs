@@ -61,7 +61,7 @@ entry point.
 | `src/installer/` | `src/installer/` | `codegraph install`: target registry + one file per agent (`claude`, `cursor`, `codex`, `opencode`, `gemini`, `kiro`, `antigravity`, `hermes`), surgical JSON/JSONC/TOML/YAML config editing |
 | `src/bin/codegraph.rs` | `src/bin/codegraph.ts` | CLI (clap; commander in TS) — same subcommands, same flags, plus the Rust-only `analyze` family |
 | `src/ui/` | `src/ui/` | Terminal UI: shimmer progress, glyph fallbacks (ASCII/Unicode) |
-| `src/analysis_bridge.rs`, `src/analyze.rs` | — (Rust-only) | Bridge from the SQLite index into the `codegraph-analysis` engine + the report runners behind `codegraph analyze` |
+| `src/analysis_bridge.rs`, `src/analyze/`, `src/analyze_ir.rs` | — (Rust-only) | Bridge from the SQLite index into the `codegraph-analysis` engine + the report runners behind `codegraph analyze`; `src/analyze/reports/` owns the report-family modules |
 | `analysis/` | — (Rust-only) | The `codegraph-analysis` crate (migrated jfc-graph): petgraph code graph, query DSL, graph algorithms, IR/CFG/dataflow analyses |
 
 ## Analysis engine (`codegraph analyze`)
@@ -71,7 +71,8 @@ The full **jfc-graph analysis engine** lives in this workspace as the
 [`notes/jfc-graph-migration.md`](notes/jfc-graph-migration.md) for the
 migration record). `src/analysis_bridge.rs` materializes an analysis graph
 from an already-indexed `.codegraph/` SQLite database — no re-parsing, pure
-read — and `src/analyze.rs` runs the engine's public capabilities over it.
+read — and `src/analyze/mod.rs` plus `src/analyze/reports/` run the
+engine's public capabilities over it.
 The `codegraph analyze` subcommands expose them on the CLI; the same
 functions are library API (`codegraph::analyze`). The MCP tool surface is
 deliberately untouched.

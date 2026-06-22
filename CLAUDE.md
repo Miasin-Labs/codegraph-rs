@@ -56,16 +56,18 @@ cargo test --workspace
   paths`. (`verify_roles` is the "model proposes, graph proves" boundary: it runs
   agent-supplied predicate-role proposals through `vuln::classify::GraphVerifier`
   and emits only graph-corroborated findings tagged `InferenceOrigin::Llm`.)
-  To add one, all in `src/mcp/tools.rs`: (1) a dispatch arm in
-  `ToolHandler::execute()`; (2) a `handle_x(&self, args) -> Result<ToolResult>`
-  handler (get the graph via `self.get_code_graph(...)`; for the analysis graph,
-  bridge with `analysis_bridge::build_analysis_graph_cached_with_options`);
-  (3) a `ToolDefinition` in `tools()` (props via `prop`/`prop_default`/
-  `project_path_property`, `annotations: read_only_annotations()`); (4) **bump the
-  count + name list in `tool_definition_json_is_wire_compatible_with_ts`** — it no
-  longer means TS parity, but it still guards registration shape, so keep it green;
-  (5) a functional test in `tests/mcp_tools_test.rs`. Heavy analyses may ALSO ship
-  as `codegraph analyze …` CLI subcommands mirrored by `src/analyze.rs` report fns.
+  To add one, update the domain-shaped `src/mcp/tools/` tree: (1) route the
+  tool in `handlers.rs`/`ToolHandler::execute()`; (2) add the handler in the
+  owning domain module (`graph/`, `explore/`, `analysis.rs`, `admin/`, etc.),
+  getting the graph via `self.get_code_graph(...)` or bridging with
+  `analysis_bridge::build_analysis_graph_cached_with_options`; (3) register
+  the schema in `registry/` using the shared schema builders and
+  `read_only_annotations()`; (4) keep the registration-shape test
+  `tool_definition_json_is_wire_compatible_with_ts` green — it no longer means
+  TS parity, but it still guards names and schemas; (5) add a functional test
+  in `tests/mcp_tools_test.rs`. Heavy analyses may ALSO ship as
+  `codegraph analyze …` CLI subcommands mirrored by `src/analyze/reports/`
+  report fns.
 - **Recursive AST/graph walkers must call `ensure_sufficient_stack`** (crate
   root fn) at the recursion head — depth is bounded by input, not thread stack;
   a deep input otherwise aborts the process.

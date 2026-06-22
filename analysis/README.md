@@ -84,7 +84,14 @@ The graph wraps petgraph's `StableDiGraph`. The public API exclusively uses `Nod
 
 ## Query DSL
 
-9 operators, pipe-separated:
+The DSL supports the legacy pipe-chain syntax plus the extended expression
+grammar used by `codegraph analyze query`: set algebra, path queries,
+entrypoints, dominators, trait implementations, reachability patterns, and
+aggregation. `analysis/src/dsl/syntax/mod.rs` is the source of truth for the
+full grammar and keeps the parser, executor, AST model, and tests split by
+role.
+
+Legacy pipe-chain operators:
 
 ```text
 fn("name")         — select functions by substring match
