@@ -317,7 +317,8 @@ pub fn map_node_kind(kind: NodeKind) -> Option<ANodeKind> {
         | NodeKind::Route
         | NodeKind::Component
         | NodeKind::DataSymbol
-        | NodeKind::StringLiteral => None,
+        | NodeKind::StringLiteral
+        | NodeKind::Macro => None,
     }
 }
 

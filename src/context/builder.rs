@@ -1427,10 +1427,9 @@ impl ContextBuilder {
                     continue;
                 }
 
-                // Fetch a large batch — popular terms like "Search" in Elasticsearch
-                // have hundreds of substring matches. The LIKE scan cost is the same
-                // regardless of LIMIT (SQLite scans all matches to sort), so we fetch
-                // generously and let path-relevance scoring pick the best ones.
+                // Fetch a bounded batch — popular terms like "Search" in Elasticsearch
+                // can have many substring matches, so the query layer caps and sorts a
+                // candidate window before path-relevance scoring picks the best ones.
                 let like_results = self.queries.find_nodes_by_name_substring(
                     &title_cased,
                     &crate::types::SearchOptions {

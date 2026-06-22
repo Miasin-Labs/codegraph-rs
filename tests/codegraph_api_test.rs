@@ -50,6 +50,14 @@ fn setup_indexed(root: &Path) -> CodeGraph {
 
 fn git(cwd: &Path, args: &[&str]) {
     let status = Command::new("git")
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "tag.gpgsign=false",
+        ])
         .args(args)
         .current_dir(cwd)
         .stdin(std::process::Stdio::null())
@@ -102,6 +110,19 @@ fn wait_for(mut predicate: impl FnMut() -> bool, timeout: Duration, what: &str) 
         std::thread::sleep(Duration::from_millis(50));
     }
     panic!("timed out waiting for: {what}");
+}
+
+#[cfg(target_os = "linux")]
+fn current_thread_names() -> Vec<String> {
+    let Ok(entries) = fs::read_dir("/proc/self/task") else {
+        return Vec::new();
+    };
+
+    entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| fs::read_to_string(entry.path().join("comm")).ok())
+        .map(|name| name.trim().to_string())
+        .collect()
 }
 
 // =============================================================================
@@ -229,6 +250,31 @@ mod sync_functionality {
         let result = cg.index_all(&IndexOptions::default()).unwrap();
         assert!(result.success);
         assert_eq!(search_count(&cg, "hello"), 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn index_all_does_not_leave_persistent_parse_worker_threads() {
+        let dir = TempDir::new().unwrap();
+        for i in 0..96 {
+            write(
+                &dir.path().join(format!("src/file_{i}.ts")),
+                &format!("export function f{i}() {{ return {i}; }}"),
+            );
+        }
+
+        let cg = CodeGraph::init_sync(dir.path()).unwrap();
+        let result = cg.index_all(&IndexOptions::default()).unwrap();
+        assert!(result.success);
+
+        let parse_threads: Vec<String> = current_thread_names()
+            .into_iter()
+            .filter(|name| name.starts_with("cg-parse-"))
+            .collect();
+        assert!(
+            parse_threads.is_empty(),
+            "index_all left persistent parse worker threads behind: {parse_threads:?}"
+        );
     }
 
     #[test]
@@ -1052,14 +1098,7 @@ mod end_to_end {
             "__int64 __fastcall sub_2000(__int64 a1)\n{\n  return a1 + 1;\n}\n",
         );
 
-        let cg = CodeGraph::init(
-            dir.path(),
-            &codegraph::InitOptions {
-                index: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let cg = CodeGraph::init(dir.path(), &codegraph::InitOptions::default()).unwrap();
 
         let caller = cg
             .get_nodes_in_file("sub_1000.c")

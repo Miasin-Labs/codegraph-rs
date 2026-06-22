@@ -664,6 +664,93 @@ fn resolves_go_aliased_imports_across_packages_388() {
 }
 
 #[test]
+fn resolves_go_cross_package_calls_from_nested_module_root() {
+    let fx = Fx::new();
+    let q = fx.q();
+    fx.write(
+        "go/go.mod",
+        "module github.com/dolthub/dolt/go\n\ngo 1.24\n",
+    );
+    fx.write(
+        "go/libraries/doltcore/diff/calc.go",
+        "package diff\nfunc Calculate(x int) int { return x * 2 }\n",
+    );
+    fx.write(
+        "go/cmd/dolt/diff/calc.go",
+        "package diff\nfunc Calculate(x int) int { return x + 1 }\n",
+    );
+    fx.write(
+        "go/cmd/dolt/main.go",
+        "package main\n\nimport \"github.com/dolthub/dolt/go/libraries/doltcore/diff\"\n\nfunc main() {\n  diff.Calculate(5)\n}\n",
+    );
+    for f in [
+        "go/libraries/doltcore/diff/calc.go",
+        "go/cmd/dolt/diff/calc.go",
+        "go/cmd/dolt/main.go",
+    ] {
+        fx.track(&q, f, Language::Go);
+    }
+
+    let imported_calculate = exported(node(
+        "func:go/libraries/doltcore/diff/calc.go:Calculate:2",
+        NodeKind::Function,
+        "Calculate",
+        "diff::Calculate",
+        "go/libraries/doltcore/diff/calc.go",
+        Language::Go,
+        2,
+        2,
+    ));
+    let nearby_distractor = exported(node(
+        "func:go/cmd/dolt/diff/calc.go:Calculate:2",
+        NodeKind::Function,
+        "Calculate",
+        "diff::Calculate",
+        "go/cmd/dolt/diff/calc.go",
+        Language::Go,
+        2,
+        2,
+    ));
+    let main_fn = exported(node(
+        "func:go/cmd/dolt/main.go:main:5",
+        NodeKind::Function,
+        "main",
+        "main::main",
+        "go/cmd/dolt/main.go",
+        Language::Go,
+        5,
+        7,
+    ));
+    q.insert_nodes(&[
+        imported_calculate.clone(),
+        nearby_distractor,
+        main_fn.clone(),
+    ])
+    .unwrap();
+    q.insert_unresolved_refs_batch(&[uref(
+        &main_fn.id,
+        "diff.Calculate",
+        EdgeKind::Calls,
+        6,
+        "go/cmd/dolt/main.go",
+        Language::Go,
+    )])
+    .unwrap();
+
+    fx.resolver()
+        .resolve_and_persist_batched(None, None)
+        .unwrap();
+
+    let call_edges = outgoing(&q, &main_fn.id, EdgeKind::Calls);
+    assert_eq!(call_edges.len(), 1);
+    let target = q.get_node_by_id(&call_edges[0].target).unwrap().unwrap();
+    assert_eq!(
+        target.file_path.replace('\\', "/"),
+        "go/libraries/doltcore/diff/calc.go"
+    );
+}
+
+#[test]
 fn type_alias_object_shape_members_resolve_method_calls_359() {
     // `recorder.stop()` (recorder: RecorderHandle) must attach to
     // `RecorderHandle::stop`, not the look-alike class method in a sibling
@@ -2030,6 +2117,191 @@ fn resolve_one_skips_builtins_best_candidate_api() {
         candidates: None,
     };
     assert!(resolver.resolve_one(&r).is_none());
+}
+
+#[test]
+fn resolve_one_skips_jvm_namespace_segments_but_not_types() {
+    let fx = Fx::new();
+    let q = fx.q();
+    let caller = node(
+        "method:src/Main.java:Main::run:1",
+        NodeKind::Method,
+        "run",
+        "src/Main.java::Main::run",
+        "src/Main.java",
+        Language::Java,
+        1,
+        5,
+    );
+    let target = node(
+        "class:src/com/example/Builder.java:Builder:1",
+        NodeKind::Class,
+        "Builder",
+        "src/com/example/Builder.java::Builder",
+        "src/com/example/Builder.java",
+        Language::Java,
+        1,
+        20,
+    );
+    q.insert_nodes(&[caller, target]).unwrap();
+
+    let resolver = fx.resolver();
+    resolver.warm_caches();
+    let package_ref = UnresolvedRef {
+        from_node_id: "method:src/Main.java:Main::run:1".to_string(),
+        reference_name: "org".to_string(),
+        reference_kind: EdgeKind::References,
+        line: 1,
+        column: 0,
+        file_path: "src/Main.java".to_string(),
+        language: Language::Java,
+        candidates: None,
+    };
+    assert!(resolver.resolve_one(&package_ref).is_none());
+
+    let type_ref = UnresolvedRef {
+        reference_name: "Builder".to_string(),
+        ..package_ref
+    };
+    let resolved = resolver.resolve_one(&type_ref).expect("type resolves");
+    assert_eq!(
+        resolved.target_node_id,
+        "class:src/com/example/Builder.java:Builder:1"
+    );
+
+    let external_call = UnresolvedRef {
+        from_node_id: "method:src/Main.java:Main::run:1".to_string(),
+        reference_name: "assertEquals".to_string(),
+        reference_kind: EdgeKind::Calls,
+        line: 2,
+        column: 0,
+        file_path: "src/Main.java".to_string(),
+        language: Language::Kotlin,
+        candidates: None,
+    };
+    assert!(resolver.resolve_one(&external_call).is_none());
+
+    let stdlib_import = UnresolvedRef {
+        reference_name: "java.util.List".to_string(),
+        reference_kind: EdgeKind::Imports,
+        language: Language::Java,
+        ..external_call.clone()
+    };
+    assert!(resolver.resolve_one(&stdlib_import).is_none());
+
+    let stdlib_type = UnresolvedRef {
+        reference_name: "String".to_string(),
+        reference_kind: EdgeKind::References,
+        language: Language::Java,
+        ..external_call
+    };
+    assert!(resolver.resolve_one(&stdlib_type).is_none());
+}
+
+#[test]
+fn resolve_one_keeps_project_classes_that_match_jvm_stdlib_names() {
+    let fx = Fx::new();
+    let q = fx.q();
+    let caller = node(
+        "method:src/Main.java:Main::run:1",
+        NodeKind::Method,
+        "run",
+        "src/Main.java::Main::run",
+        "src/Main.java",
+        Language::Java,
+        1,
+        5,
+    );
+    let local_string = node(
+        "class:src/String.java:String:1",
+        NodeKind::Class,
+        "String",
+        "src/String.java::String",
+        "src/String.java",
+        Language::Java,
+        1,
+        20,
+    );
+    q.insert_nodes(&[caller, local_string]).unwrap();
+
+    let resolver = fx.resolver();
+    resolver.warm_caches();
+    let type_ref = UnresolvedRef {
+        from_node_id: "method:src/Main.java:Main::run:1".to_string(),
+        reference_name: "String".to_string(),
+        reference_kind: EdgeKind::References,
+        line: 2,
+        column: 0,
+        file_path: "src/Main.java".to_string(),
+        language: Language::Java,
+        candidates: None,
+    };
+    let resolved = resolver
+        .resolve_one(&type_ref)
+        .expect("local String resolves");
+    assert_eq!(resolved.target_node_id, "class:src/String.java:String:1");
+}
+
+#[test]
+fn resolve_one_skips_c_stdlib_calls_unless_declared_locally() {
+    let fx = Fx::new();
+    let q = fx.q();
+    let caller = node(
+        "func:src/main.c:main:1",
+        NodeKind::Function,
+        "main",
+        "src/main.c::main",
+        "src/main.c",
+        Language::C,
+        1,
+        5,
+    );
+    q.insert_nodes(&[caller]).unwrap();
+
+    let resolver = fx.resolver();
+    resolver.warm_caches();
+    let stdlib_call = UnresolvedRef {
+        from_node_id: "func:src/main.c:main:1".to_string(),
+        reference_name: "printf".to_string(),
+        reference_kind: EdgeKind::Calls,
+        line: 2,
+        column: 0,
+        file_path: "src/main.c".to_string(),
+        language: Language::C,
+        candidates: None,
+    };
+    assert!(resolver.resolve_one(&stdlib_call).is_none());
+
+    let fx = Fx::new();
+    let q = fx.q();
+    let caller = node(
+        "func:src/main.c:main:1",
+        NodeKind::Function,
+        "main",
+        "src/main.c::main",
+        "src/main.c",
+        Language::C,
+        1,
+        5,
+    );
+    let local_printf = node(
+        "func:src/main.c:printf:7",
+        NodeKind::Function,
+        "printf",
+        "src/main.c::printf",
+        "src/main.c",
+        Language::C,
+        7,
+        9,
+    );
+    q.insert_nodes(&[caller, local_printf]).unwrap();
+
+    let resolver = fx.resolver();
+    resolver.warm_caches();
+    let resolved = resolver
+        .resolve_one(&stdlib_call)
+        .expect("declared local printf resolves");
+    assert_eq!(resolved.target_node_id, "func:src/main.c:printf:7");
 }
 
 // =============================================================================

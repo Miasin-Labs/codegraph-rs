@@ -48,6 +48,9 @@ use crate::utils::safe_json_parse;
 
 const SQLITE_PARAM_CHUNK_SIZE: usize = 500;
 
+const NAME_SUBSTRING_CANDIDATE_MULTIPLIER: usize = 20;
+const NAME_SUBSTRING_MAX_SORT_CANDIDATES: usize = 2_000;
+
 // Node cache max size (LRU-style)
 const MAX_CACHE_SIZE: usize = 1000;
 
@@ -1516,6 +1519,9 @@ impl QueryBuilder {
         let kinds = options.kinds.as_deref();
         let languages = options.languages.as_deref();
         let limit = options.limit.unwrap_or(30);
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
 
         let mut sql = String::from(
             "SELECT nodes.*, 1.0 as score
@@ -1533,8 +1539,13 @@ impl QueryBuilder {
         push_kind_filter(&mut sql, &mut params, "", kinds);
         push_language_filter(&mut sql, &mut params, "", languages);
 
-        sql.push_str(" ORDER BY length(name) ASC LIMIT ?");
-        params.push(Value::Integer(limit as i64));
+        // Do not ask SQLite to ORDER BY length(name) over every `%term%` match.
+        // On very large indexes (notably broad roots such as `$HOME` or kernel
+        // trees), that materializes and sorts huge temp sets for explore's
+        // CamelCase expansion. Fetch a bounded candidate window instead and
+        // sort that small slice in-process.
+        sql.push_str(" LIMIT ?");
+        params.push(Value::Integer(name_substring_candidate_limit(limit) as i64));
 
         let mut stmt = self.db.conn().prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(params), |row| {
@@ -1550,6 +1561,16 @@ impl QueryBuilder {
         for row in rows {
             out.push(row?);
         }
+        out.sort_by(|a, b| {
+            a.node
+                .name
+                .chars()
+                .count()
+                .cmp(&b.node.name.chars().count())
+                .then_with(|| a.node.name.cmp(&b.node.name))
+                .then_with(|| a.node.id.cmp(&b.node.id))
+        });
+        out.truncate(limit);
         Ok(out)
     }
 
@@ -2323,6 +2344,12 @@ fn push_edge_kind_filter(sql: &mut String, params: &mut Vec<Value>, kinds: Optio
     }
 }
 
+fn name_substring_candidate_limit(result_limit: usize) -> usize {
+    result_limit
+        .saturating_mul(NAME_SUBSTRING_CANDIDATE_MULTIPLIER)
+        .min(NAME_SUBSTRING_MAX_SORT_CANDIDATES)
+}
+
 // =============================================================================
 // Inline helpers — defined inline in TS `src/db/queries.ts` as well (they are
 // NOT part of the shared search/extraction modules).
@@ -2378,7 +2405,7 @@ mod tests {
     //! `crate::search::query_parser`, `crate::search::query_utils`,
     //! `crate::extraction::generated_detection`.
 
-    use super::{is_fts_operator, is_low_value_file};
+    use super::{is_fts_operator, is_low_value_file, name_substring_candidate_limit};
     use crate::extraction::generated_detection::is_generated_file;
 
     #[test]
@@ -2402,5 +2429,13 @@ mod tests {
         assert!(is_fts_operator("or"));
         assert!(is_fts_operator("Near"));
         assert!(!is_fts_operator("Andrew"));
+    }
+
+    #[test]
+    fn name_substring_candidate_window_is_bounded() {
+        assert_eq!(name_substring_candidate_limit(1), 20);
+        assert_eq!(name_substring_candidate_limit(30), 600);
+        assert_eq!(name_substring_candidate_limit(200), 2_000);
+        assert_eq!(name_substring_candidate_limit(10_000), 2_000);
     }
 }

@@ -95,7 +95,7 @@ pub mod worktree;
 /// language adapters, Tarjan SCC, Bron–Kerbosch, query-tree evaluation) recurse
 /// to a depth set by their input — AST nesting, graph/cycle depth, or query
 /// nesting — none of which is bounded a priori. On a worker thread with a fixed
-/// stack (rayon workers, the MCP engine thread) a pathologically deep input
+/// stack (scheduler workers, the MCP engine thread) a pathologically deep input
 /// would otherwise overflow and abort the process. Calling this at each
 /// recursive function's head bounds depth by input size, never by thread stack.
 /// Mirrors rustc's `ensure_sufficient_stack` and the root crate's guard.

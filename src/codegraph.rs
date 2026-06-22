@@ -96,8 +96,6 @@ pub use crate::utils::FileLock;
 /// Options for initializing a new CodeGraph project.
 #[derive(Clone, Copy, Default)]
 pub struct InitOptions<'a> {
-    /// Whether to run initial indexing after init
-    pub index: bool,
     /// Progress callback for indexing
     pub on_progress: Option<&'a dyn Fn(&IndexProgress)>,
 }
@@ -306,13 +304,10 @@ impl CodeGraph {
 
         let instance = Self::build(db, queries, resolved_root)?;
 
-        // Run initial indexing if requested
-        if options.index {
-            instance.index_all(&IndexOptions {
-                on_progress: options.on_progress,
-                ..Default::default()
-            })?;
-        }
+        instance.index_all(&IndexOptions {
+            on_progress: options.on_progress,
+            ..Default::default()
+        })?;
 
         Ok(instance)
     }
@@ -894,7 +889,7 @@ impl CodeGraph {
         let warm_ms = load_start.elapsed().as_millis();
 
         let start = std::time::Instant::now();
-        let result = self.resolver.borrow().resolve_all(&refs, None);
+        let result = self.resolver.borrow().resolve_all_parallel(&refs, None)?;
         let elapsed = start.elapsed();
 
         let per_ref_us = elapsed.as_micros() as f64 / refs.len() as f64;

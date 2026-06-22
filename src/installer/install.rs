@@ -301,7 +301,7 @@ pub fn run_installer_with_options(opts: &RunInstallerOptions) -> Result<()> {
     }
 
     if location == Location::Global {
-        note("cd your-project\ncodegraph init -i", "Quick start");
+        note("cd your-project\ncodegraph init", "Quick start");
     }
 
     let final_note = if !targets.is_empty() {
@@ -618,7 +618,7 @@ fn resolve_targets(
 /// (`CodeGraph` public API, `sync/watch-policy`, `sync/git-hooks`,
 /// `ui/shimmer-progress`) are owned by other port waves — the wiring
 /// task must reconnect this. Until then we point the user at
-/// `codegraph init -i`, mirroring the TS fallback when native modules
+/// `codegraph init`, mirroring the TS fallback when native modules
 /// can't load.
 fn initialize_local_project(_use_defaults: bool) {
     let project_path = cwd();
@@ -627,7 +627,7 @@ fn initialize_local_project(_use_defaults: bool) {
         return;
     }
     // TODO(wiring): CodeGraph::init + index_all + offer_watch_fallback.
-    log_info("Skipping project initialization. Run \"codegraph init -i\" later.");
+    log_info("Skipping project initialization. Run \"codegraph init\" later.");
 }
 
 /// Stale-index fallback for environments where the live file watcher is

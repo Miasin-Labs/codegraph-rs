@@ -411,13 +411,11 @@ fn emits_progress_for_a_token_bearing_first_call_and_never_unsolicited() {
 fn cancelled_tools_call_gets_no_response() {
     let _guard = env_read();
     let tmp = TempDir::new().unwrap();
-    // Enough files that the first call's catch-up sync (initial index) runs
-    // for a comfortably long time relative to the cancellation we send.
     let src = tmp.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
-    for i in 0..300 {
+    for i in 0..1200 {
         let mut content = String::new();
-        for j in 0..20 {
+        for j in 0..25 {
             content.push_str(&format!(
                 "export function fn_{i}_{j}(x: number) {{ return x + {j}; }}\n"
             ));
@@ -430,13 +428,19 @@ fn cancelled_tools_call_gets_no_response() {
     server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
     wait_for_message(&server, Duration::from_secs(5), |m| m["id"] == 0);
 
-    // Long first call (blocks on the catch-up sync of 300 files)…
     server.send(&json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": { "name": "codegraph_status", "arguments": {} }
+        "params": {
+            "name": "codegraph_status",
+            "arguments": {},
+            "_meta": { "progressToken": "cancel-1" }
+        }
     }));
-    // …give the dispatcher time to register the in-flight id, then cancel.
-    std::thread::sleep(Duration::from_millis(150));
+    wait_for_message(&server, Duration::from_secs(20), |m| {
+        m["method"] == "notifications/progress"
+            && m["params"]["progressToken"] == "cancel-1"
+            && m["params"]["message"] != "Catch-up sync complete"
+    });
     server.send(&json!({
         "jsonrpc": "2.0", "method": "notifications/cancelled",
         "params": { "requestId": 1, "reason": "user aborted" }

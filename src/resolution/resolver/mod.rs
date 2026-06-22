@@ -5,22 +5,22 @@
 //! `createResolver`; the `export * from './types'` re-export lives in
 //! `resolution/mod.rs`).
 
+mod engine;
+mod parallel;
+mod snapshot;
+
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use snapshot::{ResolverSnapshot, SnapshotContext};
+
 use super::callback_synthesizer::synthesize_callback_edges;
 use super::frameworks::detect_frameworks;
 use super::go_module::load_go_module;
-use super::import_resolver::{
-    extract_import_mappings,
-    extract_re_exports,
-    load_cpp_include_dirs,
-    resolve_jvm_import,
-    resolve_via_import,
-};
+use super::import_resolver::{extract_import_mappings, extract_re_exports, load_cpp_include_dirs};
 use super::lru_cache::LRUCache;
 use super::path_aliases::load_project_aliases;
 use super::types::{
@@ -48,6 +48,8 @@ use crate::types::{Edge, EdgeKind, Language, Metadata, Node, NodeKind, Unresolve
 /// `CODEGRAPH_RESOLVER_CACHE_SIZE` (single integer applied to all
 /// caches) when tuning for very large or very small projects.
 const DEFAULT_CACHE_LIMIT: usize = 5_000;
+#[cfg(not(feature = "gpu"))]
+const DEFAULT_PARALLEL_RESOLVE_MIN_REFS: usize = 250_000;
 
 /// Mirrors JS `Number.parseInt(raw, 10)`: skip leading whitespace, allow an
 /// optional sign, parse the leading run of decimal digits, NaN otherwise.
@@ -77,6 +79,26 @@ fn resolve_cache_limit() -> usize {
         Some(parsed) if parsed > 0 => parsed as usize,
         _ => DEFAULT_CACHE_LIMIT,
     }
+}
+
+#[cfg(not(feature = "gpu"))]
+fn parallel_resolve_min_refs() -> usize {
+    let raw = match std::env::var("CODEGRAPH_PARALLEL_RESOLVE_MIN_REFS") {
+        Ok(v) => v,
+        Err(_) => return DEFAULT_PARALLEL_RESOLVE_MIN_REFS,
+    };
+    if raw.is_empty() {
+        return DEFAULT_PARALLEL_RESOLVE_MIN_REFS;
+    }
+    match parse_int_prefix(&raw) {
+        Some(parsed) if parsed >= 0 => parsed as usize,
+        _ => DEFAULT_PARALLEL_RESOLVE_MIN_REFS,
+    }
+}
+
+#[cfg(not(feature = "gpu"))]
+fn should_use_snapshot_resolution(ref_count: usize) -> bool {
+    ref_count >= parallel_resolve_min_refs()
 }
 
 // Pre-built sets for O(1) built-in lookups (allocated once, shared across all instances)
@@ -339,6 +361,188 @@ static GO_BUILT_INS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "byte",
         "rune",
         "any",
+    ])
+});
+
+static C_CPP_STDLIB_CALLS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    HashSet::from([
+        "abort",
+        "abs",
+        "assert",
+        "calloc",
+        "exit",
+        "fabs",
+        "fclose",
+        "fflush",
+        "fgets",
+        "fopen",
+        "fprintf",
+        "fputs",
+        "free",
+        "fread",
+        "fscanf",
+        "fseek",
+        "fwrite",
+        "isalnum",
+        "isalpha",
+        "isdigit",
+        "islower",
+        "isspace",
+        "isupper",
+        "malloc",
+        "memcmp",
+        "memcpy",
+        "memmove",
+        "memset",
+        "printf",
+        "putchar",
+        "puts",
+        "qsort",
+        "realloc",
+        "snprintf",
+        "sprintf",
+        "sscanf",
+        "strcasecmp",
+        "strcat",
+        "strchr",
+        "strcmp",
+        "strcpy",
+        "strdup",
+        "strlen",
+        "strncmp",
+        "strncpy",
+        "strrchr",
+        "strstr",
+        "strtol",
+        "strtoll",
+        "strtoul",
+        "tolower",
+        "toupper",
+        "vfprintf",
+        "vprintf",
+        "vsnprintf",
+    ])
+});
+
+static JVM_STDLIB_EXTERNAL_CALLS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    HashSet::from([
+        "AssertionError",
+        "assert",
+        "assertFalse",
+        "assertEquals",
+        "assertNotNull",
+        "assertNull",
+        "assertSame",
+        "assertThrows",
+        "assertTrue",
+        "assertThat",
+        "containsString",
+        "empty",
+        "equalTo",
+        "expectThrows",
+        "greaterThan",
+        "hasItem",
+        "hasSize",
+        "instanceOf",
+        "is",
+        "lessThan",
+        "mock",
+        "not",
+        "notNullValue",
+        "nullValue",
+        "sameInstance",
+        "when",
+        "any",
+        "check",
+        "checkNotNull",
+        "emptyList",
+        "emptyMap",
+        "emptySet",
+        "error",
+        "hashCode",
+        "let",
+        "listOf",
+        "mapOf",
+        "require",
+        "requireNotNull",
+        "run",
+        "setOf",
+        "toString",
+        "List.of",
+        "Map.of",
+        "Set.of",
+        "Objects.equals",
+    ])
+});
+
+static JVM_STDLIB_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    HashSet::from([
+        "ArrayList",
+        "Boolean",
+        "Byte",
+        "CharSequence",
+        "Class",
+        "Double",
+        "Enum",
+        "Exception",
+        "Float",
+        "HashMap",
+        "HashSet",
+        "IllegalArgumentException",
+        "IllegalStateException",
+        "Integer",
+        "IOException",
+        "Iterable",
+        "LinkedHashMap",
+        "LinkedHashSet",
+        "List",
+        "Long",
+        "Map",
+        "Object",
+        "Optional",
+        "RuntimeException",
+        "Set",
+        "Short",
+        "String",
+        "Throwable",
+        "TreeMap",
+        "TreeSet",
+    ])
+});
+
+const JVM_STDLIB_IMPORT_PREFIXES: [&str; 7] = [
+    "java.",
+    "javax.",
+    "jakarta.",
+    "kotlin.",
+    "org.hamcrest.",
+    "org.junit.",
+    "org.mockito.",
+];
+
+static JVM_NAMESPACE_SEGMENTS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    HashSet::from([
+        "android",
+        "backend",
+        "com",
+        "common",
+        "generated",
+        "gradle",
+        "idea",
+        "io",
+        "java",
+        "javax",
+        "jetbrains",
+        "jvm",
+        "kotlin",
+        "lang",
+        "metadata",
+        "net",
+        "org",
+        "proto",
+        "protobuf",
+        "serialization",
+        "util",
     ])
 });
 
@@ -872,6 +1076,53 @@ fn capitalize_first(s: &str) -> String {
     }
 }
 
+fn has_any_possible_match_in(known: &HashSet<String>, name: &str) -> bool {
+    if known.contains(name) {
+        return true;
+    }
+
+    if let Some(dot_idx) = name.find('.') {
+        if dot_idx > 0 {
+            let receiver = &name[..dot_idx];
+            let member = &name[dot_idx + 1..];
+            if known.contains(receiver) || known.contains(member) {
+                return true;
+            }
+            let capitalized = capitalize_first(receiver);
+            if known.contains(&capitalized) {
+                return true;
+            }
+            let last_dot = name.rfind('.').unwrap_or(0);
+            if last_dot > dot_idx {
+                let tail = &name[last_dot + 1..];
+                if !tail.is_empty() && known.contains(tail) {
+                    return true;
+                }
+            }
+        }
+    }
+    if let Some(colon_idx) = name.find("::") {
+        if colon_idx > 0 {
+            let receiver = &name[..colon_idx];
+            let member = &name[colon_idx + 2..];
+            if known.contains(receiver) || known.contains(member) {
+                return true;
+            }
+        }
+    }
+
+    if let Some(slash_idx) = name.rfind('/') {
+        if slash_idx > 0 {
+            let file_name = &name[slash_idx + 1..];
+            if known.contains(file_name) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 // =============================================================================
 // Resolution context (the TS object literal returned by createContext())
 // =============================================================================
@@ -916,6 +1167,32 @@ fn is_js_family_path(file_path: &str) -> bool {
         regex::Regex::new(r"(?i)\.(?:d\.ts|[cm]?tsx?|[cm]?jsx?)$").expect("valid js-family regex")
     });
     RE.is_match(file_path)
+}
+
+fn is_js_ts_language(language: Language) -> bool {
+    matches!(
+        language,
+        Language::Typescript | Language::Javascript | Language::Tsx | Language::Jsx
+    )
+}
+
+fn is_low_value_js_ts_resolution_source(reference: &UnresolvedRef) -> bool {
+    if !is_js_ts_language(reference.language) || !is_js_family_path(&reference.file_path) {
+        return false;
+    }
+
+    let path = reference.file_path.replace('\\', "/").to_ascii_lowercase();
+    if path.contains("/deobfuscated-bundles/") {
+        return true;
+    }
+
+    let file_name = reference
+        .file_path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(reference.file_path.as_str())
+        .to_ascii_lowercase();
+    file_name.contains(".min.") || file_name.contains(".deob.")
 }
 
 impl ResolverContext {
@@ -1346,6 +1623,81 @@ impl ReferenceResolver {
         self.context.clear_caches();
     }
 
+    fn materialize_refs_with_snapshot(
+        &self,
+        unresolved_refs: &[UnresolvedReference],
+        snapshot: &SnapshotContext,
+    ) -> Vec<UnresolvedRef> {
+        unresolved_refs
+            .iter()
+            .map(|r| UnresolvedRef {
+                from_node_id: r.from_node_id.clone(),
+                reference_name: r.reference_name.clone(),
+                reference_kind: r.reference_kind,
+                line: r.line,
+                column: r.column,
+                file_path: match &r.file_path {
+                    Some(path) if !path.is_empty() => path.clone(),
+                    _ => snapshot
+                        .get_node_by_id(&r.from_node_id)
+                        .map(|node| node.file_path.clone())
+                        .unwrap_or_default(),
+                },
+                language: match r.language {
+                    Some(language) => language,
+                    None => snapshot
+                        .get_node_by_id(&r.from_node_id)
+                        .map(|node| node.language)
+                        .unwrap_or(Language::Unknown),
+                },
+                candidates: None,
+            })
+            .collect()
+    }
+
+    #[cfg(not(feature = "gpu"))]
+    fn resolve_snapshot_batch(
+        &self,
+        unresolved_refs: &[UnresolvedReference],
+        snapshot: &ResolverSnapshot,
+    ) -> ResolutionResult {
+        let refs = self.materialize_refs_with_snapshot(unresolved_refs, snapshot.context());
+        parallel::resolve_all(&refs, snapshot.context(), &self.frameworks)
+    }
+
+    /// Resolve over an immutable in-memory snapshot. This is the benchmarkable
+    /// CPU path used by full-index batched resolution; persistence still happens
+    /// serially on the SQLite connection.
+    pub fn resolve_all_parallel(
+        &self,
+        unresolved_refs: &[UnresolvedReference],
+        mut on_progress: Option<&mut dyn FnMut(usize, usize)>,
+    ) -> Result<ResolutionResult> {
+        #[cfg(feature = "gpu")]
+        {
+            let result = self.resolve_all(unresolved_refs, None);
+            if let Some(cb) = on_progress.as_deref_mut() {
+                cb(result.stats.total, result.stats.total);
+            }
+            return Ok(result);
+        }
+
+        #[cfg(not(feature = "gpu"))]
+        {
+            if !should_use_snapshot_resolution(unresolved_refs.len()) {
+                return Ok(self.resolve_all(unresolved_refs, on_progress));
+            }
+
+            let snapshot =
+                ResolverSnapshot::build(&self.context.project_root, &self.context.queries)?;
+            let result = self.resolve_snapshot_batch(unresolved_refs, &snapshot);
+            if let Some(cb) = on_progress.as_deref_mut() {
+                cb(result.stats.total, result.stats.total);
+            }
+            Ok(result)
+        }
+    }
+
     /// Resolve all unresolved references
     pub fn resolve_all(
         &self,
@@ -1498,57 +1850,7 @@ impl ReferenceResolver {
             return true; // no pre-filter available
         };
 
-        // Direct name match
-        if known.contains(name) {
-            return true;
-        }
-
-        // For qualified names like "obj.method" or "Class::method", check the parts
-        if let Some(dot_idx) = name.find('.') {
-            if dot_idx > 0 {
-                let receiver = &name[..dot_idx];
-                let member = &name[dot_idx + 1..];
-                if known.contains(receiver) || known.contains(member) {
-                    return true;
-                }
-                // Also check capitalized receiver (instance-method resolution)
-                let capitalized = capitalize_first(receiver);
-                if known.contains(&capitalized) {
-                    return true;
-                }
-                // JVM FQN: `com.example.foo.Bar` — the only useful segment is the
-                // last one (`Bar`); the earlier check finds `example.foo.Bar` which
-                // never matches a node name.
-                let last_dot = name.rfind('.').unwrap_or(0);
-                if last_dot > dot_idx {
-                    let tail = &name[last_dot + 1..];
-                    if !tail.is_empty() && known.contains(tail) {
-                        return true;
-                    }
-                }
-            }
-        }
-        if let Some(colon_idx) = name.find("::") {
-            if colon_idx > 0 {
-                let receiver = &name[..colon_idx];
-                let member = &name[colon_idx + 2..];
-                if known.contains(receiver) || known.contains(member) {
-                    return true;
-                }
-            }
-        }
-
-        // For path-like references (e.g., "snippets/drawer-menu.liquid"), check the filename
-        if let Some(slash_idx) = name.rfind('/') {
-            if slash_idx > 0 {
-                let file_name = &name[slash_idx + 1..];
-                if known.contains(file_name) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        has_any_possible_match_in(known, name)
     }
 
     /// Case-insensitive `has_any_possible_match` for Apex references.
@@ -1991,82 +2293,16 @@ impl ReferenceResolver {
         s12: Option<Option<(&Node, bool)>>,
         fuzzy: Option<Option<(&Node, bool)>>,
     ) -> Option<ResolvedRef> {
-        // Skip built-in/external references
-        if self.is_built_in_or_external(r) {
-            return None;
-        }
-
-        // GPU hint precomputations mirror the case-SENSITIVE CPU paths; Apex
-        // resolution is case-insensitive, so its references take the CPU
-        // paths (which carry the Apex case-folding fallbacks) unhinted.
-        let (ranked, s12, fuzzy) = if r.language == Language::Apex {
-            (None, None, None)
-        } else {
-            (ranked, s12, fuzzy)
-        };
-
-        // Fast pre-filter: skip if no symbol with this name exists anywhere
-        // AND the name doesn't match a local import. The import escape is
-        // necessary because re-export rename chains (`import { login }
-        // from './barrel'` where the barrel has `export { signIn as login }
-        // from './auth'`) intentionally call a name that has no
-        // declaration anywhere — only the renamed upstream symbol does.
-        // Apex gets a case-insensitive retry before the drop (see
-        // has_any_possible_match_ci).
-        if !known_hint.unwrap_or_else(|| self.has_any_possible_match(&r.reference_name))
-            && !(r.language == Language::Apex && self.has_any_possible_match_ci(&r.reference_name))
-            && !self.matches_any_import(r)
-            && !self
-                .frameworks
-                .iter()
-                .any(|f| f.claims_reference(&r.reference_name))
-        {
-            return None;
-        }
-
-        // JVM FQN imports skip framework/name-matcher: `import com.example.Bar`
-        // resolves directly through the qualifiedName index, which is unambiguous
-        // even when several `Bar` classes exist in different packages.
-        let jvm_import = resolve_jvm_import(r, &self.context);
-        if jvm_import.is_some() {
-            return jvm_import;
-        }
-
-        let mut candidates: Vec<ResolvedRef> = Vec::new();
-
-        // Strategy 1: Try framework-specific resolution
-        for framework in &self.frameworks {
-            if let Some(result) = framework.resolve(r, &self.context) {
-                if result.confidence >= 0.9 {
-                    return Some(result); // High confidence, return immediately
-                }
-                candidates.push(result);
-            }
-        }
-
-        // Strategy 2: Try import-based resolution
-        if let Some(import_result) = resolve_via_import(r, &self.context) {
-            if import_result.confidence >= 0.9 {
-                return Some(import_result);
-            }
-            candidates.push(import_result);
-        }
-
-        // Strategy 3: Try name matching
-        if let Some(name_result) =
-            super::name_matcher::match_reference_full_hints(r, &self.context, ranked, s12, fuzzy)
-        {
-            candidates.push(name_result);
-        }
-
-        // Return highest confidence candidate (first wins ties — strict `>`)
-        candidates.into_iter().reduce(|best, curr| {
-            if curr.confidence > best.confidence {
-                curr
-            } else {
-                best
-            }
-        })
+        engine::resolve_one(
+            r,
+            &self.context,
+            &self.frameworks,
+            self,
+            known_hint,
+            ranked,
+            s12,
+            fuzzy,
+        )
     }
 
     /// Create edges from resolved references
@@ -2175,9 +2411,17 @@ impl ReferenceResolver {
         batch_size: Option<usize>,
     ) -> Result<ResolutionResult> {
         let batch_size = batch_size.unwrap_or(5000);
-        self.warm_caches();
-
         let total = self.context.queries.get_unresolved_references_count()? as usize;
+        #[cfg(not(feature = "gpu"))]
+        let snapshot = if should_use_snapshot_resolution(total) {
+            Some(ResolverSnapshot::build(
+                &self.context.project_root,
+                &self.context.queries,
+            )?)
+        } else {
+            None
+        };
+
         let mut processed = 0usize;
         let mut aggregate_stats = ResolutionStats::default();
 
@@ -2195,7 +2439,13 @@ impl ReferenceResolver {
             }
             last_seen_ref_id = batch_page.last_id;
 
+            #[cfg(feature = "gpu")]
             let result = self.resolve_all(&batch, None);
+            #[cfg(not(feature = "gpu"))]
+            let result = match snapshot.as_ref() {
+                Some(snapshot) => self.resolve_snapshot_batch(&batch, snapshot),
+                None => self.resolve_all(&batch, None),
+            };
 
             // Persist edges immediately
             let edges = self.create_edges(&result.resolved);
@@ -2269,10 +2519,10 @@ impl ReferenceResolver {
     /// Check if reference is to a built-in or external symbol
     fn is_built_in_or_external(&self, r: &UnresolvedRef) -> bool {
         let name = r.reference_name.as_str();
-        let is_js_ts = matches!(
-            r.language,
-            Language::Typescript | Language::Javascript | Language::Tsx | Language::Jsx
-        );
+        if is_low_value_js_ts_resolution_source(r) {
+            return true;
+        }
+        let is_js_ts = is_js_ts_language(r.language);
 
         // JavaScript/TypeScript built-ins
         if is_js_ts && JS_BUILT_INS.contains(name) {
@@ -2343,6 +2593,47 @@ impl ReferenceResolver {
             if GO_BUILT_INS.contains(name) {
                 return true;
             }
+        }
+
+        if (r.language == Language::C || r.language == Language::Cpp)
+            && r.reference_kind == EdgeKind::Calls
+            && C_CPP_STDLIB_CALLS.contains(name)
+            && !self.context.known_has(name)
+        {
+            return true;
+        }
+
+        if (r.language == Language::Java || r.language == Language::Kotlin)
+            && r.reference_kind == EdgeKind::Calls
+            && JVM_STDLIB_EXTERNAL_CALLS.contains(name)
+            && !self.context.known_has(name)
+        {
+            return true;
+        }
+
+        if (r.language == Language::Java || r.language == Language::Kotlin)
+            && r.reference_kind == EdgeKind::Imports
+            && JVM_STDLIB_IMPORT_PREFIXES
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+        {
+            return true;
+        }
+
+        if (r.language == Language::Java || r.language == Language::Kotlin)
+            && (r.reference_kind == EdgeKind::References
+                || r.reference_kind == EdgeKind::Instantiates)
+            && JVM_STDLIB_TYPES.contains(name)
+            && !self.context.known_has(name)
+        {
+            return true;
+        }
+
+        if (r.language == Language::Java || r.language == Language::Kotlin)
+            && r.reference_kind == EdgeKind::References
+            && JVM_NAMESPACE_SEGMENTS.contains(name)
+        {
+            return true;
         }
 
         // Pascal/Delphi built-ins and standard library units
@@ -2430,6 +2721,24 @@ impl ReferenceResolver {
     }
 }
 
+impl engine::ResolutionPolicy for ReferenceResolver {
+    fn is_built_in_or_external(&self, reference: &UnresolvedRef) -> bool {
+        ReferenceResolver::is_built_in_or_external(self, reference)
+    }
+
+    fn has_any_possible_match(&self, name: &str) -> bool {
+        ReferenceResolver::has_any_possible_match(self, name)
+    }
+
+    fn has_any_possible_match_ci(&self, name: &str) -> bool {
+        ReferenceResolver::has_any_possible_match_ci(self, name)
+    }
+
+    fn matches_any_import(&self, reference: &UnresolvedRef) -> bool {
+        ReferenceResolver::matches_any_import(self, reference)
+    }
+}
+
 /// Create a reference resolver instance
 pub fn create_resolver(
     project_root: impl Into<String>,
@@ -2483,6 +2792,53 @@ mod tests {
         for p in ["a.svelte", "a.vue", "a.py", "a.tsx.bak", "ats"] {
             assert!(!is_js_family_path(p), "{p} should NOT be JS-family");
         }
+    }
+
+    #[test]
+    fn low_value_js_ts_resolution_sources_are_skipped() {
+        let reference = |file_path: &str, language: Language| UnresolvedRef {
+            from_node_id: "node:src/app.js:caller:1".to_string(),
+            reference_name: "_get".to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 1,
+            column: 1,
+            file_path: file_path.to_string(),
+            language,
+            candidates: None,
+        };
+
+        assert!(is_low_value_js_ts_resolution_source(&reference(
+            "assets/jquery-ui-1.11.4.min.js",
+            Language::Javascript,
+        )));
+        assert!(is_low_value_js_ts_resolution_source(&reference(
+            "assets/app.min.tsx",
+            Language::Tsx,
+        )));
+        assert!(is_low_value_js_ts_resolution_source(&reference(
+            "deobfuscated-bundles/bundle-1.deob.js",
+            Language::Javascript,
+        )));
+        assert!(is_low_value_js_ts_resolution_source(&reference(
+            "tmp/bundle-1.deob.js",
+            Language::Javascript,
+        )));
+        assert!(!is_low_value_js_ts_resolution_source(&reference(
+            "src/minifier.js",
+            Language::Javascript,
+        )));
+        assert!(!is_low_value_js_ts_resolution_source(&reference(
+            "src/runtime-bundle.js",
+            Language::Javascript,
+        )));
+        assert!(!is_low_value_js_ts_resolution_source(&reference(
+            "assets/site.min.css",
+            Language::Javascript,
+        )));
+        assert!(!is_low_value_js_ts_resolution_source(&reference(
+            "assets/tool.min.js",
+            Language::Python,
+        )));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! Ported from `src/utils.ts`. Concurrency helpers that exist only to paper
 //! over Node's single-threaded event loop (Mutex-as-class, processInBatches,
 //! debounce/throttle, MemoryMonitor) are intentionally NOT ported — Rust code
-//! uses `std::sync` primitives, rayon, and the watcher's own debounce instead.
+//! uses `std::sync` primitives, work-stealing, and the watcher's own debounce instead.
 
 use std::collections::HashMap;
 use std::fs;

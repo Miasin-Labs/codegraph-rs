@@ -686,6 +686,12 @@ fn git(root: &Path, args: &[&str]) {
     let out = Command::new("git")
         .args([
             "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "tag.gpgsign=false",
+            "-c",
             "user.email=test@codegraph.test",
             "-c",
             "user.name=codegraph-test",

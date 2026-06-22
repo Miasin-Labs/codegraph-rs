@@ -30,11 +30,11 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::Value;
 
-use super::strip_comments::{CommentLang, strip_comments_for_regex};
-use super::types::ResolutionContext;
 use crate::db::QueryBuilder;
 use crate::error::Result;
 use crate::extraction::generated_detection::is_generated_file;
+use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
+use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, EdgeKind, Language, Metadata, Node, NodeKind, Provenance};
 
 static REGISTRAR_NAME: LazyLock<Regex> = LazyLock::new(|| {

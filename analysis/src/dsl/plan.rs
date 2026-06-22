@@ -54,7 +54,7 @@ pub enum ScheduleStrategy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Schedule {
     pub strategy: ScheduleStrategy,
-    /// Use rayon-backed parallel BFS expansion. Caller-controllable
+    /// Use scheduler-backed parallel BFS expansion. Caller-controllable
     /// because parallel BFS is non-deterministic in result ordering;
     /// some test paths want determinism.
     pub parallel: bool,

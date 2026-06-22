@@ -775,6 +775,14 @@ mod worktree {
 
     fn git(cwd: &Path, args: &[&str]) {
         let status = Command::new("git")
+            .args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "tag.gpgsign=false",
+            ])
             .args(args)
             .current_dir(cwd)
             .stdin(std::process::Stdio::null())

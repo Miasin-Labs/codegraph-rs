@@ -4,13 +4,12 @@
 //!
 //! Ported from `src/resolution/frameworks/rust.ts`. The TS per-context
 //! `WeakMap` cache for the cargo workspace crate map becomes a
-//! per-instance `RefCell` cache keyed by project root (object identity
+//! per-instance `Mutex` cache keyed by project root (object identity
 //! doesn't exist for `&dyn ResolutionContext`); see
 //! `notes/frameworks-systems.md`.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 use regex::Regex;
 
@@ -128,7 +127,7 @@ struct ModuleResolution {
 /// project root so multiple projects sharing a process don't bleed maps).
 #[derive(Debug, Default)]
 pub struct RustResolver {
-    workspace_cache: RefCell<HashMap<String, HashMap<String, String>>>,
+    workspace_cache: Mutex<HashMap<String, HashMap<String, String>>>,
 }
 
 impl RustResolver {
@@ -142,7 +141,10 @@ impl RustResolver {
         context: &dyn ResolutionContext,
     ) -> Option<String> {
         let root = context.get_project_root().to_string();
-        let mut cache = self.workspace_cache.borrow_mut();
+        let mut cache = self
+            .workspace_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let map = cache
             .entry(root)
             .or_insert_with(|| get_cargo_workspace_crate_map(context));

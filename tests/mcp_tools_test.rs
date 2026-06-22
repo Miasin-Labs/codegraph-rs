@@ -527,6 +527,19 @@ fn explore_returns_complete_output_without_destructive_cuts() {
 }
 
 #[test]
+fn explore_uses_qualified_symbol_labels() {
+    let _env = env_read();
+    let dir = TempDir::new().unwrap();
+    let cg = budget_fixture(dir.path());
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+    let text = explore(&handler, "Session method0 helper0");
+    assert!(
+        text.contains("Session::method0") || text.contains("Session::helper0"),
+        "explore output should include fully qualified symbol labels:\n{text}"
+    );
+}
+
+#[test]
 fn omits_the_meta_text_gated_off_for_small_projects() {
     let _env = env_read();
     let dir = TempDir::new().unwrap();
@@ -945,7 +958,7 @@ fn lists_dependents_and_covering_tests_for_an_entry_symbol() {
         text.contains("### Blast radius"),
         "missing blast radius:\n{text}"
     );
-    assert!(text.contains("`target`"));
+    assert!(text.contains("`src/feature.ts::target`"));
     assert!(text.contains("caller")); // a caller count is reported
     // It names WHERE (the caller file) — not the caller's source body.
     assert!(text.contains("feature.ts"));

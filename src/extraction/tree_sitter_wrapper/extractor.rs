@@ -58,7 +58,7 @@ fn now_ms() -> i64 {
 
 // Recursion guard for every tree walker in this module: real-world ASTs
 // (LLVM, generated sources) nest deeply enough to blow the 2 MiB default
-// stack of the rayon workers extraction runs on. The single shared
+// stack of the scheduler workers extraction runs on. The single shared
 // implementation lives in the analysis crate (re-exported at the crate root)
 // so the red-zone/segment configuration can't drift between subsystems.
 use crate::ensure_sufficient_stack;
@@ -528,8 +528,15 @@ impl<'a> TreeSitterExtractor<'a> {
             skip_children = true;
         }
         // Check for variable declarations (const, let, var, etc.)
-        // Only extract top-level variables (not inside functions/methods)
-        else if ext.variable_types().contains(&node_type) && !self.is_inside_class_like_node() {
+        // Only extract top-level variables (not inside functions/methods),
+        // EXCEPT associated `const`/`static` members of a Rust trait/impl, which
+        // are real symbols (`Trait::ASSOC`, `Type::MAX`). `extract_member_
+        // variables()` opts a language in; the generic gate still excludes
+        // function-local `let`s (those are inside a Function scope, which is not
+        // class-like).
+        else if ext.variable_types().contains(&node_type)
+            && (!self.is_inside_class_like_node() || ext.extract_member_variables())
+        {
             self.extract_variable(node);
             skip_children = true; // extract_variable handles children
         }
@@ -563,6 +570,21 @@ impl<'a> TreeSitterExtractor<'a> {
         // Rust: `impl Trait for Type { ... }` — creates implements edge from Type to Trait
         else if node_type == "impl_item" {
             self.extract_rust_impl_item(node);
+            // Scope the impl body to its implementing type so associated
+            // `const`/`type`/`fn` get a `Type::member` qualified name and a
+            // Contains edge to the type. Methods already recover the receiver
+            // via `get_receiver_type`, but associated consts/type aliases do
+            // not — without this they'd be bare `MAX`/`Item`. We push the type
+            // node (if we've already extracted it) for the duration of the
+            // body walk, then restore.
+            if let Some(type_id) = self.rust_impl_self_type_id(node) {
+                self.node_stack.push(type_id);
+                for child in named_children(node) {
+                    self.visit_node(child);
+                }
+                self.node_stack.pop();
+                skip_children = true;
+            }
         }
         // TypeScript interface members: property_signature (`foo: T`) and
         // method_signature (`foo(arg: A): R`) both carry type annotations the
@@ -734,6 +756,13 @@ impl<'a> TreeSitterExtractor<'a> {
         let Some(parent_node) = self.nodes.iter().find(|n| &n.id == parent_id) else {
             return false;
         };
+        // A `Module` is a namespace scope. Some languages (Ruby) hold methods
+        // directly in a module body and need it to count as class-like; others
+        // (Rust) treat free `fn`/`const`/`static` in a `mod` as functions and
+        // module-level variables. The per-language flag decides.
+        if parent_node.kind == NodeKind::Module {
+            return self.extractor.is_some_and(|ext| ext.module_is_class_like());
+        }
         matches!(
             parent_node.kind,
             NodeKind::Class
@@ -741,7 +770,9 @@ impl<'a> TreeSitterExtractor<'a> {
                 | NodeKind::Interface
                 | NodeKind::Trait
                 | NodeKind::Enum
-                | NodeKind::Module
+                // An enum *variant* holds fields too (Rust struct-variant
+                // `V { x: T }`), so it is a field-bearing scope.
+                | NodeKind::EnumMember
         )
     }
 
@@ -1058,10 +1089,17 @@ impl<'a> TreeSitterExtractor<'a> {
     fn extract_struct(&mut self, node: SyntaxNode<'_>) {
         let Some(ext) = self.extractor else { return };
 
-        // Skip forward declarations and type references (no body = not a definition)
-        let Some(body) = get_child_by_field(node, ext.body_field()) else {
+        // A missing body field is a definition for some grammars and a forward
+        // declaration for others. Rust unit structs (`struct Unit;`) and tuple
+        // structs (`struct T(u32)`) have no `field_declaration_list` body but
+        // ARE complete definitions — dropping them loses marker/newtype types.
+        // C/C++ forward declarations (`struct Foo;`) are NOT definitions and
+        // must still be skipped. `struct_is_definition_without_body()` lets each
+        // language decide; the default keeps the old skip-on-no-body behavior.
+        let body = get_child_by_field(node, ext.body_field());
+        if body.is_none() && !ext.struct_is_definition_without_body() {
             return;
-        };
+        }
 
         let name = extract_name(node, self.source, ext);
         let docstring = get_preceding_docstring(node, self.source);
@@ -1087,12 +1125,55 @@ impl<'a> TreeSitterExtractor<'a> {
         // Rust `#[derive(Clone, Serialize, …)]` → Implements edges.
         self.extract_rust_derives(node, &struct_node.id);
 
-        // Push to stack for field extraction
+        // Push to stack for field extraction. A unit struct has no body and
+        // nothing to descend into. A tuple struct's positional fields live in an
+        // `ordered_field_declaration_list` (no field names) — extract them as
+        // index-named Field nodes (`0`, `1`, …) so the field types are still
+        // reachable; a regular `field_declaration_list` is walked normally.
         self.node_stack.push(struct_node.id.clone());
-        for child in named_children(body) {
-            self.visit_node(child);
+        if let Some(body) = body {
+            if body.kind() == "ordered_field_declaration_list" {
+                self.extract_tuple_fields(body);
+            } else {
+                for child in named_children(body) {
+                    self.visit_node(child);
+                }
+            }
         }
         self.node_stack.pop();
+    }
+
+    /// Extract positional fields of a tuple struct / tuple enum-variant
+    /// (`struct Pair(pub u32, String)`). The grammar gives an
+    /// `ordered_field_declaration_list` whose children are the field *types*
+    /// (with an optional `visibility_modifier`); there are no field names, so
+    /// each field is named by its positional index.
+    fn extract_tuple_fields(&mut self, body: SyntaxNode<'_>) {
+        let Some(ext) = self.extractor else { return };
+        let mut index = 0u32;
+        for child in named_children(body) {
+            // Skip non-type children (visibility modifiers, attributes).
+            if matches!(
+                child.kind(),
+                "visibility_modifier" | "attribute_item" | "inner_attribute_item"
+            ) {
+                continue;
+            }
+            let type_text = get_node_text(child, self.source);
+            let name = index.to_string();
+            let visibility = ext.get_visibility(child, self.source);
+            self.create_node(
+                NodeKind::Field,
+                &name,
+                child,
+                NodeExtra {
+                    signature: Some(format!("{name}: {type_text}")),
+                    visibility,
+                    ..Default::default()
+                },
+            );
+            index += 1;
+        }
     }
 
     /// Extract an enum
@@ -1150,7 +1231,22 @@ impl<'a> TreeSitterExtractor<'a> {
         // Try field-based name first (e.g. Rust enum_variant has a 'name' field)
         if let Some(name_node) = get_child_by_field(node, "name") {
             let name = get_node_text(name_node, self.source).to_string();
-            self.create_node(NodeKind::EnumMember, &name, node, NodeExtra::default());
+            let member = self.create_node(NodeKind::EnumMember, &name, node, NodeExtra::default());
+            // Struct-variant (`V { x: T }`) and tuple-variant (`V(T, U)`) fields:
+            // scope them under the variant so they're reachable as
+            // `Enum::Variant::field`. The grammar puts them in the variant's
+            // `body` field (a field_declaration_list or its ordered form).
+            if let (Some(member), Some(body)) = (member, get_child_by_field(node, "body")) {
+                self.node_stack.push(member.id.clone());
+                if body.kind() == "ordered_field_declaration_list" {
+                    self.extract_tuple_fields(body);
+                } else {
+                    for child in named_children(body) {
+                        self.visit_node(child);
+                    }
+                }
+                self.node_stack.pop();
+            }
             return;
         }
 
@@ -3084,6 +3180,38 @@ impl<'a> TreeSitterExtractor<'a> {
         if let Some(type_node_id) = self.find_node_by_name(&type_name) {
             self.push_ref(&type_node_id, trait_name, EdgeKind::Implements, trait_node);
         }
+    }
+
+    /// The node id of an `impl` block's implementing (Self) type, if it was
+    /// already extracted. For `impl Foo`, `impl Trait for Foo`, and the generic
+    /// forms (`impl<T> Foo<T>`, `impl<T> Trait for Foo<T>`) the Self type is the
+    /// LAST type child (the first, when present before `for`, is the trait).
+    /// Used to scope an impl body so associated items get a `Foo::member` name.
+    fn rust_impl_self_type_id(&self, node: SyntaxNode<'_>) -> Option<String> {
+        let type_children: Vec<SyntaxNode<'_>> = named_children(node)
+            .into_iter()
+            .filter(|c| {
+                matches!(
+                    c.kind(),
+                    "type_identifier" | "generic_type" | "scoped_type_identifier"
+                )
+            })
+            .collect();
+        let self_type = type_children.last()?;
+        let type_name = if self_type.kind() == "generic_type" {
+            match find_named_child(*self_type, "type_identifier") {
+                Some(inner) => get_node_text(inner, self.source).to_string(),
+                None => get_node_text(*self_type, self.source).to_string(),
+            }
+        } else {
+            // scoped_type_identifier (`module::Foo`) → take the last segment.
+            get_node_text(*self_type, self.source)
+                .rsplit("::")
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        };
+        self.find_node_by_name(&type_name)
     }
 
     /// Find a previously-extracted node by name (used for back-references like impl blocks)

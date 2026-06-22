@@ -254,6 +254,31 @@ pub trait LanguageExtractor: Send + Sync {
     fn methods_are_top_level(&self) -> bool {
         false
     }
+    /// Whether a `Module` scope counts as "class-like" for method/field/
+    /// variable dispatch. Ruby modules hold methods directly (→ `true`, the
+    /// default); Rust modules are namespaces whose free `fn`s are functions and
+    /// whose `const`/`static` are module-level variables, not type members
+    /// (→ `false`). Only consulted when the immediate scope is a `Module`.
+    fn module_is_class_like(&self) -> bool {
+        true
+    }
+    /// Whether a struct node with no body field is still a complete definition.
+    /// Rust unit structs (`struct Unit;`) and tuple structs have no
+    /// `field_declaration_list` but are real definitions (→ `true`). C/C++
+    /// `struct Foo;` is a forward declaration to skip (→ `false`, the default).
+    fn struct_is_definition_without_body(&self) -> bool {
+        false
+    }
+    /// Whether `variable_types` nodes are extracted even when they appear inside
+    /// a class-like scope. Rust trait/impl associated `const`/`static` are real
+    /// members (`Trait::ASSOC`) and need this (→ `true`); most languages model
+    /// in-type data as `field`/`property` and keep the default (→ `false`, which
+    /// preserves the "no function-local/member variables" behavior). Note this
+    /// does NOT pull in function-local `let`s: those sit in a `Function` scope,
+    /// which is not class-like.
+    fn extract_member_variables(&self) -> bool {
+        false
+    }
     /// NodeKind to use for interface-like declarations (Rust: `trait`). Default: `interface`
     fn interface_kind(&self) -> NodeKind {
         NodeKind::Interface

@@ -184,7 +184,28 @@ pub struct AliasMap {
     pub patterns: Vec<AliasPattern>,
 }
 
-/// Go module info from `go.mod` at the project root.
+/// One Go module root discovered from a `go.mod` file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoModuleRoot {
+    /// The module path declared in `go.mod`, e.g. `github.com/example/myproject`
+    pub module_path: String,
+    /// Absolute path to the directory containing the `go.mod` file.
+    pub root_dir: PathBuf,
+}
+
+impl GoModuleRoot {
+    pub fn import_suffix<'a>(&self, import_path: &'a str) -> Option<&'a str> {
+        if import_path == self.module_path {
+            return Some("");
+        }
+        import_path
+            .strip_prefix(&self.module_path)
+            .and_then(|rest| rest.strip_prefix('/'))
+    }
+}
+
+/// Go module info from `go.mod`.
 /// (TS: `GoModule` in `go-module.ts`.)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -193,6 +214,32 @@ pub struct GoModule {
     pub module_path: String,
     /// Absolute path to the directory containing the `go.mod` file.
     pub root_dir: PathBuf,
+    /// All discovered module roots, ordered for longest module-prefix match.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub module_roots: Vec<GoModuleRoot>,
+}
+
+impl GoModule {
+    pub fn primary_root(&self) -> GoModuleRoot {
+        GoModuleRoot {
+            module_path: self.module_path.clone(),
+            root_dir: self.root_dir.clone(),
+        }
+    }
+
+    pub fn matching_root(&self, import_path: &str) -> Option<GoModuleRoot> {
+        for module_root in &self.module_roots {
+            if module_root.import_suffix(import_path).is_some() {
+                return Some(module_root.clone());
+            }
+        }
+        let primary = self.primary_root();
+        if primary.import_suffix(import_path).is_some() {
+            Some(primary)
+        } else {
+            None
+        }
+    }
 }
 
 /// Monorepo workspace member packages.
@@ -328,7 +375,7 @@ pub struct FrameworkExtractionResult {
 /// (verified — no `this.` mutation anywhere under `frameworks/`).
 /// Implementations that want a cache should use interior mutability
 /// (`RefCell`/`Cell`).
-pub trait FrameworkResolver {
+pub trait FrameworkResolver: Send + Sync {
     /// Framework name
     fn name(&self) -> &str;
     /// Languages this framework applies to. If `None`, applies to all languages.

@@ -333,3 +333,39 @@ fn call_references_are_recorded() {
     assert_eq!(call.reference_kind, EdgeKind::Calls);
     assert_eq!(call.from_node_id, caller.id);
 }
+
+#[test]
+fn rust_try_receiver_method_calls_are_recorded() {
+    let extractor = extractor_for(Language::Rust).unwrap();
+    let result = TreeSitterExtractor::new(
+        "src/bin/app.rs",
+        r#"
+fn run() -> Result<(), Error> {
+    if options.extract_modules {
+        let mut extractor = ModuleExtractor::new();
+        extractor.extract_modules(&tokens)?;
+        extractor.write_modules(&tokens, &options.module_dir)?;
+    }
+    Ok(())
+}
+"#,
+        Some(Language::Rust),
+        Some(extractor),
+    )
+    .extract();
+
+    let calls: Vec<String> = result
+        .unresolved_references
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls)
+        .map(|r| r.reference_name.clone())
+        .collect();
+    assert!(
+        calls.contains(&"extractor.extract_modules".to_string()),
+        "missing extractor.extract_modules in {calls:?}"
+    );
+    assert!(
+        calls.contains(&"extractor.write_modules".to_string()),
+        "missing extractor.write_modules in {calls:?}"
+    );
+}

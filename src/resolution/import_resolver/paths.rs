@@ -10,8 +10,9 @@ use std::sync::{LazyLock, Mutex};
 
 use regex::Regex;
 
-use super::path_aliases::{apply_aliases, relative_lexical};
-use super::types::{
+use crate::resolution::go_module::go_package_dir_for_import;
+use crate::resolution::path_aliases::{apply_aliases, relative_lexical};
+use crate::resolution::types::{
     ImportMapping,
     ReExport,
     ResolutionContext,
@@ -19,7 +20,7 @@ use super::types::{
     ResolvedRef,
     UnresolvedRef,
 };
-use super::workspace_packages::resolve_workspace_import;
+use crate::resolution::workspace_packages::resolve_workspace_import;
 use crate::types::{Language, Node, NodeKind};
 use crate::utils::{lexical_resolve, normalize_path};
 
@@ -374,9 +375,7 @@ fn is_external_import(
         // this project. Without the module-path check we'd flag every
         // cross-package call in a Go monorepo as external (issue #388).
         if let Some(module) = context.and_then(|c| c.get_go_module()) {
-            if import_path == module.module_path
-                || import_path.starts_with(&format!("{}/", module.module_path))
-            {
+            if module.matching_root(import_path).is_some() {
                 return false;
             }
         }
@@ -1644,16 +1643,10 @@ fn resolve_go_cross_package_reference(
         if imp.local_name != receiver {
             continue;
         }
-        // Only in-module imports map to a known directory.
-        if imp.source != module.module_path
-            && !imp.source.starts_with(&format!("{}/", module.module_path))
-        {
+        let Some(pkg_dir) =
+            go_package_dir_for_import(module, &imp.source, context.get_project_root())
+        else {
             continue;
-        }
-        let pkg_dir = if imp.source == module.module_path {
-            ""
-        } else {
-            &imp.source[module.module_path.len() + 1..]
         };
 
         // Look up the member by name and pick the candidate whose file lives

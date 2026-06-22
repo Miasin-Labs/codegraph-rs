@@ -5,10 +5,12 @@
 //! direction flipping.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
 use petgraph::Direction;
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::{Dfs, EdgeRef, Reversed};
+use ws_deque::scheduler;
 
 use crate::csr::{CsrSnapshot, CsrVertex};
 use crate::edges::EdgeData;
@@ -35,15 +37,22 @@ pub struct TraversalConfig {
     pub max_nodes: usize,
     /// Direction to traverse edges
     pub direction: TraversalDirection,
-    /// Use parallel rayon expansion when frontier exceeds [`PARALLEL_THRESHOLD`].
+    /// Use parallel work-stealing expansion when frontier exceeds [`PARALLEL_THRESHOLD`].
     /// Default `false` to preserve deterministic ordering for the legacy
     /// callers; opt in for analysis-heavy paths.
     pub parallel: bool,
 }
 
 /// Frontier size at which parallel expansion starts paying off. Below this,
-/// rayon overhead dominates the per-edge work.
+/// scheduler overhead dominates the per-edge work.
 pub const PARALLEL_THRESHOLD: usize = 64;
+
+fn worker_count_for(work_items: usize) -> usize {
+    let available = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    work_items.clamp(1, available)
+}
 
 impl Default for TraversalConfig {
     fn default() -> Self {
@@ -87,7 +96,7 @@ pub const CSR_SIZE_THRESHOLD: usize = 1024;
 /// 2. **Large graphs / serial**: builds a `CsrSnapshot` once and
 ///    walks the CSR arrays. ~2-4× cache-miss reduction on dense
 ///    graphs.
-/// 3. **`config.parallel = true`**: rayon-parallel frontier expansion
+/// 3. **`config.parallel = true`**: work-stealing frontier expansion
 ///    over the CSR. Wins for traversals that exceed
 ///    [`PARALLEL_THRESHOLD`] frontier size; otherwise falls back to
 ///    serial CSR.
@@ -215,7 +224,7 @@ pub fn traverse_petgraph(
 ///
 /// When `config.parallel` is `true` and the frontier exceeds
 /// [`PARALLEL_THRESHOLD`], frontier expansion is parallelised via
-/// rayon's `par_chunks`. Per-thread visited sets are merged at
+/// `ws-deque` scheduler workers. Per-worker visited sets are merged at
 /// layer-end to preserve BFS-layer correctness.
 pub fn traverse_csr(
     snapshot: &CsrSnapshot,
@@ -269,14 +278,18 @@ pub fn traverse_csr(
         let should_parallel = config.parallel && current.len() >= PARALLEL_THRESHOLD;
 
         if should_parallel {
-            // Rayon-parallel expansion: each thread emits its
-            // candidates into a thread-local Vec; we merge with a
-            // single-threaded dedup pass.
-            use rayon::prelude::*;
+            // Work-stealing expansion: each task emits its candidates into a
+            // local Vec; we merge with a single-threaded dedup pass.
+            let worker_count = worker_count_for(current.len());
+            let chunk_size = 64.max(current.len() / worker_count.max(1));
+            let chunks: Vec<(usize, &[u32])> = current.chunks(chunk_size).enumerate().collect();
+            let slots: Vec<Mutex<Option<Vec<(u32, u32)>>>> =
+                (0..chunks.len()).map(|_| Mutex::new(None)).collect();
 
-            let local_results: Vec<Vec<(u32, u32)>> = current
-                .par_chunks(64.max(current.len() / rayon::current_num_threads().max(1)))
-                .map(|chunk| {
+            scheduler::run(
+                worker_count_for(chunks.len()),
+                chunks,
+                |(index, chunk), _| {
                     let mut out: Vec<(u32, u32)> = Vec::new();
                     for &cur in chunk {
                         let cv = CsrVertex(cur);
@@ -297,7 +310,21 @@ pub fn traverse_csr(
                             }
                         }
                     }
-                    out
+                    let mut slot = slots[index]
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    *slot = Some(out);
+                },
+            );
+
+            let local_results: Vec<Vec<(u32, u32)>> = slots
+                .into_iter()
+                .map(|slot| match slot.into_inner() {
+                    Ok(Some(batch)) => batch,
+                    Ok(None) => panic!("parallel traversal worker did not write a result"),
+                    Err(poisoned) => poisoned.into_inner().unwrap_or_else(|| {
+                        panic!("parallel traversal worker did not write a result")
+                    }),
                 })
                 .collect();
 

@@ -3,8 +3,7 @@
 //! All output goes through this module so the agent gets a consistent
 //! shape: `## Header`, `**Location:**`, fenced code blocks tagged
 //! `rust`, file-grouped impact, and a `--- handles ---` footer for
-//! chained queries. Each renderer takes the budget so it can truncate
-//! itself rather than letting a wrapper post-process the string.
+//! chained queries.
 
 use std::collections::{HashMap, HashSet};
 
@@ -38,7 +37,11 @@ pub fn render_search_results(
         if node.kind == NodeKind::Function {
             any_function = true;
         }
-        out.push_str(&format!("### {} ({})\n", node.name, kind_label(node.kind)));
+        out.push_str(&format!(
+            "### {} ({})\n",
+            symbol_label(node),
+            kind_label(node.kind)
+        ));
         // Full line range (`:start-end`) so the caller can Read offset=start
         // limit=(end-start) or symbol_edit precisely without a follow-up sed.
         out.push_str(&format!(
@@ -95,7 +98,7 @@ pub fn render_node_list(
         };
         out.push_str(&format!(
             "- {} ({}) — {}{}{}\n",
-            node.name,
+            symbol_label(node),
             kind_label(node.kind),
             node.file_path.display(),
             line_suffix(node),
@@ -138,10 +141,7 @@ pub fn render_impact(
     for (file, mut symbols) in files {
         out.push_str(&format!("**{}:**\n", file.display()));
         symbols.sort_by_key(|n| n.span.start_line);
-        let inline: Vec<String> = symbols
-            .iter()
-            .map(|n| format!("{}:{}", n.name, n.span.start_line))
-            .collect();
+        let inline: Vec<String> = symbols.iter().map(|n| line_label(n)).collect();
         out.push_str(&inline.join(", "));
         out.push_str("\n\n");
     }
@@ -246,8 +246,30 @@ fn push_relationships(
     }
 }
 
+fn symbol_label(node: &NodeData) -> String {
+    let base = if node.qualified_name.is_empty() {
+        node.name.as_str()
+    } else {
+        node.qualified_name.as_str()
+    };
+    if base.contains("::") || base.contains('.') {
+        base.to_string()
+    } else {
+        let file = node.file_path.display().to_string();
+        if file.is_empty() || file == "<unresolved>" {
+            base.to_string()
+        } else {
+            format!("{file}::{base}")
+        }
+    }
+}
+
+fn line_label(node: &NodeData) -> String {
+    format!("{}:{}", symbol_label(node), node.span.start_line)
+}
+
 fn relation_label(node: &NodeData) -> String {
-    format!("{}:{}", node.name, node.span.start_line)
+    line_label(node)
 }
 
 fn is_context_relationship_edge(kind: &EdgeKind) -> bool {
@@ -274,7 +296,7 @@ fn push_entry_points(out: &mut String, graph: &CodeGraph, entry_points: &[NodeId
         };
         out.push_str(&format!(
             "- **{}** ({}) — {}{}\n",
-            node.name,
+            symbol_label(node),
             kind_label(node.kind),
             node.file_path.display(),
             line_suffix(node),
@@ -304,10 +326,7 @@ fn push_related_symbols(out: &mut String, graph: &CodeGraph, related: &[NodeId])
     let mut files: Vec<_> = by_file.into_iter().collect();
     files.sort_by_key(|(p, _)| p.clone());
     for (file, symbols) in files {
-        let inline: Vec<String> = symbols
-            .iter()
-            .map(|n| format!("{}:{}", n.name, n.span.start_line))
-            .collect();
+        let inline: Vec<String> = symbols.iter().map(|n| line_label(n)).collect();
         out.push_str(&format!("- {}: {}\n", file.display(), inline.join(", ")));
     }
     out.push('\n');
@@ -324,7 +343,7 @@ fn push_code_blocks(out: &mut String, graph: &CodeGraph, code_blocks: &[(NodeId,
         };
         out.push_str(&format!(
             "#### {} ({}:{})\n\n",
-            node.name,
+            symbol_label(node),
             node.file_path.display(),
             node.span.start_line,
         ));
@@ -437,25 +456,7 @@ pub fn render_explore(
         ));
     }
 
-    let output = lines.join("\n");
-    truncate_to_budget(&output, budget.max_output_chars)
-}
-
-/// Truncate `text` to `max_chars`, prefer cutting on a newline boundary
-/// if one exists in the last 20 %.
-fn truncate_to_budget(text: &str, max_chars: usize) -> String {
-    if text.len() <= max_chars {
-        return text.to_string();
-    }
-    let cut = &text[..max_chars];
-    let safe_end = cut
-        .rfind('\n')
-        .filter(|i| *i > (max_chars * 4 / 5))
-        .unwrap_or(max_chars);
-    format!(
-        "{}\n\n... (output truncated to budget — drill in with a narrower query)",
-        &text[..safe_end]
-    )
+    lines.join("\n")
 }
 
 pub fn kind_label(kind: NodeKind) -> &'static str {
@@ -596,7 +597,7 @@ mod tests {
         assert!(out.contains("## Impact"));
         assert!(out.contains("affects 2 symbols"));
         assert!(out.contains("**src/lib.rs:**"));
-        assert!(out.contains("a:1, b:5"));
+        assert!(out.contains("crate::a:1, crate::b:5"));
     }
 
     #[test]
@@ -660,15 +661,50 @@ mod tests {
         );
         assert!(out.contains("### Relationships"));
         assert!(out.contains("**calls:**"));
-        assert!(out.contains("caller:1 -> callee:10"));
+        assert!(out.contains("crate::caller:1 -> crate::callee:10"));
     }
 
     #[test]
-    fn truncate_to_budget_keeps_under_cap() {
-        let big = "line\n".repeat(1000);
-        let truncated = truncate_to_budget(&big, 200);
-        assert!(truncated.len() <= 400);
-        assert!(truncated.contains("truncated"));
+    fn render_context_uses_qualified_symbol_labels() {
+        let mut g = CodeGraph::new();
+        let id = g.add_node(node("foo", NodeKind::Function, 7));
+        let budget = ExploreBudget::for_file_count(1000);
+        let out = render_context(
+            &g,
+            "foo",
+            &[id.clone()],
+            &[],
+            &[(id.clone(), "fn foo() {}\n".to_string())],
+            TaskIntent::Exploration,
+            &budget,
+        );
+        assert!(out.contains("**crate::foo**"));
+        assert!(out.contains("#### crate::foo (src/lib.rs:7)"));
+    }
+
+    #[test]
+    fn render_explore_keeps_included_blocks_intact() {
+        let mut budget = ExploreBudget::for_file_count(1000);
+        budget.max_output_chars = 80;
+        let body = "line\n".repeat(100);
+        let out = render_explore(
+            "test",
+            1,
+            1,
+            &[],
+            &[(
+                "src/lib.rs".to_string(),
+                "rust".to_string(),
+                "crate::long_fn(function)".to_string(),
+                body.clone(),
+            )],
+            &[],
+            &[],
+            &[],
+            &budget,
+        );
+        assert!(out.contains(&body));
+        assert!(!out.contains("output truncated"));
     }
 
     #[test]

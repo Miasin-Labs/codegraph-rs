@@ -26,8 +26,8 @@ pub fn get_codegraph_dir(project_root: &Path) -> PathBuf {
 /// Requires both `.codegraph/` directory AND `codegraph.db` to exist.
 pub fn is_initialized(project_root: &Path) -> bool {
     let dir = get_codegraph_dir(project_root);
-    match fs::metadata(&dir) {
-        Ok(meta) if meta.is_dir() => dir.join("codegraph.db").exists(),
+    match fs::symlink_metadata(&dir) {
+        Ok(meta) if meta.file_type().is_dir() => dir.join("codegraph.db").exists(),
         _ => false,
     }
 }

@@ -11,7 +11,8 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use super::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
+use crate::resolution::jvm_scope;
+use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
 use crate::types::{EdgeKind, Language, Node, NodeKind};
 
 // ---------------------------------------------------------------------------
@@ -205,6 +206,12 @@ pub fn match_by_exact_name_ranked(
             confidence: if is_cross_language { 0.5 } else { 0.9 },
             resolved_by: ResolvedBy::ExactMatch,
         });
+    }
+
+    if reference.language == Language::Java || reference.language == Language::Kotlin {
+        if let Some(jvm_match) = jvm_scope::match_exact_name(reference, context, &candidates) {
+            return Some(jvm_match);
+        }
     }
 
     // Multiple matches - try to narrow down
@@ -759,7 +766,20 @@ pub fn match_method_call_hinted(
             .collect();
     }
 
+    let mut class_candidate_order: Vec<&Node> = Vec::new();
+    if let Some(scoped) = jvm_scope::scoped_candidates(reference, context, &class_candidates) {
+        class_candidate_order.extend(scoped.nodes);
+    }
     for class_node in &class_candidates {
+        if !class_candidate_order
+            .iter()
+            .any(|ordered| ordered.id == class_node.id)
+        {
+            class_candidate_order.push(class_node);
+        }
+    }
+
+    for class_node in class_candidate_order {
         if class_node.kind == NodeKind::Class
             || class_node.kind == NodeKind::Struct
             || class_node.kind == NodeKind::Interface

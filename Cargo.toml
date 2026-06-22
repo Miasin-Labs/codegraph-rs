@@ -32,7 +32,7 @@ globset = "0.4"
 walkdir = "2"
 sha2 = "0.10"
 regex = "1"
-rayon = "1"
+ws-deque = { path = "../../ws-deque" }
 crossbeam-channel = "0.5"
 # GPU resolution tier (optional): CUDA driver API + NVRTC via cudarc.
 # dynamic-loading = no build-time CUDA dependency; libcuda is dlopen'd at

@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use codegraph::directory::{
     create_directory,
     get_codegraph_dir,
+    is_initialized,
     list_directory_contents,
     remove_directory,
 };
@@ -251,6 +252,18 @@ fn remove_directory_does_not_follow_symlinked_codegraph_dir() {
     assert!(fs::symlink_metadata(get_codegraph_dir(project.path())).is_err());
     // …but the target directory and its contents survive.
     assert!(victim.path().join("important.txt").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn is_initialized_rejects_symlinked_codegraph_dir() {
+    let project = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    fs::write(external.path().join("codegraph.db"), "").unwrap();
+
+    std::os::unix::fs::symlink(external.path(), get_codegraph_dir(project.path())).unwrap();
+
+    assert!(!is_initialized(project.path()));
 }
 
 // `list_directory_contents` skips symlinks so listings never leak (or

@@ -25,5 +25,5 @@ Use codegraph for **structural** questions — where X is defined, what X's sign
 
 ### If `.codegraph/` doesn't exist
 
-The MCP server returns "not initialized." Ask the user: *"I notice this project doesn't have CodeGraph initialized. Want me to run `codegraph init -i` to build the index?"*
+The MCP server returns "not initialized." Ask the user: *"I notice this project doesn't have CodeGraph initialized. Want me to run `codegraph init` to build the index?"*
 <!-- CODEGRAPH_END -->

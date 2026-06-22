@@ -572,6 +572,9 @@ pub fn kind_bonus(kind: NodeKind) -> i32 {
         // lower-signal than callable code.
         NodeKind::DataSymbol => 2,
         NodeKind::StringLiteral => 1,
+        // Macro definitions are searchable symbols; rank near traits/types
+        // since `macro_rules!` often defines core API surface.
+        NodeKind::Macro => 6,
     }
 }
 

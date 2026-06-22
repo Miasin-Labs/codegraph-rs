@@ -105,6 +105,14 @@ fn open_graph(dir: &Path) -> (DatabaseConnection, QueryBuilder) {
 
 fn git(cwd: &Path, args: &[&str]) {
     let status = Command::new("git")
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "tag.gpgsign=false",
+        ])
         .args(args)
         .current_dir(cwd)
         .stdout(std::process::Stdio::null())

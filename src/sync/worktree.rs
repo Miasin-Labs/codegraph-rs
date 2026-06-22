@@ -86,7 +86,7 @@ pub fn worktree_mismatch_warning(m: &WorktreeIndexMismatch) -> String {
         \x20 Running in: {}\n\
         \x20 Index from: {}\n\
         Results reflect that tree's code (often a different branch), not this worktree — \
-        symbols changed only here are missing. Run \"codegraph init -i\" in this worktree \
+        symbols changed only here are missing. Run \"codegraph init\" in this worktree \
         for a worktree-local index.",
         m.worktree_root.display(),
         m.index_root.display()
@@ -100,7 +100,7 @@ pub fn worktree_mismatch_notice(m: &WorktreeIndexMismatch) -> String {
     format!(
         "⚠ CodeGraph results below come from a different git worktree ({}), \
         not where you're working ({}) — they may reflect another branch, \
-        and symbols changed only here are missing. Run \"codegraph init -i\" here for a \
+        and symbols changed only here are missing. Run \"codegraph init\" here for a \
         worktree-local index.",
         m.index_root.display(),
         m.worktree_root.display()
@@ -140,7 +140,7 @@ mod tests {
         let msg = worktree_mismatch_notice(&m);
         assert!(!msg.contains('\n'));
         assert!(msg.starts_with("⚠ CodeGraph results below come from a different git worktree"));
-        assert!(msg.contains("codegraph init -i"));
+        assert!(msg.contains("codegraph init"));
     }
 
     #[test]

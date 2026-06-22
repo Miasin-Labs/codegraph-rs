@@ -77,8 +77,26 @@ cargo test --workspace
   currently through v6). A schema change must bump `schema_versions`, add an
   idempotent migration, treat new columns as nullable (backfill on re-index),
   and update count/size pin tests.
-- Language-support additions pin sizes with **count tests** (a regression guard
-  on how many nodes/edges a fixture yields).
+ - Language-support additions pin sizes with **count tests** (a regression guard
+   on how many nodes/edges a fixture yields).
+ - **Extraction is bounded by the pinned tree-sitter grammar.** A grammar that
+   can't parse some (usually *nightly/unstable*) syntax misparses that item and
+   degrades extraction for it alone. Known, test-pinned Rust cases (all on
+   tree-sitter-rust 0.24): `const trait` (no trait node; required methods hoisted
+   to bare fns — `rust_const_trait_is_a_known_grammar_limitation`), **trait
+   aliases** `pub trait X = A + B;` (no node; upstream #229) and **declarative
+   macros 2.0** `pub macro m {…}` (no node; upstream #45) —
+   `rust_trait_alias_and_macro2_are_known_grammar_limitations`. (`const impl`,
+   `~const` bounds, let-else, GATs, const generics, raw idents, `gen` blocks,
+   safe/unsafe `extern`, auto traits, and doc comments all parse fine — don't
+   add extractor branches for them.) Other languages: C/C++ macro-confused
+   `namespace`/`switch` "functions", Kotlin `fun interface`. The fix is a grammar
+   bump, not an extractor branch. Macro **expansion** is also out of scope —
+   tree-sitter parses tokens, so symbols *generated* by a `macro_rules!`
+   invocation are never extracted (only the macro def + the call site are).
+   `NodeKind` now has **25** variants (added `Macro` for `macro_rules!` defs);
+   `map_node_kind` (analysis bridge) maps it to `None` — macros aren't callable
+   analysis nodes.
 
 ## Notable subsystems
 

@@ -12,6 +12,7 @@ pub mod go_module;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod import_resolver;
+mod jvm_scope;
 pub mod lru_cache;
 pub mod name_matcher;
 pub mod path_aliases;

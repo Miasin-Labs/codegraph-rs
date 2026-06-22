@@ -35,7 +35,7 @@ pub use codegraph::*;
 /// Recursive walkers over unbounded input — AST nesting (extraction), graph
 /// chains (impact/type hierarchy), parsed-query trees (DSL), directory depth
 /// (file-tree rendering) — recurse to a depth set by their input, not by a
-/// fixed bound. On a worker thread with a fixed stack (rayon workers, the MCP
+/// fixed bound. On a worker thread with a fixed stack (scheduler workers, the MCP
 /// dispatch thread, the file watcher) a pathologically deep input would
 /// otherwise overflow and abort the whole process. Calling this at each
 /// recursive function's head bounds depth by input size, never by thread

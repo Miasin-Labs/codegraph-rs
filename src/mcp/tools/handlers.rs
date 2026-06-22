@@ -155,6 +155,24 @@ fn last_qualifier_part(symbol: &str) -> String {
         .unwrap_or_else(|| symbol.to_string())
 }
 
+fn display_symbol(node: &Node) -> String {
+    let base = if node.qualified_name.is_empty() {
+        node.name.as_str()
+    } else {
+        node.qualified_name.as_str()
+    };
+    if base.contains("::") || base.contains('.') {
+        base.to_string()
+    } else {
+        let file = node.file_path.as_str();
+        if file.is_empty() || file == "<unresolved>" {
+            base.to_string()
+        } else {
+            format!("{file}::{base}")
+        }
+    }
+}
+
 /// Calculate the recommended number of codegraph_explore calls based on project size.
 /// Larger codebases need more exploration calls to cover their surface area,
 /// but smaller ones should use fewer to avoid unnecessary overhead.
@@ -2821,7 +2839,7 @@ impl ToolHandler {
 
             entries.push(format!(
                 "- `{}` ({}:{}) — {} caller{}{}{}",
-                root.name,
+                display_symbol(root),
                 rel(&root.file_path),
                 root.start_line,
                 uniq.len(),
@@ -3335,7 +3353,15 @@ impl ToolHandler {
         ];
 
         // Blast radius (always-on, compact).
-        let blast_radius = self.build_blast_radius_section(&cg, &roots, &nodes);
+        let mut blast_roots: Vec<String> = named_seed_ids.iter().cloned().collect();
+        blast_roots.sort();
+        blast_roots.extend(
+            roots
+                .iter()
+                .filter(|id| !named_seed_ids.contains(*id))
+                .cloned(),
+        );
+        let blast_radius = self.build_blast_radius_section(&cg, &blast_roots, &nodes);
         if !blast_radius.is_empty() {
             lines.push(blast_radius);
         }
@@ -3366,7 +3392,7 @@ impl ToolHandler {
                 by_kind
                     .entry(kind)
                     .or_default()
-                    .push((source_node.name.clone(), target_node.name.clone()));
+                    .push((display_symbol(source_node), display_symbol(target_node)));
             }
 
             for kind in &kind_order {
@@ -3657,8 +3683,14 @@ impl ToolHandler {
                         .nodes
                         .iter()
                         .filter(|n| n.kind != NodeKind::Import && n.kind != NodeKind::Export)
-                        .filter(|n| name_seen.insert(n.name.clone()))
-                        .map(|n| n.name.clone())
+                        .filter_map(|n| {
+                            let label = display_symbol(n);
+                            if name_seen.insert(label.clone()) {
+                                Some(label)
+                            } else {
+                                None
+                            }
+                        })
                         .take(budget.max_symbols_in_file_header)
                         .collect::<Vec<_>>()
                         .join(", ");
@@ -3706,7 +3738,7 @@ impl ToolHandler {
                     .nodes
                     .iter()
                     .filter(|n| n.kind != NodeKind::Import && n.kind != NodeKind::Export)
-                    .map(|n| format!("{}({})", n.name, n.kind.as_str()))
+                    .map(|n| format!("{}({})", display_symbol(n), n.kind.as_str()))
                     .filter(|s| sym_seen.insert(s.clone()))
                     .collect();
                 let header_names: Vec<String> = uniq_symbols
@@ -3809,7 +3841,7 @@ impl ToolHandler {
                     LineRange {
                         start: n.start_line as i64,
                         end: n.end_line as i64,
-                        name: n.name.clone(),
+                        name: display_symbol(n),
                         kind: n.kind.as_str().to_string(),
                         importance,
                     }
@@ -3830,7 +3862,7 @@ impl ToolHandler {
                     }
                     let target_name = nodes
                         .get(&edge.target)
-                        .map(|t| t.name.clone())
+                        .map(display_symbol)
                         .unwrap_or_else(|| edge.kind.as_str().to_string());
                     ranges.push(LineRange {
                         start: line as i64,
@@ -4046,7 +4078,7 @@ impl ToolHandler {
                     let symbols = group
                         .nodes
                         .iter()
-                        .map(|n| format!("{}:{}", n.name, n.start_line))
+                        .map(|n| format!("{}:{}", display_symbol(n), n.start_line))
                         .collect::<Vec<_>>()
                         .join(", ");
                     lines.push(format!("- {file_path}: {symbols}"));

@@ -45,10 +45,14 @@ pub enum NodeKind {
     DataSymbol,
     /// A string / format literal in decompiled binary output.
     StringLiteral,
+    /// A macro definition (Rust `macro_rules!`, C `#define`-style, etc.).
+    /// Macro *expansion* is out of scope — this is the definition symbol only,
+    /// so the analysis bridge maps it to `None` (it is not callable code).
+    Macro,
 }
 
 /// Runtime-iterable list of all node kinds (mirrors `NODE_KINDS` in TS).
-pub const NODE_KINDS: [NodeKind; 24] = [
+pub const NODE_KINDS: [NodeKind; 25] = [
     NodeKind::File,
     NodeKind::Module,
     NodeKind::Class,
@@ -73,6 +77,7 @@ pub const NODE_KINDS: [NodeKind; 24] = [
     NodeKind::Component,
     NodeKind::DataSymbol,
     NodeKind::StringLiteral,
+    NodeKind::Macro,
 ];
 
 impl NodeKind {
@@ -102,6 +107,7 @@ impl NodeKind {
             NodeKind::Component => "component",
             NodeKind::DataSymbol => "data_symbol",
             NodeKind::StringLiteral => "string_literal",
+            NodeKind::Macro => "macro",
         }
     }
 }

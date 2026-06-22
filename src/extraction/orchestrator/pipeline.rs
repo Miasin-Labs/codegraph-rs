@@ -11,7 +11,7 @@
 //! Node-isms dropped (documented in `notes/extraction-orchestrator.md`):
 //! - `parse-worker.ts` and the whole worker lifecycle (spawn/recycle/timeout,
 //!   `PARSE_TIMEOUT_MS`, `WORKER_RECYCLE_INTERVAL`) — parsing is native and
-//!   in-process; parallelism is rayon over read batches instead.
+//!   in-process; parallelism is work-stealing over read batches instead.
 //! - The WASM memory-corruption retry pass (fresh-worker retry + comment
 //!   stripping) — there is no WASM heap to corrupt.
 //! - `scanDirectoryAsync` — only existed to yield to the Node event loop;
@@ -23,12 +23,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use ws_deque::scheduler;
 
 use crate::db::QueryBuilder;
 use crate::error::{Result, log_debug, log_warn};
@@ -76,7 +76,7 @@ use crate::utils::{
 };
 
 /// Number of files to read + parse in parallel per batch during indexing.
-/// Each batch fans out across the rayon pool, then results are stored
+/// Each batch fans out across the work-stealing scheduler, then results are stored
 /// serially (SQLite is single-threaded), so the batch size caps effective
 /// parallelism and amortizes the store barrier. Worst-case memory is
 /// `FILE_IO_BATCH_SIZE` files of held content (plus extraction results) — there
@@ -87,30 +87,14 @@ const FILE_IO_BATCH_SIZE: usize = 64;
 /// How many fully parsed batches the parse producer may run ahead of the
 /// (single-threaded) store loop. Bounds peak memory to
 /// `(PARSE_PIPELINE_DEPTH + 1) × FILE_IO_BATCH_SIZE` files of content +
-/// extraction results while keeping the rayon pool busy during SQLite writes.
+/// extraction results while keeping parse workers busy during SQLite writes.
 const PARSE_PIPELINE_DEPTH: usize = 2;
 
-/// Build the global rayon pool with named threads and roomy stacks before the
-/// first `par_iter`. Workers otherwise default to 2 MiB stacks — the recursive
-/// AST visitor self-heals via `stacker`, but a larger stack keeps segment
-/// switching off the hot path, and named threads make a future crash
-/// attributable (the llvm-project overflow reported `thread '<unknown>'`).
-fn ensure_worker_pool() {
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| {
-        if let Err(error) = rayon::ThreadPoolBuilder::new()
-            .thread_name(|i| format!("cg-parse-{i}"))
-            .stack_size(16 * 1024 * 1024)
-            .build_global()
-        {
-            // Pool already built (embedding caller beat us to it) — workers
-            // keep their stacks; the stacker guard still prevents overflow.
-            log_debug(
-                "Global rayon pool already initialized",
-                Some(&serde_json::json!({ "error": error.to_string() })),
-            );
-        }
-    });
+fn worker_count_for(work_items: usize) -> usize {
+    let available = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    work_items.clamp(1, available)
 }
 
 /// Epoch milliseconds (`Date.now()` parity).
@@ -1132,6 +1116,39 @@ struct BatchItem {
     outcome: BatchOutcome,
 }
 
+fn parse_batch(root_dir: &Path, batch: &[String], framework_names: &[String]) -> Vec<BatchItem> {
+    if batch.len() <= 1 {
+        return batch
+            .iter()
+            .map(|fp| read_and_parse(root_dir, fp, framework_names))
+            .collect();
+    }
+
+    let slots: Vec<Mutex<Option<BatchItem>>> = (0..batch.len()).map(|_| Mutex::new(None)).collect();
+    scheduler::run(
+        worker_count_for(batch.len()),
+        batch.iter().enumerate(),
+        |(index, fp), _| {
+            let item = read_and_parse(root_dir, fp, framework_names);
+            let mut slot = slots[index]
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = Some(item);
+        },
+    );
+
+    slots
+        .into_iter()
+        .map(|slot| match slot.into_inner() {
+            Ok(Some(item)) => item,
+            Ok(None) => panic!("parallel parse worker did not write a result"),
+            Err(poisoned) => poisoned
+                .into_inner()
+                .unwrap_or_else(|| panic!("parallel parse worker did not write a result")),
+        })
+        .collect()
+}
+
 fn validate_io_path_within_root(
     root_dir: &Path,
     file_path: &str,
@@ -1163,7 +1180,7 @@ fn validate_io_path_within_root(
     }
 }
 
-/// Read + size-check + parse a single file. Runs on rayon worker threads, so
+/// Read + size-check + parse a single file. Runs on scheduler worker threads, so
 /// it must not touch the orchestrator (the DB handle is not `Sync`).
 fn read_and_parse(root_dir: &Path, file_path: &str, framework_names: &[String]) -> BatchItem {
     let Ok(full_path) = validate_io_path_within_root(root_dir, file_path) else {
@@ -1403,7 +1420,6 @@ impl<'a> ExtractionOrchestrator<'a> {
         _verbose: bool,
     ) -> Result<IndexResult> {
         init_grammars();
-        ensure_worker_pool();
         let start_time = now_ms();
         let mut errors: Vec<ExtractionError> = Vec::new();
         let mut files_indexed = 0usize;
@@ -1459,8 +1475,8 @@ impl<'a> ExtractionOrchestrator<'a> {
             });
         }
 
-        // Phase 2: Parse files (rayon over read batches; storage stays on this
-        // thread — SQLite access is single-threaded).
+        // Phase 2: Parse files (work-stealing over read batches; storage stays
+        // on this thread — SQLite access is single-threaded).
         let total = files.len();
         let mut processed = 0usize;
 
@@ -1489,9 +1505,9 @@ impl<'a> ExtractionOrchestrator<'a> {
         }
         load_grammars_for_languages(&needed_languages);
 
-        // Parse/store pipeline: a producer task on the rayon pool parses
-        // batches ahead while this thread stores the previous batch's results
-        // into SQLite — parsing never idles behind the single-threaded store.
+        // Parse/store pipeline: a producer thread parses batches ahead while
+        // this thread stores the previous batch's results into SQLite — parsing
+        // never idles behind the single-threaded store.
         // The bounded channel caps how far the producer runs ahead; dropping
         // the receiver (error/abort return paths) stops the producer after
         // its in-flight batch.
@@ -1502,17 +1518,14 @@ impl<'a> ExtractionOrchestrator<'a> {
             let root_dir = self.root_dir.clone();
             let framework_names = framework_names.clone();
             let parse_aborted = Arc::clone(&parse_aborted);
-            rayon::spawn(move || {
+            std::thread::spawn(move || {
                 for batch in files.chunks(FILE_IO_BATCH_SIZE) {
                     if parse_aborted.load(Ordering::Relaxed) {
                         return;
                     }
                     // Read + parse the batch in parallel (with path validation
                     // before any I/O); order is preserved.
-                    let items: Vec<BatchItem> = batch
-                        .par_iter()
-                        .map(|fp| read_and_parse(&root_dir, fp, &framework_names))
-                        .collect();
+                    let items = parse_batch(&root_dir, batch, &framework_names);
                     if batch_tx.send(items).is_err() {
                         return; // consumer dropped the receiver
                     }

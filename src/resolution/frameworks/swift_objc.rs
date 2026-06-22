@@ -39,9 +39,8 @@
 //! **Provenance:** every edge produced here is recorded as a framework-
 //! resolved reference (`resolvedBy: 'framework'`) with `confidence: 0.6`.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 use regex::Regex;
 
@@ -276,7 +275,7 @@ fn declaration_source_window(node: &Node, context: &dyn ResolutionContext) -> St
 /// daemon — don't bleed maps between them).
 #[derive(Debug, Default)]
 pub struct SwiftObjcBridgeResolver {
-    objc_by_candidate_swift_base: RefCell<HashMap<String, HashMap<String, Vec<Node>>>>,
+    objc_by_candidate_swift_base: Mutex<HashMap<String, HashMap<String, Vec<Node>>>>,
 }
 
 impl SwiftObjcBridgeResolver {
@@ -302,7 +301,10 @@ impl SwiftObjcBridgeResolver {
         };
 
         let root = context.get_project_root().to_string();
-        let mut cache = self.objc_by_candidate_swift_base.borrow_mut();
+        let mut cache = self
+            .objc_by_candidate_swift_base
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let map = cache.entry(root).or_insert_with(|| build_objc_map(context));
         let candidates = map.get(raw_name)?;
         if candidates.is_empty() {

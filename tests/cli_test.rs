@@ -73,6 +73,30 @@ fn temp_project() -> (tempfile::TempDir, PathBuf) {
     (dir, root)
 }
 
+fn temp_project_without_parent_index() -> (tempfile::TempDir, PathBuf) {
+    let mut candidates = vec![PathBuf::from("/var/tmp"), PathBuf::from("/dev/shm")];
+    candidates.push(std::env::temp_dir());
+
+    for base in candidates {
+        if !base.is_dir() || has_codegraph_ancestor(&base) {
+            continue;
+        }
+        let dir = tempfile::Builder::new()
+            .prefix("codegraph-cli-test-")
+            .tempdir_in(&base)
+            .expect("create isolated tempdir");
+        let root = dir.path().canonicalize().expect("canonicalize tempdir");
+        return (dir, root);
+    }
+
+    temp_project()
+}
+
+fn has_codegraph_ancestor(path: &Path) -> bool {
+    path.ancestors()
+        .any(|ancestor| ancestor.join(".codegraph").join("codegraph.db").exists())
+}
+
 // =============================================================================
 // ISO-8601 round-trip helpers (`new Date(ms).toISOString()` inverse)
 // =============================================================================
@@ -129,7 +153,7 @@ fn get_last_indexed_at_is_null_before_indexing_and_a_recent_ms_timestamp_after()
 
 #[test]
 fn status_json_on_an_uninitialized_project_reports_version_index_path_last_indexed_null() {
-    let (_dir, root) = temp_project();
+    let (_dir, root) = temp_project_without_parent_index();
 
     let out = run_status_json(&root);
     assert_eq!(out["initialized"], serde_json::json!(false));
@@ -203,7 +227,7 @@ fn write_smoke_fixture(root: &Path) {
 
 #[test]
 fn end_to_end_smoke_init_query_affected_uninit() {
-    let (_dir, root) = temp_project();
+    let (_dir, root) = temp_project_without_parent_index();
     write_smoke_fixture(&root);
 
     // --- init (builds the initial index by default) ---
@@ -351,6 +375,19 @@ fn help_lists_every_subcommand() {
 }
 
 #[test]
+fn init_rejects_removed_index_flag() {
+    let (_dir, root) = temp_project();
+    let out = run_cli(&root, &["init", "-i"]);
+
+    assert!(!out.status.success(), "init -i must be rejected");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected argument '-i'") || stderr.contains("unexpected argument"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
 fn version_prints_the_bare_package_version() {
     let (_dir, root) = temp_project();
     let out = run_cli(&root, &["--version"]);
@@ -368,7 +405,7 @@ fn unknown_command_exits_1_like_commander() {
 
 #[test]
 fn status_human_output_reports_not_initialized() {
-    let (_dir, root) = temp_project();
+    let (_dir, root) = temp_project_without_parent_index();
     let out = run_cli(&root, &["status"]);
     assert!(out.status.success());
     let stdout = stdout_str(&out);
