@@ -162,16 +162,7 @@ fn walk_cognitive_inner(
 
     // Check for logical operators (&&, ||, ??) — +1 each
     if rules.logical_op_nodes.contains(&kind) {
-        if let Some(op_node) = node.child_by_field_name("operator") {
-            let op_text = &source[op_node.byte_range()];
-            if rules
-                .logical_operators
-                .iter()
-                .any(|op| op.as_bytes() == op_text)
-            {
-                *score += 1;
-            }
-        }
+        *score += operator_tokens(node, source, rules.logical_operators).len() as u32;
     }
 
     // Recurse into children with updated nesting level.
@@ -212,16 +203,7 @@ fn walk_cyclomatic_inner(node: TsNode<'_>, source: &[u8], rules: &LangRules, cou
 
     // Logical operators (&&, ||) add a decision point.
     if rules.logical_op_nodes.contains(&kind) {
-        if let Some(op_node) = node.child_by_field_name("operator") {
-            let op_text = &source[op_node.byte_range()];
-            if rules
-                .logical_operators
-                .iter()
-                .any(|op| op.as_bytes() == op_text)
-            {
-                *count += 1;
-            }
-        }
+        *count += operator_tokens(node, source, rules.logical_operators).len() as u32;
     }
 
     let mut cursor = node.walk();
@@ -369,10 +351,7 @@ fn walk_halstead_inner(
 
     // For binary/unary expressions, extract the operator token itself.
     if rules.operator_container_nodes.contains(&kind) {
-        if let Some(op_node) = node.child_by_field_name("operator") {
-            let op_text = std::str::from_utf8(&source[op_node.byte_range()])
-                .unwrap_or("")
-                .to_string();
+        for op_text in operator_tokens(node, source, &[]) {
             *total_ops += 1;
             unique_ops.insert(op_text);
         }
@@ -427,6 +406,66 @@ fn compute_loc(function_node: TsNode<'_>, source: &[u8]) -> Option<LocMetrics> {
         total,
         source: source_lines,
         comment,
+    })
+}
+
+fn operator_tokens(node: TsNode<'_>, source: &[u8], accepted: &[&str]) -> Vec<String> {
+    let mut tokens = Vec::new();
+    if let Some(op_node) = node.child_by_field_name("operator") {
+        push_operator_token(&mut tokens, op_node, source, accepted);
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if !child.is_named() {
+            push_operator_token(&mut tokens, child, source, accepted);
+        }
+    }
+    tokens
+}
+
+fn push_operator_token(
+    tokens: &mut Vec<String>,
+    node: TsNode<'_>,
+    source: &[u8],
+    accepted: &[&str],
+) {
+    let text = std::str::from_utf8(&source[node.byte_range()])
+        .unwrap_or("")
+        .trim();
+    if text.is_empty() || tokens.iter().any(|existing| existing == text) {
+        return;
+    }
+    if accepted.is_empty() {
+        if is_operator_like(text) {
+            tokens.push(text.to_string());
+        }
+    } else if accepted.contains(&text) {
+        tokens.push(text.to_string());
+    }
+}
+
+fn is_operator_like(text: &str) -> bool {
+    matches!(
+        text,
+        "and" | "or" | "not" | "is" | "in" | "as" | "instanceof"
+    ) || text.bytes().all(|b| {
+        matches!(
+            b,
+            b'!' | b'%'
+                | b'&'
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'/'
+                | b'<'
+                | b'='
+                | b'>'
+                | b'?'
+                | b'^'
+                | b'|'
+                | b'~'
+        )
     })
 }
 
@@ -620,10 +659,10 @@ fn validate(x: i32, y: i32) -> bool {
         let func = first_function(&tree, "rust");
         let metrics = compute_complexity(func, src.as_bytes(), "rust").unwrap();
 
-        // cognitive: +1 per logical operator (&&, ||) = 2
-        assert!(metrics.cognitive >= 2);
-        // cyclomatic: 1 + 2 logical ops = 3
-        assert!(metrics.cyclomatic >= 3);
+        assert_eq!(metrics.cognitive, 2);
+        assert_eq!(metrics.cyclomatic, 3);
+        let halstead = metrics.halstead.expect("halstead metrics");
+        assert!(halstead.unique_operators >= 2);
     }
 
     // ─── Test: Deeply nested ─────────────────────────────────────────────

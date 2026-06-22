@@ -119,7 +119,9 @@ impl FrameworkResolver for SalesforceResolver {
             // LWC template `{binding}` → component JS class member.
             Language::Html => resolve_lwc_template_binding(reference, context),
             // Visualforce `Controller.member` bindings (getter convention).
-            Language::Apex => resolve_visualforce_binding(reference, context),
+            Language::Apex | Language::Visualforce => {
+                resolve_visualforce_binding(reference, context)
+            }
             // Aura markup `{!c.handler}` → bundle client controller.
             Language::Aura => resolve_aura_handler(reference, context),
             _ => None,
@@ -618,6 +620,24 @@ mod tests {
                 .resolve(&apex_code, &Ctx::new())
                 .is_none()
         );
+    }
+
+    #[test]
+    fn visualforce_language_binding_uses_visualforce_resolver() {
+        let r = UnresolvedRef {
+            from_node_id: "file:page".to_string(),
+            reference_name: "AccountController.greeting".to_string(),
+            reference_kind: EdgeKind::References,
+            line: 2,
+            column: 0,
+            file_path: "force-app/main/default/pages/Wrapper.page".to_string(),
+            language: Language::Visualforce,
+            candidates: None,
+        };
+        let resolved = SalesforceResolver
+            .resolve(&r, &Ctx::new())
+            .expect("resolved");
+        assert_eq!(resolved.target_node_id, "method:2");
     }
 
     #[test]

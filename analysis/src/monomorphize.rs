@@ -20,12 +20,11 @@
 //! | Key               | Who writes it          | Example value              |
 //! |-------------------|------------------------|----------------------------|
 //! | `generic_params`  | Adapter, on the *decl* | `["T", "U"]`               |
-//! | `type_args`       | Adapter, on the *call* | `["String", "i32"]`        |
+//! | `callee_type_args` | Adapter, on the caller | `{"foo": ["String"]}`      |
 //!
-//! Both are JSON-encoded string arrays. `generic_params` lives on the
-//! declaring Function/Struct/Enum node; `type_args` lives on the calling
-//! Function node's metadata under a callsite-keyed sub-object, OR on the
-//! `Calls` edge's [`crate::edges::EdgeData::metadata`].
+//! `generic_params` is a JSON-encoded string array on the declaring
+//! Function/Struct/Enum node. `callee_type_args` is a JSON object on the
+//! caller node, keyed by callee/type name with string-array values.
 //!
 //! # Precision
 //!
@@ -93,7 +92,7 @@ fn collect_instantiations_for(
     out: &mut Vec<GenericInstantiation>,
 ) {
     for (caller_id, edge) in graph.get_edges_to(generic_id) {
-        if !matches!(edge.kind, EdgeKind::Calls) {
+        if !matches!(edge.kind, EdgeKind::Calls | EdgeKind::UsesType) {
             continue;
         }
         try_caller_type_args(graph, generic_id, caller_id, out);
@@ -245,6 +244,27 @@ mod tests {
         assert_eq!(insts.len(), 1);
         assert_eq!(insts[0].type_args, vec!["String"]);
         assert_eq!(insts[0].generic_id, vec_new_id);
+    }
+
+    #[test]
+    fn finds_struct_instantiation_from_type_use_metadata() {
+        let mut g = CodeGraph::new();
+        let mut gp: HashMap<String, String> = HashMap::new();
+        gp.insert("generic_params".into(), r#"["T"]"#.into());
+        let vec_id = NodeId::new("test.rs", "Vec", NodeKind::Struct);
+        let caller_id = NodeId::new("test.rs", "main", NodeKind::Function);
+        g.add_node(make_node("Vec", NodeKind::Struct, gp));
+
+        let mut cm: HashMap<String, String> = HashMap::new();
+        cm.insert("callee_type_args".into(), r#"{"Vec": ["String"]}"#.into());
+        g.add_node(make_node("main", NodeKind::Function, cm));
+        g.add_edge(&caller_id, &vec_id, edge(EdgeKind::UsesType))
+            .unwrap();
+
+        let insts = find_instantiations(&g);
+        assert_eq!(insts.len(), 1);
+        assert_eq!(insts[0].type_args, vec!["String"]);
+        assert_eq!(insts[0].generic_id, vec_id);
     }
 
     #[test]

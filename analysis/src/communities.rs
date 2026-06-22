@@ -273,7 +273,13 @@ fn local_moves(adj: &AdjList, community: &mut [u32], resolution: f64, seed: u64)
             let mut best_gain = 0.0;
             let mut best_comm = node_comm as u32;
 
-            for (&target_comm, &k_i_in_target) in &comm_weights {
+            let mut candidates: Vec<(u32, f64)> = comm_weights
+                .iter()
+                .map(|(&target_comm, &weight)| (target_comm, weight))
+                .collect();
+            candidates.sort_by_key(|&(target_comm, _)| target_comm);
+
+            for (target_comm, k_i_in_target) in candidates {
                 if target_comm as usize == node_comm {
                     continue;
                 }
@@ -287,7 +293,9 @@ fn local_moves(adj: &AdjList, community: &mut [u32], resolution: f64, seed: u64)
                 // Net gain = insert_gain - remove_cost
                 let gain = insert_gain - remove_cost;
 
-                if gain > best_gain {
+                if gain > best_gain
+                    || ((gain - best_gain).abs() <= f64::EPSILON && target_comm < best_comm)
+                {
                     best_gain = gain;
                     best_comm = target_comm;
                 }

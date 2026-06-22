@@ -1,4 +1,4 @@
-// Expected nodes: 4 Functions (foo, bar, baz, process), 1 Struct (Config, 4 fields),
+// Expected nodes: 5 Functions (helper_one, foo, bar, baz, process), 1 Struct (Config, 4 fields),
 //                 1 Enum (Status, 3 variants), 1 Trait (Processor, 2 methods), 1 Module (helpers)
 // Expected edges: foo->bar (Calls), bar->baz (Calls), process uses Config (UsesType),
 //                 Config implements Processor (Implements)

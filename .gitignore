@@ -2,5 +2,6 @@
 # stray local agent config (installer test artifact) — not part of the project
 /opencode.jsonc
 /.codegraph
+/.jfc/
 # research corpus (259MB, embedded vendored checkouts) — on disk, versioned in jfc
 /analysis/research/

@@ -16,16 +16,17 @@ on:
 
 jobs:
   claude-review:
-    # Auto-review every ordinary PR; respond to "/claude" comments anywhere.
+    # Auto-review every ordinary PR; respond to trusted "/claude" comments.
     # The standing full-codebase PR (base: code-review-base) is EXCLUDED from
     # auto-runs — its diff is the whole repo and re-reviewing it on every main
     # push would burn tokens for nothing (CodeRabbit covers it via
-    # .coderabbit.yaml). "/claude" comments still work there on demand.
+    # .coderabbit.yaml). "/claude" comments still work there on demand for
+    # owners, members, and collaborators.
     if: |
       (github.event_name == 'pull_request' && github.event.pull_request.base.ref != 'code-review-base') ||
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '/claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '/claude'))
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '/claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '/claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     permissions:
       contents: read

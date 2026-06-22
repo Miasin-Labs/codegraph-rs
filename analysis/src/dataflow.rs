@@ -94,11 +94,7 @@ impl FunctionDataflow {
             ));
         }
         for r in &self.returns {
-            let expr = if r.expression.len() > 60 {
-                format!("{}...", &r.expression[..57])
-            } else {
-                r.expression.clone()
-            };
+            let expr = truncate_expr(&r.expression, 60);
             out.push_str(&format!("  return L{}: {}\n", r.line, expr));
         }
         for a in &self.assignments {
@@ -536,10 +532,11 @@ fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
 }
 
 fn truncate_expr(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
+        let prefix: String = s.chars().take(max_len.saturating_sub(3)).collect();
+        format!("{prefix}...")
     }
 }
 
@@ -729,6 +726,24 @@ fn example() {
         let func = find_first_function(&tree);
         let result = extract_dataflow(func, src.as_bytes(), "unknown_lang");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn format_summary_truncates_unicode_returns_by_char_boundary() {
+        let df = FunctionDataflow {
+            params: Vec::new(),
+            returns: vec![DataflowReturn {
+                line: 1,
+                expression: "é".repeat(80),
+            }],
+            assignments: Vec::new(),
+            arg_flows: Vec::new(),
+            mutations: Vec::new(),
+        };
+
+        let summary = df.format_summary();
+        assert!(summary.contains("..."));
+        assert!(summary.contains("return L1"));
     }
 
     #[test]

@@ -83,12 +83,13 @@ fn cooccurrence_gpu_inner(
     let mut total_pairs: u64 = 0;
     for w in commit_off.windows(2) {
         let s = (w[1] - w[0]) as u64;
-        total_pairs += s * s.saturating_sub(1) / 2;
+        total_pairs = total_pairs.checked_add(s.checked_mul(s.saturating_sub(1))? / 2)?;
     }
     if total_pairs == 0 {
         return Some(Vec::new());
     }
-    let capacity = ((total_pairs * 2).next_power_of_two() as usize).max(1024);
+    let capacity_u64 = total_pairs.checked_mul(2)?.checked_next_power_of_two()?;
+    let capacity = usize::try_from(capacity_u64).ok()?.max(1024);
     if capacity > max_slots {
         return None; // too big for VRAM budget — let the CPU handle it
     }

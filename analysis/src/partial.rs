@@ -113,14 +113,19 @@ pub fn get_partial_struct(
         .get(ACCESSED_FIELDS_KEY)
         .map(|s| s.split(',').map(|f| f.trim().to_string()).collect())
         .unwrap_or_default();
+    let visible_accessed: Vec<String> = all_fields
+        .iter()
+        .filter(|field| accessed.contains(&field.name))
+        .map(|field| field.name.clone())
+        .collect();
 
-    let is_partial = !accessed.is_empty() && accessed.len() < all_fields.len();
+    let is_partial = !visible_accessed.is_empty() && visible_accessed.len() < all_fields.len();
 
     Some(PartialView {
         struct_name: struct_node.name.clone(),
         struct_id: struct_id.clone(),
         all_fields,
-        accessed_fields: accessed,
+        accessed_fields: visible_accessed,
         is_partial,
     })
 }
@@ -382,6 +387,24 @@ mod tests {
 
         assert!(!view.is_partial);
         assert_eq!(view.visible_fields().len(), 8);
+    }
+
+    #[test]
+    fn test_partial_struct_ignores_unrelated_accessed_fields() {
+        let mut graph = CodeGraph::new();
+
+        let struct_node = make_struct_node(BIG_CONFIG_FIELDS);
+        let struct_id = graph.add_node(struct_node);
+
+        let unrelated = "name, other_a, other_b, other_c, other_d, other_e, other_f, other_g";
+        let fn_node = make_fn_node("uses_one_field_and_other_struct", Some(unrelated));
+        let fn_id = graph.add_node(fn_node);
+
+        let view = get_partial_struct(&graph, &struct_id, &fn_id).unwrap();
+
+        assert!(view.is_partial);
+        assert_eq!(view.visible_fields().len(), 1);
+        assert_eq!(view.accessed_fields, vec!["name"]);
     }
 
     #[test]

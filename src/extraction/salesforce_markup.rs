@@ -155,6 +155,7 @@ impl<'a> SalesforceMarkupExtractor<'a> {
     fn extract_visualforce(&self, file_node_id: &str, result: &mut ExtractionResult) {
         // Controller + extensions → Apex class references. Managed-package
         // namespaces (`ns.Controller`) keep the class simple name.
+        let mut binding_targets = Vec::new();
         let controller = CONTROLLER_RE.captures(self.source).map(|c| {
             let m = c.get(1).expect("group 1");
             let simple = m.as_str().rsplit('.').next().unwrap_or(m.as_str()).trim();
@@ -168,6 +169,9 @@ impl<'a> SalesforceMarkupExtractor<'a> {
             );
             simple.to_string()
         });
+        if let Some(controller) = controller {
+            binding_targets.push(controller);
+        }
         if let Some(caps) = EXTENSIONS_RE.captures(self.source) {
             let m = caps.get(1).expect("group 1");
             for ext in m.as_str().split(',') {
@@ -181,49 +185,63 @@ impl<'a> SalesforceMarkupExtractor<'a> {
                         m.start(),
                         Language::Apex,
                     );
+                    binding_targets.push(simple.to_string());
                 }
             }
         }
 
-        // Bindings only mean something against a custom controller; standard
-        // controllers (`standardController="Account"`) bind sObject fields,
-        // which have no nodes — emitting them would be pure noise.
-        let Some(controller) = controller else { return };
+        // Bindings only mean something against custom Apex classes. A bare
+        // `standardController="Account"` binds sObject fields, which have no
+        // nodes here; extensions are Apex classes and should receive bindings.
+        if binding_targets.is_empty() {
+            return;
+        }
 
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut seen: HashSet<(String, EdgeKind)> = HashSet::new();
+        let mut action_names: HashSet<String> = HashSet::new();
         // `action="{!save}"` invocations first (calls)…
         for caps in ACTION_RE.captures_iter(self.source) {
             let m = caps.get(1).expect("group 1");
-            if seen.insert(m.as_str().to_string()) {
-                self.push_ref(
-                    result,
-                    file_node_id,
-                    format!("{}.{}", controller, m.as_str()),
-                    EdgeKind::Calls,
-                    m.start(),
-                    Language::Apex,
-                );
+            action_names.insert(m.as_str().to_string());
+            for target in &binding_targets {
+                let name = format!("{}.{}", target, m.as_str());
+                if seen.insert((name.clone(), EdgeKind::Calls)) {
+                    self.push_ref(
+                        result,
+                        file_node_id,
+                        name,
+                        EdgeKind::Calls,
+                        m.start(),
+                        Language::Apex,
+                    );
+                }
             }
         }
         // …then plain `{!member}` property reads (references).
         for caps in VF_BINDING_RE.captures_iter(self.source) {
             let m = caps.get(1).expect("group 1");
             let ident = m.as_str();
+            if action_names.contains(ident) {
+                continue;
+            }
             if matches!(
                 ident.to_ascii_lowercase().as_str(),
                 "true" | "false" | "null"
             ) {
                 continue;
             }
-            if seen.insert(ident.to_string()) {
-                self.push_ref(
-                    result,
-                    file_node_id,
-                    format!("{}.{}", controller, ident),
-                    EdgeKind::References,
-                    m.start(),
-                    Language::Apex,
-                );
+            for target in &binding_targets {
+                let name = format!("{}.{}", target, ident);
+                if seen.insert((name.clone(), EdgeKind::References)) {
+                    self.push_ref(
+                        result,
+                        file_node_id,
+                        name,
+                        EdgeKind::References,
+                        m.start(),
+                        Language::Apex,
+                    );
+                }
             }
         }
     }
@@ -292,9 +310,15 @@ mod tests {
         assert!(refs.contains(&("OrionWrapperClassController", EdgeKind::References)));
         assert!(refs.contains(&("PageExt", EdgeKind::References)));
         assert!(refs.contains(&("OtherExt", EdgeKind::References)));
-        // action= is a call; value bindings are references.
+        // action= is a call; value bindings are references against the
+        // controller and both extensions.
         assert!(refs.contains(&("OrionWrapperClassController.save", EdgeKind::Calls)));
+        assert!(refs.contains(&("PageExt.save", EdgeKind::Calls)));
+        assert!(refs.contains(&("OtherExt.save", EdgeKind::Calls)));
+        assert!(!refs.contains(&("OrionWrapperClassController.save", EdgeKind::References)));
         assert!(refs.contains(&("OrionWrapperClassController.greeting", EdgeKind::References)));
+        assert!(refs.contains(&("PageExt.greeting", EdgeKind::References)));
+        assert!(refs.contains(&("OtherExt.greeting", EdgeKind::References)));
         assert!(refs.contains(&("OrionWrapperClassController.account", EdgeKind::References)));
         // Formula + $global expressions are skipped.
         assert!(!refs.iter().any(|(n, _)| n.contains("IF")));
@@ -314,6 +338,24 @@ mod tests {
             "standard-controller bindings must be skipped: {:?}",
             result.unresolved_references
         );
+    }
+
+    #[test]
+    fn visualforce_standard_controller_extensions_receive_bindings() {
+        let source = "<apex:page standardController=\"Account\" extensions=\"AccountExt\">\n    <apex:commandButton action=\"{!save}\" value=\"Save\"/>\n    <apex:outputText value=\"{!status}\"/>\n</apex:page>\n";
+        let result =
+            SalesforceMarkupExtractor::new("pages/A.page", source, Language::Visualforce).extract();
+
+        let refs: Vec<(&str, EdgeKind)> = result
+            .unresolved_references
+            .iter()
+            .map(|r| (r.reference_name.as_str(), r.reference_kind))
+            .collect();
+
+        assert!(refs.contains(&("AccountExt", EdgeKind::References)));
+        assert!(refs.contains(&("AccountExt.save", EdgeKind::Calls)));
+        assert!(refs.contains(&("AccountExt.status", EdgeKind::References)));
+        assert!(!refs.iter().any(|(name, _)| name.starts_with("Account.")));
     }
 
     #[test]

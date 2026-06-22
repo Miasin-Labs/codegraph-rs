@@ -302,7 +302,7 @@ where
     Some(
         (0..n)
             .filter(|&i| bitmap[i] == 1)
-            .map(|i| ids[i].clone())
+            .map(|i| (*ids[i]).clone())
             .collect(),
     )
 }

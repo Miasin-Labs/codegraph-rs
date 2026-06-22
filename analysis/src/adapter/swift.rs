@@ -114,15 +114,9 @@ fn walk_swift_inner(
     enclosing: Option<&str>,
 ) {
     match node.kind() {
-        "class_declaration" => {
+        "class_declaration" | "struct_declaration" | "enum_declaration" => {
             if let Some(name) = find_swift_name(&node, source) {
-                // Swift grammar uses class_declaration for class, struct, and enum
-                let src_text = source[node.byte_range()].trim_start();
-                let kind = if src_text.starts_with("enum") {
-                    NodeKind::Enum
-                } else {
-                    NodeKind::Struct
-                };
+                let kind = swift_type_kind(node, source);
                 out.push(build_nd(&name, kind, node, file_path, path_str, &name));
                 walk_children(node, source, file_path, path_str, out, Some(&name));
                 return;
@@ -286,14 +280,12 @@ fn extract_swift_conformance_inner(
     path_str: &str,
     out: &mut Vec<(NodeId, NodeId, EdgeData)>,
 ) {
-    if node.kind() == "class_declaration" {
+    if matches!(
+        node.kind(),
+        "class_declaration" | "struct_declaration" | "enum_declaration"
+    ) {
         if let Some(name) = find_swift_name(&node, source) {
-            let src_text = source[node.byte_range()].trim_start();
-            let kind = if src_text.starts_with("enum") {
-                NodeKind::Enum
-            } else {
-                NodeKind::Struct
-            };
+            let kind = swift_type_kind(node, source);
             let src_id = NodeId::new(path_str, &name, kind);
 
             // Look for inheritance_specifier children
@@ -370,6 +362,21 @@ fn extract_type_from_specifier(node: TsNode, source: &str) -> Option<String> {
         Some(t.split('<').next().unwrap_or(t).trim().to_string())
     } else {
         None
+    }
+}
+
+fn swift_type_kind(node: TsNode, source: &str) -> NodeKind {
+    if node.kind() == "enum_declaration" {
+        return NodeKind::Enum;
+    }
+    if node
+        .child_by_field_name("declaration_kind")
+        .is_some_and(|kind_node| text(&kind_node, source) == "enum")
+        || source[node.byte_range()].trim_start().starts_with("enum")
+    {
+        NodeKind::Enum
+    } else {
+        NodeKind::Struct
     }
 }
 
@@ -591,5 +598,47 @@ class Document: Printable {
             .filter(|(_, _, e)| matches!(e.kind, EdgeKind::Implements))
             .collect();
         assert!(!impl_edges.is_empty(), "expected conformance edge");
+    }
+
+    #[test]
+    fn extract_struct_and_enum_conformance() {
+        let src = r#"
+protocol Printable {
+    func print()
+}
+
+struct Receipt: Printable {
+    func print() {}
+}
+
+enum Status: Printable {
+    case ready
+    func print() {}
+}
+"#;
+        let file = parse(src);
+        let adapter = SwiftAdapter::new();
+        let nodes = adapter.extract_nodes(&file);
+        let edges = adapter.extract_edges(&file, &nodes);
+
+        assert!(
+            nodes
+                .iter()
+                .any(|n| n.kind == NodeKind::Struct && n.name == "Receipt")
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|n| n.kind == NodeKind::Enum && n.name == "Status")
+        );
+
+        let impl_sources: Vec<_> = edges
+            .iter()
+            .filter(|(_, _, e)| matches!(e.kind, EdgeKind::Implements))
+            .filter_map(|(source, _, _)| nodes.iter().find(|n| n.id == *source))
+            .map(|n| n.name.as_str())
+            .collect();
+        assert!(impl_sources.contains(&"Receipt"));
+        assert!(impl_sources.contains(&"Status"));
     }
 }
