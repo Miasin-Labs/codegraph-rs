@@ -61,19 +61,20 @@ impl ReferenceResolver {
     pub fn resolve_all_parallel(
         &self,
         unresolved_refs: &[UnresolvedReference],
-        mut on_progress: Option<&mut dyn FnMut(usize, usize)>,
+        on_progress: Option<&mut dyn FnMut(usize, usize)>,
     ) -> Result<ResolutionResult> {
         #[cfg(feature = "gpu")]
         {
             let result = self.resolve_all(unresolved_refs, None);
-            if let Some(cb) = on_progress.as_deref_mut() {
+            if let Some(cb) = on_progress {
                 cb(result.stats.total, result.stats.total);
             }
-            return Ok(result);
+            Ok(result)
         }
 
         #[cfg(not(feature = "gpu"))]
         {
+            let mut on_progress = on_progress;
             if !should_use_snapshot_resolution(unresolved_refs.len()) {
                 return Ok(self.resolve_all(unresolved_refs, on_progress));
             }

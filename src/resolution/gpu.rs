@@ -120,7 +120,7 @@ extern "C" __global__ void probe_names(
     out[i] = flags;
 }
 
-// Tier-2: full find_best_match scoring (name_matcher.rs:833-913), exact in
+// Tier-2: full find_best_match scoring (name_matcher/support.rs), exact in
 // scaled x10 integers (order-preserving vs the CPU's f64: every CPU term is a
 // multiple of 0.1 except the line-distance term, which scales exactly).
 // One thread per reference scans its CSR candidate slice IN ORDER (CPU
@@ -198,7 +198,7 @@ extern "C" __global__ void score_candidates(
     out_best[i] = best;
 }
 
-// Tier-3: match_method_call strategies 1+2 (name_matcher.rs:668-733).
+// Tier-3: match_method_call strategies 1+2 (name_matcher/method.rs).
 // For each reference: walk its class-candidate list IN ORDER; for each class,
 // scan the methods of that class's file IN ORDER; first method whose
 // name-hash matches the ref's method name AND whose qualified_name CONTAINS
@@ -252,7 +252,7 @@ extern "C" __global__ void match_class_methods(
     }
 }
 
-// Tier-4: match_fuzzy (name_matcher.rs:916) — lowercase-name candidates,
+// Tier-4: match_fuzzy (name_matcher/fuzzy.rs) — lowercase-name candidates,
 // callable kinds only (Function=1, Method=2, Class=3), prefer same-language;
 // a winner exists ONLY when the preferred set has exactly one member.
 // out: candidate idx or -1; out_cross: 1 when the winner is cross-language.
@@ -778,7 +778,7 @@ mod tests {
             )
             .expect("score_batch");
 
-        // CPU mirror of find_best_match (name_matcher.rs:833) in x10 integers.
+        // CPU mirror of find_best_match (name_matcher/support.rs) in x10 integers.
         let prox = |f1: u32, f2: u32| -> i64 {
             let (s1, e1) = (
                 dir_starts[f1 as usize] as usize,

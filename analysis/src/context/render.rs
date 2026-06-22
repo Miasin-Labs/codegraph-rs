@@ -669,12 +669,13 @@ mod tests {
         let mut g = CodeGraph::new();
         let id = g.add_node(node("foo", NodeKind::Function, 7));
         let budget = ExploreBudget::for_file_count(1000);
+        let included_blocks = [(id, "fn foo() {}\n".to_string())];
         let out = render_context(
             &g,
             "foo",
-            &[id.clone()],
+            std::slice::from_ref(&included_blocks[0].0),
             &[],
-            &[(id.clone(), "fn foo() {}\n".to_string())],
+            &included_blocks,
             TaskIntent::Exploration,
             &budget,
         );

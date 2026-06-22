@@ -112,13 +112,10 @@ impl ReferenceResolver {
             }
         }
 
-        match synthesize_callback_edges(&self.context.queries, &self.context) {
-            Ok(count) => {
-                aggregate_stats
-                    .by_method
-                    .insert("callback-synthesis".to_string(), count);
-            }
-            Err(_) => {}
+        if let Ok(count) = synthesize_callback_edges(&self.context.queries, &self.context) {
+            aggregate_stats
+                .by_method
+                .insert("callback-synthesis".to_string(), count);
         }
 
         Ok(ResolutionResult {
