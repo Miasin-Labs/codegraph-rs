@@ -1,4 +1,17 @@
-use super::*;
+use super::{
+    HistoryCommands,
+    HistoryDb,
+    PathBuf,
+    bold,
+    default_history_path,
+    default_jfc_logs_dir,
+    error_msg,
+    format_number,
+    parse_int_js,
+    parse_logs_dir,
+    print_json,
+    process,
+};
 
 pub(crate) fn cmd_history(command: HistoryCommands) {
     match command {

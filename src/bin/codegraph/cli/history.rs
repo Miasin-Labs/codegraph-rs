@@ -1,4 +1,4 @@
-use super::*;
+use super::Subcommand;
 
 /// `codegraph history` — the global, redacted tool-call history flywheel.
 #[derive(Subcommand)]

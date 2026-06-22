@@ -1,4 +1,13 @@
-use super::*;
+use super::{
+    AnalysisGraph,
+    HashMap,
+    StoredComplexity,
+    add_call,
+    add_fn_span,
+    base_snapshot,
+    diff_report,
+    fixture,
+};
 
 #[test]
 fn diff_report_finds_added_removed_changed_and_impact() {

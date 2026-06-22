@@ -1,4 +1,6 @@
-use super::super::*;
+use super::super::{Fixture, make_ref, match_reference, node};
+use crate::resolution::types::{ImportMapping, ResolvedBy};
+use crate::types::{EdgeKind, Language, NodeKind};
 
 #[test]
 fn java_field_receiver_type_resolves_via_field_signature() {

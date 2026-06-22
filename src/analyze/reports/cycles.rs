@@ -1,4 +1,4 @@
-use super::*;
+use super::{AnalysisGraph, Serialize, SymbolRef, analysis, symbol_ref};
 
 // =============================================================================
 // analyze cycles

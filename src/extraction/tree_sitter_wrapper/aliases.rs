@@ -1,9 +1,13 @@
-use super::context::*;
+use super::context::{extract_name, named_children};
 use super::extractor::TreeSitterExtractor;
 use super::type_annotations::is_type_annotation_language;
-use crate::extraction::tree_sitter_helpers::*;
-use crate::extraction::tree_sitter_types::*;
-use crate::types::*;
+use crate::extraction::tree_sitter_helpers::{
+    get_child_by_field,
+    get_node_text,
+    get_preceding_docstring,
+};
+use crate::extraction::tree_sitter_types::{NodeExtra, SyntaxNode};
+use crate::types::{Language, Node, NodeKind};
 
 impl<'a> TreeSitterExtractor<'a> {
     /// Extract a type alias (e.g. `export type X = ...` in TypeScript).

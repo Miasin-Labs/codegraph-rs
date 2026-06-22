@@ -3,7 +3,17 @@ use codegraph_analysis::vuln::TemplateKind;
 use codegraph_analysis::vuln::mining::{MineConfig, mine_missing_guards};
 use codegraph_analysis::vuln::taint_seed::scan_unsanitized_flows;
 
-use super::*;
+use super::{
+    ANodeId,
+    ANodeKind,
+    AnalysisGraph,
+    HashSet,
+    Path,
+    PathBuf,
+    VulnFindingOut,
+    VulnReport,
+    severity_for,
+};
 
 /// Whether a finding sits in test code (excluded from a security scan).
 fn is_test_site(file: &str, symbol: &str) -> bool {

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Capability, CapabilityTree, Serialize};
 
 // =============================================================================
 // analyze capabilities

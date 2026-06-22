@@ -1,4 +1,16 @@
-use super::*;
+use super::{
+    analysis_reports,
+    bold,
+    bridge_project,
+    dim,
+    error_msg,
+    info,
+    print_report_json,
+    print_symbol_line,
+    process,
+    resolve_project_path,
+    white,
+};
 
 /// codegraph analyze generics [symbol]
 pub(crate) fn cmd_analyze_generics(

@@ -1,4 +1,15 @@
-use super::*;
+use super::{
+    analysis_reports,
+    bold,
+    dim,
+    error_msg,
+    green,
+    info,
+    print_report_json,
+    process,
+    red,
+    white,
+};
 
 /// codegraph analyze capabilities
 ///

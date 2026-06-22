@@ -1,4 +1,21 @@
-use super::*;
+use super::{
+    BridgeOptions,
+    CACHE_META_FILE,
+    COMPLEXITY_SIDECAR_FILE,
+    ComplexitySidecar,
+    GRAPH_SNAPSHOT_FILE,
+    OsString,
+    PREV_SUFFIX,
+    Path,
+    SNAPSHOT_CACHE_SCHEMA_VERSION,
+    analysis_cache_dir_with_override,
+    fs,
+    load_cache,
+    read_cache_meta,
+    sample_bridge_result,
+    store_cache,
+    workspace_cache_key,
+};
 
 #[test]
 fn snapshot_cache_misses_on_include_fields_mismatch() {

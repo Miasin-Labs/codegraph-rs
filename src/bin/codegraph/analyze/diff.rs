@@ -1,4 +1,32 @@
-use super::*;
+use super::{
+    DatabaseConnection,
+    Path,
+    QueryBuilder,
+    analysis_reports,
+    bold,
+    build_analysis_graph_cached,
+    compute_index_fingerprint,
+    cyan,
+    cycle_kind_label,
+    dim,
+    error_msg,
+    get_database_path,
+    get_glyphs,
+    green,
+    info,
+    is_initialized,
+    load_auto_base_snapshot,
+    load_explicit_base_snapshot,
+    parse_int_js,
+    print_report_json,
+    process,
+    red,
+    resolve_project_path,
+    store_complexity_sidecar,
+    success,
+    white,
+    yellow,
+};
 
 /// The honest no-base note `analyze diff` prints (exit 0): a diff needs a
 /// snapshot of the pre-edit state, and any analyze command caches one.

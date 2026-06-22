@@ -1,4 +1,4 @@
-use super::*;
+use super::{ANodeId, AnalysisGraph, HashMap, analysis};
 
 /// SCC clusters keyed by their sorted member ids, for set comparison.
 pub(super) fn cycle_keys(graph: &AnalysisGraph) -> HashMap<Vec<ANodeId>, Vec<ANodeId>> {

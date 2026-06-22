@@ -1,8 +1,12 @@
-use super::context::*;
+use super::context::{find_named_child, named_children};
 use super::extractor::TreeSitterExtractor;
-use crate::extraction::tree_sitter_helpers::*;
-use crate::extraction::tree_sitter_types::*;
-use crate::types::*;
+use crate::extraction::tree_sitter_helpers::{
+    get_child_by_field,
+    get_node_text,
+    get_preceding_docstring,
+};
+use crate::extraction::tree_sitter_types::{NodeExtra, SyntaxNode};
+use crate::types::NodeKind;
 
 impl<'a> TreeSitterExtractor<'a> {
     /// Extract a class property declaration (e.g. C# `public string Name { get; set; }`).

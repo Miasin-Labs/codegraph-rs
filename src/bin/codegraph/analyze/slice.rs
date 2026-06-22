@@ -1,4 +1,21 @@
-use super::*;
+use super::{
+    SOURCE_REPORT_MAX_ENTRIES,
+    SliceDirection,
+    analysis_reports,
+    analyze_ir,
+    bold,
+    bridge_project,
+    error_msg,
+    get_glyphs,
+    info,
+    parse_int_js,
+    print_report_json,
+    print_symbol_line,
+    process,
+    resolve_project_path,
+    resolve_symbol_via_index,
+    warn,
+};
 
 /// codegraph analyze slice <symbol> [--direction fwd|bwd]
 #[allow(clippy::too_many_arguments)]

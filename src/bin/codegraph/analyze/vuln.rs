@@ -1,4 +1,12 @@
-use super::*;
+use super::{
+    analysis_reports,
+    bridge_project,
+    error_msg,
+    info,
+    print_report_json,
+    process,
+    resolve_project_path,
+};
 
 pub(crate) fn cmd_analyze_vuln(
     min_confidence_arg: &str,

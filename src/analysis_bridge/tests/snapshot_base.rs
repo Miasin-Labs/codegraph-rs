@@ -1,4 +1,23 @@
-use super::*;
+use super::{
+    ANodeId,
+    ANodeKind,
+    BaseGeneration,
+    BridgeOptions,
+    CACHE_META_FILE,
+    COMPLEXITY_SIDECAR_FILE,
+    GRAPH_SNAPSHOT_FILE,
+    HashMap,
+    PREV_SUFFIX,
+    StoredComplexity,
+    analysis_cache_dir_with_override,
+    fs,
+    load_auto_base_snapshot,
+    load_complexity_sidecar,
+    load_explicit_base_snapshot,
+    sample_bridge_result,
+    store_cache,
+    store_complexity_sidecar,
+};
 
 #[test]
 fn complexity_sidecar_round_trips_and_rejects_stale_fingerprints() {

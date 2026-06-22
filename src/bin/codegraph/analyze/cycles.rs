@@ -1,4 +1,18 @@
-use super::*;
+use super::{
+    analysis_reports,
+    bold,
+    bridge_project,
+    cyan,
+    cycle_kind_label,
+    dim,
+    error_msg,
+    info,
+    print_report_json,
+    process,
+    resolve_project_path,
+    success,
+    white,
+};
 
 /// codegraph analyze cycles
 pub(crate) fn cmd_analyze_cycles(path_arg: Option<&str>, no_cache: bool, json: bool) {

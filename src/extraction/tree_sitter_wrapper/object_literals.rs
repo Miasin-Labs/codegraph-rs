@@ -1,8 +1,8 @@
-use super::context::*;
+use super::context::named_children;
 use super::extractor::TreeSitterExtractor;
 use crate::ensure_sufficient_stack;
-use crate::extraction::tree_sitter_helpers::*;
-use crate::extraction::tree_sitter_types::*;
+use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
+use crate::extraction::tree_sitter_types::SyntaxNode;
 
 impl<'a> TreeSitterExtractor<'a> {
     /// Extract function-valued properties of an object literal as named function

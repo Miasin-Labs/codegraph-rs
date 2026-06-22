@@ -1,4 +1,4 @@
-use super::*;
+use super::{BridgeOptions, Node, NodeKind, OsString, engine_safe_field_name, field_type_from};
 
 #[test]
 fn bridge_options_env_gate_parsing() {

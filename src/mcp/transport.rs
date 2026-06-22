@@ -666,7 +666,25 @@ mod socket_transport {
     use std::io::BufReader;
     use std::os::unix::net::UnixStream;
 
-    use super::*;
+    use super::{
+        Arc,
+        AtomicBool,
+        BufRead,
+        CloseLatch,
+        IncomingMessage,
+        JsonRpcTransport,
+        LineRpcCore,
+        MAX_DISPATCH_QUEUE_MESSAGES,
+        MessageHandler,
+        Mutex,
+        NotificationInterceptor,
+        Ordering,
+        Value,
+        Write,
+        queue_or_reject,
+        run_handler,
+        spawn_transport_thread,
+    };
 
     /// Socket Transport for MCP daemon sessions.
     ///

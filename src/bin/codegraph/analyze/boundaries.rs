@@ -1,4 +1,17 @@
-use super::*;
+use super::{
+    analysis_reports,
+    bold,
+    bridge_project,
+    cyan,
+    dim,
+    error_msg,
+    info,
+    print_report_json,
+    process,
+    resolve_project_path,
+    warn,
+    white,
+};
 
 /// codegraph analyze boundaries
 pub(crate) fn cmd_analyze_boundaries(path_arg: Option<&str>, no_cache: bool, json: bool) {

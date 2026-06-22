@@ -1,4 +1,4 @@
-use super::*;
+use super::{FileRecord, dim, get_glyphs};
 
 /// Tree node for `printFileTree`.
 struct TreeNode {

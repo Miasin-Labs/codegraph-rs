@@ -1,4 +1,6 @@
-use super::super::*;
+use super::super::{Fixture, make_ref, match_reference, node, split_camel_case};
+use crate::resolution::types::ResolvedBy;
+use crate::types::{EdgeKind, Language, NodeKind};
 
 #[test]
 fn capitalized_receiver_finds_class_method() {

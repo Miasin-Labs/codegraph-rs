@@ -1,8 +1,8 @@
-use super::context::*;
+use super::context::{named_children, strip_qualifier};
 use super::extractor::TreeSitterExtractor;
-use crate::extraction::tree_sitter_helpers::*;
-use crate::extraction::tree_sitter_types::*;
-use crate::types::*;
+use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
+use crate::extraction::tree_sitter_types::SyntaxNode;
+use crate::types::{EdgeKind, UnresolvedReference};
 
 impl<'a> TreeSitterExtractor<'a> {
     /// Consider one node as a decorator/annotation attached to `decorated_id`

@@ -1,4 +1,7 @@
-use super::*;
+use std::collections::HashMap;
+
+use crate::resolution::types::{ImportMapping, ResolutionContext, UnresolvedRef};
+use crate::types::{EdgeKind, Language, Node, NodeKind};
 
 pub(super) struct Fixture {
     nodes: Vec<Node>,

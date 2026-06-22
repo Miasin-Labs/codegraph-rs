@@ -1,4 +1,4 @@
-use super::*;
+use super::Subcommand;
 
 /// `codegraph analyze` — the analysis engine (`codegraph-analysis`) running
 /// over the bridged SQLite index. Pure reads of the index itself; the

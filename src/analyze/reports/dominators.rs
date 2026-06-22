@@ -1,4 +1,15 @@
-use super::*;
+use super::{
+    ANodeId,
+    AnalysisGraph,
+    DOMINATOR_TRAVERSAL_DEPTH,
+    Serialize,
+    SymbolRef,
+    TraversalConfig,
+    TraversalDirection,
+    analysis,
+    symbol_ref,
+    traverse,
+};
 
 // =============================================================================
 // analyze dominators

@@ -1,11 +1,11 @@
 use super::calls::INSTANTIATION_KINDS;
-use super::context::*;
+use super::context::{basename, named_children, now_ms};
 use super::extractor::TreeSitterExtractor;
 use super::type_annotations::is_type_annotation_language;
 use crate::ensure_sufficient_stack;
 use crate::extraction::grammars::{create_parser, is_language_supported};
-use crate::extraction::tree_sitter_types::*;
-use crate::types::*;
+use crate::extraction::tree_sitter_types::{ClassLikeKind, SyntaxNode};
+use crate::types::{ExtractionError, ExtractionResult, Language, Node, NodeKind, Severity};
 
 impl<'a> TreeSitterExtractor<'a> {
     pub fn extract(mut self) -> ExtractionResult {

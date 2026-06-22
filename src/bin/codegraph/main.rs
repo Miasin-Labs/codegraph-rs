@@ -126,7 +126,35 @@ use index::{
     cmd_unlock,
 };
 use install::{cmd_install, cmd_uninstall};
-use output::*;
+use output::{
+    DIM,
+    RESET,
+    blue,
+    bold,
+    clack_intro,
+    clack_log_error,
+    clack_log_info,
+    clack_log_success,
+    clack_log_warn,
+    clack_outro,
+    cyan,
+    dim,
+    error_msg,
+    format_duration,
+    format_number,
+    green,
+    info,
+    iso_from_epoch_ms,
+    js_to_fixed,
+    parse_int_js,
+    print_index_result,
+    red,
+    run_index_all,
+    success,
+    warn,
+    white,
+    yellow,
+};
 use path::{resolve_absolute, resolve_project_path};
 use serve::cmd_serve;
 pub(crate) fn main() {

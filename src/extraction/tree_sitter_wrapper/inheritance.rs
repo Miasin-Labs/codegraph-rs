@@ -1,8 +1,8 @@
-use super::context::*;
+use super::context::{find_named_child, named_children};
 use super::extractor::TreeSitterExtractor;
-use crate::extraction::tree_sitter_helpers::*;
-use crate::extraction::tree_sitter_types::*;
-use crate::types::*;
+use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
+use crate::extraction::tree_sitter_types::SyntaxNode;
+use crate::types::{EdgeKind, UnresolvedReference};
 
 impl<'a> TreeSitterExtractor<'a> {
     /// Push an unresolved reference (shared shorthand for inheritance refs).

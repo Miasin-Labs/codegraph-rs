@@ -1,8 +1,12 @@
-use super::context::*;
+use super::context::{extract_name, find_named_child, init_signature, named_children};
 use super::extractor::TreeSitterExtractor;
-use crate::extraction::tree_sitter_helpers::*;
-use crate::extraction::tree_sitter_types::*;
-use crate::types::*;
+use crate::extraction::tree_sitter_helpers::{
+    get_child_by_field,
+    get_node_text,
+    get_preceding_docstring,
+};
+use crate::extraction::tree_sitter_types::{NodeExtra, SyntaxNode};
+use crate::types::{Language, NodeKind};
 
 impl<'a> TreeSitterExtractor<'a> {
     /// Extract a variable declaration (const, let, var, etc.)

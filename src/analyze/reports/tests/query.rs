@@ -1,4 +1,11 @@
-use super::*;
+use super::{
+    REPORT_SCHEMA_VERSION,
+    ReportEnvelope,
+    explain_report,
+    fixture,
+    query_report,
+    validate_report,
+};
 
 #[test]
 fn query_report_runs_pipe_dsl_over_call_edges() {

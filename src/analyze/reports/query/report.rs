@@ -1,4 +1,20 @@
-use super::*;
+use super::{
+    AnalysisGraph,
+    DslQueryConfig,
+    DslQueryError,
+    Path,
+    QueryEdge,
+    QueryReport,
+    SymbolRef,
+    WhyEntry,
+    WhyStep,
+    build_preconditions_section,
+    query_requests_preconditions,
+    run_query_expr,
+    symbol_ref,
+    symbol_sort_key,
+    trace_query,
+};
 
 /// Render a [`DslQueryError`] without the redundant outer `parse error:`
 /// wrapper — the inner parse error already carries position + offending

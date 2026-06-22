@@ -1,4 +1,25 @@
-use super::*;
+use super::{
+    CodeGraph,
+    OpenOptions,
+    SOURCE_TAINT_MAX_PATHS,
+    analysis_reports,
+    analyze_ir,
+    bold,
+    bridge_project,
+    cyan,
+    dim,
+    error_msg,
+    format_number,
+    info,
+    js_to_fixed,
+    parse_int_js,
+    print_report_json,
+    process,
+    resolve_analysis_symbol,
+    resolve_project_path,
+    warn,
+    white,
+};
 
 /// codegraph analyze taint [source-symbol] [sink-symbol] [--suggest]
 ///

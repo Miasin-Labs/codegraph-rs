@@ -1,4 +1,15 @@
-use super::*;
+use super::{
+    ANodeKind,
+    AnalysisGraph,
+    Path,
+    Serialize,
+    SymbolRef,
+    annotate_graph_from_lcov,
+    is_placeholder,
+    parse_lcov,
+    symbol_ref,
+    symbol_sort_key,
+};
 
 // =============================================================================
 // analyze coverage

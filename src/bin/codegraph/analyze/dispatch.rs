@@ -1,4 +1,31 @@
-use super::*;
+use super::{
+    AnalyzeCommands,
+    cmd_analyze_boundaries,
+    cmd_analyze_capabilities,
+    cmd_analyze_centrality,
+    cmd_analyze_cfg,
+    cmd_analyze_co_change,
+    cmd_analyze_communities,
+    cmd_analyze_complexity,
+    cmd_analyze_coverage,
+    cmd_analyze_critical,
+    cmd_analyze_cycles,
+    cmd_analyze_dataflow,
+    cmd_analyze_diff,
+    cmd_analyze_dominators,
+    cmd_analyze_export,
+    cmd_analyze_generics,
+    cmd_analyze_impact,
+    cmd_analyze_query,
+    cmd_analyze_schema,
+    cmd_analyze_slice,
+    cmd_analyze_stats,
+    cmd_analyze_taint,
+    cmd_analyze_traits,
+    cmd_analyze_types,
+    cmd_analyze_validate,
+    cmd_analyze_vuln,
+};
 
 /// codegraph analyze <subcommand>
 pub(crate) fn cmd_analyze(command: AnalyzeCommands) {

@@ -114,7 +114,19 @@ mod unix_proxy {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use super::*;
+    use super::{
+        CODEGRAPH_PACKAGE_VERSION,
+        DAEMON_PROXY_PENDING_MAX_BYTES,
+        DAEMON_PROXY_PENDING_MAX_LINES,
+        DAEMON_RECONNECT_MAX_RETRIES,
+        DAEMON_RECONNECT_RETRY_MS,
+        ProxyOutcome,
+        ProxyResult,
+        Value,
+        is_process_alive_local,
+        parse_host_ppid,
+        parse_poll_ms,
+    };
     use crate::mcp::daemon::{DaemonHello, MAX_HELLO_LINE_BYTES};
     use crate::mcp::daemon_paths::HOST_PPID_ENV;
     use crate::mcp::transport::ErrorCodes;

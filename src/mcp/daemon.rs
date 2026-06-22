@@ -307,7 +307,20 @@ mod unix_daemon {
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::{Duration, Instant};
 
-    use super::*;
+    use super::{
+        CODEGRAPH_PACKAGE_VERSION,
+        DaemonHello,
+        DaemonLockInfo,
+        DaemonStartResult,
+        Path,
+        PathBuf,
+        decode_lock_info,
+        fs,
+        get_daemon_pid_path,
+        get_daemon_socket_path,
+        now_ms,
+        resolve_idle_timeout_ms,
+    };
 
     /// Per-connection session + shared engine seam.
     ///

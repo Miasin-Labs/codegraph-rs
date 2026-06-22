@@ -1,4 +1,4 @@
-use super::*;
+use super::Serialize;
 
 // =============================================================================
 // Vulnerability scan (inference-based engine + concurrency lint)

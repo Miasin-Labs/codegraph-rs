@@ -1,4 +1,4 @@
-use super::*;
+use super::{VulnReport, sample_vuln_report};
 
 #[test]
 fn sarif_has_rules_results_and_levels() {

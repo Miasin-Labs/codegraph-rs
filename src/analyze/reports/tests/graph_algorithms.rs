@@ -1,4 +1,13 @@
-use super::*;
+use super::{
+    SliceDirection,
+    communities_report,
+    cycles_report,
+    dominators_report,
+    fixture,
+    impact_report,
+    slice_report,
+    taint_report,
+};
 
 #[test]
 fn forward_slice_walks_callees_and_backward_walks_callers() {

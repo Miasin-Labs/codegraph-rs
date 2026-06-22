@@ -1,4 +1,14 @@
-use super::*;
+use super::{
+    ANodeData,
+    AnalysisGraph,
+    BTreeMap,
+    LOUVAIN_RESOLUTION,
+    LOUVAIN_SEED,
+    Serialize,
+    SymbolRef,
+    louvain,
+    symbol_ref,
+};
 
 // =============================================================================
 // analyze communities

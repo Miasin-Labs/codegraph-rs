@@ -1,4 +1,4 @@
-use super::*;
+use super::{ANodeData, ANodeId, AnalysisGraph, HashMap, HashSet, is_placeholder};
 
 /// Structural comparison of one node present in both states. Pure position
 /// shifts (a function pushed down by an edit above it) are deliberately NOT

@@ -1,4 +1,13 @@
-use super::*;
+use super::{
+    AnalysisGraph,
+    Serialize,
+    SymbolRef,
+    find_instantiations,
+    is_placeholder,
+    matches_symbol_filter,
+    symbol_ref,
+    symbol_sort_key,
+};
 
 // =============================================================================
 // analyze generics

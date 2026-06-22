@@ -1,4 +1,18 @@
-use super::*;
+use super::{
+    analysis_reports,
+    bold,
+    bridge_project,
+    cyan,
+    dim,
+    error_msg,
+    format_number,
+    info,
+    js_to_fixed,
+    parse_int_js,
+    print_report_json,
+    process,
+    resolve_project_path,
+};
 
 /// codegraph analyze communities
 pub(crate) fn cmd_analyze_communities(

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Serialize, SymbolRef};
 
 // =============================================================================
 // analyze query (pipe-based DSL)

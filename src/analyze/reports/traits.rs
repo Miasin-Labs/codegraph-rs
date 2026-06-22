@@ -1,4 +1,4 @@
-use super::*;
+use super::{ANodeKind, AnalysisGraph, Serialize, SymbolRef, symbol_ref, symbol_sort_key};
 
 // =============================================================================
 // analyze traits

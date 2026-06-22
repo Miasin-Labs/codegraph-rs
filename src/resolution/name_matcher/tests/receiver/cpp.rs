@@ -1,4 +1,6 @@
-use super::super::*;
+use super::super::{Fixture, make_ref, match_reference, node, normalize_cpp_type_name};
+use crate::resolution::types::ResolvedBy;
+use crate::types::{EdgeKind, Language, NodeKind};
 
 #[test]
 fn cpp_receiver_type_inference_resolves_out_of_line_method() {

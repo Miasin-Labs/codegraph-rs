@@ -1,4 +1,14 @@
-use super::*;
+use super::{
+    AnalysisGraph,
+    BoundaryKind,
+    Serialize,
+    SymbolRef,
+    detect_ffi_exports,
+    detect_http_routes,
+    detect_wasm_exports,
+    resolve_cross_language_calls,
+    symbol_ref,
+};
 
 // =============================================================================
 // analyze boundaries

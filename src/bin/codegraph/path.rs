@@ -1,4 +1,4 @@
-use super::*;
+use super::{PathBuf, is_initialized, lexical_resolve};
 
 pub(crate) fn resolve_project_path(path_arg: Option<&str>) -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));

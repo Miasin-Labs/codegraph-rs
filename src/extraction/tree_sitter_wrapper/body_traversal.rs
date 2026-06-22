@@ -1,9 +1,9 @@
 use super::calls::INSTANTIATION_KINDS;
-use super::context::*;
+use super::context::{extract_name, named_children};
 use super::extractor::TreeSitterExtractor;
 use crate::ensure_sufficient_stack;
-use crate::extraction::tree_sitter_types::*;
-use crate::types::*;
+use crate::extraction::tree_sitter_types::{ClassLikeKind, SyntaxNode};
+use crate::types::{EdgeKind, NodeKind, UnresolvedReference};
 
 impl<'a> TreeSitterExtractor<'a> {
     /// Visit function body and extract calls (and structural nodes).

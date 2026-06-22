@@ -1,4 +1,4 @@
-use super::*;
+use super::{AEdgeKind, ANodeKind, EdgeKind, NodeKind, map_edge_kind, map_node_kind};
 
 #[test]
 fn node_kind_mapping_covers_all_22_kinds() {

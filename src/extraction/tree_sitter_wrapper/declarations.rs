@@ -1,8 +1,8 @@
-use super::context::*;
+use super::context::{named_children, now_ms};
 use super::extractor::TreeSitterExtractor;
-use crate::extraction::tree_sitter_helpers::*;
-use crate::extraction::tree_sitter_types::*;
-use crate::types::*;
+use crate::extraction::tree_sitter_helpers::generate_node_id;
+use crate::extraction::tree_sitter_types::{NodeExtra, SyntaxNode};
+use crate::types::{Edge, EdgeKind, Node, NodeKind};
 
 impl<'a> TreeSitterExtractor<'a> {
     /// Create a Node object

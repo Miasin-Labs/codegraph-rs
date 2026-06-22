@@ -1,4 +1,4 @@
-use super::*;
+use super::{CycleSummary, Serialize, SymbolRef};
 
 /// Where the diff base came from.
 #[derive(Debug, Serialize)]

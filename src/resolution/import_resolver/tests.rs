@@ -1,6 +1,6 @@
 use super::imports::strip_js_comments;
 use super::normalize::{join_posix, normalize_segments, posix_dirname, relative_posix};
-use super::*;
+use super::{extract_import_mappings, extract_re_exports};
 use crate::resolution::types::ReExport;
 use crate::types::Language;
 

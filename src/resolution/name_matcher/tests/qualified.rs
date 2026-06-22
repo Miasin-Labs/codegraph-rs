@@ -1,4 +1,6 @@
-use super::*;
+use super::{Fixture, make_ref, match_by_qualified_name, match_reference, node};
+use crate::resolution::types::ResolvedBy;
+use crate::types::{EdgeKind, Language, NodeKind};
 
 // -- "should match qualified name references" ----------------------------
 #[test]

@@ -1,4 +1,18 @@
-use super::*;
+use super::{
+    analysis_reports,
+    bold,
+    bridge_project,
+    cyan,
+    dim,
+    error_msg,
+    get_glyphs,
+    info,
+    print_report_json,
+    process,
+    resolve_project_path,
+    resolve_symbol_via_index,
+    white,
+};
 
 /// codegraph analyze impact <symbol> [--signature <sig>]
 pub(crate) fn cmd_analyze_impact(

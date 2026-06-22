@@ -1,4 +1,6 @@
-use super::*;
+use super::{Fixture, make_ref, match_by_exact_name, match_method_call, node};
+use crate::resolution::types::ResolvedBy;
+use crate::types::{EdgeKind, Language, NodeKind};
 
 // -- Apex case-insensitive resolution -------------------------------------
 

@@ -1,4 +1,16 @@
-use super::*;
+use super::{
+    analysis_reports,
+    bold,
+    bridge_project,
+    cyan,
+    dim,
+    error_msg,
+    info,
+    print_report_json,
+    process,
+    resolve_project_path,
+    white,
+};
 
 /// codegraph analyze traits [type]
 pub(crate) fn cmd_analyze_traits(

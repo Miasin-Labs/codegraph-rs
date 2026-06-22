@@ -1,4 +1,4 @@
-use super::*;
+use super::{blue, get_glyphs, green, red, yellow};
 
 pub(crate) fn success(message: &str) {
     println!("{} {message}", green(get_glyphs().ok));
