@@ -724,6 +724,44 @@ fn returns_null_for_disconnected_nodes() {
     assert!(path.is_none());
 }
 
+// Regression: a multi-hop shortest path must be reconstructed correctly from
+// the BFS predecessor map (the fix for the `paths` O(V*E) path-clone blowup).
+// main -> processValue -> formatValue is the only route and spans two `Calls`
+// hops, so it exercises reconstruction across more than one edge.
+#[test]
+fn finds_shortest_multi_hop_path() {
+    let fx = build_fixture();
+    let traverser = fx.traverser();
+
+    let path = traverser
+        .find_path(MAIN, FORMAT_VALUE, &[])
+        .unwrap()
+        .expect("main -> formatValue path should exist");
+
+    let ids: Vec<&str> = path.iter().map(|s| s.node.id.as_str()).collect();
+    assert_eq!(ids, vec![MAIN, PROCESS_VALUE, FORMAT_VALUE]);
+    assert!(path[0].edge.is_none());
+    assert_eq!(path[1].edge.as_ref().map(|e| e.kind), Some(EdgeKind::Calls));
+    assert_eq!(path[2].edge.as_ref().map(|e| e.kind), Some(EdgeKind::Calls));
+}
+
+// A node's path to itself is the single-node path (no edges). Guards the
+// `from_id == to_id` short-circuit added with the predecessor-map rewrite.
+#[test]
+fn finds_trivial_self_path() {
+    let fx = build_fixture();
+    let traverser = fx.traverser();
+
+    let path = traverser
+        .find_path(MAIN, MAIN, &[])
+        .unwrap()
+        .expect("a node always has a path to itself");
+
+    assert_eq!(path.len(), 1);
+    assert_eq!(path[0].node.id, MAIN);
+    assert!(path[0].edge.is_none());
+}
+
 // =============================================================================
 // getAncestors() and getChildren()
 // =============================================================================

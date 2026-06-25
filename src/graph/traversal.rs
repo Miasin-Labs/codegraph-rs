@@ -775,33 +775,41 @@ impl GraphTraverser {
             return Ok(None);
         };
 
-        // BFS to find shortest path
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut queue: VecDeque<(String, Vec<PathStep>)> = VecDeque::new();
-        queue.push_back((
-            from_id.to_string(),
-            vec![PathStep {
+        // Trivial path: the source is the target.
+        if from_id == to_id {
+            return Ok(Some(vec![PathStep {
                 node: from_node,
                 edge: None,
-            }],
-        ));
+            }]));
+        }
 
-        while let Some((node_id, path)) = queue.pop_front() {
-            if node_id == to_id {
-                return Ok(Some(path));
-            }
+        let kinds = if edge_kinds.is_empty() {
+            None
+        } else {
+            Some(edge_kinds)
+        };
 
-            if visited.contains(&node_id) {
-                continue;
-            }
-            visited.insert(node_id.clone());
+        // BFS with a predecessor map. Each node is recorded in `came_from`
+        // exactly once — the first (hence shortest) time it is discovered — and
+        // marked visited *on enqueue*, so it is never enqueued or expanded
+        // twice. The path is reconstructed from `came_from` only after the
+        // target is reached.
+        //
+        // The previous version carried a cloned `Vec<PathStep>` (each step
+        // owning a cloned `Node`) on every queue entry and marked nodes visited
+        // on *dequeue*. A node was therefore enqueued once per incoming edge,
+        // deep-cloning the whole running path each time — O(V*E) `Node` clones,
+        // enough to peg a core and balloon the heap on a large index (the
+        // observed 100%-CPU / ~1GB-RSS hang of the `paths` tool). Recording one
+        // parent edge per node instead makes it O(V+E) time and O(V) memory.
+        let mut visited: HashSet<String> = HashSet::from([from_id.to_string()]);
+        let mut came_from: HashMap<String, (String, Edge)> = HashMap::new();
+        let mut node_cache: HashMap<String, Node> = HashMap::new();
+        node_cache.insert(from_node.id.clone(), from_node);
+        let mut queue: VecDeque<String> = VecDeque::new();
+        queue.push_back(from_id.to_string());
 
-            // Get outgoing edges
-            let kinds = if edge_kinds.is_empty() {
-                None
-            } else {
-                Some(edge_kinds)
-            };
+        while let Some(node_id) = queue.pop_front() {
             let outgoing_edges = self.queries.get_outgoing_edges(&node_id, kinds, None)?;
             if outgoing_edges.is_empty() {
                 continue;
@@ -820,21 +828,73 @@ impl GraphTraverser {
             };
 
             for edge in outgoing_edges {
-                if !visited.contains(&edge.target) {
-                    if let Some(next_node) = next_nodes.get(&edge.target) {
-                        let mut next_path = path.clone();
-                        let target = edge.target.clone();
-                        next_path.push(PathStep {
-                            node: next_node.clone(),
-                            edge: Some(edge),
-                        });
-                        queue.push_back((target, next_path));
-                    }
+                let target = edge.target.clone();
+                if visited.contains(&target) {
+                    continue;
                 }
+                let Some(next_node) = next_nodes.get(&target) else {
+                    continue;
+                };
+
+                visited.insert(target.clone());
+                node_cache.insert(target.clone(), next_node.clone());
+                came_from.insert(target.clone(), (node_id.clone(), edge));
+
+                if target == to_id {
+                    return Ok(Some(Self::reconstruct_path(
+                        from_id,
+                        to_id,
+                        &came_from,
+                        &mut node_cache,
+                    )));
+                }
+
+                queue.push_back(target);
             }
         }
 
         Ok(None) // No path found
+    }
+
+    /// Rebuild the `from_id -> to_id` path from a BFS predecessor map.
+    ///
+    /// Walks parent edges backward from the target, then reverses so the result
+    /// runs source-first (`path[0].edge == None`). The walk is capped at
+    /// `came_from.len() + 1` steps as a belt-and-suspenders guard: the map is
+    /// acyclic by construction (BFS records each node once), so the cap can only
+    /// trip on corruption, in which case we stop rather than spin.
+    fn reconstruct_path(
+        from_id: &str,
+        to_id: &str,
+        came_from: &HashMap<String, (String, Edge)>,
+        node_cache: &mut HashMap<String, Node>,
+    ) -> Vec<PathStep> {
+        let mut reverse: Vec<PathStep> = Vec::new();
+        let mut current = to_id.to_string();
+        let max_steps = came_from.len() + 1;
+
+        for _ in 0..max_steps {
+            // Each node appears once on a shortest path, so moving it out of the
+            // cache is safe and avoids an extra clone.
+            let Some(node) = node_cache.remove(&current) else {
+                break;
+            };
+            if current == from_id {
+                reverse.push(PathStep { node, edge: None });
+                break;
+            }
+            let Some((parent, edge)) = came_from.get(&current) else {
+                break;
+            };
+            reverse.push(PathStep {
+                node,
+                edge: Some(edge.clone()),
+            });
+            current = parent.clone();
+        }
+
+        reverse.reverse();
+        reverse
     }
 
     /// Get the containment hierarchy for a node (ancestors).

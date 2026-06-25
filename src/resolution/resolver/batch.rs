@@ -74,7 +74,6 @@ impl ReferenceResolver {
 
         #[cfg(not(feature = "gpu"))]
         {
-            let mut on_progress = on_progress;
             if !should_use_snapshot_resolution(unresolved_refs.len()) {
                 return Ok(self.resolve_all(unresolved_refs, on_progress));
             }
@@ -82,7 +81,7 @@ impl ReferenceResolver {
             let snapshot =
                 ResolverSnapshot::build(&self.context.project_root, &self.context.queries)?;
             let result = self.resolve_snapshot_batch(unresolved_refs, &snapshot);
-            if let Some(cb) = on_progress.as_deref_mut() {
+            if let Some(cb) = on_progress {
                 cb(result.stats.total, result.stats.total);
             }
             Ok(result)
