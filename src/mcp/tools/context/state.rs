@@ -73,6 +73,13 @@ impl CallContext {
             .as_ref()
             .is_some_and(|flag| flag.load(Ordering::SeqCst))
     }
+
+    /// The current call's cancel flag, cloned out so the dispatcher can install
+    /// it as the thread-local traversal cancellation token (see
+    /// [`crate::graph::cancel`]). `None` when the call carried no token.
+    pub fn cancel_flag(&self) -> Option<Arc<AtomicBool>> {
+        self.cancel.borrow().clone()
+    }
 }
 
 impl ToolHandler {

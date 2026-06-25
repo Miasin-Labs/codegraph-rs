@@ -52,6 +52,12 @@ impl ToolHandler {
             .and_then(|v| v.as_str())
             .map(String::from);
 
+        // Make this call's cancel flag observable to in-flight graph traversals
+        // (find_path/BFS/DFS/impact/type-hierarchy poll it). Dropped at the end
+        // of dispatch, so a flag never leaks into the next call.
+        let _cancel_guard =
+            crate::graph::cancel::CancelGuard::install(self.call_context.cancel_flag());
+
         let result = match tool_name {
             "codegraph_search" => self.handle_search(args),
             "codegraph_callers" => self.handle_callers(args),

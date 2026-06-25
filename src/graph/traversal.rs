@@ -117,6 +117,7 @@ impl GraphTraverser {
         }
 
         while !queue.is_empty() && nodes.len() < opts.limit {
+            crate::graph::cancel::check()?;
             let TraversalStep { node, edge, depth } = queue.pop_front().expect("non-empty queue");
 
             if visited.contains(&node.id) {
@@ -229,6 +230,7 @@ impl GraphTraverser {
         edges: &mut Vec<Edge>,
         visited: &mut HashSet<String>,
     ) -> Result<()> {
+        crate::graph::cancel::check()?;
         if visited.contains(&node.id) || nodes.len() >= opts.limit || opts.depth_reached(depth) {
             return Ok(());
         }
@@ -349,6 +351,7 @@ impl GraphTraverser {
 
         let mut depth = 0;
         while depth < max_depth && !frontier.is_empty() {
+            crate::graph::cancel::check()?;
             let edges = if incoming {
                 self.queries
                     .get_incoming_edges_for_targets(&frontier, Some(edge_kinds))?
@@ -505,6 +508,7 @@ impl GraphTraverser {
         edges: &mut Vec<Edge>,
         visited: &mut HashSet<String>,
     ) -> Result<()> {
+        crate::graph::cancel::check()?;
         if visited.contains(node_id) {
             return Ok(());
         }
@@ -554,6 +558,7 @@ impl GraphTraverser {
         edges: &mut Vec<Edge>,
         visited: &mut HashSet<String>,
     ) -> Result<()> {
+        crate::graph::cancel::check()?;
         if visited.contains(node_id) {
             return Ok(());
         }
@@ -671,6 +676,7 @@ impl GraphTraverser {
         edges: &mut Vec<Edge>,
         visited: &mut HashSet<String>,
     ) -> Result<()> {
+        crate::graph::cancel::check()?;
         if current_depth >= max_depth || visited.contains(node_id) {
             return Ok(());
         }
@@ -810,6 +816,7 @@ impl GraphTraverser {
         queue.push_back(from_id.to_string());
 
         while let Some(node_id) = queue.pop_front() {
+            crate::graph::cancel::check()?;
             let outgoing_edges = self.queries.get_outgoing_edges(&node_id, kinds, None)?;
             if outgoing_edges.is_empty() {
                 continue;

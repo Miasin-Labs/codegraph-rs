@@ -5,6 +5,7 @@
 //! Mirrors `src/graph/index.ts` (re-exports `GraphTraverser` and
 //! `GraphQueryManager`).
 
+pub mod cancel;
 pub mod queries;
 pub mod traversal;
 

@@ -762,6 +762,28 @@ fn finds_trivial_self_path() {
     assert!(path[0].edge.is_none());
 }
 
+// A cancelled tool call must stop an in-flight traversal: with the thread-local
+// cancel token already tripped, find_path bails out with an error instead of
+// walking the graph. The guard restores the (empty) token on drop.
+#[test]
+fn find_path_bails_out_when_cancelled() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use codegraph::graph::cancel::CancelGuard;
+
+    let fx = build_fixture();
+    let traverser = fx.traverser();
+
+    let flag = Arc::new(AtomicBool::new(true));
+    let _guard = CancelGuard::install(Some(Arc::clone(&flag)));
+
+    let err = traverser
+        .find_path(MAIN, FORMAT_VALUE, &[])
+        .expect_err("a cancelled traversal must return an error");
+    assert!(err.to_string().to_lowercase().contains("cancel"));
+}
+
 // =============================================================================
 // getAncestors() and getChildren()
 // =============================================================================
