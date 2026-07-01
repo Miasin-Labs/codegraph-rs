@@ -150,6 +150,7 @@ fn mk_ref(name: &str, language: Language, file_path: &str) -> UnresolvedRef {
         file_path: file_path.to_string(),
         language,
         candidates: None,
+        metadata: None,
     }
 }
 
@@ -391,6 +392,7 @@ fn nestjs_resolves_injected_service_reference_to_class_in_service_file() {
         file_path: "src/users/users.controller.ts".to_string(),
         language: Language::Typescript,
         candidates: None,
+        metadata: None,
     };
     let result = NestjsResolver.resolve(&reference, &ctx).unwrap();
     assert_eq!(result.target_node_id, svc_node.id);
@@ -410,6 +412,7 @@ fn nestjs_returns_none_for_name_without_provider_suffix() {
         file_path: "a.ts".to_string(),
         language: Language::Typescript,
         candidates: None,
+        metadata: None,
     };
     assert!(NestjsResolver.resolve(&reference, &ctx).is_none());
 }

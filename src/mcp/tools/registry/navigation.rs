@@ -33,6 +33,7 @@ pub(in crate::mcp::tools::registry) fn push_arch_tool(out: &mut Vec<ToolDefiniti
                 properties: props,
                 required: None,
             },
+            output_schema: None,
             annotations: read_only_annotations(),
         });
     }
@@ -66,6 +67,7 @@ pub(in crate::mcp::tools::registry) fn push_xref_tool(out: &mut Vec<ToolDefiniti
                 properties: props,
                 required: Some(vec!["symbol".into()]),
             },
+            output_schema: None,
             annotations: read_only_annotations(),
         });
     }
@@ -95,6 +97,7 @@ pub(in crate::mcp::tools::registry) fn push_paths_tool(out: &mut Vec<ToolDefinit
                 properties: props,
                 required: Some(vec!["from".into(), "to".into()]),
             },
+            output_schema: None,
             annotations: read_only_annotations(),
         });
     }

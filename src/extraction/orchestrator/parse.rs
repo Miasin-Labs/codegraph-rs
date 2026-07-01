@@ -60,6 +60,7 @@ pub(super) fn unresolved_ref_to_reference(
         file_path: Some(r.file_path),
         language: Some(r.language),
         candidates: r.candidates,
+        metadata: r.metadata,
     }
 }
 

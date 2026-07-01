@@ -7,7 +7,7 @@ use crate::db::connection::{Db, now_ms};
 use crate::error::Result;
 
 /// Current schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 6;
+pub const CURRENT_SCHEMA_VERSION: u32 = 7;
 
 /// Migration definition.
 pub struct Migration {
@@ -20,7 +20,7 @@ pub struct Migration {
 ///
 /// Note: Version 1 is the initial schema, handled by schema.sql.
 /// Future migrations go here.
-static MIGRATIONS: [Migration; 5] = [
+static MIGRATIONS: [Migration; 6] = [
     Migration {
         version: 2,
         description: "Add project metadata, provenance tracking, and unresolved ref context",
@@ -73,6 +73,11 @@ static MIGRATIONS: [Migration; 5] = [
                  ALTER TABLE nodes ADD COLUMN size INTEGER;",
             )
         },
+    },
+    Migration {
+        version: 7,
+        description: "Add nullable metadata to unresolved_refs (copied onto resolved edges; backfill NULL, populated on re-index)",
+        up: |db| db.exec("ALTER TABLE unresolved_refs ADD COLUMN metadata TEXT;"),
     },
 ];
 

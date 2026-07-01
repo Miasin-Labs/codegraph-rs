@@ -325,6 +325,7 @@ impl FrameworkResolver for ExpressResolver {
                         file_path: file_path.to_string(),
                         language: lang,
                         candidates: None,
+                        metadata: None,
                     });
                 }
             } else {
@@ -345,6 +346,7 @@ impl FrameworkResolver for ExpressResolver {
                         file_path: file_path.to_string(),
                         language: lang,
                         candidates: None,
+                        metadata: None,
                     });
                 }
             }

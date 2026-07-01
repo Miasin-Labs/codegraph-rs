@@ -84,6 +84,13 @@ impl<'a> TreeSitterExtractor<'a> {
     pub(super) fn extract_type_annotations(&mut self, node: SyntaxNode<'_>, node_id: &str) {
         let Some(ext) = self.extractor else { return };
         if !is_type_annotation_language(self.language) {
+            linkscope::event_fields(
+                "codegraph.extract.type_annotations_unsupported",
+                [
+                    linkscope::TraceField::text("language", self.language.as_str()),
+                    linkscope::TraceField::text("node_kind", node.kind()),
+                ],
+            );
             return;
         }
 

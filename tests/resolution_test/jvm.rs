@@ -130,6 +130,103 @@ fn java_import_disambiguates_same_name_classes_across_modules_314() {
 }
 
 #[test]
+fn kotlin_imports_without_semicolon_resolve_top_level_symbols_by_qualified_name() {
+    let fx = Fx::new();
+    let q = fx.q();
+    let helper_file = "src/main/kotlin/com/example/foo/Helpers.kt";
+    let caller_file = "src/main/kotlin/com/example/app/Use.kt";
+    fx.write(
+        helper_file,
+        "package com.example.foo\nfun util(): String = \"ok\"\nfun aliased(): String = \"ok\"\n",
+    );
+    fx.write(
+        caller_file,
+        "package com.example.app\nimport com.example.foo.util\nimport com.example.foo.aliased as doUtil\nfun use() = util()\nfun useAlias() = doUtil()\n",
+    );
+    for f in [helper_file, caller_file] {
+        fx.track(&q, f, Language::Kotlin);
+    }
+
+    let util = node(
+        "fn:kotlin:util:2",
+        NodeKind::Function,
+        "util",
+        "com.example.foo::util",
+        helper_file,
+        Language::Kotlin,
+        2,
+        2,
+    );
+    let aliased = node(
+        "fn:kotlin:aliased:3",
+        NodeKind::Function,
+        "aliased",
+        "com.example.foo::aliased",
+        helper_file,
+        Language::Kotlin,
+        3,
+        3,
+    );
+    let use_fn = node(
+        "fn:kotlin:use:4",
+        NodeKind::Function,
+        "use",
+        "com.example.app::use",
+        caller_file,
+        Language::Kotlin,
+        4,
+        4,
+    );
+    let use_alias = node(
+        "fn:kotlin:useAlias:5",
+        NodeKind::Function,
+        "useAlias",
+        "com.example.app::useAlias",
+        caller_file,
+        Language::Kotlin,
+        5,
+        5,
+    );
+    q.insert_nodes(&[
+        util.clone(),
+        aliased.clone(),
+        use_fn.clone(),
+        use_alias.clone(),
+    ])
+    .unwrap();
+    q.insert_unresolved_refs_batch(&[
+        uref(
+            &use_fn.id,
+            "util",
+            EdgeKind::Calls,
+            4,
+            caller_file,
+            Language::Kotlin,
+        ),
+        uref(
+            &use_alias.id,
+            "doUtil",
+            EdgeKind::Calls,
+            5,
+            caller_file,
+            Language::Kotlin,
+        ),
+    ])
+    .unwrap();
+
+    fx.resolver()
+        .resolve_and_persist_batched(None, None)
+        .unwrap();
+
+    let direct = outgoing(&q, &use_fn.id, EdgeKind::Calls);
+    assert_eq!(direct.len(), 1, "got {direct:?}");
+    assert_eq!(direct[0].target, util.id);
+    let alias = outgoing(&q, &use_alias.id, EdgeKind::Calls);
+    assert_eq!(alias.len(), 1, "got {alias:?}");
+    assert_eq!(alias[0].target, aliased.id);
+}
+
+#[test]
 fn resolve_one_skips_jvm_namespace_segments_but_not_types() {
     let fx = Fx::new();
     let q = fx.q();
@@ -166,6 +263,7 @@ fn resolve_one_skips_jvm_namespace_segments_but_not_types() {
         file_path: "src/Main.java".to_string(),
         language: Language::Java,
         candidates: None,
+        metadata: None,
     };
     assert!(resolver.resolve_one(&package_ref).is_none());
 
@@ -188,6 +286,7 @@ fn resolve_one_skips_jvm_namespace_segments_but_not_types() {
         file_path: "src/Main.java".to_string(),
         language: Language::Kotlin,
         candidates: None,
+        metadata: None,
     };
     assert!(resolver.resolve_one(&external_call).is_none());
 
@@ -245,6 +344,7 @@ fn resolve_one_keeps_project_classes_that_match_jvm_stdlib_names() {
         file_path: "src/Main.java".to_string(),
         language: Language::Java,
         candidates: None,
+        metadata: None,
     };
     let resolved = resolver
         .resolve_one(&type_ref)

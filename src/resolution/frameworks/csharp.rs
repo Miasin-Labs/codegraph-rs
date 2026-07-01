@@ -275,6 +275,7 @@ impl FrameworkResolver for AspnetResolver {
                     file_path: file_path.to_string(),
                     language: Language::Csharp,
                     candidates: None,
+                    metadata: None,
                 });
             }
         }
@@ -313,6 +314,7 @@ impl FrameworkResolver for AspnetResolver {
                     file_path: file_path.to_string(),
                     language: Language::Csharp,
                     candidates: None,
+                    metadata: None,
                 });
             }
         }

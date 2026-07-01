@@ -78,9 +78,9 @@ pub(in crate::mcp::tools::explore) fn render_adaptive_section(
     }
     let names = adaptive_header_names(req.group, req.budget);
     let tag = if !body_ids.is_empty() {
-        "focused (the methods you named in full, the rest as signatures — codegraph_explore a signature by name for its body; do NOT Read)"
+        "focused (named methods in full, rest as signatures)"
     } else {
-        "skeleton (signatures only — codegraph_explore a name for its full body; do NOT Read)"
+        "skeleton (signatures only)"
     };
     let body = skeleton.join("\n");
     Ok(Some(RenderedFile {

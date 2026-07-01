@@ -1,6 +1,6 @@
 use super::ReferenceResolver;
 use crate::resolution::types::ResolvedRef;
-use crate::types::{Edge, EdgeKind, Metadata, NodeKind};
+use crate::types::{Edge, EdgeKind, NodeKind};
 
 impl ReferenceResolver {
     /// Create edges from resolved references
@@ -36,7 +36,7 @@ impl ReferenceResolver {
                     }
                 }
 
-                let mut metadata = Metadata::new();
+                let mut metadata = resolved_ref.original.metadata.clone().unwrap_or_default();
                 metadata.insert(
                     "confidence".to_string(),
                     serde_json::json!(resolved_ref.confidence),

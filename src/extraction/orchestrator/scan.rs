@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use super::git::get_git_visible_files;
-use super::ignore::{build_default_ignore, gitignore_ignores};
+use super::ignore::build_default_ignore;
 use crate::error::log_debug;
 use crate::extraction::grammars::is_source_file;
 use crate::utils::{normalize_path, validate_existing_path_within_root_real};
@@ -67,6 +67,7 @@ fn load_ignore(dir: &Path) -> Option<ScopedIgnore> {
 }
 
 fn is_ignored(full_path: &Path, is_dir: bool, matchers: &[ScopedIgnore]) -> bool {
+    let mut ignored = false;
     for m in matchers {
         let rel = match full_path.strip_prefix(&m.dir) {
             Ok(r) => normalize_path(&r.to_string_lossy()),
@@ -75,11 +76,14 @@ fn is_ignored(full_path: &Path, is_dir: bool, matchers: &[ScopedIgnore]) -> bool
         if rel.is_empty() {
             continue;
         }
-        if gitignore_ignores(&m.ig, &rel, is_dir) {
-            return true;
+        let matched = m.ig.matched_path_or_any_parents(&rel, is_dir);
+        if matched.is_ignore() {
+            ignored = true;
+        } else if matched.is_whitelist() {
+            ignored = false;
         }
     }
-    false
+    ignored
 }
 
 /// Filesystem walk fallback for non-git projects.

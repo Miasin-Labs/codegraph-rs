@@ -98,7 +98,7 @@ pub fn worktree_mismatch_warning(m: &WorktreeIndexMismatch) -> String {
 /// the agent is already reading — a multi-line block would bury the result.
 pub fn worktree_mismatch_notice(m: &WorktreeIndexMismatch) -> String {
     format!(
-        "⚠ CodeGraph results below come from a different git worktree ({}), \
+        "CodeGraph results below come from a different git worktree ({}), \
         not where you're working ({}) — they may reflect another branch, \
         and symbols changed only here are missing. Run \"codegraph init\" here for a \
         worktree-local index.",
@@ -139,7 +139,7 @@ mod tests {
         };
         let msg = worktree_mismatch_notice(&m);
         assert!(!msg.contains('\n'));
-        assert!(msg.starts_with("⚠ CodeGraph results below come from a different git worktree"));
+        assert!(msg.starts_with("CodeGraph results below come from a different git worktree"));
         assert!(msg.contains("codegraph init"));
     }
 

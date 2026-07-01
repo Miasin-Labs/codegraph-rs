@@ -28,3 +28,7 @@ pub(in crate::mcp::tools) fn is_callable_kind(kind: NodeKind) -> bool {
         NodeKind::Method | NodeKind::Function | NodeKind::Component
     )
 }
+
+pub(in crate::mcp::tools) fn is_explore_seed_kind(kind: NodeKind) -> bool {
+    is_callable_kind(kind) || matches!(kind, NodeKind::DataSymbol | NodeKind::StringLiteral)
+}

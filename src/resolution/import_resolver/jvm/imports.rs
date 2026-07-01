@@ -7,6 +7,14 @@ use crate::resolution::types::{
 };
 use crate::types::{EdgeKind, Language};
 
+fn qualified_name_from_fqn(fqn: &str) -> Option<String> {
+    let last_dot = fqn.rfind('.')?;
+    if last_dot == 0 {
+        return None;
+    }
+    Some(format!("{}::{}", &fqn[..last_dot], &fqn[last_dot + 1..]))
+}
+
 pub(super) fn resolve_jvm_import(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
@@ -72,6 +80,21 @@ pub(super) fn resolve_java_imported_reference(
             .starts_with(&format!("{}.", imp.local_name));
         if !matches_bare && !matches_qualified {
             continue;
+        }
+
+        if matches_bare {
+            if let Some(qualified_name) = qualified_name_from_fqn(&imp.source) {
+                for node in context.get_nodes_by_qualified_name(&qualified_name) {
+                    if node.language == reference.language {
+                        return Some(ResolvedRef {
+                            original: reference.clone(),
+                            target_node_id: node.id.clone(),
+                            confidence: 0.95,
+                            resolved_by: ResolvedBy::Import,
+                        });
+                    }
+                }
+            }
         }
 
         // Convert FQN to a file-path suffix. `com.example.Foo` ->

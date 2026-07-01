@@ -61,6 +61,7 @@ fn resolve_one_skips_builtins_best_candidate_api() {
         file_path: "src/a.ts".to_string(),
         language: Language::Typescript,
         candidates: None,
+        metadata: None,
     };
     assert!(resolver.resolve_one(&r).is_none());
 }

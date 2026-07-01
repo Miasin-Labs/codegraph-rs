@@ -40,7 +40,8 @@ impl ReferenceResolver {
                         .map(|node| node.language)
                         .unwrap_or(Language::Unknown),
                 },
-                candidates: None,
+                candidates: r.candidates.clone(),
+                metadata: r.metadata.clone(),
             })
             .collect()
     }

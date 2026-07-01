@@ -205,6 +205,7 @@ impl FrameworkResolver for RailsResolver {
                 file_path: file_path.to_string(),
                 language: Language::Ruby,
                 candidates: None,
+                metadata: None,
             });
         }
 
@@ -266,6 +267,7 @@ impl FrameworkResolver for RailsResolver {
                     file_path: file_path.to_string(),
                     language: Language::Ruby,
                     candidates: None,
+                    metadata: None,
                 });
             }
         }

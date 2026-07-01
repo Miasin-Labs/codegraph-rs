@@ -147,6 +147,7 @@ impl LanguageExtractor for PhpExtractor {
                         column: node.start_position().column as u32,
                         language: None,
                         candidates: None,
+                        metadata: None,
                     });
                 }
             }

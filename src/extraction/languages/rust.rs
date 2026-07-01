@@ -221,6 +221,7 @@ impl LanguageExtractor for RustExtractor {
                                 file_path: None,
                                 language: None,
                                 candidates: None,
+                                metadata: None,
                             });
                         }
                     }

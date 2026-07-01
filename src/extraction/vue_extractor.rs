@@ -363,14 +363,13 @@ impl<'a> VueExtractor<'a> {
 
             for caps in TAG_RE.captures_iter(line) {
                 let raw = caps.get(1).unwrap().as_str();
-                let component_name: String;
-                if raw.starts_with(|c: char| c.is_ascii_uppercase()) {
-                    component_name = raw.to_string(); // PascalCase component
+                let component_name = if raw.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    raw.to_string() // PascalCase component
                 } else if raw.contains('-') {
-                    component_name = kebab_to_pascal(raw); // kebab-case component
+                    kebab_to_pascal(raw) // kebab-case component
                 } else {
                     continue; // lowercase, no hyphen → native HTML element
-                }
+                };
                 if VUE_BUILTIN_COMPONENTS.contains(&component_name.as_str()) {
                     continue;
                 }
@@ -384,6 +383,7 @@ impl<'a> VueExtractor<'a> {
                     file_path: Some(self.file_path.clone()),
                     language: Some(Language::Vue),
                     candidates: None,
+                    metadata: None,
                 });
             }
         }

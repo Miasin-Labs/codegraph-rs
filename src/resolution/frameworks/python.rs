@@ -185,6 +185,7 @@ impl FrameworkResolver for DjangoResolver {
                     file_path: file_path.to_string(),
                     language: Language::Python,
                     candidates: None,
+                    metadata: None,
                 });
             }
         }
@@ -225,6 +226,7 @@ impl FrameworkResolver for DjangoResolver {
                 file_path: file_path.to_string(),
                 language: Language::Python,
                 candidates: None,
+                metadata: None,
             });
         }
 
@@ -587,6 +589,7 @@ fn extract_decorator_routes(
                 file_path: file_path.to_string(),
                 language: Language::Python,
                 candidates: None,
+                metadata: None,
             });
         }
     }
@@ -642,6 +645,7 @@ fn extract_flask_restful(file_path: &str, safe: &str) -> FrameworkExtractionResu
                 file_path: file_path.to_string(),
                 language: Language::Python,
                 candidates: None,
+                metadata: None,
             });
         }
     }

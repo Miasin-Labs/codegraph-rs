@@ -696,6 +696,8 @@ impl EngineHandle {
                 content_type: "text".to_string(),
                 text: "Tool execution failed: engine stopped".to_string(),
             }],
+            structured_content: None,
+            meta: None,
             is_error: Some(true),
         }
     }

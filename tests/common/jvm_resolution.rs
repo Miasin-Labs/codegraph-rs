@@ -17,7 +17,7 @@ impl Fx {
         let dir = tempdir().expect("tempdir");
         let root = dir.path().to_path_buf();
         let conn = DatabaseConnection::initialize(root.join(".codegraph").join("codegraph.db"))
-            .expect("initialize db");
+            .unwrap_or_else(|error| panic!("initialize db at {}: {error}", root.display()));
         Self {
             _dir: dir,
             root,
@@ -104,5 +104,6 @@ pub(crate) fn ref_from(
         file_path: file_path.to_string(),
         language: Language::Java,
         candidates: None,
+        metadata: None,
     }
 }

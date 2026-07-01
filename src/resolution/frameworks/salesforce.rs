@@ -195,6 +195,7 @@ impl FrameworkResolver for SalesforceResolver {
                 file_path: file_path.to_string(),
                 language: Language::Apex,
                 candidates: None,
+                metadata: None,
             });
         }
 
@@ -521,6 +522,7 @@ mod tests {
             file_path: "force-app/main/default/lwc/accountList/accountList.js".to_string(),
             language: Language::Javascript,
             candidates: None,
+            metadata: None,
         }
     }
 
@@ -569,6 +571,7 @@ mod tests {
             file_path: "force-app/main/default/lwc/accountList/accountList.html".to_string(),
             language: Language::Html,
             candidates: None,
+            metadata: None,
         };
         let resolved = SalesforceResolver
             .resolve(&r, &Ctx::new())
@@ -598,6 +601,7 @@ mod tests {
             file_path: "force-app/main/default/pages/Wrapper.page".to_string(),
             language: Language::Apex,
             candidates: None,
+            metadata: None,
         };
         let resolved = SalesforceResolver
             .resolve(&r, &Ctx::new())
@@ -633,6 +637,7 @@ mod tests {
             file_path: "force-app/main/default/pages/Wrapper.page".to_string(),
             language: Language::Visualforce,
             candidates: None,
+            metadata: None,
         };
         let resolved = SalesforceResolver
             .resolve(&r, &Ctx::new())
@@ -651,6 +656,7 @@ mod tests {
             file_path: "force-app/main/default/aura/orderForm/orderForm.cmp".to_string(),
             language: Language::Aura,
             candidates: None,
+            metadata: None,
         };
         let resolved = SalesforceResolver
             .resolve(&r, &Ctx::new())

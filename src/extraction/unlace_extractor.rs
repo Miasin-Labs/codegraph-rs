@@ -116,6 +116,18 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
+fn line_for_byte(source: &str, byte: usize) -> u32 {
+    source[..byte.min(source.len())]
+        .bytes()
+        .filter(|b| *b == b'\n')
+        .count() as u32
+        + 1
+}
+
+fn rebase_line(line: u32, delta: i64) -> u32 {
+    (i64::from(line) + delta).max(1) as u32
+}
+
 /// A whole-program unlace C dump: per-function `/* Function: … */` block
 /// comments carrying an `Address:` field. Distinct from IDA's `// Name:`
 /// LINE-comment banners (handled by [`IdaCExtractor`]).
@@ -135,6 +147,7 @@ struct FnBlock<'a> {
     address: Option<u64>,
     size: Option<u32>,
     xrefs_to: Vec<String>,
+    original_start_line: u32,
     /// Signature + body text following the block comment.
     code: &'a str,
 }
@@ -220,6 +233,7 @@ impl<'a> UnlaceCExtractor<'a> {
                 address: Some(addr),
                 size: None,
                 xrefs_to: Vec::new(),
+                original_start_line: line_for_byte(self.source, start),
                 code,
             });
         }
@@ -274,6 +288,7 @@ impl<'a> UnlaceCExtractor<'a> {
                 address,
                 size,
                 xrefs_to,
+                original_start_line: line_for_byte(self.source, body_start),
                 code: &self.source[body_start..code_end],
             });
         }
@@ -293,6 +308,8 @@ impl<'a> UnlaceCExtractor<'a> {
         if let Some(size) = block.size {
             synthetic.push_str(&format!("// Size: {size} bytes\n"));
         }
+        let synthetic_header_lines = synthetic.bytes().filter(|b| *b == b'\n').count() as i64;
+        let line_delta = i64::from(block.original_start_line) - 1 - synthetic_header_lines;
         synthetic.push_str(block.code);
 
         // A per-function synthetic path keeps generated node ids unique across
@@ -311,6 +328,8 @@ impl<'a> UnlaceCExtractor<'a> {
             }
             // Re-home every node onto the real whole-program file.
             node.file_path = self.file_path.clone();
+            node.start_line = rebase_line(node.start_line, line_delta);
+            node.end_line = rebase_line(node.end_line, line_delta);
             if matches!(node.kind, NodeKind::Function | NodeKind::Method)
                 && function_node_id.is_none()
             {
@@ -323,10 +342,20 @@ impl<'a> UnlaceCExtractor<'a> {
             if edge.source == synth_file_node {
                 edge.source = file_node_id.to_string();
             }
+            if let Some(line) = edge.line {
+                edge.line = Some(rebase_line(line, line_delta));
+            }
             out.edges.push(edge);
         }
-        out.unresolved_references.extend(sub.unresolved_references);
-        out.errors.extend(sub.errors);
+        out.unresolved_references
+            .extend(sub.unresolved_references.into_iter().map(|mut reference| {
+                reference.line = rebase_line(reference.line, line_delta);
+                reference
+            }));
+        out.errors.extend(sub.errors.into_iter().map(|mut error| {
+            error.line = error.line.map(|line| rebase_line(line, line_delta));
+            error
+        }));
 
         // The authoritative `Xrefs to:` list as Calls (catches callees the body
         // regex might miss, e.g. via tail calls / indirect thunks).
@@ -336,11 +365,12 @@ impl<'a> UnlaceCExtractor<'a> {
                     from_node_id: fn_id.clone(),
                     reference_name: callee.clone(),
                     reference_kind: EdgeKind::Calls,
-                    line: 1,
+                    line: block.original_start_line,
                     column: 0,
                     file_path: None,
                     language: None,
                     candidates: None,
+                    metadata: None,
                 });
             }
             // Containment under the real file node.
@@ -425,6 +455,9 @@ mod tests {
         // main's size came from the block comment.
         let main = result.nodes.iter().find(|n| n.name == "main").unwrap();
         assert_eq!(main.size, Some(1037));
+        assert_eq!(main.start_line, 7);
+        let helper = result.nodes.iter().find(|n| n.name == "f_helper").unwrap();
+        assert_eq!(helper.start_line, 16);
 
         // Every function is contained by the one file node.
         for f in result.nodes.iter().filter(|n| n.kind == NodeKind::Function) {

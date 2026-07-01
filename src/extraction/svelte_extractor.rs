@@ -397,6 +397,7 @@ impl<'a> SvelteExtractor<'a> {
                         file_path: Some(self.file_path.clone()),
                         language: Some(Language::Svelte),
                         candidates: None,
+                        metadata: None,
                     });
                 }
             }
@@ -435,6 +436,7 @@ impl<'a> SvelteExtractor<'a> {
                     file_path: Some(self.file_path.clone()),
                     language: Some(Language::Svelte),
                     candidates: None,
+                    metadata: None,
                 });
             }
         }

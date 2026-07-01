@@ -110,5 +110,6 @@ pub(super) fn make_ref(
         file_path: file_path.into(),
         language,
         candidates: None,
+        metadata: None,
     }
 }

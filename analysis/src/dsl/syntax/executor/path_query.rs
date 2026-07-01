@@ -141,5 +141,8 @@ fn edge_kind_matches(actual: &EdgeKind, expected: &EdgeKind) -> bool {
             | (Implements, Implements)
             | (UnresolvedCall(_), UnresolvedCall(_))
             | (ExternalCall(_, _), ExternalCall(_, _))
+            | (Extends, Extends)
+            | (Returns, Returns)
+            | (TypeOf, TypeOf)
     )
 }

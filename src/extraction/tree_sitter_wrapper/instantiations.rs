@@ -51,6 +51,7 @@ impl<'a> TreeSitterExtractor<'a> {
                 file_path: None,
                 language: None,
                 candidates: None,
+                metadata: None,
             });
         }
     }
@@ -129,6 +130,7 @@ impl<'a> TreeSitterExtractor<'a> {
             file_path: None,
             language: None,
             candidates: None,
+            metadata: None,
         });
 
         // Walk the body's children so method_declaration nodes inside become

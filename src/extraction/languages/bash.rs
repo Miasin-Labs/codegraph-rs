@@ -154,6 +154,7 @@ impl LanguageExtractor for BashExtractor {
                     file_path: None,
                     language: None,
                     candidates: None,
+                    metadata: None,
                 });
             }
         }

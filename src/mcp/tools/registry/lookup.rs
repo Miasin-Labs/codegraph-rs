@@ -2,6 +2,7 @@
 
 use serde_json::{Map, Value};
 
+use super::super::output::{node_output_schema, search_output_schema};
 use super::super::schema::{InputSchema, ToolDefinition};
 use super::schema_builder::{
     project_path_property,
@@ -52,6 +53,7 @@ pub(in crate::mcp::tools::registry) fn push_search_tool(out: &mut Vec<ToolDefini
                 properties: props,
                 required: Some(vec!["query".into()]),
             },
+            output_schema: Some(search_output_schema()),
             annotations: read_only_annotations(),
         });
     }
@@ -86,6 +88,7 @@ pub(in crate::mcp::tools::registry) fn push_callee_tools(out: &mut Vec<ToolDefin
                 properties: props,
                 required: Some(vec!["symbol".into()]),
             },
+            output_schema: None,
             annotations: read_only_annotations(),
         });
     }
@@ -119,6 +122,7 @@ pub(in crate::mcp::tools::registry) fn push_callee_tools(out: &mut Vec<ToolDefin
                 properties: props,
                 required: Some(vec!["symbol".into()]),
             },
+            output_schema: None,
             annotations: read_only_annotations(),
         });
     }
@@ -149,6 +153,7 @@ pub(in crate::mcp::tools::registry) fn push_impact_tool(out: &mut Vec<ToolDefini
                 properties: props,
                 required: Some(vec!["symbol".into()]),
             },
+            output_schema: None,
             annotations: read_only_annotations(),
         });
     }
@@ -192,6 +197,7 @@ pub(in crate::mcp::tools::registry) fn push_node_tool(out: &mut Vec<ToolDefiniti
                 properties: props,
                 required: Some(vec!["symbol".into()]),
             },
+            output_schema: Some(node_output_schema()),
             annotations: read_only_annotations(),
         });
     }

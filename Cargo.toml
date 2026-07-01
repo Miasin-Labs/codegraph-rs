@@ -32,7 +32,8 @@ globset = "0.4"
 walkdir = "2"
 sha2 = "0.10"
 regex = "1"
-ws-deque = { path = "../../ws-deque" }
+linkscope = { git = "https://github.com/Miasin-Labs/linkscope", rev = "3c76713b531a5bf75d41e89ce132a33f42f31f5f", default-features = false }
+ws-deque = { git = "https://github.com/Miasin-Labs/ws-deque", rev = "4a277b7221ff962d2e467d0fe251ebbd5b4c6986" }
 crossbeam-channel = "0.5"
 # GPU resolution tier (optional): CUDA driver API + NVRTC via cudarc.
 # dynamic-loading = no build-time CUDA dependency; libcuda is dlopen'd at

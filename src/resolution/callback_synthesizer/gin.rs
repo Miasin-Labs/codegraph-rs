@@ -24,9 +24,6 @@ static GIN_REG_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\.(?:Use|GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|Any|Handle)\s*\(")
         .expect("valid regex")
 });
-static GIN_METHODS_TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\.(?:GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|Any|Handle)\(").expect("valid regex")
-});
 
 /// Balanced `(...)` body starting at the '(' index; None if unbalanced.
 pub(super) fn go_balanced_args(s: &str, open_idx: usize) -> Option<&str> {
@@ -151,9 +148,7 @@ pub(super) fn gin_middleware_chain_edges(
         let Some(content) = ctx.read_file(&file) else {
             continue;
         };
-        if content.is_empty()
-            || (!content.contains(".Use(") && !GIN_METHODS_TEST_RE.is_match(&content))
-        {
+        if content.is_empty() || !GIN_REG_RE.is_match(&content) {
             continue;
         }
         let safe = strip_comments_for_regex(&content, CommentLang::Go);

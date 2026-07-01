@@ -261,6 +261,7 @@ impl FrameworkResolver for ReactResolver {
                     file_path: file_path.to_string(),
                     language: jsx_lang,
                     candidates: None,
+                    metadata: None,
                 });
             }
         }
@@ -315,6 +316,7 @@ impl FrameworkResolver for ReactResolver {
                     file_path: file_path.to_string(),
                     language: jsx_lang,
                     candidates: None,
+                    metadata: None,
                 });
             }
         }

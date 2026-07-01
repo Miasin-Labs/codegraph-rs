@@ -14,10 +14,12 @@ pub fn map_node_kind(kind: NodeKind) -> Option<ANodeKind> {
         NodeKind::Enum => Some(ANodeKind::Enum),
         NodeKind::File | NodeKind::Module | NodeKind::Namespace => Some(ANodeKind::Module),
         NodeKind::Trait | NodeKind::Interface | NodeKind::Protocol => Some(ANodeKind::Trait),
+        NodeKind::Constant | NodeKind::DataSymbol | NodeKind::StringLiteral => {
+            Some(ANodeKind::Constant)
+        }
         NodeKind::Property
         | NodeKind::Field
         | NodeKind::Variable
-        | NodeKind::Constant
         | NodeKind::EnumMember
         | NodeKind::TypeAlias
         | NodeKind::Parameter
@@ -25,8 +27,6 @@ pub fn map_node_kind(kind: NodeKind) -> Option<ANodeKind> {
         | NodeKind::Export
         | NodeKind::Route
         | NodeKind::Component
-        | NodeKind::DataSymbol
-        | NodeKind::StringLiteral
         | NodeKind::Macro => None,
     }
 }
@@ -70,7 +70,8 @@ pub fn map_edge_kind(kind: EdgeKind, source: ANodeKind, target: ANodeKind) -> Op
         } else {
             AEdgeKind::References
         }),
-        EdgeKind::Reads | EdgeKind::Writes | EdgeKind::Aliases => None,
+        EdgeKind::Reads | EdgeKind::Writes => Some(AEdgeKind::References),
+        EdgeKind::Aliases => None,
     }
 }
 

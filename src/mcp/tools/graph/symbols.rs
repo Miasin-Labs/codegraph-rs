@@ -160,6 +160,37 @@ impl ToolHandler {
         symbol: &str,
     ) -> Result<SymbolMatches> {
         let is_qualified = symbol.contains('.') || symbol.contains('/') || symbol.contains("::");
+        if !is_qualified {
+            let exact = cg.get_nodes_by_name(symbol)?;
+            if !exact.is_empty() {
+                let mut ranked = exact;
+                ranked.sort_by_key(|n| {
+                    if is_generated_file(&n.file_path) {
+                        1
+                    } else {
+                        0
+                    }
+                });
+                let note = if ranked.len() > 1 {
+                    let locations: Vec<String> = ranked
+                        .iter()
+                        .map(|n| format!("{} at {}:{}", n.kind.as_str(), n.file_path, n.start_line))
+                        .collect();
+                    format!(
+                        "\n\n> **Note:** Aggregated results across {} symbols named \"{}\": {}",
+                        ranked.len(),
+                        symbol,
+                        locations.join(", ")
+                    )
+                } else {
+                    String::new()
+                };
+                return Ok(SymbolMatches {
+                    nodes: ranked,
+                    note,
+                });
+            }
+        }
         let mut results = cg.search_nodes(
             symbol,
             Some(&SearchOptions {

@@ -66,9 +66,11 @@ pub struct TaintConfig<'a> {
 /// dataflow). When the BFS reaches a sink node, emits one [`TaintFlow`]
 /// recording the path and whether a sanitizer appeared on it.
 ///
-/// Multiple flows from the same `(source, sink)` pair are deduplicated —
-/// the first path discovered (shortest, by BFS layer order) wins. Callers
-/// who need *all* paths should run `forward_slice` directly and inspect
+/// Multiple flows from the same `(source, sink, sanitizer-state)` tuple are
+/// deduplicated — the first path discovered (shortest, by BFS layer order)
+/// wins for each sanitized/unsanitized state. Keeping sanitizer state separate
+/// prevents a sanitized shortest path from hiding an unsanitized alternative.
+/// Callers who need *all* paths should run `forward_slice` directly and inspect
 /// the slice instead.
 ///
 /// ## Phase 7 — frontier-aware BFS
@@ -91,9 +93,9 @@ pub fn analyze(
     let sanitizers: HashSet<&NodeId> = config.sanitizers.iter().collect();
 
     let mut flows: Vec<TaintFlow> = Vec::new();
-    // Dedup: at most one flow per (source, sink) pair. BFS guarantees the
-    // first one is the shortest.
-    let mut seen_pairs: HashSet<(NodeId, NodeId)> = HashSet::new();
+    // Dedup: at most one flow per (source, sink, sanitized?) state. BFS
+    // guarantees the first one is the shortest within that state.
+    let mut seen_pairs: HashSet<(NodeId, NodeId, bool)> = HashSet::new();
 
     for source in config.sources {
         if !graph.contains_node(source) {
@@ -101,30 +103,34 @@ pub fn analyze(
         }
 
         // BFS state. `predecessor` lets us reconstruct paths once we hit a
-        // sink. `sanitizer_on_path` carries the first sanitizer seen on the
-        // shortest path to each node — sufficient because BFS visits each
-        // node via its shortest-path predecessor.
-        let mut predecessor: HashMap<NodeId, NodeId> = HashMap::new();
-        let mut sanitizer_on_path: HashMap<NodeId, NodeId> = HashMap::new();
-        let mut visited: HashSet<NodeId> = HashSet::new();
-        let mut frontier: VecDeque<NodeId> = VecDeque::new();
+        // sink. `VisitState` tracks whether a sanitizer has been seen on that
+        // path, so sanitized and unsanitized frontiers can both reach the same
+        // node without suppressing each other.
+        let source_state = VisitState {
+            node: source.clone(),
+            sanitized: sanitizers.contains(source),
+        };
+        let mut predecessor: HashMap<VisitState, VisitState> = HashMap::new();
+        let mut sanitizer_on_path: HashMap<VisitState, NodeId> = HashMap::new();
+        let mut visited: HashSet<VisitState> = HashSet::new();
+        let mut frontier: VecDeque<VisitState> = VecDeque::new();
 
-        visited.insert(source.clone());
-        frontier.push_back(source.clone());
+        visited.insert(source_state.clone());
+        frontier.push_back(source_state.clone());
         // The source itself may or may not be a sanitizer (almost never in
         // practice, but the bookkeeping is symmetric).
         if sanitizers.contains(source) {
-            sanitizer_on_path.insert(source.clone(), source.clone());
+            sanitizer_on_path.insert(source_state.clone(), source.clone());
         }
 
         while let Some(current) = frontier.pop_front() {
             // Sink check happens *after* dequeue and *before* expansion so
             // the source itself can be a sink (degenerate case).
-            if sinks.contains(&current) && &current != source {
-                let pair = (source.clone(), current.clone());
+            if sinks.contains(&current.node) && &current.node != source {
+                let pair = (source.clone(), current.node.clone(), current.sanitized);
                 if seen_pairs.insert(pair) {
                     flows.push(reconstruct_flow(
-                        source,
+                        &source_state,
                         &current,
                         &predecessor,
                         sanitizer_on_path.get(&current).cloned(),
@@ -133,22 +139,26 @@ pub fn analyze(
                 // Continue BFS — other sinks may be reachable past this one.
             }
 
-            for next in oracle.use_defs(&current) {
+            for next in oracle.use_defs(&current.node) {
                 if !graph.contains_node(&next) {
                     continue;
                 }
-                if !visited.insert(next.clone()) {
+                let next_state = VisitState {
+                    sanitized: current.sanitized || sanitizers.contains(&next),
+                    node: next.clone(),
+                };
+                if !visited.insert(next_state.clone()) {
                     continue;
                 }
-                predecessor.insert(next.clone(), current.clone());
+                predecessor.insert(next_state.clone(), current.clone());
                 // Carry forward an existing sanitizer marker, or set one if
                 // the new node is itself a sanitizer.
                 if let Some(s) = sanitizer_on_path.get(&current).cloned() {
-                    sanitizer_on_path.insert(next.clone(), s);
+                    sanitizer_on_path.insert(next_state.clone(), s);
                 } else if sanitizers.contains(&next) {
-                    sanitizer_on_path.insert(next.clone(), next.clone());
+                    sanitizer_on_path.insert(next_state.clone(), next.clone());
                 }
-                frontier.push_back(next);
+                frontier.push_back(next_state);
             }
         }
     }
@@ -156,18 +166,24 @@ pub fn analyze(
     flows
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct VisitState {
+    node: NodeId,
+    sanitized: bool,
+}
+
 /// Walk the BFS predecessor map back from `sink` to `source` to assemble
 /// the path. Returns `[source, …, sink]` in source-to-sink order.
 fn reconstruct_flow(
-    source: &NodeId,
-    sink: &NodeId,
-    predecessor: &HashMap<NodeId, NodeId>,
+    source: &VisitState,
+    sink: &VisitState,
+    predecessor: &HashMap<VisitState, VisitState>,
     sanitizer: Option<NodeId>,
 ) -> TaintFlow {
-    let mut path = vec![sink.clone()];
+    let mut path = vec![sink.node.clone()];
     let mut cursor = sink.clone();
     while let Some(prev) = predecessor.get(&cursor) {
-        path.push(prev.clone());
+        path.push(prev.node.clone());
         if prev == source {
             break;
         }
@@ -175,8 +191,8 @@ fn reconstruct_flow(
     }
     path.reverse();
     TaintFlow {
-        source: source.clone(),
-        sink: sink.clone(),
+        source: source.node.clone(),
+        sink: sink.node.clone(),
         path,
         passed_through_sanitizer: sanitizer,
     }
@@ -382,6 +398,43 @@ mod tests {
             flows.len(),
             1,
             "dedup keeps only one flow per (source, sink)"
+        );
+    }
+
+    #[test]
+    fn taint_keeps_unsanitized_flow_when_sanitized_path_is_seen_first() {
+        let (graph, ids) = graph_with(&["source", "sanitize", "transform", "sink"]);
+        let (source, sanitizer, transform, sink) = (
+            ids[0].clone(),
+            ids[1].clone(),
+            ids[2].clone(),
+            ids[3].clone(),
+        );
+
+        let mut oracle = MockOracle::default();
+        oracle
+            .uses
+            .insert(source.clone(), vec![sanitizer.clone(), transform.clone()]);
+        oracle.uses.insert(sanitizer.clone(), vec![sink.clone()]);
+        oracle.uses.insert(transform, vec![sink.clone()]);
+
+        let sources = [source];
+        let sinks = [sink];
+        let sanitizers = [sanitizer.clone()];
+        let cfg = TaintConfig {
+            sources: &sources,
+            sinks: &sinks,
+            sanitizers: &sanitizers,
+        };
+
+        let flows = analyze(&graph, &oracle, &cfg);
+
+        assert_eq!(flows.len(), 2, "got {flows:?}");
+        assert!(flows.iter().any(|f| f.passed_through_sanitizer.is_none()));
+        assert!(
+            flows
+                .iter()
+                .any(|f| f.passed_through_sanitizer == Some(sanitizer.clone()))
         );
     }
 }

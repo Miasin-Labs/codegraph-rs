@@ -3,6 +3,7 @@
 mod adaptive;
 mod cluster;
 mod handler;
+mod literal;
 mod ranking;
 mod relationships;
 mod seed;

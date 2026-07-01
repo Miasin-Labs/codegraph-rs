@@ -24,7 +24,7 @@ pub(super) fn extract_java_imports(content: &str) -> Vec<ImportMapping> {
         LazyLock::new(|| Regex::new(r"//[^\n]*").expect("valid regex"));
     static IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(&format!(
-            r"(?m)^\s*import\s+(static\s+)?([{w}.]+(?:\.\*)?)\s*;",
+            r"(?m)^\s*import\s+(static\s+)?([{w}.]+(?:\.\*)?)(?:\s+as\s+([{w}]+))?\s*;?\s*$",
             w = "0-9A-Za-z_"
         ))
         .expect("valid regex")
@@ -43,11 +43,12 @@ pub(super) fn extract_java_imports(content: &str) -> Vec<ImportMapping> {
         if fqn.ends_with(".*") {
             continue;
         }
-        let local_name = fqn.split('.').next_back().unwrap_or("");
+        let exported_name = fqn.split('.').next_back().unwrap_or("");
+        let local_name = m.get(3).map_or(exported_name, |alias| alias.as_str());
         if local_name.is_empty() {
             continue;
         }
-        mappings.push(mapping(local_name, local_name, fqn, false, false));
+        mappings.push(mapping(local_name, exported_name, fqn, false, false));
     }
     mappings
 }

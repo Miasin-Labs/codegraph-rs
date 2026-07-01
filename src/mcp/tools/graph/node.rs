@@ -6,6 +6,7 @@ use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
 use super::super::format::is_container_node_kind;
+use super::super::output::{NodeDetailOutput, NodeOutput, NodeSummary};
 use super::super::schema::ToolResult;
 use crate::codegraph::CodeGraph;
 use crate::error::Result;
@@ -36,7 +37,17 @@ impl ToolHandler {
 
         let mut matches = self.find_symbol_matches(&cg, &symbol)?;
         if matches.is_empty() {
-            return Ok(self.text_result(&format!("Symbol \"{symbol}\" not found in the codebase")));
+            let output = NodeOutput {
+                schema_version: 1,
+                kind: "node",
+                query: symbol.clone(),
+                include_code,
+                match_count: 0,
+                returned_full_count: 0,
+                truncated: false,
+                matches: Vec::new(),
+            };
+            return self.structured_result(&format!("Symbol not found: `{symbol}`"), &output);
         }
 
         // Disambiguate a heavily-overloaded name to a specific definition the
@@ -86,12 +97,22 @@ impl ToolHandler {
 
         // Single definition — the common case.
         if matches.len() == 1 {
-            let section = self.render_node_section(&cg, &matches[0], include_code)?;
-            return Ok(self.text_result(&self.truncate_output(&section)));
+            let (section, detail) = self.render_node_detail(&cg, &matches[0], include_code)?;
+            let output = NodeOutput {
+                schema_version: 1,
+                kind: "node",
+                query: symbol,
+                include_code,
+                match_count: 1,
+                returned_full_count: 1,
+                truncated: false,
+                matches: vec![detail],
+            };
+            return self.structured_result(&self.truncate_output(&section), &output);
         }
 
         // Multiple definitions share this name — return them ALL.
-        let header = format!("**{} definitions named \"{}\"**", matches.len(), symbol);
+        let header = format!("{} definitions named `{}`", matches.len(), symbol);
         if !include_code {
             let list: Vec<String> = matches
                 .iter()
@@ -108,12 +129,21 @@ impl ToolHandler {
             let mut out = vec![
                 header,
                 String::new(),
-                "Re-query with `includeCode: true` to get every body in one call — no need to pick one first."
-                    .to_string(),
+                "Re-query with `includeCode: true` to get bodies.".to_string(),
                 String::new(),
             ];
             out.extend(list);
-            return Ok(self.text_result(&self.truncate_output(&out.join("\n"))));
+            let output = NodeOutput {
+                schema_version: 1,
+                kind: "node",
+                query: symbol,
+                include_code,
+                match_count: matches.len(),
+                returned_full_count: 0,
+                truncated: false,
+                matches: matches.iter().map(empty_node_detail).collect(),
+            };
+            return self.structured_result(&self.truncate_output(&out.join("\n")), &output);
         }
 
         // Render every definition in full up to a RELEVANCE cap (how many
@@ -121,19 +151,22 @@ impl ToolHandler {
         // belongs to the host.
         const HARD_CAP: usize = 16;
         let mut rendered: Vec<String> = Vec::new();
+        let mut details: Vec<NodeDetailOutput> = Vec::new();
         let mut listed: Vec<Node> = Vec::new();
         for n in &matches {
             if rendered.len() >= HARD_CAP {
                 listed.push(n.clone());
                 continue;
             }
-            rendered.push(self.render_node_section(&cg, n, true)?);
+            let (section, detail) = self.render_node_detail(&cg, n, true)?;
+            rendered.push(section);
+            details.push(detail);
         }
 
         let mut out: Vec<String> = vec![
             header,
             format!(
-                "Returning {} in full{} — pick the one you need (no Read required).",
+                "Returning {} in full{}.",
                 rendered.len(),
                 if !listed.is_empty() {
                     format!("; {} more listed below", listed.len())
@@ -147,7 +180,7 @@ impl ToolHandler {
         if !listed.is_empty() {
             const LIST_CAP: usize = 20;
             out.push(String::new());
-            out.push("### Other definitions".to_string());
+            out.push("Other definitions".to_string());
             for n in listed.iter().take(LIST_CAP) {
                 out.push(format!(
                     "- `{}` ({}) — {}:{}",
@@ -165,21 +198,27 @@ impl ToolHandler {
                 .split('/')
                 .next_back()
                 .unwrap_or(&listed[0].file_path);
-            out.push(String::new());
-            out.push(format!(
-                "> Need one of these in full? Call codegraph_node again with `file` (e.g. `\"{basename}\"`) or `line` — do NOT Read it."
-            ));
+            let _ = basename;
         }
-        Ok(self.text_result(&self.truncate_output(&out.join("\n"))))
+        let output = NodeOutput {
+            schema_version: 1,
+            kind: "node",
+            query: symbol,
+            include_code,
+            match_count: matches.len(),
+            returned_full_count: details.len(),
+            truncated: !listed.is_empty(),
+            matches: details,
+        };
+        self.structured_result(&self.truncate_output(&out.join("\n")), &output)
     }
 
-    /// Render one symbol: details + (optional) body/outline + its trail.
-    fn render_node_section(
+    fn render_node_detail(
         &self,
         cg: &CodeGraph,
         node: &Node,
         include_code: bool,
-    ) -> Result<String> {
+    ) -> Result<(String, NodeDetailOutput)> {
         let mut code: Option<String> = None;
         let mut outline: Option<String> = None;
         if include_code {
@@ -194,27 +233,27 @@ impl ToolHandler {
                 code = cg.get_code(&node.id)?;
             }
         }
-        Ok(format!(
+        let (callers, callees) = self.trail_refs(cg, node)?;
+        let text = format!(
             "{}{}",
             self.format_node_details(node, code.as_deref(), outline.as_deref()),
-            self.format_trail(cg, node)?
-        ))
+            self.format_trail_refs(node, &callers, &callees)
+        );
+        let detail = NodeDetailOutput {
+            node: NodeSummary::from(node),
+            code,
+            outline,
+            callers: callers.iter().map(|r| NodeSummary::from(&r.node)).collect(),
+            callees: callees.iter().map(|r| NodeSummary::from(&r.node)).collect(),
+        };
+        Ok((text, detail))
     }
 
-    /// Build the "trail" for a symbol: direct callees and callers with
-    /// file:line.
-    fn format_trail(&self, cg: &CodeGraph, node: &Node) -> Result<String> {
-        const TRAIL_CAP: usize = 12;
-        let fmt = |e: &crate::types::NodeRef| -> String {
-            let base = format!(
-                "{} ({}:{})",
-                e.node.name, e.node.file_path, e.node.start_line
-            );
-            match self.synth_edge_note(Some(&e.edge)) {
-                Some(synth) => format!("{} [{}]", base, synth.compact),
-                None => base,
-            }
-        };
+    fn trail_refs(
+        &self,
+        cg: &CodeGraph,
+        node: &Node,
+    ) -> Result<(Vec<crate::types::NodeRef>, Vec<crate::types::NodeRef>)> {
         let collect = |edges: Vec<crate::types::NodeRef>| -> Vec<crate::types::NodeRef> {
             let mut seen: HashSet<String> = HashSet::new();
             seen.insert(node.id.clone());
@@ -226,18 +265,35 @@ impl ToolHandler {
             }
             out
         };
-        let callees = collect(cg.get_callees(&node.id, None)?);
         let callers = collect(cg.get_callers(&node.id, None)?);
+        let callees = collect(cg.get_callees(&node.id, None)?);
+        Ok((callers, callees))
+    }
+
+    fn format_trail_refs(
+        &self,
+        node: &Node,
+        callers: &[crate::types::NodeRef],
+        callees: &[crate::types::NodeRef],
+    ) -> String {
+        const TRAIL_CAP: usize = 12;
         if callees.is_empty() && callers.is_empty() {
-            return Ok(String::new());
+            return String::new();
         }
-        let mut lines: Vec<String> = vec![
-            String::new(),
-            "### Trail — codegraph_node any of these to follow it (no Read needed)".to_string(),
-        ];
+        let fmt = |e: &crate::types::NodeRef| -> String {
+            let base = format!(
+                "{} ({}:{})",
+                e.node.name, e.node.file_path, e.node.start_line
+            );
+            match self.synth_edge_note(Some(&e.edge)) {
+                Some(synth) => format!("{} [{}]", base, synth.compact),
+                None => base,
+            }
+        };
+        let mut lines: Vec<String> = vec![String::new(), format!("Trail for `{}`", node.name)];
         if !callees.is_empty() {
             lines.push(format!(
-                "**Calls →** {}{}",
+                "Calls: {}{}",
                 callees
                     .iter()
                     .take(TRAIL_CAP)
@@ -253,7 +309,7 @@ impl ToolHandler {
         }
         if !callers.is_empty() {
             lines.push(format!(
-                "**Called by ←** {}{}",
+                "Called by: {}{}",
                 callers
                     .iter()
                     .take(TRAIL_CAP)
@@ -267,9 +323,19 @@ impl ToolHandler {
                 }
             ));
         }
-        Ok(lines.join("\n"))
+        lines.join("\n")
     }
 
     // =========================================================================
     // codegraph_status
+}
+
+fn empty_node_detail(node: &Node) -> NodeDetailOutput {
+    NodeDetailOutput {
+        node: NodeSummary::from(node),
+        code: None,
+        outline: None,
+        callers: Vec::new(),
+        callees: Vec::new(),
+    }
 }

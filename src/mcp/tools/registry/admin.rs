@@ -2,6 +2,7 @@
 
 use serde_json::{Map, Value};
 
+use super::super::output::{files_output_schema, status_output_schema};
 use super::super::schema::{InputSchema, ToolDefinition};
 use super::schema_builder::{
     project_path_property,
@@ -25,6 +26,7 @@ pub(in crate::mcp::tools::registry) fn push_status_tool(out: &mut Vec<ToolDefini
                 properties: props,
                 required: None,
             },
+            output_schema: Some(status_output_schema()),
             annotations: read_only_annotations(),
         });
     }
@@ -81,6 +83,7 @@ pub(in crate::mcp::tools::registry) fn push_files_tool(out: &mut Vec<ToolDefinit
                 properties: props,
                 required: None,
             },
+            output_schema: Some(files_output_schema()),
             annotations: read_only_annotations(),
         });
     }

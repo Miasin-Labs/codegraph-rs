@@ -59,6 +59,7 @@ fn low_value_js_ts_resolution_sources_are_skipped() {
         file_path: file_path.to_string(),
         language,
         candidates: None,
+        metadata: None,
     };
 
     assert!(is_low_value_js_ts_resolution_source(&reference(

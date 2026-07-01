@@ -671,6 +671,8 @@ pub struct UnresolvedReference {
     /// Possible qualified names it might resolve to
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidates: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Metadata>,
 }
 
 // =============================================================================

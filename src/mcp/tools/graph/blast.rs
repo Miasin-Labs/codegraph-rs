@@ -107,7 +107,7 @@ impl ToolHandler {
                     }
                 )
             } else {
-                "; ⚠️ no covering tests found".to_string()
+                "; no covering tests found".to_string()
             };
 
             entries.push(format!(

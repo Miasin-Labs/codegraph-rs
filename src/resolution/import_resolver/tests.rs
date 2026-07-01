@@ -100,6 +100,21 @@ public class App {}
 }
 
 #[test]
+fn kotlin_import_mappings_accept_missing_semicolons_and_aliases() {
+    let content = "package com.example.app\nimport com.example.foo.util\nimport com.example.foo.aliased as doUtil\n";
+
+    let mappings = extract_import_mappings("Use.kt", content, Language::Kotlin);
+
+    assert_eq!(mappings.len(), 2);
+    assert_eq!(mappings[0].local_name, "util");
+    assert_eq!(mappings[0].exported_name, "util");
+    assert_eq!(mappings[0].source, "com.example.foo.util");
+    assert_eq!(mappings[1].local_name, "doUtil");
+    assert_eq!(mappings[1].exported_name, "aliased");
+    assert_eq!(mappings[1].source, "com.example.foo.aliased");
+}
+
+#[test]
 fn go_import_mappings_single_and_block() {
     let content = r#"
 package main

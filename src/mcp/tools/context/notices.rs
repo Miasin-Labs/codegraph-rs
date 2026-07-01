@@ -2,8 +2,8 @@
 
 use std::rc::Rc;
 
-use super::super::format::{format_stale_banner, format_stale_footer, resolve_path};
-use super::super::schema::{ToolContent, ToolResult};
+use super::super::format::resolve_path;
+use super::super::schema::{ToolNotice, ToolNoticeFile, ToolResult};
 use super::ToolHandler;
 use crate::sync::PendingFile;
 use crate::sync::worktree::worktree_mismatch_notice;
@@ -21,17 +21,14 @@ impl ToolHandler {
             return result;
         };
 
-        let notice = worktree_mismatch_notice(&mismatch);
-        let mut content = result.content;
-        if let Some(first) = content.first_mut() {
-            if first.content_type == "text" {
-                first.text = format!("{}\n\n{}", notice, first.text);
-            }
-        }
-        ToolResult {
-            content,
-            is_error: result.is_error,
-        }
+        let notice_text = worktree_mismatch_notice(&mismatch);
+        result.with_notice(ToolNotice {
+            kind: "worktree_mismatch".into(),
+            severity: "warning".into(),
+            message: notice_text,
+            files: Vec::new(),
+            data: Some(serde_json::to_value(mismatch).unwrap_or_default()),
+        })
     }
 
     /// Annotate a successful read-tool result with per-file staleness (#403).
@@ -65,16 +62,9 @@ impl ToolHandler {
             return result;
         }
 
-        let Some(first) = result.content.first() else {
-            return result;
-        };
-        if first.content_type != "text" {
-            return result;
-        }
-
-        let text = first.text.clone();
         let mut in_response: Vec<PendingFile> = Vec::new();
         let mut elsewhere: Vec<PendingFile> = Vec::new();
+        let text = result.text();
         for p in pending {
             if text.contains(&p.path) {
                 in_response.push(p);
@@ -83,33 +73,33 @@ impl ToolHandler {
             }
         }
 
-        let banner = if in_response.is_empty() {
-            String::new()
-        } else {
-            format_stale_banner(&in_response)
-        };
-        let footer = if elsewhere.is_empty() {
-            String::new()
-        } else {
-            format_stale_footer(&elsewhere)
-        };
-        if banner.is_empty() && footer.is_empty() {
+        let notice_files = in_response
+            .iter()
+            .chain(elsewhere.iter())
+            .map(stale_notice_file)
+            .collect::<Vec<_>>();
+        if notice_files.is_empty() {
             return result;
         }
+        result.with_notice(ToolNotice {
+            kind: "stale_index".into(),
+            severity: "warning".into(),
+            message: "Some indexed files are pending sync".into(),
+            files: notice_files,
+            data: None,
+        })
+    }
+}
 
-        let composed = [banner, text, footer]
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let mut content = result.content;
-        content[0] = ToolContent {
-            content_type: "text".into(),
-            text: composed,
-        };
-        ToolResult {
-            content,
-            is_error: result.is_error,
-        }
+fn stale_notice_file(pending: &PendingFile) -> ToolNoticeFile {
+    let age_ms = (super::super::format::now_ms() - pending.last_seen_ms).max(0);
+    ToolNoticeFile {
+        path: pending.path.clone(),
+        age_ms,
+        status: if pending.indexing {
+            "indexing in progress".into()
+        } else {
+            "pending sync".into()
+        },
     }
 }

@@ -20,6 +20,12 @@ use serde::{Deserialize, Serialize};
 
 use super::InferenceOrigin;
 
+const CONFIDENCE_DECIMAL_PLACES: f64 = 1_000_000_000.0;
+
+fn round_confidence(confidence: f64) -> f64 {
+    (confidence * CONFIDENCE_DECIMAL_PLACES).round() / CONFIDENCE_DECIMAL_PLACES
+}
+
 /// One learned role for one symbol, with fused confidence and provenance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LearnedRole {
@@ -80,7 +86,7 @@ impl LearnedStore {
                 last_seen_rev: 0,
             });
         // noisy-OR: 1 - (1-old)*(1-new)
-        entry.confidence = 1.0 - (1.0 - entry.confidence) * (1.0 - confidence);
+        entry.confidence = round_confidence(1.0 - (1.0 - entry.confidence) * (1.0 - confidence));
         entry.support += 1;
         entry.last_seen_rev = entry.last_seen_rev.max(rev);
         let origin_id = origin.id().to_owned();

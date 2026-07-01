@@ -29,6 +29,16 @@ pub(in crate::mcp::tools::explore) fn render_whole_file(
     };
     if req.file_lines.len() > whole_file_max_lines || req.file_content.len() > whole_file_max_chars
     {
+        linkscope::event_fields(
+            "codegraph.explore.whole_file_skipped",
+            [
+                linkscope::TraceField::text("file", req.file_path),
+                linkscope::TraceField::count("lines", req.file_lines.len() as u64),
+                linkscope::TraceField::count("max_lines", whole_file_max_lines as u64),
+                linkscope::TraceField::bytes("chars", req.file_content.len() as u64),
+                linkscope::TraceField::bytes("max_chars", whole_file_max_chars as u64),
+            ],
+        );
         return None;
     }
 

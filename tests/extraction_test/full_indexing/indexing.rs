@@ -60,6 +60,14 @@ fn full_indexing_indexes_multiple_files() {
 
     let files = queries.get_all_files().unwrap();
     assert_eq!(files.len(), 2);
+    let mut paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+    paths.sort_unstable();
+    assert_eq!(paths, vec!["src/math.ts", "src/string.ts"]);
+    assert!(
+        files
+            .iter()
+            .all(|file| file.language == Language::Typescript)
+    );
 }
 
 #[test]
