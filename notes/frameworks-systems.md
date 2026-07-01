@@ -103,6 +103,19 @@ Route node shapes/metadata are byte-identical to TS:
    window is only regex-probed for `@objc`/`@nonobjc`.
 7. TS `Set` insertion order in `swiftBaseNamesForObjcSelector` reproduced
    with an order-preserving Vec + contains-check.
+8. **Bug fix, not parity**: `RustResolver::resolve_module` (rust.rs) now
+   returns `None` immediately for `name` in `{"super", "self", "crate"}`
+   before generating `src/{name}.rs` / `src/{name}/mod.rs` candidates. TS
+   `resolveModule` (rust.ts:311) has no such guard — every `use super::x;`
+   / `self::x` / `crate::x` reference (extracted as an `UnresolvedRef` named
+   `super`/`self`/`crate` by `getRootModule`/`get_root_module`) matches the
+   `^[a-z_]+$` module pattern and probes the filesystem for literal
+   `src/super.rs` etc. on every resolution pass. In the daemon's live
+   file-watcher loop this repeated `file_exists()` churn was observed
+   consuming a sustained ~65-70% of a CPU core on real crates (nested
+   `super::` usage is extremely common in Rust). Confirmed via strace: this
+   is a live, observable bug in the TS original too, not just the port —
+   deliberately not reproduced here.
 
 ## Deferred tests (for the wiring/e2e task)
 

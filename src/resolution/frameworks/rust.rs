@@ -156,6 +156,17 @@ impl RustResolver {
         name: &str,
         context: &dyn ResolutionContext,
     ) -> Option<ModuleResolution> {
+        // `super`/`self`/`crate` are Rust path keywords, not module names —
+        // never probe the filesystem for a literal `src/super.rs`. Left
+        // unguarded, every `use super::x;` reference sent through here fires
+        // repeated `file_exists()` (statx) calls per resolution pass, which
+        // the file watcher's debounce loop reads as filesystem churn and
+        // reschedules on, producing a sustained near-100%-CPU busy loop with
+        // no forward progress (see notes/frameworks-systems.md).
+        if matches!(name, "super" | "self" | "crate") {
+            return None;
+        }
+
         // Rust modules can be either mod.rs in a directory or name.rs
         let local_paths = [format!("src/{name}.rs"), format!("src/{name}/mod.rs")];
 
@@ -170,9 +181,17 @@ impl RustResolver {
             .map(|p| (p.clone(), false))
             .chain(workspace_paths.iter().map(|p| (p.clone(), true)))
             .collect();
+        let _span = linkscope::phase("resolver.rust.resolve_module");
 
         for (mod_path, from_workspace) in candidates {
             if !context.file_exists(&mod_path) {
+                linkscope::event_fields(
+                    "resolver.rust.resolve_module.candidate_miss",
+                    [
+                        linkscope::TraceField::text("name", name),
+                        linkscope::TraceField::text("candidate", &mod_path),
+                    ],
+                );
                 continue;
             }
             let nodes = context.get_nodes_in_file(&mod_path);

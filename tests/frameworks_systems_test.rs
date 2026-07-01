@@ -360,6 +360,37 @@ fn resolves_crate_name_from_workspace_member_lib_rs() {
     assert!(result.confidence >= 0.9);
 }
 
+/// `super`/`self`/`crate` are Rust path keywords, not module names. A `use
+/// super::helper;` reference extracts `super` as the root-module name
+/// (`get_root_module` in extraction/languages/rust.rs), which the Pattern-4
+/// module-reference branch below used to hand straight to `resolve_module`
+/// — generating literal candidate paths like `src/super.rs`. Regression
+/// test for the file-watcher CPU busy-loop this caused: even with a
+/// deliberately-planted `src/super.rs`/`src/self.rs`/`src/crate.rs` module
+/// node that would otherwise match, resolution must return `None` for all
+/// three keywords.
+#[test]
+fn does_not_resolve_rust_path_keywords_as_literal_modules() {
+    let mut ctx = TestContext::new();
+    for keyword in ["super", "self", "crate"] {
+        let node = make_module_node(
+            &format!("module:src/{keyword}.rs:{keyword}:1"),
+            keyword,
+            &format!("src/{keyword}.rs"),
+        );
+        ctx.existing.insert(node.file_path.clone());
+        ctx.nodes.push(node);
+    }
+
+    for keyword in ["super", "self", "crate"] {
+        let reference = make_ref(keyword, Language::Rust, "src/lib.rs");
+        assert!(
+            RustResolver::new().resolve(&reference, &ctx).is_none(),
+            "resolve_module must not treat Rust keyword `{keyword}` as a literal module name"
+        );
+    }
+}
+
 #[test]
 fn resolves_crate_name_from_workspace_member_main_rs_when_lib_rs_is_absent() {
     let workspace_cargo = "\n[workspace]\nmembers = [\n  \"crates/mytool-runner\",\n]\n";

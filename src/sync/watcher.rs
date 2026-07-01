@@ -631,6 +631,16 @@ impl Worker {
             st.syncing = true;
         }
 
+        let pending_before = self.shared.state.lock().unwrap().pending_files.len();
+        let _span = linkscope::phase("watcher.flush");
+        linkscope::event_fields(
+            "watcher.flush.started",
+            [linkscope::TraceField::count(
+                "pending_files",
+                pending_before as u64,
+            )],
+        );
+
         let result = (self.shared.sync_fn)();
 
         match &result {
@@ -683,9 +693,18 @@ impl Worker {
         st.syncing = false;
         // If pending files remain (mid-sync events, or this sync failed),
         // schedule another pass.
-        if !st.pending_files.is_empty() && !st.stopped {
+        let rescheduled = !st.pending_files.is_empty() && !st.stopped;
+        if rescheduled {
             st.deadline = Some(Instant::now() + Duration::from_millis(self.shared.debounce_ms));
         }
+        linkscope::event_fields(
+            "watcher.flush.finished",
+            [
+                linkscope::TraceField::count("pending_files", st.pending_files.len() as u64),
+                linkscope::TraceField::text("rescheduled", rescheduled.to_string()),
+                linkscope::TraceField::text("ok", result.is_ok().to_string()),
+            ],
+        );
     }
 
     /// The worker's event loop: receive watch events / seam kicks, and fire

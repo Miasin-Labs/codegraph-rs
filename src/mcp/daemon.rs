@@ -578,11 +578,19 @@ mod unix_daemon {
                     break;
                 }
                 match listener.accept() {
-                    Ok((stream, _addr)) => self.handle_connection(stream),
+                    Ok((stream, _addr)) => {
+                        linkscope::count("daemon.accept_loop.connections", 1);
+                        let _span = linkscope::phase("daemon.handle_connection");
+                        self.handle_connection(stream);
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(25));
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        linkscope::event_fields(
+                            "daemon.accept_loop.error",
+                            [linkscope::TraceField::text("error", e.to_string())],
+                        );
                         if self.state.lock().unwrap().stopping {
                             break;
                         }
@@ -628,9 +636,14 @@ mod unix_daemon {
                 st.idle_deadline = None;
                 self.cv.notify_all();
             }
+            linkscope::event_fields(
+                "daemon.client.connected",
+                [linkscope::TraceField::count("client_id", id)],
+            );
 
             let inner = Arc::clone(self);
             std::thread::spawn(move || {
+                let _span = linkscope::phase("daemon.serve_connection");
                 inner.factory.serve_connection(stream, &inner.project_root);
                 inner.drop_client(id);
             });
