@@ -146,6 +146,7 @@ fn make_ref(name: &str, file_path: &str, language: Language) -> UnresolvedRef {
         file_path: file_path.to_string(),
         language,
         candidates: None,
+        metadata: None,
     }
 }
 

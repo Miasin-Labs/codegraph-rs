@@ -106,6 +106,7 @@ impl<'a> TreeSitterExtractor<'a> {
                 file_path: None,
                 language: None,
                 candidates: None,
+                metadata: None,
             });
         }
 

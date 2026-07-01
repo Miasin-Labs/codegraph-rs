@@ -42,7 +42,7 @@ ignore = "0.4"
 thiserror = "2.0.18"
 tracing = "0.1.44"
 # Phase 1 — parallelism + dense bitsets for direction-optimised BFS.
-ws-deque = { path = "../../../ws-deque" }
+ws-deque = { git = "https://github.com/Miasin-Labs/ws-deque", rev = "4a277b7221ff962d2e467d0fe251ebbd5b4c6986" }
 roaring = "0.10"
 dashmap = "6"
 # Recursion guard: grows the stack on demand so recursive AST/IR/graph walkers

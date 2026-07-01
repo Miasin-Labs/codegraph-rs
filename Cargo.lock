@@ -308,6 +308,7 @@ dependencies = [
  "jsonc-parser",
  "libc",
  "libloading",
+ "linkscope",
  "notify",
  "regex",
  "rusqlite",
@@ -943,6 +944,11 @@ dependencies = [
  "pkg-config",
  "vcpkg",
 ]
+
+[[package]]
+name = "linkscope"
+version = "0.1.0"
+source = "git+https://github.com/Miasin-Labs/linkscope?rev=3c76713b531a5bf75d41e89ce132a33f42f31f5f#3c76713b531a5bf75d41e89ce132a33f42f31f5f"
 
 [[package]]
 name = "linux-raw-sys"
@@ -2113,6 +2119,7 @@ dependencies = [
 [[package]]
 name = "ws-deque"
 version = "0.1.0"
+source = "git+https://github.com/Miasin-Labs/ws-deque?rev=4a277b7221ff962d2e467d0fe251ebbd5b4c6986#4a277b7221ff962d2e467d0fe251ebbd5b4c6986"
 dependencies = [
  "loom",
 ]

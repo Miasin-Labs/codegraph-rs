@@ -16,7 +16,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{InferenceOrigin, TemplateKind, VulnFinding};
+use super::{InferenceOrigin, TemplateKind, VulnFinding, cfg_dominance};
+use crate::cfg::FunctionCfg;
 use crate::edges::EdgeKind;
 use crate::graph::CodeGraph;
 use crate::nodes::{NodeId, NodeKind};
@@ -51,6 +52,10 @@ impl Default for MineConfig {
 /// One [`VulnFinding`] per `(site, sink)` deviation, merging all guards the
 /// site is missing. Sorted by confidence descending (strongest norm first).
 pub fn mine_missing_guards(graph: &CodeGraph, config: &MineConfig) -> Vec<VulnFinding> {
+    let min_callers = config.min_callers.max(4);
+    let min_support = config.min_support.max(3);
+    let threshold = config.threshold.clamp(0.0, 1.0);
+
     // Merge key: a single caller→sink site may be missing several guards; we
     // emit one finding listing them all.
     let mut merged: HashMap<(NodeId, NodeId), Deviation> = HashMap::new();
@@ -72,18 +77,22 @@ pub fn mine_missing_guards(graph: &CodeGraph, config: &MineConfig) -> Vec<VulnFi
                 .or_insert(line);
         }
         let total = caller_sink_line.len();
-        if total < config.min_callers {
+        if total < min_callers {
             continue;
         }
 
         // guard candidate -> set of callers that invoke it before the sink.
         let mut guard_callers: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
         for (caller, &sink_line) in &caller_sink_line {
+            // Prefer real control-flow dominance over textual ordering when the
+            // caller carries a CFG — a guard inside a conditional branch must
+            // not count as protecting a sink that follows the branch.
+            let caller_cfg = graph.get_node(caller).and_then(|n| n.cfg.as_ref());
             for (callee, edge) in graph.get_edges_from(caller) {
                 if !is_call(&edge.kind) || callee == sink_id || callee == caller {
                     continue;
                 }
-                if edge.source_span.start_line < sink_line {
+                if guard_precedes_sink(caller_cfg, edge.source_span.start_line, sink_line) {
                     guard_callers
                         .entry(callee.clone())
                         .or_default()
@@ -96,8 +105,7 @@ pub fn mine_missing_guards(graph: &CodeGraph, config: &MineConfig) -> Vec<VulnFi
             let support = callers_with.len();
             let freq = support as f64 / total as f64;
             // A norm: shared by most callers, but not all (else no deviant).
-            if support < config.min_support as usize || freq < config.threshold || support >= total
-            {
+            if support < min_support as usize || freq < threshold || support >= total {
                 continue;
             }
             // Every caller missing this guard is a deviation.
@@ -141,7 +149,8 @@ struct Deviation {
     confidence: f64,
 }
 
-fn build_finding(graph: &CodeGraph, site: NodeId, sink: NodeId, dev: Deviation) -> VulnFinding {
+fn build_finding(graph: &CodeGraph, site: NodeId, sink: NodeId, mut dev: Deviation) -> VulnFinding {
+    dev.expected.sort_by_key(|id| (node_name(graph, id), id.0));
     let site_name = node_name(graph, &site);
     let sink_name = node_name(graph, &sink);
     let guard_names: Vec<String> = dev.expected.iter().map(|g| node_name(graph, g)).collect();
@@ -177,6 +186,20 @@ fn build_finding(graph: &CodeGraph, site: NodeId, sink: NodeId, dev: Deviation) 
 
 fn is_call(kind: &EdgeKind) -> bool {
     matches!(kind, EdgeKind::Calls)
+}
+
+/// Whether the call at `guard_line` is guaranteed to run before the call at
+/// `sink_line` within the caller. With a CFG, "before" means **control-flow
+/// dominance** — the guard lies on every path from entry to the sink; a guard
+/// buried in a conditional branch therefore does not count. Without a CFG (or
+/// when a line can't be mapped to a block) it falls back to textual ordering,
+/// so the check only ever sharpens the corpus norm.
+fn guard_precedes_sink(caller_cfg: Option<&FunctionCfg>, guard_line: u32, sink_line: u32) -> bool {
+    match caller_cfg {
+        Some(cfg) => cfg_dominance::dominates_by_line(cfg, guard_line, sink_line)
+            .unwrap_or(guard_line < sink_line),
+        None => guard_line < sink_line,
+    }
 }
 
 fn node_name(graph: &CodeGraph, id: &NodeId) -> String {
@@ -366,6 +389,80 @@ mod tests {
             &["h1", "h2"],
         );
         assert!(mine_missing_guards(&g, &MineConfig::default()).is_empty());
+    }
+
+    /// End-to-end control-flow awareness: 4 of 5 callers guard `delete_user`
+    /// with `require_admin` on a dominating path; the 5th calls `require_admin`
+    /// only *inside an `if`* — textually before the sink but not on every path.
+    /// Line ordering would wrongly call h5 "guarded" (no finding); real CFG
+    /// dominance exposes it as the deviant.
+    #[test]
+    fn cfg_dominance_flags_guard_buried_in_branch() {
+        use tree_sitter::Parser;
+
+        use crate::cfg::build_cfg;
+
+        let src = "fn h5(cond: bool) {\n    if cond {\n        require_admin();\n    }\n    delete_user();\n}\n";
+        let guard_line = (src[..src.find("require_admin").unwrap()]
+            .matches('\n')
+            .count()
+            + 1) as u32;
+        let sink_line = (src[..src.find("delete_user").unwrap()]
+            .matches('\n')
+            .count()
+            + 1) as u32;
+        assert!(guard_line < sink_line, "guard is textually before the sink");
+
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let root = tree.root_node();
+        let mut cur = root.walk();
+        let func_node = root
+            .named_children(&mut cur)
+            .find(|c| c.kind() == "function_item")
+            .unwrap();
+        let h5_cfg = build_cfg(func_node, src.as_bytes(), "rust").unwrap();
+
+        // Build the corpus: h1..h4 guard then sink (textual, no CFG); h5 guards
+        // inside the branch. `attach_cfg` toggles the control-flow view on h5.
+        let build = |attach_cfg: bool| -> CodeGraph {
+            let mut g = CodeGraph::new();
+            let guard_id = g.add_node(func("require_admin"));
+            let sink_id = g.add_node(func("delete_user"));
+            for h in ["h1", "h2", "h3", "h4"] {
+                let cid = g.add_node(func(h));
+                g.add_edge(&cid, &guard_id, call_at(2)).unwrap();
+                g.add_edge(&cid, &sink_id, call_at(5)).unwrap();
+            }
+            let mut h5 = func("h5");
+            if attach_cfg {
+                h5.cfg = Some(h5_cfg.clone());
+            }
+            let h5_id = g.add_node(h5);
+            g.add_edge(&h5_id, &guard_id, call_at(guard_line)).unwrap();
+            g.add_edge(&h5_id, &sink_id, call_at(sink_line)).unwrap();
+            g
+        };
+
+        // Without the CFG, line ordering treats h5 as guarded → no deviation.
+        let line_only = mine_missing_guards(&build(false), &MineConfig::default());
+        assert!(
+            !line_only
+                .iter()
+                .any(|f| f.site == id_of("h5") && f.sink == id_of("delete_user")),
+            "line ordering should not flag h5: {line_only:#?}"
+        );
+
+        // With the CFG, the in-branch guard does not dominate → h5 is flagged.
+        let cfg_aware = mine_missing_guards(&build(true), &MineConfig::default());
+        let flagged = cfg_aware
+            .iter()
+            .find(|f| f.site == id_of("h5") && f.sink == id_of("delete_user"))
+            .expect("CFG dominance should flag h5 as missing require_admin");
+        assert!(flagged.expected.contains(&id_of("require_admin")));
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 use serde_json::{Map, Value};
 
+use super::super::output::explore_output_schema;
 use super::super::schema::{InputSchema, ToolDefinition};
 use super::schema_builder::{project_path_property, prop, prop_default, read_only_annotations};
 
@@ -27,12 +28,13 @@ pub(in crate::mcp::tools::registry) fn push_explore_tool(out: &mut Vec<ToolDefin
         props.insert("projectPath".into(), project_path_property());
         out.push(ToolDefinition {
             name: "codegraph_explore".into(),
-            description: "PRIMARY TOOL — call FIRST for almost any question: how does X work, architecture, a bug, where/what is X, or surveying an area. Returns the verbatim source of the relevant symbols grouped by file in ONE capped call (Read-equivalent — do NOT re-open shown files). Query can be a natural-language question OR a bag of symbol/file names. Usually the ONLY call you need — answers without further search/node/Read/Grep.".into(),
+            description: "Primary context tool for codebase questions. Returns structured file/symbol context plus a compact text projection with source snippets and literal line matches from indexed files.".into(),
             input_schema: InputSchema {
                 schema_type: "object".into(),
                 properties: props,
                 required: Some(vec!["query".into()]),
             },
+            output_schema: Some(explore_output_schema()),
             annotations: read_only_annotations(),
         });
     }

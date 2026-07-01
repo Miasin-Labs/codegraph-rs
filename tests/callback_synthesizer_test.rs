@@ -445,6 +445,85 @@ fn event_emitter_links_emit_site_to_named_handler() {
     assert_eq!(registered_at, "listener.js:2");
 }
 
+#[test]
+fn gin_registration_prefilter_accepts_whitespace_before_paren() {
+    let server_go = "package main\nfunc Next(c *Context) { c.handlers[c.index](c) }\nfunc setup(router *Engine) { router.GET (\"/x\", authMiddleware, handleX) }\nfunc authMiddleware(c *Context) {}\nfunc handleX(c *Context) {}\n";
+    let fx = setup(&[("server.go", server_go)]);
+    fx.ctx
+        .q
+        .insert_nodes(&[
+            node(
+                "m-next",
+                NodeKind::Method,
+                "Next",
+                "server.go",
+                Language::Go,
+                2,
+                2,
+            ),
+            node(
+                "f-auth",
+                NodeKind::Function,
+                "authMiddleware",
+                "server.go",
+                Language::Go,
+                4,
+                4,
+            ),
+            node(
+                "f-handle",
+                NodeKind::Function,
+                "handleX",
+                "server.go",
+                Language::Go,
+                5,
+                5,
+            ),
+        ])
+        .expect("insert nodes");
+
+    synthesize_callback_edges(&fx.ctx.q, &fx.ctx).expect("synthesize");
+
+    let rows = synth_rows(&fx, "gin-middleware-chain");
+    let targets: HashSet<&str> = rows.iter().map(|row| row.target_name.as_str()).collect();
+    assert!(targets.contains("authMiddleware"), "got {targets:?}");
+    assert!(targets.contains("handleX"), "got {targets:?}");
+}
+
+#[test]
+fn rn_event_channel_ignores_unrelated_jvm_emitters() {
+    let native_java = "class Bus { void send() { eventBus.emit(\"shared\", body); } }\n";
+    let listener_js = "function setup(bus) { bus.addListener(\"shared\", handleShared); }\nfunction handleShared() { return 1; }\n";
+    let fx = setup(&[("Bus.java", native_java), ("listener.js", listener_js)]);
+    fx.ctx
+        .q
+        .insert_nodes(&[
+            node(
+                "m-send",
+                NodeKind::Method,
+                "send",
+                "Bus.java",
+                Language::Java,
+                1,
+                1,
+            ),
+            node(
+                "f-handle",
+                NodeKind::Function,
+                "handleShared",
+                "listener.js",
+                Language::Javascript,
+                2,
+                2,
+            ),
+        ])
+        .expect("insert nodes");
+
+    synthesize_callback_edges(&fx.ctx.q, &fx.ctx).expect("synthesize");
+
+    assert!(synth_rows(&fx, "rn-event-channel").is_empty());
+}
+
 /// Phase 4 React re-render: a sibling method calling `this.setState(` is
 /// bridged to the class's `render` method.
 #[test]

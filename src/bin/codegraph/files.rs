@@ -19,18 +19,64 @@ mod tree;
 use tree::print_file_tree;
 
 fn glob_to_regex_str(pattern: &str) -> String {
-    // .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    let mut escaped = String::new();
-    for c in pattern.chars() {
-        if ".+^${}()|[]\\".contains(c) {
-            escaped.push('\\');
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' if chars.get(i + 1) == Some(&'*') => {
+                i += 2;
+                if chars.get(i) == Some(&'/') {
+                    out.push_str("(?:.*/)?");
+                    i += 1;
+                } else {
+                    out.push_str(".*");
+                }
+            }
+            '*' => {
+                out.push_str("[^/]*");
+                i += 1;
+            }
+            '?' => {
+                out.push_str("[^/]");
+                i += 1;
+            }
+            '{' => {
+                if let Some(close) = chars[i + 1..].iter().position(|c| *c == '}') {
+                    let end = i + 1 + close;
+                    let body: String = chars[i + 1..end].iter().collect();
+                    let alts: Vec<String> = body
+                        .split(',')
+                        .filter(|alt| !alt.is_empty())
+                        .map(regex::escape)
+                        .collect();
+                    if alts.is_empty() {
+                        out.push_str("\\{");
+                    } else {
+                        out.push_str("(?:");
+                        out.push_str(&alts.join("|"));
+                        out.push(')');
+                        i = end + 1;
+                        continue;
+                    }
+                } else {
+                    out.push_str("\\{");
+                }
+                i += 1;
+            }
+            c => {
+                if matches!(
+                    c,
+                    '.' | '+' | '^' | '$' | '(' | ')' | '|' | '[' | ']' | '\\' | '}'
+                ) {
+                    out.push('\\');
+                }
+                out.push(c);
+                i += 1;
+            }
         }
-        escaped.push(c);
     }
-    let escaped = escaped.replace("**", "{{GLOBSTAR}}");
-    let escaped = escaped.replace('*', "[^/]*");
-    let escaped = escaped.replace('?', "[^/]");
-    escaped.replace("{{GLOBSTAR}}", ".*")
+    out
 }
 
 /// codegraph files

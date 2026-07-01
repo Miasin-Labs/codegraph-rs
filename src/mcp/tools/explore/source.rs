@@ -26,6 +26,14 @@ pub(in crate::mcp::tools::explore) struct SourceFilesRequest<'a> {
 pub(in crate::mcp::tools::explore) struct SourceFilesResult {
     pub files_included: usize,
     pub any_file_trimmed: bool,
+    pub rendered_files: Vec<StructuredSourceFile>,
+}
+
+pub(in crate::mcp::tools::explore) struct StructuredSourceFile {
+    pub path: String,
+    pub language: String,
+    pub header: String,
+    pub body: String,
 }
 
 pub(in crate::mcp::tools::explore) fn render_source_files(
@@ -37,6 +45,7 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
     let mut total_chars = req.initial_chars;
     let mut files_included = 0usize;
     let mut any_file_trimmed = false;
+    let mut rendered_files = Vec::new();
 
     for file_path in &req.ranked.sorted_files {
         if files_included >= req.max_files {
@@ -81,6 +90,7 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
             super_many: &mut super_many,
         })? {
             append_rendered(lines, &rendered);
+            rendered_files.push(structured_source_file(file_path, &rendered));
             total_chars += rendered.cost;
             files_included += 1;
             continue;
@@ -102,6 +112,7 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
                 continue;
             }
             append_rendered(lines, &rendered);
+            rendered_files.push(structured_source_file(file_path, &rendered));
             total_chars += rendered.cost;
             files_included += 1;
             continue;
@@ -127,6 +138,7 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
                 continue;
             }
             append_rendered(lines, &rendered);
+            rendered_files.push(structured_source_file(file_path, &rendered));
             total_chars += rendered.cost;
             files_included += 1;
         }
@@ -135,7 +147,17 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
     Ok(SourceFilesResult {
         files_included,
         any_file_trimmed,
+        rendered_files,
     })
+}
+
+fn structured_source_file(file_path: &str, rendered: &RenderedFile) -> StructuredSourceFile {
+    StructuredSourceFile {
+        path: file_path.to_string(),
+        language: rendered.language.clone(),
+        header: rendered.header.clone(),
+        body: rendered.body.clone(),
+    }
 }
 
 fn append_rendered(lines: &mut Vec<String>, rendered: &RenderedFile) {

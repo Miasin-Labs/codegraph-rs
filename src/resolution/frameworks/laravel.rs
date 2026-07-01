@@ -204,6 +204,7 @@ impl FrameworkResolver for LaravelResolver {
                     file_path: file_path.to_string(),
                     language: Language::Php,
                     candidates: None,
+                    metadata: None,
                 });
             }
         }
@@ -239,6 +240,7 @@ impl FrameworkResolver for LaravelResolver {
                         file_path: file_path.to_string(),
                         language: Language::Php,
                         candidates: None,
+                        metadata: None,
                     });
                 }
             }

@@ -617,6 +617,7 @@ impl FrameworkResolver for VaporResolver {
                     file_path: file_path.to_string(),
                     language: Language::Swift,
                     candidates: None,
+                    metadata: None,
                 });
             }
         }

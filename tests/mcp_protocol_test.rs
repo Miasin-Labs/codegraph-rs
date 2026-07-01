@@ -287,6 +287,32 @@ fn every_tool_carries_read_only_annotations() {
 }
 
 #[test]
+fn primary_lookup_tools_advertise_output_schemas() {
+    let _guard = env_read();
+    let tmp = TempDir::new().unwrap();
+    let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
+    server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
+    wait_for_message(&server, Duration::from_secs(5), |m| m["id"] == 0);
+
+    server.send(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }));
+    let listed = wait_for_message(&server, Duration::from_secs(5), |m| m["id"] == 1);
+    let tools = listed["result"]["tools"].as_array().expect("tools array");
+    for name in [
+        "codegraph_search",
+        "codegraph_node",
+        "codegraph_explore",
+        "codegraph_status",
+        "codegraph_files",
+    ] {
+        let tool = tools.iter().find(|t| t["name"] == name).expect(name);
+        assert!(
+            tool.get("outputSchema").is_some(),
+            "{name} missing outputSchema"
+        );
+    }
+}
+
+#[test]
 fn static_tools_fn_carries_annotations_too() {
     // The proxy's static tools/list answer serializes get_static_tools() —
     // annotations must ride along for free.
@@ -646,7 +672,8 @@ fn roots_list_changed_re_arms_the_one_shot_roots_query() {
     // …and the project resolves this time.
     let resp2 = wait_for_message(&server, Duration::from_secs(15), |m| m["id"] == 2);
     let text = resp2["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("CodeGraph Status"), "got: {text}");
+    assert!(text.contains("CodeGraph status"), "got: {text}");
+    assert_eq!(resp2["result"]["structuredContent"]["kind"], "status");
 }
 
 // =============================================================================
@@ -754,8 +781,9 @@ mod degraded_proxy {
             result["result"]["content"][0]["text"]
                 .as_str()
                 .unwrap()
-                .contains("CodeGraph Status")
+                .contains("CodeGraph status")
         );
+        assert_eq!(result["result"]["structuredContent"]["kind"], "status");
     }
 }
 

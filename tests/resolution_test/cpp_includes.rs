@@ -115,6 +115,7 @@ fn resolve_one_skips_c_stdlib_calls_unless_declared_locally() {
         file_path: "src/main.c".to_string(),
         language: Language::C,
         candidates: None,
+        metadata: None,
     };
     assert!(resolver.resolve_one(&stdlib_call).is_none());
 

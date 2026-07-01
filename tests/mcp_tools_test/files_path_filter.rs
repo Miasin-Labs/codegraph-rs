@@ -32,6 +32,24 @@ fn listed(handler: &ToolHandler, path_filter: Option<&str>) -> String {
     result.text().to_string()
 }
 
+fn listed_with_pattern(handler: &ToolHandler, pattern: &str) -> String {
+    let result = handler.execute(
+        "codegraph_files",
+        &json!({
+            "format": "flat",
+            "includeMetadata": false,
+            "pattern": pattern,
+        }),
+    );
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "codegraph_files errored: {}",
+        result.text()
+    );
+    result.text().to_string()
+}
+
 #[test]
 fn treats_rootish_path_filters_as_project_root() {
     let _env = env_read();
@@ -129,4 +147,40 @@ fn does_not_match_sibling_directories_that_share_a_prefix() {
     let output = listed(&handler, Some("src"));
     assert!(output.contains("src/index.ts"));
     assert!(!output.contains("src-utils/helper.ts"));
+}
+
+#[test]
+fn supports_common_brace_extension_globs() {
+    let _env = env_read();
+    let dir = TempDir::new().unwrap();
+    write(&dir.path().join("src/index.ts"), "export const x = 1;\n");
+    write(&dir.path().join("src/view.tsx"), "export const View = () => 1;\n");
+    write(&dir.path().join("src/lib.rs"), "pub fn run() {}\n");
+    write(&dir.path().join("README.md"), "# docs\n");
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    let output = listed_with_pattern(&handler, "**/*.{ts,tsx,rs}");
+    assert!(output.contains("src/index.ts"), "{output}");
+    assert!(output.contains("src/view.tsx"), "{output}");
+    assert!(output.contains("src/lib.rs"), "{output}");
+    assert!(!output.contains("README.md"), "{output}");
+}
+
+#[test]
+fn files_returns_structured_payload() {
+    let _env = env_read();
+    let dir = TempDir::new().unwrap();
+    let cg = files_fixture(dir.path());
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    let result = handler.execute(
+        "codegraph_files",
+        &json!({ "format": "grouped", "includeMetadata": false }),
+    );
+    let structured = result.structured_content.as_ref().expect("structured files");
+    assert_eq!(structured["kind"], "files");
+    assert_eq!(structured["total"], 3);
+    assert!(structured["files"].as_array().unwrap().iter().any(|f| f["path"] == "src/index.ts"));
 }

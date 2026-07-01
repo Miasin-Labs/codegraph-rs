@@ -21,6 +21,7 @@ use crate::types::{
     ExtractionError,
     ExtractionResult,
     Language,
+    Metadata,
     Node,
     NodeKind,
     Severity,
@@ -168,12 +169,16 @@ static IDA_CALL_MACROS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 /// - `_mm*_…`           SSE/AVX vector intrinsics
 /// - `__{read,write}{f,g}s{byte,word,dword,qword}`  segment/canary access
 /// - `_Interlocked*`    MS interlocked atomics
-/// - `_byteswap_*`, `_BitScan*`, `_mul128`/`_umul128`
+/// - `_byteswap_*`, `_BitScan*`, `_bittest*`, `_mul128`/`_umul128`
+/// - `_ReadStatusReg`, `__break`/`__debugbreak`, ARM barrier/exclusive
+///   access intrinsics
+/// - `__attribute__` / `__declspec` syntax artifacts that can appear in
+///   decompiled signatures
 /// - `S?(BYTE|WORD|DWORD)<n>`   bit/byte slice macros (incl. signed/high idx)
 /// - `__S?PAIR<n>__`, `__RO[LR]<n>__`, `COERCE_*`   pair/rotate/type-pun macros
 static IDA_INTRINSIC_CALL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"^(?:_mm[0-9]*_[a-z]|__(?:read|write)[fg]s(?:byte|word|dword|qword)$|_Interlocked|_byteswap_|_BitScan|_u?mul128$|S?(?:BYTE|WORD|DWORD)[0-9]+$|__S?PAIR(?:8|16|32|64|128)__$|__RO[LR][0-9]+__$|COERCE_)",
+        r"^(?:_mm[0-9]*_[a-z]|__(?:read|write)[fg]s(?:byte|word|dword|qword)$|_Interlocked|_byteswap_|_BitScan|_bittest(?:64)?$|_u?mul128$|_ReadStatusReg$|__(?:break|debugbreak|und|dmb|ldrex|strex|ldaxr|stlxr|rev16|clz|lzcnt|attribute__|declspec)$|S?(?:BYTE|WORD|DWORD)[0-9]+$|__S?PAIR(?:8|16|32|64|128)__$|__RO[LR][0-9]+__$|COERCE_)",
     )
     .expect("valid regex")
 });
@@ -222,8 +227,10 @@ static RESOLVED_TARGET_COMMENT_RE: LazyLock<Regex> =
 static IDA_INT_KEYWORD_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b__(?:int(?:8|16|32|64|128)|fastcall|usercall|noreturn)\b").expect("valid regex")
 });
-static IDA_WORD_TYPE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b(?:_QWORD|_DWORD|_BYTE|_OWORD|BYREF)\b").expect("valid regex"));
+static IDA_WORD_TYPE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:_QWORD|_DWORD|_WORD|_BYTE|_OWORD|_BOOL[1248]?|_TBYTE|BYREF)\b")
+        .expect("valid regex")
+});
 static STACK_REF_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\[[re]?[sb]p[+-][0-9A-F]+h\]").expect("valid regex"));
 static LABEL_RE: LazyLock<Regex> =
@@ -260,7 +267,7 @@ static TARGET_TYPE_VALUE_RE: LazyLock<Regex> =
 /// named vtables (`<Class>_vtable`). Code labels (`loc_`/`sub_`) are excluded.
 static DATA_SYMBOL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"\b((?:off|dword|qword|byte|word|unk|stru|asc|xmmword|flt|dbl|jpt)_[0-9A-Fa-f]+|[A-Za-z_][A-Za-z0-9_]*_vtable)\b",
+        r"\b((?:off|dword|qword|byte|word|unk|stru|asc|xmmword|flt|dbl|jpt|algn|funcs|tbyte)_[0-9A-Fa-f]+|[A-Za-z_][A-Za-z0-9_]*_vtable)\b",
     )
     .expect("valid regex")
 });
@@ -349,6 +356,16 @@ static DISASM_LEA_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// qsort-comparator pattern — a real fn→fn edge the `name(` call scan drops.
 static FN_POINTER_ARG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(sub_[0-9A-Fa-f]+)\s*[,)]").expect("valid regex"));
+static IDA_MEMORY_DEREF_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\*\s*\(\s*([A-Za-z_][A-Za-z0-9_:]*(?:\s+[A-Za-z_][A-Za-z0-9_:]*)?)\s*\*\s*\)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*([+-])\s*(0x[0-9A-Fa-f]+|[0-9A-Fa-f]+h|[0-9]+)\s*\)")
+        .expect("valid regex")
+});
+static IDA_CFG_LABEL_DEF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^\s*(LABEL_[0-9]+)\s*:").expect("valid regex"));
+static IDA_CFG_GOTO_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bgoto\s+(LABEL_[0-9]+)\s*;").expect("valid regex"));
+static IDA_CFG_SWITCH_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bswitch\s*\(").expect("valid regex"));
 
 /// x86-64 register names — excluded as `call`/`lea` targets when mining raw
 /// disassembly (a register operand is an indirect call/load with no symbol).
@@ -652,6 +669,10 @@ pub fn is_ida_generated_c(file_path: &str, source: &str) -> bool {
         return true;
     }
 
+    if has_strong_ida_content_marker(sample) {
+        return true;
+    }
+
     let looks_like_dump_name = IDA_NAME_PATTERNS.iter().any(|p| p.is_match(base_name));
     if !looks_like_dump_name {
         return false;
@@ -662,6 +683,29 @@ pub fn is_ida_generated_c(file_path: &str, source: &str) -> bool {
         || STACK_REF_RE.is_match(sample)
         || LABEL_RE.is_match(sample)
         || SUB_CALL_RE.is_match(sample)
+}
+
+fn has_strong_ida_content_marker(sample: &str) -> bool {
+    let has_ida_type_surface =
+        IDA_INT_KEYWORD_RE.is_match(sample) || IDA_WORD_TYPE_RE.is_match(sample);
+    let has_decompiler_only_surface = STACK_REF_RE.is_match(sample)
+        || LABEL_RE.is_match(sample)
+        || SUB_CALL_RE.is_match(sample)
+        || contains_ida_intrinsic_like_call(sample);
+    has_ida_type_surface && has_decompiler_only_surface
+}
+
+fn contains_ida_intrinsic_like_call(sample: &str) -> bool {
+    for m in CALL_PATTERN_RE.find_iter(sample) {
+        let name = m.as_str();
+        if !(IDA_CALL_MACROS.contains(name) || IDA_INTRINSIC_CALL_RE.is_match(name)) {
+            continue;
+        }
+        if CALL_PAREN_RE.is_match(&sample[m.end()..]) {
+            return true;
+        }
+    }
+    false
 }
 
 #[derive(Debug, Clone)]
@@ -699,6 +743,28 @@ struct TypeRef {
     name: String,
     qualified_name: String,
     original: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryAccessMode {
+    Read,
+    Write,
+}
+
+impl MemoryAccessMode {
+    fn edge_kind(self) -> EdgeKind {
+        match self {
+            MemoryAccessMode::Read => EdgeKind::Reads,
+            MemoryAccessMode::Write => EdgeKind::Writes,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            MemoryAccessMode::Read => "read",
+            MemoryAccessMode::Write => "write",
+        }
+    }
 }
 
 pub struct IdaCExtractor<'a> {
@@ -792,6 +858,7 @@ impl<'a> IdaCExtractor<'a> {
                         file_path: None,
                         language: None,
                         candidates: None,
+                        metadata: None,
                     });
                     self_names.insert(target);
                 }
@@ -804,7 +871,10 @@ impl<'a> IdaCExtractor<'a> {
             // literals → DataSymbol / StringLiteral nodes with Reads/Writes/
             // References edges (the cross-function data-coupling surface).
             self.extract_data_symbols(&func_node_id, info.body_start_index);
+            self.extract_memory_accesses(&func_node_id, info.body_start_index);
             self.extract_string_literals(&func_node_id, info.body_start_index);
+            self.extract_call_argument_role_facts(&func_node_id);
+            self.extract_ida_cfg_facts(&func_node_id, info.body_start_index);
             // RAW DISASSEMBLY FALLBACK: the body is `//` comments, so the call
             // graph for these functions lives only in the disassembly text.
             if self.source.contains("RAW DISASSEMBLY FALLBACK")
@@ -1182,7 +1252,8 @@ impl<'a> IdaCExtractor<'a> {
             }
 
             let (line, column) = self.line_column_at(index);
-            self.add_call_ref(from_node_id, &callee, line, column, &mut seen);
+            let metadata = self.call_argument_roles_metadata(name, index);
+            self.add_call_ref(from_node_id, &callee, line, column, &mut seen, metadata);
         }
     }
 
@@ -1212,6 +1283,7 @@ impl<'a> IdaCExtractor<'a> {
                 file_path: None,
                 language: None,
                 candidates: None,
+                metadata: None,
             });
         }
     }
@@ -1243,6 +1315,7 @@ impl<'a> IdaCExtractor<'a> {
                 file_path: None,
                 language: None,
                 candidates: None,
+                metadata: None,
             });
         }
         let mut seen_refs: HashSet<String> = HashSet::new();
@@ -1265,6 +1338,7 @@ impl<'a> IdaCExtractor<'a> {
                 file_path: None,
                 language: None,
                 candidates: None,
+                metadata: None,
             });
         }
     }
@@ -1301,6 +1375,171 @@ impl<'a> IdaCExtractor<'a> {
             edge.column = Some(column);
             self.edges.push(edge);
         }
+    }
+
+    fn extract_memory_accesses(&mut self, from_node_id: &str, body_start: Option<usize>) {
+        let Some(body_start) = body_start else { return };
+        let source = self.source;
+        let mut seen: HashSet<(String, EdgeKind)> = HashSet::new();
+        let hits: Vec<(String, usize, Metadata, EdgeKind)> = IDA_MEMORY_DEREF_RE
+            .captures_iter(&source[body_start..])
+            .filter_map(|caps| {
+                let full = caps.get(0).expect("group 0");
+                let abs = body_start + full.start();
+                if self.is_in_line_comment(abs) {
+                    return None;
+                }
+                let type_text = caps.get(1)?.as_str().trim();
+                let base = caps.get(2)?.as_str();
+                let sign = caps.get(3)?.as_str();
+                let raw_offset = caps.get(4)?.as_str();
+                let offset_value = parse_ida_int(raw_offset)?;
+                let signed_offset = if sign == "-" {
+                    -offset_value
+                } else {
+                    offset_value
+                };
+                let name = format_memory_symbol_name(base, signed_offset, raw_offset, sign);
+                let mode = match self.classify_data_access(abs, body_start + full.end()) {
+                    EdgeKind::Writes => MemoryAccessMode::Write,
+                    _ => MemoryAccessMode::Read,
+                };
+                let mut metadata = Metadata::new();
+                metadata.insert("kind".to_string(), serde_json::json!("memory_access"));
+                metadata.insert("type".to_string(), serde_json::json!(type_text));
+                metadata.insert("base".to_string(), serde_json::json!(base));
+                metadata.insert("offset".to_string(), serde_json::json!(signed_offset));
+                metadata.insert("rawOffset".to_string(), serde_json::json!(raw_offset));
+                metadata.insert("mode".to_string(), serde_json::json!(mode.as_str()));
+                Some((name, abs, metadata, mode.edge_kind()))
+            })
+            .collect();
+        for (name, abs, metadata, kind) in hits {
+            if !seen.insert((name.clone(), kind)) {
+                continue;
+            }
+            let data_id = self.ensure_data_node(&name);
+            let mut edge = Edge::new(from_node_id, data_id, kind);
+            let (line, column) = self.line_column_at(abs);
+            edge.line = Some(line);
+            edge.column = Some(column);
+            edge.metadata = Some(metadata);
+            self.edges.push(edge);
+        }
+    }
+
+    fn extract_call_argument_role_facts(&mut self, from_node_id: &str) {
+        let source = self.source;
+        let hits: Vec<(String, usize, Metadata)> = CALL_PATTERN_RE
+            .find_iter(source)
+            .filter_map(|m| {
+                if self.is_in_line_comment(m.start()) {
+                    return None;
+                }
+                self.call_argument_roles_metadata(m.as_str(), m.start())
+                    .map(|metadata| (m.as_str().to_string(), m.start(), metadata))
+            })
+            .collect();
+        let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
+        for (callee, abs, metadata) in hits {
+            let (line, column) = self.line_column_at(abs);
+            if !seen.insert((callee.clone(), line, column)) {
+                continue;
+            }
+            let node_id = self.ensure_data_node(&format!("callarg:{callee}:{line}:{column}"));
+            let mut edge = Edge::new(from_node_id, node_id, EdgeKind::References);
+            edge.line = Some(line);
+            edge.column = Some(column);
+            edge.metadata = Some(metadata);
+            self.edges.push(edge);
+        }
+    }
+
+    fn extract_ida_cfg_facts(&mut self, from_node_id: &str, body_start: Option<usize>) {
+        let Some(body_start) = body_start else { return };
+        let source = self.source;
+        let body = &source[body_start..];
+        let label_hits: Vec<(String, usize)> = IDA_CFG_LABEL_DEF_RE
+            .captures_iter(body)
+            .filter_map(|caps| {
+                let m = caps.get(1)?;
+                Some((m.as_str().to_string(), body_start + m.start()))
+            })
+            .collect();
+        for (label, abs) in label_hits {
+            self.add_cfg_fact(
+                from_node_id,
+                &format!("label:{label}"),
+                abs,
+                "label",
+                Some(&label),
+            );
+        }
+
+        let goto_hits: Vec<(String, usize)> = IDA_CFG_GOTO_RE
+            .captures_iter(body)
+            .filter_map(|caps| {
+                let m = caps.get(1)?;
+                Some((m.as_str().to_string(), body_start + m.start()))
+            })
+            .collect();
+        for (label, abs) in goto_hits {
+            self.add_cfg_fact(
+                from_node_id,
+                &format!("label:{label}"),
+                abs,
+                "goto",
+                Some(&label),
+            );
+        }
+
+        let switch_hits: Vec<usize> = IDA_CFG_SWITCH_RE
+            .find_iter(body)
+            .map(|m| body_start + m.start())
+            .collect();
+        for abs in switch_hits {
+            let (line, _) = self.line_column_at(abs);
+            self.add_cfg_fact(from_node_id, &format!("switch:{line}"), abs, "switch", None);
+        }
+
+        let jump_hits: Vec<(String, usize)> = DATA_SYMBOL_RE
+            .captures_iter(body)
+            .filter_map(|caps| {
+                let m = caps.get(1)?;
+                let name = m.as_str();
+                name.starts_with("jpt_")
+                    .then(|| (name.to_string(), body_start + m.start()))
+            })
+            .collect();
+        for (name, abs) in jump_hits {
+            self.add_cfg_fact(from_node_id, &name, abs, "jump_table", Some(&name));
+        }
+    }
+
+    fn add_cfg_fact(
+        &mut self,
+        from_node_id: &str,
+        target_name: &str,
+        abs: usize,
+        role: &str,
+        label: Option<&str>,
+    ) {
+        if self.is_in_line_comment(abs) {
+            return;
+        }
+        let target_id = self.ensure_data_node(target_name);
+        let (line, column) = self.line_column_at(abs);
+        let mut metadata = Metadata::new();
+        metadata.insert("kind".to_string(), serde_json::json!("ida_cfg"));
+        metadata.insert("role".to_string(), serde_json::json!(role));
+        if let Some(label) = label {
+            metadata.insert("label".to_string(), serde_json::json!(label));
+        }
+        let mut edge = Edge::new(from_node_id, target_id, EdgeKind::References);
+        edge.line = Some(line);
+        edge.column = Some(column);
+        edge.metadata = Some(metadata);
+        self.edges.push(edge);
     }
 
     /// Classify a data-symbol access at byte range `[start, end)`: `&sym` is
@@ -1436,6 +1675,7 @@ impl<'a> IdaCExtractor<'a> {
         line: u32,
         column: u32,
         seen: &mut HashSet<String>,
+        metadata: Option<Metadata>,
     ) {
         let cleaned_name = reference_name.trim();
         if cleaned_name.is_empty() || cleaned_name == "<no type info>" {
@@ -1454,7 +1694,43 @@ impl<'a> IdaCExtractor<'a> {
             file_path: None,
             language: None,
             candidates: None,
+            metadata,
         });
+    }
+
+    fn call_argument_roles_metadata(&self, raw_name: &str, name_start: usize) -> Option<Metadata> {
+        let callee = simple_name(raw_name.trim_start_matches('.'));
+        let roles = call_argument_roles(callee)?;
+        let after_name = name_start + raw_name.len();
+        let rest = &self.source[after_name..];
+        let open_rel = rest.find('(')?;
+        if !rest[..open_rel].trim().is_empty() {
+            return None;
+        }
+        let open = after_name + open_rel;
+        let close = find_matching_paren(self.source, open)?;
+        let args = split_top_level(&self.source[open + 1..close], ',');
+        let mut arg_values = Vec::new();
+        for (index, role) in roles_for_args(&roles, args.len()).into_iter().enumerate() {
+            let Some(role) = role else { continue };
+            let expr = args.get(index).copied().unwrap_or_default().trim();
+            arg_values.push(serde_json::json!({
+                "index": index,
+                "role": role,
+                "expr": expr,
+            }));
+        }
+        if arg_values.is_empty() {
+            return None;
+        }
+        let mut metadata = Metadata::new();
+        metadata.insert("kind".to_string(), serde_json::json!("call_argument_roles"));
+        metadata.insert("callee".to_string(), serde_json::json!(callee));
+        metadata.insert(
+            "arguments".to_string(),
+            serde_json::Value::Array(arg_values),
+        );
+        Some(metadata)
     }
 
     fn add_type_references(
@@ -1480,6 +1756,7 @@ impl<'a> IdaCExtractor<'a> {
                 file_path: None,
                 language: None,
                 candidates: None,
+                metadata: None,
             });
         }
     }
@@ -1700,6 +1977,104 @@ fn extract_type_refs(type_text: &str) -> Vec<TypeRef> {
         }
     }
     refs
+}
+
+fn parse_ida_int(raw: &str) -> Option<i64> {
+    if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+        return i64::from_str_radix(hex, 16).ok();
+    }
+    if let Some(hex) = raw.strip_suffix('h').or_else(|| raw.strip_suffix('H')) {
+        return i64::from_str_radix(hex, 16).ok();
+    }
+    raw.parse::<i64>().ok()
+}
+
+fn format_memory_symbol_name(
+    base: &str,
+    signed_offset: i64,
+    raw_offset: &str,
+    sign: &str,
+) -> String {
+    if signed_offset == 0 {
+        return format!("mem:{base}");
+    }
+    if signed_offset > 0 {
+        format!("mem:{base}+{signed_offset}")
+    } else {
+        let magnitude = signed_offset.checked_abs().unwrap_or(i64::MAX);
+        if sign == "-" {
+            format!("mem:{base}-{magnitude}")
+        } else {
+            format!("mem:{base}+{raw_offset}")
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CallRoleProfile {
+    MemCopy,
+    StrCopy,
+    Sprintf,
+    QRead,
+    Free,
+    New,
+    Realloc,
+}
+
+fn call_argument_roles(callee: &str) -> Option<CallRoleProfile> {
+    match callee {
+        "memcpy" | "qmemcpy" | "memmove" => Some(CallRoleProfile::MemCopy),
+        "strcpy" => Some(CallRoleProfile::StrCopy),
+        "sprintf" => Some(CallRoleProfile::Sprintf),
+        "qlread" | "qfread" => Some(CallRoleProfile::QRead),
+        "free" => Some(CallRoleProfile::Free),
+        "new" => Some(CallRoleProfile::New),
+        "realloc" => Some(CallRoleProfile::Realloc),
+        _ => None,
+    }
+}
+
+fn roles_for_args(profile: &CallRoleProfile, arg_count: usize) -> Vec<Option<&'static str>> {
+    let mut roles = vec![None; arg_count];
+    let mut set = |index: usize, role: &'static str| {
+        if let Some(slot) = roles.get_mut(index) {
+            *slot = Some(role);
+        }
+    };
+    match profile {
+        CallRoleProfile::MemCopy => {
+            set(0, "write_dst");
+            set(1, "read_src");
+            set(2, "size");
+        }
+        CallRoleProfile::StrCopy => {
+            set(0, "write_dst");
+            set(1, "read_src");
+        }
+        CallRoleProfile::Sprintf => {
+            set(0, "write_dst");
+            set(1, "format");
+            for index in 2..arg_count {
+                set(index, "format_arg");
+            }
+        }
+        CallRoleProfile::QRead => {
+            set(0, "handle");
+            set(1, "write_dst");
+            set(2, "size");
+        }
+        CallRoleProfile::Free => {
+            set(0, "freed_ptr");
+        }
+        CallRoleProfile::New => {
+            set(0, "alloc_size");
+        }
+        CallRoleProfile::Realloc => {
+            set(0, "readwrite_ptr");
+            set(1, "alloc_size");
+        }
+    }
+    roles
 }
 
 fn find_matching_paren(text: &str, open_paren: usize) -> Option<usize> {

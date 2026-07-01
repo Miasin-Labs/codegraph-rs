@@ -177,6 +177,7 @@ fn make_ref(name: &str, language: Language, file_path: &str) -> UnresolvedRef {
         file_path: file_path.to_string(),
         language,
         candidates: None,
+        metadata: None,
     }
 }
 
@@ -308,6 +309,7 @@ fn workspace_ref(name: &str, file_path: &str) -> UnresolvedRef {
         file_path: file_path.to_string(),
         language: Language::Rust,
         candidates: None,
+        metadata: None,
     }
 }
 
@@ -347,6 +349,7 @@ fn resolves_crate_name_from_workspace_member_lib_rs() {
         file_path: "crates/mytool-fetcher/src/main.rs".into(),
         language: Language::Rust,
         candidates: None,
+        metadata: None,
     };
 
     let result = RustResolver::new().resolve(&reference, &ctx).unwrap();

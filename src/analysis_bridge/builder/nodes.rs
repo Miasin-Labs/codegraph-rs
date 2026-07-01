@@ -109,6 +109,30 @@ impl NodeInsert<'_> {
                 metadata.insert("accessed_fields".to_string(), serde_json::to_string(&arr)?);
             }
         }
+        if let Some(set) = self.enrichment.global_reads.get(aid) {
+            let arr: Vec<&String> = set.iter().collect();
+            metadata.insert("global_reads".to_string(), serde_json::to_string(&arr)?);
+        }
+        if let Some(set) = self.enrichment.global_writes.get(aid) {
+            let arr: Vec<&String> = set.iter().collect();
+            metadata.insert("global_writes".to_string(), serde_json::to_string(&arr)?);
+        }
+        if let Some(set) = self.enrichment.string_refs.get(aid) {
+            let arr: Vec<&String> = set.iter().collect();
+            metadata.insert("string_refs".to_string(), serde_json::to_string(&arr)?);
+        }
+        if let Some(items) = self.enrichment.memory_accesses.get(aid) {
+            metadata.insert("memory_accesses".to_string(), serde_json::to_string(items)?);
+        }
+        if let Some(items) = self.enrichment.call_argument_roles.get(aid) {
+            metadata.insert(
+                "call_argument_roles".to_string(),
+                serde_json::to_string(items)?,
+            );
+        }
+        if let Some(items) = self.enrichment.ida_cfg.get(aid) {
+            metadata.insert("ida_cfg".to_string(), serde_json::to_string(items)?);
+        }
         Ok(metadata)
     }
 

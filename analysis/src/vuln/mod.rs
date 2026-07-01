@@ -25,6 +25,7 @@
 //! graph ([`crate::graph`]), dominators ([`crate::dominators`]), path
 //! preconditions ([`crate::predicates`]), and taint ([`crate::taint_v2`]).
 
+pub mod cfg_dominance;
 pub mod classify;
 pub mod fix_history;
 pub mod learned;

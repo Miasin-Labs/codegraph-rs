@@ -16,14 +16,22 @@ impl ToolHandler {
             Some(Value::String(s)) if !s.is_empty() => {
                 let len = s.chars().count();
                 if len > MAX_INPUT_LENGTH {
-                    Err(self.error_result(&format!(
-                        "{name} exceeds maximum length of {MAX_INPUT_LENGTH} characters (got {len})"
-                    )))
+                    Err(self.validation_error_result(
+                        name,
+                        &format!("{name} exceeds maximum length of {MAX_INPUT_LENGTH} characters"),
+                        &format!("string with at most {MAX_INPUT_LENGTH} characters"),
+                        Some(&format!("string with {len} characters")),
+                    ))
                 } else {
                     Ok(s.clone())
                 }
             }
-            _ => Err(self.error_result(&format!("{name} must be a non-empty string"))),
+            other => Err(self.validation_error_result(
+                name,
+                &format!("{name} must be a non-empty string"),
+                "non-empty string",
+                other.map(value_kind),
+            )),
         }
     }
 
@@ -38,14 +46,33 @@ impl ToolHandler {
             Some(Value::String(s)) => {
                 let len = s.chars().count();
                 if len > MAX_PATH_LENGTH {
-                    Err(self.error_result(&format!(
-                        "{name} exceeds maximum length of {MAX_PATH_LENGTH} characters (got {len})"
-                    )))
+                    Err(self.validation_error_result(
+                        name,
+                        &format!("{name} exceeds maximum length of {MAX_PATH_LENGTH} characters"),
+                        &format!("string with at most {MAX_PATH_LENGTH} characters"),
+                        Some(&format!("string with {len} characters")),
+                    ))
                 } else {
                     Ok(Some(s.clone()))
                 }
             }
-            Some(_) => Err(self.error_result(&format!("{name} must be a string"))),
+            Some(other) => Err(self.validation_error_result(
+                name,
+                &format!("{name} must be a string"),
+                "string",
+                Some(value_kind(other)),
+            )),
         }
+    }
+}
+
+fn value_kind(value: &Value) -> &str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
     }
 }

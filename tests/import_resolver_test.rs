@@ -195,6 +195,7 @@ fn import_ref(reference_name: &str, language: Language) -> UnresolvedRef {
         file_path: "Caller.kt".into(),
         language,
         candidates: None,
+        metadata: None,
     }
 }
 
@@ -318,6 +319,7 @@ fn returns_null_for_non_imports_reference_kinds() {
         file_path: "Caller.kt".into(),
         language: Language::Kotlin,
         candidates: None,
+        metadata: None,
     };
     assert!(resolve_jvm_import(&reference, &ctx).is_none());
 }

@@ -345,6 +345,7 @@ impl FrameworkResolver for RustResolver {
                     file_path: file_path.to_string(),
                     language: Language::Rust,
                     candidates: None,
+                    metadata: None,
                 });
             }
         }
@@ -414,6 +415,7 @@ impl FrameworkResolver for RustResolver {
                     file_path: file_path.to_string(),
                     language: Language::Rust,
                     candidates: None,
+                    metadata: None,
                 });
             }
         }
@@ -452,6 +454,7 @@ impl FrameworkResolver for RustResolver {
                 file_path: file_path.to_string(),
                 language: Language::Rust,
                 candidates: None,
+                metadata: None,
             });
         };
 

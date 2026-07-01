@@ -112,6 +112,12 @@ pub(super) fn rn_event_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         // anywhere in the file; the JS in-language path uses a separate
         // emitter object pattern and is already handled by eventEmitterEdges.)
         if file.ends_with(".java") || file.ends_with(".kt") {
+            if !content.contains("RCTDeviceEventEmitter")
+                && !content.contains("DeviceEventManagerModule")
+                && !content.contains("getJSModule")
+            {
+                continue;
+            }
             for m in RN_JVM_EMIT_RE.captures_iter(&content) {
                 let idx = m.get(0).expect("whole match").start();
                 if !m[1].is_empty() {

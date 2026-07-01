@@ -101,6 +101,22 @@ fn directory_exclusion_applies_a_nested_gitignore_only_to_its_own_subtree() {
 }
 
 #[test]
+fn directory_exclusion_nested_gitignore_negation_reincludes_file() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let app_dir = temp_dir.path().join("app");
+    fs::create_dir_all(&app_dir).unwrap();
+    fs::write(temp_dir.path().join(".gitignore"), "*.ts\n").unwrap();
+    fs::write(app_dir.join(".gitignore"), "!keep.ts\n").unwrap();
+    fs::write(app_dir.join("keep.ts"), "export const keep = 1;").unwrap();
+    fs::write(app_dir.join("drop.ts"), "export const drop = 1;").unwrap();
+
+    let files = scan_directory(temp_dir.path(), None);
+
+    assert!(files.contains(&"app/keep.ts".to_string()), "got {files:?}");
+    assert!(!files.contains(&"app/drop.ts".to_string()), "got {files:?}");
+}
+
+#[test]
 fn directory_exclusion_always_skips_git_directories() {
     let temp_dir = tempfile::tempdir().unwrap();
     let src_dir = temp_dir.path().join("src");

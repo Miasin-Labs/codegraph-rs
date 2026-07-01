@@ -1,5 +1,6 @@
-use super::graph_fixture::{build_setalgebra_fixture, fixture_node, names_of};
+use super::graph_fixture::{build_setalgebra_fixture, fixture_edge, fixture_node, names_of};
 use crate::dsl::syntax::{DslOp, QueryConfig, parse_expr, parse_query, run_query, run_query_expr};
+use crate::edges::EdgeKind;
 use crate::nodes::NodeKind;
 
 #[test]
@@ -95,6 +96,28 @@ fn dsl_path_via_edge_kind_filters_normal() {
 }
 
 #[test]
+fn dsl_path_via_extended_edge_kind_matches_normal() {
+    let mut graph = crate::graph::CodeGraph::new();
+    let child = graph.add_node(fixture_node("child", NodeKind::Function));
+    let parent = graph.add_node(fixture_node("parent", NodeKind::Function));
+    graph
+        .add_edge(&child, &parent, fixture_edge(EdgeKind::Extends))
+        .unwrap();
+
+    let result = run_query_expr(
+        r#"path fn("child") -> fn("parent") via Extends"#,
+        &graph,
+        &QueryConfig::default(),
+    )
+    .unwrap();
+
+    let names = names_of(&graph, &result.nodes);
+    assert_eq!(names.len(), 2, "got {names:?}");
+    assert!(names.contains("child"));
+    assert!(names.contains("parent"));
+}
+
+#[test]
 fn dsl_entrypoints_returns_classified_normal() {
     let graph = build_setalgebra_fixture();
     let result = run_query_expr("entrypoints", &graph, &QueryConfig::default()).unwrap();
@@ -115,6 +138,19 @@ fn dsl_entrypoints_returns_classified_normal() {
     )
     .unwrap();
     assert_eq!(result_pub.nodes.len(), 4);
+}
+
+#[test]
+fn dsl_entrypoints_pipe_runs_normal_pipe_ops() {
+    let graph = build_setalgebra_fixture();
+    let callers = run_query_expr("entrypoints | callers", &graph, &QueryConfig::default()).unwrap();
+    let caller_names = names_of(&graph, &callers.nodes);
+    assert!(caller_names.contains("a"), "got {caller_names:?}");
+    assert!(caller_names.contains("b"), "got {caller_names:?}");
+
+    let depth = run_query_expr("entrypoints | depth 2", &graph, &QueryConfig::default()).unwrap();
+    let depth_names = names_of(&graph, &depth.nodes);
+    assert!(depth_names.contains("c"), "got {depth_names:?}");
 }
 
 #[test]

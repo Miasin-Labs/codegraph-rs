@@ -5,6 +5,7 @@ mod explore;
 mod format;
 mod graph;
 mod handlers;
+mod output;
 mod registry;
 mod schema;
 

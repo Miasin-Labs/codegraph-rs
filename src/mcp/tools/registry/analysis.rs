@@ -33,6 +33,7 @@ pub(in crate::mcp::tools::registry) fn push_vuln_tool(out: &mut Vec<ToolDefiniti
                 properties: props,
                 required: None,
             },
+            output_schema: None,
             annotations: read_only_annotations(),
         });
     }
@@ -102,6 +103,7 @@ pub(in crate::mcp::tools::registry) fn push_verify_roles_tool(out: &mut Vec<Tool
                 properties: props,
                 required: Some(vec!["roles".into()]),
             },
+            output_schema: None,
             annotations: read_only_annotations(),
         });
     }

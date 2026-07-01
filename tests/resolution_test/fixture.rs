@@ -130,6 +130,7 @@ pub(crate) fn uref(
         file_path: Some(file_path.to_string()),
         language: Some(language),
         candidates: None,
+        metadata: None,
     }
 }
 

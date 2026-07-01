@@ -62,7 +62,7 @@ typically one to a few calls; a grep/read exploration is dozens.
 - **Don't grep first** when looking up a symbol by name — `codegraph_search` is faster and returns kind + location + signature.
 - **Don't chain `codegraph_search` + `codegraph_node`** to understand an area — ONE `codegraph_explore` returns the relevant symbols' source together in a single round-trip.
 - **Don't loop `codegraph_node` over many symbols** — one `codegraph_explore` call returns them all grouped by file, while each separate call re-reads the whole context and costs far more. Use `codegraph_node` for a single symbol.
-- **After editing, check the staleness banner.** When a tool response starts with "⚠️ Some files referenced below were edited since the last index sync…", the listed files are pending re-index — Read those specific files for accurate content. Every file NOT in that banner is fresh, so still trust codegraph. `codegraph_status` also lists pending files under "Pending sync".
+- **After editing, check staleness notices.** Tool results may include `_meta.notices` with `kind: "stale_index"` and a compatibility text notice. Read only the listed pending files directly for exact current content. Every file not listed is fresh, so still trust codegraph. `codegraph_status` also lists pending files under "Pending sync".
 
 ## Limitations
 
@@ -89,6 +89,6 @@ mod tests {
         assert!(SERVER_INSTRUCTIONS.contains("## Tool selection by intent"));
         assert!(SERVER_INSTRUCTIONS.contains("## Anti-patterns"));
         assert!(SERVER_INSTRUCTIONS.contains("`codegraph_explore`"));
-        assert!(SERVER_INSTRUCTIONS.contains("⚠️ Some files referenced below were edited"));
+        assert!(SERVER_INSTRUCTIONS.contains("_meta.notices"));
     }
 }

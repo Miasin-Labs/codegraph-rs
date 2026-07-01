@@ -284,6 +284,7 @@ impl FrameworkResolver for GoResolver {
                     file_path: file_path.to_string(),
                     language: Language::Go,
                     candidates: None,
+                    metadata: None,
                 });
             }
         }

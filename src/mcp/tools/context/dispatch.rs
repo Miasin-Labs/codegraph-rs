@@ -46,6 +46,11 @@ impl ToolHandler {
                 return r;
             }
         }
+        if args.contains_key("file") {
+            if let Err(r) = self.validate_optional_path(args.get("file"), "file") {
+                return r;
+            }
+        }
 
         let project_path: Option<String> = args
             .get("projectPath")

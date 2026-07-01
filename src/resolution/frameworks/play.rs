@@ -172,6 +172,7 @@ impl FrameworkResolver for PlayResolver {
                 file_path: file_path.to_string(),
                 language: Language::Scala,
                 candidates: None,
+                metadata: None,
             });
         }
 

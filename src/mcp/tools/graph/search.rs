@@ -4,6 +4,7 @@ use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
 use super::super::format::num_or;
+use super::super::output::SearchOutput;
 use super::super::schema::ToolResult;
 use crate::error::Result;
 use crate::extraction::is_generated_file;
@@ -28,14 +29,15 @@ impl ToolHandler {
         let raw_limit = num_or(args, "limit", 10.0);
         let limit = clamp(raw_limit, 1.0, 100.0) as usize;
 
-        // TS passes the raw kind string through; an unknown kind (e.g. "type")
-        // matches no rows. NodeKind can't represent it, so short-circuit the
-        // same empty-result outcome.
         let kinds: Option<Vec<NodeKind>> = match kind {
+            Some("type") => Some(vec![NodeKind::TypeAlias]),
             Some(k) => match k.parse::<NodeKind>() {
                 Ok(nk) => Some(vec![nk]),
                 Err(_) => {
-                    return Ok(self.text_result(&format!("No results found for \"{query}\"")));
+                    let output =
+                        SearchOutput::new(query.clone(), kind.map(str::to_string), limit, &[]);
+                    return self
+                        .structured_result(&format!("Search results: 0 for `{query}`"), &output);
                 }
             },
             None => None,
@@ -50,11 +52,6 @@ impl ToolHandler {
             }),
         )?;
 
-        if results.is_empty() {
-            return Ok(self.text_result(&format!("No results found for \"{query}\"")));
-        }
-
-        // Down-rank generated files within the FTS-returned set. Stable.
         let mut ranked = results;
         ranked.sort_by_key(|r| {
             if is_generated_file(&r.node.file_path) {
@@ -65,7 +62,8 @@ impl ToolHandler {
         });
 
         let formatted = self.format_search_results(&ranked);
-        Ok(self.text_result(&self.truncate_output(&formatted)))
+        let output = SearchOutput::new(query, kind.map(str::to_string), limit, &ranked);
+        self.structured_result(&self.truncate_output(&formatted), &output)
     }
 
     // =========================================================================

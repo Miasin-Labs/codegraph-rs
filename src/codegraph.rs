@@ -1231,6 +1231,7 @@ mod tests {
             file_path: None,
             language: None,
             candidates: None,
+            metadata: None,
         };
         let by_file = vec![make("a", "x", 1), make("b", "y", 2)];
         let by_name = vec![make("a", "x", 9), make("c", "z", 3)];

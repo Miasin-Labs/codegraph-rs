@@ -252,8 +252,8 @@ fn gets_schema_version() {
     let (_dir, db, _q) = setup();
     let version = db.get_schema_version().unwrap();
     assert!(version.is_some());
-    assert_eq!(version.unwrap().version, 6);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 6);
+    assert_eq!(version.unwrap().version, 7);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 7);
 }
 
 #[test]
@@ -707,7 +707,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 6);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 7);
 
     let handle = db.get_db().unwrap();
     // Migration 2 added columns + project_metadata
@@ -723,6 +723,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     };
     assert!(unresolved_cols.iter().any(|c| c == "file_path"));
     assert!(unresolved_cols.iter().any(|c| c == "language"));
+    assert!(unresolved_cols.iter().any(|c| c == "metadata"));
     let edge_cols: Vec<String> = {
         let mut stmt = handle
             .conn()
@@ -747,7 +748,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     // History records each applied migration
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
 }
 
 #[test]
@@ -758,13 +759,12 @@ fn open_does_not_rerun_migrations_on_current_database() {
         let _db = DatabaseConnection::initialize(&db_path).unwrap();
     }
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 6);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 7);
     let handle = db.get_db().unwrap();
     assert!(!codegraph::db::needs_migration(&handle));
-    // initialize() recorded versions 1 + 6 only; open() added nothing.
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 6]);
+    assert_eq!(versions, vec![1, 7]);
 }
 
 #[test]
@@ -820,7 +820,7 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 6);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 7);
     let handle = db.get_db().unwrap();
 
     // v5 added the nullable byte-offset columns.
@@ -866,7 +866,7 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
 
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
 }
 
 // =============================================================================
@@ -1033,6 +1033,7 @@ fn make_ref(from: &str, name: &str, file: &str) -> UnresolvedReference {
         file_path: Some(file.to_string()),
         language: Some(Language::Typescript),
         candidates: None,
+        metadata: None,
     }
 }
 
@@ -1041,8 +1042,13 @@ fn unresolved_refs_roundtrip() {
     let (_dir, _db, q) = setup();
     q.insert_nodes(&[make_node("n1", "n1"), make_node("n2", "n2")])
         .unwrap();
+    let mut helper_ref = make_ref("n1", "helper", "a.ts");
+    helper_ref.metadata = Some(serde_json::Map::from_iter([
+        ("kind".to_string(), serde_json::json!("call_argument_roles")),
+        ("callee".to_string(), serde_json::json!("memcpy")),
+    ]));
     q.insert_unresolved_refs_batch(&[
-        make_ref("n1", "helper", "a.ts"),
+        helper_ref,
         make_ref("n1", "other", "a.ts"),
         make_ref("n2", "helper", "b.ts"),
     ])
@@ -1050,7 +1056,16 @@ fn unresolved_refs_roundtrip() {
 
     assert_eq!(q.get_unresolved_references_count().unwrap(), 3);
     assert_eq!(q.get_unresolved_by_name("helper").unwrap().len(), 2);
-    assert_eq!(q.get_unresolved_references().unwrap().len(), 3);
+    let all_refs = q.get_unresolved_references().unwrap();
+    assert_eq!(all_refs.len(), 3);
+    assert!(all_refs.iter().any(|r| {
+        r.reference_name == "helper"
+            && r.metadata
+                .as_ref()
+                .and_then(|m| m.get("kind"))
+                .and_then(|v| v.as_str())
+                == Some("call_argument_roles")
+    }));
     assert_eq!(
         q.get_unresolved_references_by_files(&["a.ts".to_string()])
             .unwrap()

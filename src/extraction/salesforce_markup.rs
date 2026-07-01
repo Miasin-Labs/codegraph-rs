@@ -149,6 +149,7 @@ impl<'a> SalesforceMarkupExtractor<'a> {
             file_path: None,
             language: Some(language),
             candidates: None,
+            metadata: None,
         });
     }
 

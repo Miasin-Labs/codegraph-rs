@@ -444,7 +444,8 @@ fn resolves_the_project_from_the_client_roots_list_when_no_root_uri_is_sent() {
     // The status call now succeeds against the resolved project.
     let resp = wait_for_message(&server, Duration::from_secs(8), |m| m["id"] == 1);
     let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("CodeGraph Status"));
+    assert!(text.contains("CodeGraph status"));
+    assert_eq!(resp["result"]["structuredContent"]["kind"], "status");
     assert!(!text.contains("No CodeGraph project is loaded"));
 }
 
@@ -514,7 +515,8 @@ fn honors_an_explicit_root_uri_without_asking_the_client_for_roots() {
     let resp = wait_for_message(&server, Duration::from_secs(8), |m| m["id"] == 1);
     let text = resp["result"]["content"][0]["text"].as_str().unwrap();
 
-    assert!(text.contains("CodeGraph Status"));
+    assert!(text.contains("CodeGraph status"));
+    assert_eq!(resp["result"]["structuredContent"]["kind"], "status");
     // rootUri is a stronger signal than roots — we never needed to ask.
     assert!(
         !server
@@ -604,19 +606,11 @@ fn prepends_a_stale_banner_when_the_response_references_a_pending_file() {
     assert_ne!(res.is_error, Some(true));
     let text = first_text(&res);
 
-    // Banner shape: warning glyph + filename + actionable instruction.
-    assert!(
-        text.starts_with("⚠️"),
-        "banner must lead the response: {text}"
-    );
-    assert!(text.contains("src/alpha-only.ts"));
-    assert!(
-        regex::Regex::new(r"edited \d+ms ago")
-            .unwrap()
-            .is_match(text)
-    );
-    assert!(text.contains("Read them directly"));
-    // The actual result must still follow the banner.
+    assert!(!text.contains("Stale index notice:"), "{text}");
+    let notices = &res.meta.as_ref().expect("metadata").notices;
+    assert_eq!(notices[0].kind, "stale_index");
+    assert_eq!(notices[0].files[0].path, "src/alpha-only.ts");
+    assert!(notices[0].files[0].age_ms >= 0);
     assert!(text.contains("alphaOnly"));
 
     cg.unwatch();
@@ -658,9 +652,12 @@ fn uses_the_footer_not_the_banner_when_pending_files_are_not_referenced() {
     let res = handler.execute("codegraph_search", &json!({ "query": "alphaOnly" }));
     let text = first_text(&res);
 
-    assert!(!text.starts_with("⚠️"));
-    assert!(text.contains("elsewhere in this project are pending index sync"));
-    assert!(text.contains("src/bravo-only.ts"));
+    assert!(!text.starts_with("Stale index notice:"));
+    assert!(!text.contains("elsewhere in this project are pending index sync"));
+    assert!(!text.contains("src/bravo-only.ts"));
+    let notices = &res.meta.as_ref().expect("metadata").notices;
+    assert_eq!(notices[0].kind, "stale_index");
+    assert_eq!(notices[0].files[0].path, "src/bravo-only.ts");
 
     cg.unwatch();
     cg.close();
@@ -691,7 +688,7 @@ fn drops_the_banner_once_the_sync_completes_and_clears_the_pending_entry() {
 
     let res = handler.execute("codegraph_search", &json!({ "query": "alphaOnly" }));
     let text = first_text(&res);
-    assert!(!text.starts_with("⚠️"));
+    assert!(!text.starts_with("Stale index notice:"));
     assert!(!text.contains("elsewhere in this project are pending index sync"));
 
     cg.unwatch();
@@ -729,10 +726,12 @@ fn lists_pending_files_under_pending_sync_in_codegraph_status() {
 
     let res = handler.execute("codegraph_status", &json!({}));
     let text = first_text(&res);
-    assert!(text.contains("### Pending sync:"));
+    assert!(text.contains("Pending sync:"));
     assert!(text.contains("src/charlie-only.ts"));
     // Status embeds the info first-class, so the auto-banner is suppressed.
-    assert!(!text.starts_with("⚠️"));
+    assert!(!text.starts_with("Stale index notice:"));
+    let structured = res.structured_content.as_ref().expect("structured status");
+    assert_eq!(structured["pendingSync"][0]["path"], "src/charlie-only.ts");
 
     cg.unwatch();
     cg.close();
@@ -890,7 +889,7 @@ fn security_fixture() -> (TempDir, Rc<CodeGraph>, ToolHandler) {
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(
         src.join("example.ts"),
-        "export function exampleFunc(): void {}\nexport class ExampleClass {}\n",
+        "export function exampleFunc(): void {}\nexport class ExampleClass {}\nexport type ExampleType = string;\n",
     )
     .unwrap();
 
@@ -907,6 +906,10 @@ fn rejects_non_string_query_in_codegraph_search() {
     let res = handler.execute("codegraph_search", &json!({ "query": null }));
     assert_eq!(res.is_error, Some(true));
     assert!(first_text(&res).contains("non-empty string"));
+    let structured = res.structured_content.as_ref().expect("structured error");
+    assert_eq!(structured["kind"], "error");
+    assert_eq!(structured["error"]["category"], "validation");
+    assert_eq!(structured["error"]["field"], "query");
     cg.close();
 }
 
@@ -926,6 +929,30 @@ fn accepts_valid_query_in_codegraph_search() {
     let (_tmp, cg, handler) = security_fixture();
     let res = handler.execute("codegraph_search", &json!({ "query": "example" }));
     assert_ne!(res.is_error, Some(true));
+    let structured = res.structured_content.as_ref().expect("structured search");
+    assert_eq!(structured["kind"], "search");
+    assert_eq!(structured["query"], "example");
+    assert!(structured["results"].as_array().unwrap().len() >= 2);
+    cg.close();
+}
+
+#[test]
+fn codegraph_search_kind_type_matches_type_aliases() {
+    let _lock = env_read();
+    let (_tmp, cg, handler) = security_fixture();
+    let res = handler.execute(
+        "codegraph_search",
+        &json!({ "query": "ExampleType", "kind": "type" }),
+    );
+    assert_ne!(res.is_error, Some(true));
+    let structured = res.structured_content.as_ref().expect("structured search");
+    let results = structured["results"].as_array().expect("results array");
+    assert!(
+        results
+            .iter()
+            .any(|row| row["node"]["kind"] == "type_alias"),
+        "got {results:?}"
+    );
     cg.close();
 }
 
@@ -1021,6 +1048,20 @@ fn rejects_non_string_symbol_in_codegraph_node() {
     let (_tmp, cg, handler) = security_fixture();
     let res = handler.execute("codegraph_node", &json!({ "symbol": false }));
     assert_eq!(res.is_error, Some(true));
+    cg.close();
+}
+
+#[test]
+fn rejects_oversized_file_hint_in_codegraph_node() {
+    let _lock = env_read();
+    let (_tmp, cg, handler) = security_fixture();
+    let oversized_file = "x".repeat(4097);
+    let res = handler.execute(
+        "codegraph_node",
+        &json!({ "symbol": "exampleFunc", "file": oversized_file }),
+    );
+    assert_eq!(res.is_error, Some(true));
+    assert!(first_text(&res).contains("file exceeds maximum length"));
     cg.close();
 }
 

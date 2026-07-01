@@ -1,22 +1,43 @@
 use super::{AEdgeKind, ANodeKind, EdgeKind, NodeKind, map_edge_kind, map_node_kind};
 
 #[test]
-fn node_kind_mapping_covers_all_22_kinds() {
+fn node_kind_mapping_covers_all_kinds() {
     use crate::types::NODE_KINDS;
     let mapped: Vec<NodeKind> = NODE_KINDS
         .iter()
         .copied()
         .filter(|k| map_node_kind(*k).is_some())
         .collect();
-    assert_eq!(mapped.len(), 11);
+    let skipped = [
+        NodeKind::Property,
+        NodeKind::Field,
+        NodeKind::Variable,
+        NodeKind::EnumMember,
+        NodeKind::TypeAlias,
+        NodeKind::Parameter,
+        NodeKind::Import,
+        NodeKind::Export,
+        NodeKind::Route,
+        NodeKind::Component,
+        NodeKind::Macro,
+    ];
+    assert_eq!(mapped.len(), NODE_KINDS.len() - skipped.len());
     assert_eq!(map_node_kind(NodeKind::Method), Some(ANodeKind::Function));
     assert_eq!(map_node_kind(NodeKind::Class), Some(ANodeKind::Struct));
     assert_eq!(map_node_kind(NodeKind::File), Some(ANodeKind::Module));
     assert_eq!(map_node_kind(NodeKind::Interface), Some(ANodeKind::Trait));
     assert_eq!(map_node_kind(NodeKind::Protocol), Some(ANodeKind::Trait));
-    assert_eq!(map_node_kind(NodeKind::Variable), None);
-    assert_eq!(map_node_kind(NodeKind::Route), None);
-    assert_eq!(map_node_kind(NodeKind::Parameter), None);
+    assert_eq!(
+        map_node_kind(NodeKind::DataSymbol),
+        Some(ANodeKind::Constant)
+    );
+    assert_eq!(
+        map_node_kind(NodeKind::StringLiteral),
+        Some(ANodeKind::Constant)
+    );
+    for kind in skipped {
+        assert_eq!(map_node_kind(kind), None);
+    }
 }
 
 #[test]

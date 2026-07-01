@@ -111,6 +111,7 @@ impl<'a> LwcTemplateExtractor<'a> {
                 file_path: None,
                 language: Some(Language::Html),
                 candidates: None,
+                metadata: None,
             });
         }
     }

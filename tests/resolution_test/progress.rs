@@ -127,6 +127,7 @@ fn resolve_all_reports_progress_and_stats() {
         file_path: None,
         language: None,
         candidates: None,
+        metadata: None,
     };
     let result = resolver.resolve_all(std::slice::from_ref(&bare), None);
     assert_eq!(result.stats.resolved, 1);

@@ -100,6 +100,7 @@ pub(super) fn unresolved_from_row(row: &Row<'_>) -> rusqlite::Result<UnresolvedR
     let kind_s: String = row.get("reference_kind")?;
     let reference_kind: EdgeKind = kind_s.parse().map_err(|e: String| conv_err(e))?;
     let candidates: Option<String> = row.get("candidates")?;
+    let metadata: Option<String> = row.get("metadata")?;
     let lang_s: String = row.get("language")?;
     Ok(UnresolvedReference {
         from_node_id: row.get("from_node_id")?,
@@ -108,6 +109,8 @@ pub(super) fn unresolved_from_row(row: &Row<'_>) -> rusqlite::Result<UnresolvedR
         line: row.get("line")?,
         column: row.get("col")?,
         candidates: candidates.and_then(|s| safe_json_parse::<Option<Vec<String>>>(&s, None)),
+        metadata: metadata
+            .and_then(|s| safe_json_parse::<Option<crate::types::Metadata>>(&s, None)),
         file_path: Some(row.get("file_path")?),
         language: Some(lang_s.parse().unwrap_or(Language::Unknown)),
     })

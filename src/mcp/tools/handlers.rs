@@ -171,7 +171,8 @@ mod tests {
         let name_i = json.find("\"name\"").unwrap();
         let desc_i = json.find("\"description\"").unwrap();
         let schema_i = json.find("\"inputSchema\"").unwrap();
-        assert!(name_i < desc_i && desc_i < schema_i);
+        let output_schema_i = json.find("\"outputSchema\"").unwrap();
+        assert!(name_i < desc_i && desc_i < schema_i && schema_i < output_schema_i);
         // Property order: query, kind, limit, projectPath.
         let q = json.find("\"query\"").unwrap();
         let k = json.find("\"kind\"").unwrap();
@@ -182,9 +183,18 @@ mod tests {
         assert!(json.contains("\"enum\":[\"function\",\"method\",\"class\",\"interface\",\"type\",\"variable\",\"route\",\"component\"]"));
         assert!(json.contains("\"default\":10"));
         assert!(json.contains("\"required\":[\"query\"]"));
+        assert!(json.contains("\"kind\":{\"const\":\"search\"}"));
         // status has no `required` key at all (TS omits it).
         let status = serde_json::to_value(&defs[6]).unwrap();
         assert!(status["inputSchema"].get("required").is_none());
+        assert_eq!(
+            status["outputSchema"]["oneOf"][0]["properties"]["kind"]["const"],
+            "status"
+        );
+        assert_eq!(
+            status["outputSchema"]["oneOf"][1]["properties"]["kind"]["const"],
+            "error"
+        );
     }
 
     #[test]
@@ -194,6 +204,8 @@ mod tests {
                 content_type: "text".into(),
                 text: "hi".into(),
             }],
+            structured_content: None,
+            meta: None,
             is_error: None,
         };
         assert_eq!(
@@ -203,13 +215,15 @@ mod tests {
         let err = ToolResult {
             content: vec![ToolContent {
                 content_type: "text".into(),
-                text: "Error: x".into(),
+                text: "x".into(),
             }],
+            structured_content: None,
+            meta: None,
             is_error: Some(true),
         };
         assert_eq!(
             serde_json::to_string(&err).unwrap(),
-            r#"{"content":[{"type":"text","text":"Error: x"}],"isError":true}"#
+            r#"{"content":[{"type":"text","text":"x"}],"isError":true}"#
         );
     }
 }

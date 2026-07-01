@@ -10,10 +10,11 @@ use crate::types::{Node, NodeKind, SearchResult};
 
 impl ToolHandler {
     pub(in crate::mcp::tools) fn format_search_results(&self, results: &[SearchResult]) -> String {
-        let mut lines: Vec<String> = vec![
-            format!("## Search Results ({} found)", results.len()),
-            String::new(),
-        ];
+        let mut lines: Vec<String> = vec![format!("Search results: {}", results.len())];
+        if results.is_empty() {
+            return lines.join("\n");
+        }
+        lines.push(String::new());
 
         for result in results {
             let node = &result.node;
@@ -22,15 +23,18 @@ impl ToolHandler {
             } else {
                 String::new()
             };
-            // Compact format: one line per result with key info
-            lines.push(format!("### {} ({})", node.name, node.kind.as_str()));
-            lines.push(format!("{}{}", node.file_path, location));
+            lines.push(format!(
+                "- {} ({}) {}{}",
+                node.name,
+                node.kind.as_str(),
+                node.file_path,
+                location
+            ));
             if let Some(sig) = &node.signature {
                 if !sig.is_empty() {
-                    lines.push(format!("`{sig}`"));
+                    lines.push(format!("  `{sig}`"));
                 }
             }
-            lines.push(String::new());
         }
 
         lines.join("\n")

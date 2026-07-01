@@ -4,13 +4,14 @@ use super::super::context::ToolHandler;
 use super::super::format::{
     ExploreOutputBudget,
     OrderedNodeMap,
+    cap_structured_content,
     display_symbol,
     floor_char_boundary,
     get_explore_budget,
     output_char_cap,
     to_locale_string,
 };
-use super::super::schema::ToolResult;
+use super::super::schema::{ToolContent, ToolResult};
 use super::types::RankedExploreFiles;
 use crate::codegraph::CodeGraph;
 use crate::error::Result;
@@ -146,11 +147,12 @@ pub(in crate::mcp::tools::explore) fn append_explore_footer(
         lines.push(String::new());
         lines.push("---".to_string());
         lines.push(format!(
-            "> **Complete source for {files_included} files is included above — do NOT re-read them.** If your question also needs files/symbols listed under \"Not shown above\" (or any area this call didn't cover), make ANOTHER codegraph_explore targeting those names — it returns the same source with line numbers and is cheaper and more complete than reading. Reserve Read for a single specific line range explore can't surface."
+            "> Source included for {files_included} file(s). Query specific omitted names if needed."
         ));
     } else if any_file_trimmed {
         lines.push(String::new());
-        lines.push("> Some file sections were trimmed for size. For a specific symbol you still need, run another `codegraph_explore` (or `codegraph_node`) with its exact name — line-numbered source, cheaper and more complete than Read.".to_string());
+        lines
+            .push("> Some sections were trimmed. Query exact symbols for more detail.".to_string());
     }
     if !budget.include_budget_note {
         return;
@@ -159,7 +161,7 @@ pub(in crate::mcp::tools::explore) fn append_explore_footer(
         let call_budget = get_explore_budget(stats.file_count);
         lines.push(String::new());
         lines.push(format!(
-            "> **Explore budget: {} calls for this project ({} files indexed).** Each call covers ~6 files; if your question spans more, spend your remaining calls on the uncovered area BEFORE falling back to Read — another explore is cheaper and more complete than reading those files. Synthesize once you've used {}.",
+            "> Explore budget: {} call(s) for this project ({} files indexed). Synthesize after {} call(s).",
             call_budget,
             to_locale_string(stats.file_count),
             call_budget
@@ -169,9 +171,10 @@ pub(in crate::mcp::tools::explore) fn append_explore_footer(
 }
 
 pub(in crate::mcp::tools::explore) fn finish_explore_result(
-    handler: &ToolHandler,
+    _handler: &ToolHandler,
     flow_text: &str,
     lines: Vec<String>,
+    structured_content: Option<serde_json::Value>,
 ) -> Result<ToolResult> {
     let output = format!("{}{}", flow_text, lines.join("\n"));
     if let Some(cap) = output_char_cap() {
@@ -188,10 +191,27 @@ pub(in crate::mcp::tools::explore) fn finish_explore_result(
                 Some(pos) if pos > 0 => &cut[..pos],
                 _ => cut,
             };
-            return Ok(handler.text_result(&format!(
-                "{safe}\n\n... (output truncated to budget; the source above is complete and verbatim — treat it as already Read. For any area not covered, run another codegraph_explore with the specific names — do NOT Read these files.)"
-            )));
+            let text = format!(
+                "{safe}\n\n... (output truncated to budget; query specific names for omitted areas.)"
+            );
+            return Ok(ToolResult {
+                content: vec![ToolContent {
+                    content_type: "text".into(),
+                    text,
+                }],
+                structured_content: structured_content.map(cap_structured_content),
+                meta: None,
+                is_error: None,
+            });
         }
     }
-    Ok(handler.text_result(&output))
+    Ok(ToolResult {
+        content: vec![ToolContent {
+            content_type: "text".into(),
+            text: output,
+        }],
+        structured_content: structured_content.map(cap_structured_content),
+        meta: None,
+        is_error: None,
+    })
 }

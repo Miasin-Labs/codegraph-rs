@@ -59,6 +59,54 @@ fn xref_lists_incoming_references_to_a_symbol() {
 }
 
 #[test]
+fn node_returns_structured_payload() {
+    let _env = env_read();
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("src/lib.ts"),
+        "export function target(): number { return 1; }\nexport function caller(): number { return target(); }\n",
+    );
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    let res = handler.execute(
+        "codegraph_node",
+        &json!({ "symbol": "target", "includeCode": true }),
+    );
+    assert_ne!(res.is_error, Some(true), "node errored: {}", res.text());
+    let structured = res.structured_content.as_ref().expect("structured node");
+    assert_eq!(structured["kind"], "node");
+    assert_eq!(structured["matches"][0]["node"]["name"], "target");
+    assert_eq!(structured["matches"][0]["callers"][0]["name"], "caller");
+    assert!(structured["matches"][0]["code"].as_str().unwrap().contains("target"));
+}
+
+#[test]
+fn node_structured_code_respects_output_cap() {
+    let _env = env_write();
+    let _guard = EnvVarGuard::set("CODEGRAPH_MAX_OUTPUT_CHARS", "600");
+    let dir = TempDir::new().unwrap();
+    let repeated = "x".repeat(5000);
+    write(
+        &dir.path().join("src/lib.ts"),
+        &format!("export function target(): string {{ return \"{repeated}\"; }}\n"),
+    );
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    let res = handler.execute(
+        "codegraph_node",
+        &json!({ "symbol": "target", "includeCode": true }),
+    );
+    let structured = res.structured_content.as_ref().expect("structured node");
+    let code = structured["matches"][0]["code"].as_str().unwrap();
+    assert!(code.contains("[truncated]"), "{code}");
+    assert!(code.len() < repeated.len(), "structured code was not capped");
+}
+
+#[test]
 fn paths_finds_call_chain_from_source_to_sink() {
     let _env = env_read();
     let dir = TempDir::new().unwrap();

@@ -70,6 +70,7 @@ pub(super) fn restore_unresolved_refs_for_removed_targets(
             file_path: Some(source.file_path.clone()),
             language: Some(source.language),
             candidates: None,
+            metadata: None,
         });
     }
 

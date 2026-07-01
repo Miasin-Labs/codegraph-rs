@@ -185,6 +185,7 @@ impl FrameworkResolver for NestjsResolver {
                     file_path: file_path.to_string(),
                     language: lang,
                     candidates: None,
+                    metadata: None,
                 });
             }
         };

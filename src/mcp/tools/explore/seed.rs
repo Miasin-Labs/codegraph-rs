@@ -5,7 +5,7 @@ use super::super::format::{
     OrderedNodeMap,
     TYPE_TOKEN_RE,
     extract_symbol_tokens,
-    is_callable_kind,
+    is_explore_seed_kind,
     is_qualified_token,
     is_test_path,
 };
@@ -73,7 +73,7 @@ impl ToolHandler {
             };
             let mut cands: Vec<Node> = raw
                 .into_iter()
-                .filter(|n| is_callable_kind(n.kind) && !is_test_path(&n.file_path))
+                .filter(|n| is_explore_seed_kind(n.kind) && !is_test_path(&n.file_path))
                 .collect();
             cands.sort_by(|a, b| {
                 let a_sub = if body_lines(a) > 1 { 1 } else { 0 };

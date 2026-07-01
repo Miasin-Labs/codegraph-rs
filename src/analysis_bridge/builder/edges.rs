@@ -9,6 +9,7 @@ use codegraph_analysis::nodes::{
     Visibility as AVisibility,
 };
 use codegraph_analysis::partial::FieldInfo as AFieldInfo;
+use serde_json::Value;
 
 use super::{MappedNodes, NodeById};
 use crate::analysis_bridge::mapping::{
@@ -30,6 +31,12 @@ pub(super) struct Enrichment {
     pub(super) fields: HashMap<ANodeId, BTreeSet<String>>,
     pub(super) variants: HashMap<ANodeId, BTreeSet<String>>,
     pub(super) accessed_fields: HashMap<ANodeId, BTreeSet<String>>,
+    pub(super) global_reads: HashMap<ANodeId, BTreeSet<String>>,
+    pub(super) global_writes: HashMap<ANodeId, BTreeSet<String>>,
+    pub(super) string_refs: HashMap<ANodeId, BTreeSet<String>>,
+    pub(super) memory_accesses: HashMap<ANodeId, Vec<Value>>,
+    pub(super) call_argument_roles: HashMap<ANodeId, Vec<Value>>,
+    pub(super) ida_cfg: HashMap<ANodeId, Vec<Value>>,
     pub(super) engine_fields: BTreeMap<ANodeId, BTreeMap<String, AFieldInfo>>,
     pub(super) engine_accessed: BTreeMap<ANodeId, Vec<String>>,
 }
@@ -71,6 +78,7 @@ struct GraphEdgeInput<'a> {
     row: &'a EdgeRow,
     kind: EdgeKind,
     src_node: &'a Node,
+    tgt_node: &'a Node,
     src_aid: &'a ANodeId,
     src_akind: ANodeKind,
     tgt_aid: &'a ANodeId,
@@ -108,6 +116,7 @@ impl EdgePass<'_> {
                         row,
                         kind,
                         src_node,
+                        tgt_node,
                         src_aid,
                         src_akind: *src_akind,
                         tgt_aid,
@@ -128,6 +137,7 @@ impl EdgePass<'_> {
     }
 
     fn queue_graph_edge(&mut self, input: GraphEdgeInput<'_>) {
+        self.fold_data_and_fact_metadata(&input);
         let Some(akind) = map_edge_kind(input.kind, input.src_akind, input.tgt_akind) else {
             skip_edge(
                 self.stats,
@@ -157,6 +167,70 @@ impl EdgePass<'_> {
                 weight: 1.0,
             },
         ));
+    }
+
+    fn fold_data_and_fact_metadata(&mut self, input: &GraphEdgeInput<'_>) {
+        if input.src_akind != ANodeKind::Function {
+            return;
+        }
+        if let Some(metadata) = &input.row.metadata {
+            let fact = Value::Object(metadata.clone());
+            match metadata.get("kind").and_then(Value::as_str) {
+                Some("memory_access") => {
+                    self.enrichment
+                        .memory_accesses
+                        .entry(input.src_aid.clone())
+                        .or_default()
+                        .push(fact);
+                    return;
+                }
+                Some("call_argument_roles") => {
+                    self.enrichment
+                        .call_argument_roles
+                        .entry(input.src_aid.clone())
+                        .or_default()
+                        .push(fact);
+                    return;
+                }
+                Some("ida_cfg") => {
+                    self.enrichment
+                        .ida_cfg
+                        .entry(input.src_aid.clone())
+                        .or_default()
+                        .push(fact);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        match (input.kind, input.tgt_node.kind) {
+            (EdgeKind::Reads, NodeKind::DataSymbol)
+                if is_real_data_symbol(&input.tgt_node.name) =>
+            {
+                self.enrichment
+                    .global_reads
+                    .entry(input.src_aid.clone())
+                    .or_default()
+                    .insert(input.tgt_node.name.clone());
+            }
+            (EdgeKind::Writes, NodeKind::DataSymbol)
+                if is_real_data_symbol(&input.tgt_node.name) =>
+            {
+                self.enrichment
+                    .global_writes
+                    .entry(input.src_aid.clone())
+                    .or_default()
+                    .insert(input.tgt_node.name.clone());
+            }
+            (EdgeKind::References, NodeKind::StringLiteral) => {
+                self.enrichment
+                    .string_refs
+                    .entry(input.src_aid.clone())
+                    .or_default()
+                    .insert(input.tgt_node.qualified_name.clone());
+            }
+            _ => {}
+        }
     }
 
     fn fold_skipped_target(&mut self, input: SkippedTargetInput<'_>) {
@@ -221,6 +295,13 @@ impl EdgePass<'_> {
                 is_public: matches!(map_visibility(tgt_node.visibility), AVisibility::Public),
             });
     }
+}
+
+fn is_real_data_symbol(name: &str) -> bool {
+    !(name.starts_with("mem:")
+        || name.starts_with("callarg:")
+        || name.starts_with("label:")
+        || name.starts_with("switch:"))
 }
 
 pub(super) fn insert_pending_edges(

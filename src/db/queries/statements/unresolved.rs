@@ -16,11 +16,15 @@ impl QueryBuilder {
     /// Insert an unresolved reference.
     pub fn insert_unresolved_ref(&self, reference: &UnresolvedReference) -> Result<()> {
         let mut stmt = self.db.conn().prepare_cached(
-            "INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, candidates, file_path, language)
-             VALUES (@fromNodeId, @referenceName, @referenceKind, @line, @col, @candidates, @filePath, @language)",
+            "INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, candidates, metadata, file_path, language)
+             VALUES (@fromNodeId, @referenceName, @referenceKind, @line, @col, @candidates, @metadata, @filePath, @language)",
         )?;
         let candidates: Option<String> = match &reference.candidates {
             Some(c) => Some(serde_json::to_string(c)?),
+            None => None,
+        };
+        let metadata: Option<String> = match &reference.metadata {
+            Some(m) => Some(serde_json::to_string(m)?),
             None => None,
         };
         stmt.execute(rusqlite::named_params! {
@@ -30,6 +34,7 @@ impl QueryBuilder {
             "@line": reference.line,
             "@col": reference.column,
             "@candidates": candidates,
+            "@metadata": metadata,
             "@filePath": reference.file_path.as_deref().unwrap_or(""),
             "@language": reference.language.unwrap_or(Language::Unknown).as_str(),
         })?;

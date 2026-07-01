@@ -16,7 +16,11 @@ pub(in crate::mcp::tools) use budget::{
     now_ms,
     output_char_cap,
 };
-pub(in crate::mcp::tools) use kinds::{is_callable_kind, is_container_node_kind};
+pub(in crate::mcp::tools) use kinds::{
+    is_callable_kind,
+    is_container_node_kind,
+    is_explore_seed_kind,
+};
 pub(in crate::mcp::tools) use ordered::{
     FlowInfo,
     OrderedNodeMap,
@@ -40,6 +44,7 @@ pub(in crate::mcp::tools) use regexes::{
     TOKEN_SPLIT_RE,
     TYPE_TOKEN_RE,
 };
+pub(in crate::mcp::tools) use results::cap_structured_content;
 pub use stale::{format_stale_banner, format_stale_footer};
 pub(in crate::mcp::tools) use symbols::{
     display_symbol,

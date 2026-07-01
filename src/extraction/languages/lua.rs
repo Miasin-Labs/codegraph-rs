@@ -124,6 +124,7 @@ fn emit_require(call_node: SyntaxNode<'_>, ctx: &mut dyn ExtractorContext) {
                 file_path: None,
                 language: None,
                 candidates: None,
+                metadata: None,
             });
         }
     }

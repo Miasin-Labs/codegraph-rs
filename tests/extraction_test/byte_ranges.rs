@@ -49,7 +49,7 @@ fn byte_ranges_match_source_slices_for_typescript() {
 fn byte_ranges_round_trip_through_full_indexing() {
     let temp_dir = tempfile::tempdir().unwrap();
     let src_dir = temp_dir.path().join("src");
-    fs::create_dir(&src_dir).unwrap();
+    fs::create_dir_all(&src_dir).unwrap();
     let code = "export function add(a: number, b: number): number {\n  return a + b;\n}\n";
     fs::write(src_dir.join("utils.ts"), code).unwrap();
 

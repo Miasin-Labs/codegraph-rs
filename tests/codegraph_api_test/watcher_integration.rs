@@ -9,6 +9,7 @@ mod watcher_integration {
         assert!(!cg.is_watching());
 
         let started = cg.watch(WatchOptions {
+            // Test-only debounce: long enough to exercise timer wiring, short enough for the suite.
             debounce_ms: Some(200),
             inert_for_tests: true,
             ..Default::default()

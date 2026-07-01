@@ -6,6 +6,7 @@ use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
 use super::super::format::{LEADING_DOT_SLASH_RE, locale_cmp};
+use super::super::output::{FileGroupOutput, FileOutput, FilesOutput};
 use super::super::schema::ToolResult;
 use super::glob_to_regex;
 use crate::error::Result;
@@ -31,15 +32,10 @@ impl ToolHandler {
         };
 
         // Get all files from the index
-        struct FileEntry {
-            path: String,
-            language: String,
-            node_count: u32,
-        }
-        let all_files: Vec<FileEntry> = cg
+        let all_files: Vec<FileOutput> = cg
             .get_files()?
             .into_iter()
-            .map(|f| FileEntry {
+            .map(|f| FileOutput {
                 path: f.path,
                 language: f.language.as_str().to_string(),
                 node_count: f.node_count,
@@ -47,21 +43,23 @@ impl ToolHandler {
             .collect();
 
         if all_files.is_empty() {
-            return Ok(self.text_result("No files indexed. Run `codegraph index` first."));
+            let output = FilesOutput {
+                schema_version: 1,
+                kind: "files",
+                path_filter: normalized_path_filter(path_filter),
+                pattern: pattern.map(str::to_string),
+                format: format.to_string(),
+                total: 0,
+                files: Vec::new(),
+                groups: Vec::new(),
+            };
+            return self.structured_result("Files: 0", &output);
         }
 
         // Filter by path prefix, normalizing root-ish and Windows-style
         // variants (#426).
-        let normalized_filter: String = match path_filter {
-            Some(pf) if !pf.is_empty() => {
-                let s = pf.replace('\\', "/");
-                let s = LEADING_DOT_SLASH_RE.replace(&s, "").to_string();
-                let s = if s == "." { String::new() } else { s };
-                s.trim_end_matches('/').to_string()
-            }
-            _ => String::new(),
-        };
-        let mut files: Vec<&FileEntry> = if !normalized_filter.is_empty() {
+        let normalized_filter = normalized_path_filter(path_filter).unwrap_or_default();
+        let mut files: Vec<&FileOutput> = if !normalized_filter.is_empty() {
             all_files
                 .iter()
                 .filter(|f| {
@@ -80,22 +78,43 @@ impl ToolHandler {
         }
 
         if files.is_empty() {
-            return Ok(self.text_result("No files found matching the criteria."));
+            let output = FilesOutput {
+                schema_version: 1,
+                kind: "files",
+                path_filter: normalized_path_filter(path_filter),
+                pattern: pattern.map(str::to_string),
+                format: format.to_string(),
+                total: 0,
+                files: Vec::new(),
+                groups: Vec::new(),
+            };
+            return self.structured_result("Files: 0", &output);
         }
 
         let triples: Vec<(&str, &str, u32)> = files
             .iter()
             .map(|f| (f.path.as_str(), f.language.as_str(), f.node_count))
             .collect();
+        let payload_files: Vec<FileOutput> = files.iter().map(|f| (*f).clone()).collect();
+        let groups = file_groups(&payload_files);
 
-        // Format output
         let output = match format {
             "flat" => self.format_files_flat(&triples, include_metadata),
             "grouped" => self.format_files_grouped(&triples, include_metadata),
             _ => self.format_files_tree(&triples, include_metadata, max_depth),
         };
+        let payload = FilesOutput {
+            schema_version: 1,
+            kind: "files",
+            path_filter: normalized_path_filter(path_filter),
+            pattern: pattern.map(str::to_string),
+            format: format.to_string(),
+            total: payload_files.len(),
+            files: payload_files,
+            groups,
+        };
 
-        Ok(self.text_result(&self.truncate_output(&output)))
+        self.structured_result(&self.truncate_output(&output), &payload)
     }
 
     /// Format files as a flat list.
@@ -152,4 +171,38 @@ impl ToolHandler {
 
         lines.join("\n")
     }
+}
+
+fn normalized_path_filter(path_filter: Option<&str>) -> Option<String> {
+    match path_filter {
+        Some(pf) if !pf.is_empty() => {
+            let s = pf.replace('\\', "/");
+            let s = LEADING_DOT_SLASH_RE.replace(&s, "").to_string();
+            let s = if s == "." { String::new() } else { s };
+            let normalized = s.trim_end_matches('/').to_string();
+            if normalized.is_empty() {
+                None
+            } else {
+                Some(normalized)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn file_groups(files: &[FileOutput]) -> Vec<FileGroupOutput> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for file in files {
+        *counts.entry(file.language.clone()).or_default() += 1;
+    }
+    let mut groups: Vec<FileGroupOutput> = counts
+        .into_iter()
+        .map(|(language, count)| FileGroupOutput { language, count })
+        .collect();
+    groups.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| locale_cmp(&a.language, &b.language))
+    });
+    groups
 }

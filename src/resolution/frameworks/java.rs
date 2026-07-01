@@ -403,6 +403,7 @@ impl FrameworkResolver for SpringResolver {
                     file_path: file_path.to_string(),
                     language: lang,
                     candidates: None,
+                    metadata: None,
                 });
             }
         }
@@ -454,6 +455,7 @@ impl FrameworkResolver for SpringResolver {
                 file_path: file_path.to_string(),
                 language: lang,
                 candidates: None,
+                metadata: None,
             });
         }
 
@@ -682,6 +684,7 @@ fn extract_spring_value_bindings(
             file_path: file_path.to_string(),
             language: lang,
             candidates: None,
+            metadata: None,
         });
     }
 
@@ -718,6 +721,7 @@ fn extract_spring_value_bindings(
             file_path: file_path.to_string(),
             language: lang,
             candidates: None,
+            metadata: None,
         });
     }
 }

@@ -408,6 +408,143 @@ fn property_rows_fold_into_fields_and_accessed_fields_metadata() {
     assert_eq!(result.stats.edges_enriched, 4);
 }
 
+#[test]
+fn data_symbols_strings_and_ida_facts_bridge_into_constants_and_metadata() {
+    let dir = TempDir::new().unwrap();
+    write_fixture(dir.path());
+    index_fixture(dir.path());
+
+    let (_conn, qb) = open_queries(dir.path());
+    let main_id = db_node_id(&qb, "main", NodeKind::Function);
+
+    let data = Node::new(
+        "data_symbol:global_counter",
+        NodeKind::DataSymbol,
+        "global_counter",
+        "global_counter",
+        "src/main.ts",
+        Language::Typescript,
+        1,
+        1,
+    );
+    let data_written = Node::new(
+        "data_symbol:global_state",
+        NodeKind::DataSymbol,
+        "global_state",
+        "global_state",
+        "src/main.ts",
+        Language::Typescript,
+        1,
+        1,
+    );
+    let string = Node::new(
+        "string_literal:test",
+        NodeKind::StringLiteral,
+        "hello ida",
+        "hello ida",
+        "src/main.ts",
+        Language::Typescript,
+        1,
+        1,
+    );
+    let mem = Node::new(
+        "data_symbol:mem:a1+148",
+        NodeKind::DataSymbol,
+        "mem:a1+148",
+        "mem:a1+148",
+        "src/main.ts",
+        Language::Typescript,
+        1,
+        1,
+    );
+    let callarg = Node::new(
+        "data_symbol:callarg:memcpy:10:2",
+        NodeKind::DataSymbol,
+        "callarg:memcpy:10:2",
+        "callarg:memcpy:10:2",
+        "src/main.ts",
+        Language::Typescript,
+        1,
+        1,
+    );
+    let label = Node::new(
+        "data_symbol:label:LABEL_1",
+        NodeKind::DataSymbol,
+        "label:LABEL_1",
+        "label:LABEL_1",
+        "src/main.ts",
+        Language::Typescript,
+        1,
+        1,
+    );
+    qb.insert_nodes(&[data, data_written, string, mem, callarg, label])
+        .expect("insert ida fact nodes");
+
+    let mut memory_edge = Edge::new(&main_id, "data_symbol:mem:a1+148", EdgeKind::Reads);
+    memory_edge.metadata = Some(serde_json::Map::from_iter([
+        ("kind".to_string(), serde_json::json!("memory_access")),
+        ("base".to_string(), serde_json::json!("a1")),
+        ("offset".to_string(), serde_json::json!(148)),
+    ]));
+    let mut call_edge = Edge::new(
+        &main_id,
+        "data_symbol:callarg:memcpy:10:2",
+        EdgeKind::References,
+    );
+    call_edge.metadata = Some(serde_json::Map::from_iter([
+        ("kind".to_string(), serde_json::json!("call_argument_roles")),
+        ("callee".to_string(), serde_json::json!("memcpy")),
+        (
+            "arguments".to_string(),
+            serde_json::json!([{ "index": 0, "role": "write_dst", "expr": "dst" }]),
+        ),
+    ]));
+    let mut cfg_edge = Edge::new(&main_id, "data_symbol:label:LABEL_1", EdgeKind::References);
+    cfg_edge.metadata = Some(serde_json::Map::from_iter([
+        ("kind".to_string(), serde_json::json!("ida_cfg")),
+        ("role".to_string(), serde_json::json!("goto")),
+        ("label".to_string(), serde_json::json!("LABEL_1")),
+    ]));
+    qb.insert_edges(&[
+        Edge::new(&main_id, "data_symbol:global_counter", EdgeKind::Reads),
+        Edge::new(&main_id, "data_symbol:global_state", EdgeKind::Writes),
+        Edge::new(&main_id, "string_literal:test", EdgeKind::References),
+        memory_edge,
+        call_edge,
+        cfg_edge,
+    ])
+    .expect("insert ida fact edges");
+
+    let result = build_analysis_graph(&qb).expect("bridge");
+    node_id_by_name(&result, "global_counter", ANodeKind::Constant);
+    node_id_by_name(&result, "hello ida", ANodeKind::Constant);
+
+    let main = node_id_by_name(&result, "main", ANodeKind::Function);
+    let metadata = &result.graph.get_node(&main).unwrap().metadata;
+    let reads: Vec<String> =
+        serde_json::from_str(metadata.get("global_reads").expect("global reads")).unwrap();
+    let writes: Vec<String> =
+        serde_json::from_str(metadata.get("global_writes").expect("global writes")).unwrap();
+    let strings: Vec<String> =
+        serde_json::from_str(metadata.get("string_refs").expect("string refs")).unwrap();
+    let memory: Vec<serde_json::Value> =
+        serde_json::from_str(metadata.get("memory_accesses").expect("memory accesses")).unwrap();
+    let call_roles: Vec<serde_json::Value> = serde_json::from_str(
+        metadata
+            .get("call_argument_roles")
+            .expect("call argument roles"),
+    )
+    .unwrap();
+    let cfg: Vec<serde_json::Value> =
+        serde_json::from_str(metadata.get("ida_cfg").expect("ida cfg")).unwrap();
+    assert_eq!(reads, vec!["global_counter".to_string()]);
+    assert_eq!(writes, vec!["global_state".to_string()]);
+    assert_eq!(strings, vec!["hello ida".to_string()]);
+    assert_eq!(memory.len(), 1);
+    assert_eq!(call_roles.len(), 1);
+    assert_eq!(cfg.len(), 1);
+}
+
 // =============================================================================
 // End-to-end analyses over the bridged graph
 // =============================================================================

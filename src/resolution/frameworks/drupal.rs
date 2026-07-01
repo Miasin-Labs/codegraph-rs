@@ -155,6 +155,7 @@ fn flush_route(
             file_path: file_path.to_string(),
             language: Language::Yaml,
             candidates: None,
+            metadata: None,
         });
     }
 }
@@ -330,6 +331,7 @@ fn extract_drupal_hooks(file_path: &str, content: &str) -> FrameworkExtractionRe
             file_path: file_path.to_string(),
             language: Language::Php,
             candidates: None,
+            metadata: None,
         });
     };
 

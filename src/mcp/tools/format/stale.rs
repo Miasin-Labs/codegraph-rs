@@ -18,7 +18,7 @@ pub fn format_stale_banner(stale: &[PendingFile]) -> String {
         })
         .collect();
     format!(
-        "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n{}\nFor accurate content of those specific files, Read them directly. The rest of this response is fresh.",
+        "Stale index notice: some files referenced below changed after the last index sync:\n{}\nRead those files directly for exact current content. Other files in this response are fresh.",
         lines.join("\n")
     )
 }
@@ -37,12 +37,12 @@ pub fn format_stale_footer(stale: &[PendingFile]) -> String {
         })
         .collect();
     let more = if stale.len() > MAX {
-        format!("\n  - …and {} more", stale.len() - MAX)
+        format!("\n  - and {} more", stale.len() - MAX)
     } else {
         String::new()
     };
     format!(
-        "(Note: {} file(s) elsewhere in this project are pending index sync but were not referenced above:\n{}{})",
+        "Note: {} file(s) elsewhere in this project are pending index sync but were not referenced above:\n{}{}",
         stale.len(),
         lines.join("\n"),
         more

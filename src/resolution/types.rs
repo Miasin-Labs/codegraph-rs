@@ -20,7 +20,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{EdgeKind, Language, Node, NodeKind};
+use crate::types::{EdgeKind, Language, Metadata, Node, NodeKind};
 
 // =============================================================================
 // Unresolved / resolved references
@@ -53,6 +53,8 @@ pub struct UnresolvedRef {
     /// Possible qualified names it might resolve to
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidates: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Metadata>,
 }
 
 /// How a reference was resolved (TS union
@@ -517,6 +519,7 @@ mod tests {
             file_path: "src/a.ts".into(),
             language: Language::Typescript,
             candidates: None,
+            metadata: None,
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["fromNodeId"], "n1");

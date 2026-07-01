@@ -33,7 +33,8 @@ impl ReferenceResolver {
                     Some(language) => language,
                     None => self.get_language_from_node_id(&r.from_node_id),
                 },
-                candidates: None,
+                candidates: r.candidates.clone(),
+                metadata: r.metadata.clone(),
             })
             .collect();
 
