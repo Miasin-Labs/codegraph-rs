@@ -99,25 +99,36 @@ fn terminate_sql_includes(source: &str) -> String {
 }
 
 fn normalize_source(source: &str) -> String {
-    if !is_free_format(source) {
-        return terminate_sql_includes(source);
-    }
+    let mut normalized = if is_free_format(source) {
+        let shifted = source
+            .split('\n')
+            .enumerate()
+            .map(|(index, line)| {
+                if index == 0 {
+                    format!("CGWIDE {line}")
+                } else if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("       {line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        terminate_sql_includes(&shifted)
+    } else {
+        terminate_sql_includes(source)
+    };
 
-    let shifted = source
-        .split('\n')
-        .enumerate()
-        .map(|(index, line)| {
-            if index == 0 {
-                format!("CGWIDE {line}")
-            } else if line.is_empty() {
-                String::new()
-            } else {
-                format!("       {line}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    terminate_sql_includes(&shifted)
+    // tree-sitter-COBOL's sequence-area scanner advances while column <= 5
+    // without checking EOF. Keep its final logical line at column 6 or later so
+    // malformed files ending in a short line cannot spin inside the C scanner.
+    const SEQUENCE_AREA_WIDTH: usize = 6;
+    let final_line_width = normalized.rsplit('\n').next().map_or(0, str::len);
+    normalized.extend(std::iter::repeat_n(
+        ' ',
+        SEQUENCE_AREA_WIDTH.saturating_sub(final_line_width),
+    ));
+    normalized
 }
 
 fn node_text(node: SyntaxNode<'_>, source: &str) -> String {
@@ -668,5 +679,25 @@ impl LanguageExtractor for CobolExtractor {
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_source;
+
+    #[test]
+    fn pads_short_final_line_past_the_external_scanner_sequence_area() {
+        let source = "       IDENTIFICATION DIVISION.\n       PORGRAM-ID. HELLO.\n*>>\n";
+        let normalized = normalize_source(source);
+
+        assert_eq!(normalized, format!("{source}{}", " ".repeat(6)));
+        assert_eq!(normalized.rsplit('\n').next().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn leaves_complete_final_line_width_unchanged() {
+        let source = "       IDENTIFICATION DIVISION.\n123456";
+        assert_eq!(normalize_source(source), source);
     }
 }

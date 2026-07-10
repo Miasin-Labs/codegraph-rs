@@ -201,6 +201,50 @@ fn cobol_vbnet_and_erlang_extract_primary_program_symbols() {
 }
 
 #[test]
+fn cobol_error_fixture_with_short_trailing_line_finishes_parsing() {
+    let source = concat!(
+        "*> { dg-options \"-fdiagnostics-show-caret\" } \n",
+        "*> { dg-do compile }\n",
+        "\n",
+        "       identification division.\n",
+        "       porgram-id. hello. *> { dg-error \"8: syntax error, unexpected NAME, expecting FUNCTION or PROGRAM-ID\" }\n",
+        "       procedure division.\n",
+        "           display \"Hello World!\".\n",
+        "           stop run.\n",
+        "\n",
+        "*<<\n",
+        "{ dg-begin-multiline-output \"\" }\n",
+        "        porgram-id. hello.\n",
+        "        ^~~~~~~~~~~\n",
+        "{ dg-end-multiline-output \"\" }\n",
+        "*>>\n",
+    );
+
+    let result = extract("typo-1.cob", source);
+    assert!(
+        find_named(&result, NodeKind::File, "typo-1.cob").is_some(),
+        "malformed COBOL should still produce a file node"
+    );
+}
+
+#[test]
+fn cobol_free_format_with_trailing_newline_finishes_parsing() {
+    let source = concat!(
+        "IDENTIFICATION DIVISION.\n",
+        "PROGRAM-ID. HELLO.\n",
+        "PROCEDURE DIVISION.\n",
+        "DISPLAY \"Hello World!\".\n",
+        "STOP RUN.\n",
+    );
+
+    let result = extract("free-format.cob", source);
+    assert!(
+        find_named(&result, NodeKind::Module, "HELLO").is_some(),
+        "free-format COBOL with a trailing newline should finish parsing"
+    );
+}
+
+#[test]
 fn terraform_and_opentofu_extract_resource_blocks() {
     for path in ["main.tf", "main.tofu"] {
         let result = extract(
