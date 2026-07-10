@@ -66,13 +66,15 @@ export function loadConfig() {
     );
 }
 
-fn index_fixture(root: &Path) {
+async fn index_fixture(root: &Path) {
     let cg = if CodeGraph::is_initialized(root) {
         CodeGraph::open_sync(root).expect("open")
     } else {
         CodeGraph::init_sync(root).expect("init")
     };
-    cg.index_all(&IndexOptions::default()).expect("index_all");
+    cg.index_all(&IndexOptions::default())
+        .await
+        .expect("index_all");
     cg.close();
 }
 
@@ -142,9 +144,9 @@ fn plant_fields(qb: &QueryBuilder) {
 }
 
 /// Indexed fixture + planted fields; callers open their own connection.
-fn fixture(root: &Path) {
+async fn fixture(root: &Path) {
     write_fixture(root);
-    index_fixture(root);
+    index_fixture(root).await;
     let (_conn, qb) = open_queries(root);
     plant_fields(&qb);
 }
@@ -169,10 +171,10 @@ fn with_fields() -> BridgeOptions {
 // 1. Bridged-with-flag graph contains engine-typed field data
 // =============================================================================
 
-#[test]
-fn flag_gated_bridge_carries_engine_field_metadata() {
+#[tokio::test(flavor = "current_thread")]
+async fn flag_gated_bridge_carries_engine_field_metadata() {
     let dir = TempDir::new().unwrap();
-    fixture(dir.path());
+    fixture(dir.path()).await;
     let (_conn, qb) = open_queries(dir.path());
 
     // Default bridge: legacy JSON name-array fold, no engine encoding.
@@ -258,10 +260,10 @@ fn flag_gated_bridge_carries_engine_field_metadata() {
 // 2. context --strategy analysis renders the partial view
 // =============================================================================
 
-#[test]
-fn context_analysis_renders_partial_view_over_bridged_fields() {
+#[tokio::test(flavor = "current_thread")]
+async fn context_analysis_renders_partial_view_over_bridged_fields() {
     let dir = TempDir::new().unwrap();
-    fixture(dir.path());
+    fixture(dir.path()).await;
     let (_conn, qb) = open_queries(dir.path());
 
     // With fields: the partial view section appears, showing only the two
@@ -320,10 +322,10 @@ fn context_analysis_renders_partial_view_over_bridged_fields() {
 // 3. Snapshot cache never leaks between flag states
 // =============================================================================
 
-#[test]
-fn snapshot_cache_does_not_leak_between_flag_states() {
+#[tokio::test(flavor = "current_thread")]
+async fn snapshot_cache_does_not_leak_between_flag_states() {
     let dir = TempDir::new().unwrap();
-    fixture(dir.path());
+    fixture(dir.path()).await;
     let (_conn, qb) = open_queries(dir.path());
     let off = BridgeOptions::default();
     let on = with_fields();
@@ -395,11 +397,11 @@ fn run_cli(cwd: &Path, args: &[&str]) -> std::process::Output {
         .expect("spawn codegraph binary")
 }
 
-#[test]
-fn cli_context_fields_flag_renders_partial_views() {
+#[tokio::test(flavor = "current_thread")]
+async fn cli_context_fields_flag_renders_partial_views() {
     let dir = TempDir::new().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    fixture(&root);
+    fixture(&root).await;
 
     let task = "how does loadConfig use BigConfig";
 

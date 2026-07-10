@@ -18,6 +18,7 @@ fn framework_registry_preserves_ts_registration_order() {
             "react",
             "svelte",
             "vue",
+            "astro",
             "django",
             "flask",
             "fastapi",
@@ -25,6 +26,7 @@ fn framework_registry_preserves_ts_registration_order() {
             "spring",
             "play",
             "go",
+            "goframe",
             "rust",
             "aspnet",
             "swiftui",
@@ -34,6 +36,8 @@ fn framework_registry_preserves_ts_registration_order() {
             "react-native-bridge",
             "expo-modules",
             "fabric-view",
+            "cics",
+            "terraform",
             "salesforce",
         ]
     );

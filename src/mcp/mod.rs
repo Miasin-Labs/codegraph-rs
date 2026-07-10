@@ -5,6 +5,7 @@
 
 pub mod daemon;
 pub mod daemon_paths;
+pub mod daemon_registry;
 pub mod engine;
 pub mod proxy;
 pub mod server;

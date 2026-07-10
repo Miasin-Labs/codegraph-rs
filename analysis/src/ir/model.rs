@@ -1636,7 +1636,9 @@ pub fn lower_for_language(lang_id: &str, node: Node, source: &str) -> Option<IrF
     match lang_id {
         "rust" => RustIrLowering::new().lower_function(node, source),
         "python" => PythonIrLowering::new().lower_function(node, source),
-        "typescript" | "javascript" => TypeScriptIrLowering::new().lower_function(node, source),
+        "typescript" | "javascript" | "arkts" => {
+            TypeScriptIrLowering::new().lower_function(node, source)
+        }
         "go" => GoIrLowering::new().lower_function(node, source),
         _ => None,
     }

@@ -37,14 +37,14 @@ impl QueryBuilder {
               id, kind, name, qualified_name, file_path, language,
               start_line, end_line, start_column, end_column,
               start_byte, end_byte, address, size,
-              docstring, signature, visibility,
+              docstring, signature, return_type, visibility,
               is_exported, is_async, is_static, is_abstract,
               decorators, type_parameters, updated_at
             ) VALUES (
               @id, @kind, @name, @qualifiedName, @filePath, @language,
               @startLine, @endLine, @startColumn, @endColumn,
               @startByte, @endByte, @address, @size,
-              @docstring, @signature, @visibility,
+              @docstring, @signature, @returnType, @visibility,
               @isExported, @isAsync, @isStatic, @isAbstract,
               @decorators, @typeParameters, @updatedAt
             )",
@@ -86,6 +86,7 @@ impl QueryBuilder {
             "@size": node.size,
             "@docstring": node.docstring,
             "@signature": node.signature,
+            "@returnType": node.return_type,
             "@visibility": node.visibility.map(visibility_str),
             "@isExported": node.is_exported.unwrap_or(false) as i64,
             "@isAsync": node.is_async.unwrap_or(false) as i64,
@@ -95,6 +96,13 @@ impl QueryBuilder {
             "@typeParameters": type_parameters,
             "@updatedAt": updated_at,
         })?;
+        drop(stmt);
+        if !matches!(
+            node.kind,
+            crate::types::NodeKind::File | crate::types::NodeKind::Import
+        ) {
+            self.insert_name_segments(&node.name)?;
+        }
         Ok(())
     }
 
@@ -139,6 +147,7 @@ impl QueryBuilder {
               size = @size,
               docstring = @docstring,
               signature = @signature,
+              return_type = @returnType,
               visibility = @visibility,
               is_exported = @isExported,
               is_async = @isAsync,
@@ -186,6 +195,7 @@ impl QueryBuilder {
             "@size": node.size,
             "@docstring": node.docstring,
             "@signature": node.signature,
+            "@returnType": node.return_type,
             "@visibility": node.visibility.map(visibility_str),
             "@isExported": node.is_exported.unwrap_or(false) as i64,
             "@isAsync": node.is_async.unwrap_or(false) as i64,
@@ -195,6 +205,13 @@ impl QueryBuilder {
             "@typeParameters": type_parameters,
             "@updatedAt": updated_at,
         })?;
+        drop(stmt);
+        if !matches!(
+            node.kind,
+            crate::types::NodeKind::File | crate::types::NodeKind::Import
+        ) {
+            self.insert_name_segments(&node.name)?;
+        }
         Ok(())
     }
 

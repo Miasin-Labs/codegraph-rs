@@ -255,6 +255,10 @@ pub struct WorkspacePackages {
     /// (lookups are by exact name; the longest-name-match consumer in
     /// `resolveWorkspaceImport` is order-independent).
     pub by_name: HashMap<String, String>,
+    /// Bare package name → manifest-declared entry file. HarmonyOS ohpm
+    /// modules commonly use `oh-package.json5` with `main: "Index.ets"`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub entry_by_name: HashMap<String, String>,
 }
 
 // =============================================================================

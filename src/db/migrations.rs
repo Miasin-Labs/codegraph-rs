@@ -7,7 +7,12 @@ use crate::db::connection::{Db, now_ms};
 use crate::error::Result;
 
 /// Current schema version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 7;
+///
+/// Version 8 is the first shared superset of the historical Rust and
+/// TypeScript schema-7 lineages. Both implementations independently used
+/// versions 5-7 for different changes, so the v8 migration inspects the
+/// database shape instead of assuming which lineage produced it.
+pub const CURRENT_SCHEMA_VERSION: u32 = 8;
 
 /// Migration definition.
 pub struct Migration {
@@ -20,7 +25,7 @@ pub struct Migration {
 ///
 /// Note: Version 1 is the initial schema, handled by schema.sql.
 /// Future migrations go here.
-static MIGRATIONS: [Migration; 6] = [
+static MIGRATIONS: [Migration; 7] = [
     Migration {
         version: 2,
         description: "Add project metadata, provenance tracking, and unresolved ref context",
@@ -79,7 +84,86 @@ static MIGRATIONS: [Migration; 6] = [
         description: "Add nullable metadata to unresolved_refs (copied onto resolved edges; backfill NULL, populated on re-index)",
         up: |db| db.exec("ALTER TABLE unresolved_refs ADD COLUMN metadata TEXT;"),
     },
+    Migration {
+        version: 8,
+        description: "Unify Rust and TypeScript schema-7 lineages, deduplicate edges, and add prompt vocabulary",
+        up: migrate_unified_schema_v8,
+    },
 ];
+
+fn table_has_column(db: &Db, table: &str, column: &str) -> Result<bool> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut stmt = db.conn().prepare(&sql)?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn add_column_if_missing(db: &Db, table: &str, column: &str, ddl: &str) -> Result<()> {
+    if !table_has_column(db, table, column)? {
+        db.exec(ddl)?;
+    }
+    Ok(())
+}
+
+/// Reconcile databases written by either schema-7 lineage.
+fn migrate_unified_schema_v8(db: &Db) -> Result<()> {
+    add_column_if_missing(
+        db,
+        "nodes",
+        "start_byte",
+        "ALTER TABLE nodes ADD COLUMN start_byte INTEGER;",
+    )?;
+    add_column_if_missing(
+        db,
+        "nodes",
+        "end_byte",
+        "ALTER TABLE nodes ADD COLUMN end_byte INTEGER;",
+    )?;
+    add_column_if_missing(
+        db,
+        "nodes",
+        "address",
+        "ALTER TABLE nodes ADD COLUMN address INTEGER;",
+    )?;
+    add_column_if_missing(
+        db,
+        "nodes",
+        "size",
+        "ALTER TABLE nodes ADD COLUMN size INTEGER;",
+    )?;
+    add_column_if_missing(
+        db,
+        "nodes",
+        "return_type",
+        "ALTER TABLE nodes ADD COLUMN return_type TEXT;",
+    )?;
+    add_column_if_missing(
+        db,
+        "unresolved_refs",
+        "metadata",
+        "ALTER TABLE unresolved_refs ADD COLUMN metadata TEXT;",
+    )?;
+
+    db.exec(
+        "DELETE FROM edges
+         WHERE id NOT IN (
+           SELECT MIN(id) FROM edges
+           GROUP BY source, target, kind, IFNULL(line, -1), IFNULL(col, -1)
+         );
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_identity
+           ON edges(source, target, kind, IFNULL(line, -1), IFNULL(col, -1));
+         CREATE TABLE IF NOT EXISTS name_segment_vocab (
+           segment TEXT NOT NULL,
+           name TEXT NOT NULL,
+           PRIMARY KEY (segment, name)
+         ) WITHOUT ROWID;",
+    )
+}
 
 /// Get the current schema version from the database.
 pub fn get_current_version(db: &Db) -> u32 {

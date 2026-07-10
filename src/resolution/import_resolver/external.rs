@@ -189,7 +189,12 @@ pub(super) fn is_external_import(
     // Common external patterns
     if matches!(
         language,
-        Language::Typescript | Language::Javascript | Language::Tsx | Language::Jsx
+        Language::Typescript
+            | Language::Javascript
+            | Language::Tsx
+            | Language::Jsx
+            | Language::Arkts
+            | Language::Astro
     ) {
         // Node built-ins
         if [

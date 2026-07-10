@@ -1,7 +1,7 @@
 use crate::fixture::*;
 
-#[test]
-fn csharp_type_references_resolve_to_dto_classes_381() {
+#[tokio::test(flavor = "current_thread")]
+async fn csharp_type_references_resolve_to_dto_classes_381() {
     // Extraction-side #381 produces `references` refs from method returns/
     // params, properties and fields; this pins the RESOLUTION of those refs
     // to the DTO classes.
@@ -101,15 +101,17 @@ fn csharp_type_references_resolve_to_dto_classes_381() {
     // SessionInfoDto: Build return, Build param, BuildAsync return (inside
     // Task<>), Latest property. UserDto: Build param, BuildAsync param,
     // _cached field.
+    let mut build_session_param = uref(
+        &build.id,
+        "SessionInfoDto",
+        EdgeKind::References,
+        5,
+        "src/Service.cs",
+        Language::Csharp,
+    );
+    build_session_param.column = 50;
     q.insert_unresolved_refs_batch(&[
-        uref(
-            &build.id,
-            "SessionInfoDto",
-            EdgeKind::References,
-            5,
-            "src/Service.cs",
-            Language::Csharp,
-        ),
+        build_session_param,
         uref(
             &build.id,
             "UserDto",
@@ -163,6 +165,7 @@ fn csharp_type_references_resolve_to_dto_classes_381() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let session_incoming = incoming(&q, &session_dto.id, EdgeKind::References);

@@ -477,6 +477,8 @@ impl GraphSession {
             "rust"
         } else if file_path.ends_with(".ts") || file_path.ends_with(".tsx") {
             "typescript"
+        } else if file_path.ends_with(".ets") {
+            "arkts"
         } else if file_path.ends_with(".py") {
             "python"
         } else {
@@ -1394,6 +1396,7 @@ fn lang_for(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("rs") => "rust",
         Some("ts") | Some("tsx") => "typescript",
+        Some("ets") => "arkts",
         Some("js") | Some("jsx") => "javascript",
         Some("py") => "python",
         Some("go") => "go",
@@ -1406,6 +1409,8 @@ fn lang_for(path: &Path) -> &'static str {
         Some("php") => "php",
         Some("cs") => "csharp",
         Some("svelte") => "svelte",
+        Some("astro") => "astro",
+        Some("razor") | Some("cshtml") => "razor",
         _ => "",
     }
 }

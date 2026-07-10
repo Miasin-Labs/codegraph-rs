@@ -1,0 +1,11 @@
+[package]
+name = "tree-sitter"
+version = "0.20.10"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tree-sitter-next = { package = "tree-sitter", version = "=0.26.9" }

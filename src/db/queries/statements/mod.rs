@@ -19,6 +19,7 @@ mod models;
 mod nodes;
 mod rows;
 mod search;
+mod segments;
 mod stats;
 mod unresolved;
 

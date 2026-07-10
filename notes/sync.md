@@ -153,13 +153,14 @@ User-visible strings match TS verbatim (including the `⚠` prefix and
    per-directory inotify watches built by our own ignore-aware tree walk
    (notify's recursive mode would descend into node_modules and blow the
    inotify budget — the exact thing the TS design avoids, #579).
-2. **No async runtime**: one worker `std::thread` per started watcher owns the
-   notify watcher + a crossbeam channel; the debounce is a deadline serviced
-   via `recv_timeout` (TS `setTimeout`). `start()` blocks on a rendezvous
-   until the watch set is installed, so it stays synchronous like TS.
-3. `sync_fn` runs synchronously **on the worker thread**. OS events arriving
-   mid-sync queue in the channel and enter `pending_files` only after
-   `sync_fn` returns (TS updated them live on the event loop). Net pruning
+2. One worker `std::thread` per started watcher owns the notify watcher + a
+   crossbeam channel; the debounce is a deadline serviced via `recv_timeout`
+   (TS `setTimeout`). `start()` blocks on a rendezvous until the watch set is
+   installed, so it stays synchronous like TS. The worker borrows the process
+   Tokio runtime handle when it must drive an async CodeGraph sync.
+3. `sync_fn` runs to completion **from the worker thread**. OS events arriving
+   mid-sync queue in the channel and enter `pending_files` only after the sync
+   future returns (TS updated them live on the event loop). Net pruning
    semantics are identical (their `last_seen_ms` ends up > `sync_started_ms`,
    so they survive into the rescheduled follow-up sync); the only observable
    difference is `get_pending_files()` during an in-flight sync not yet

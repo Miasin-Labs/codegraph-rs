@@ -3,8 +3,8 @@ mod concurrent_locking {
 
     use super::*;
 
-    #[test]
-    fn uses_a_bounded_busy_timeout_not_the_old_2_minute_hang() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn uses_a_bounded_busy_timeout_not_the_old_2_minute_hang() {
         let dir = TempDir::new().unwrap();
         let conn = DatabaseConnection::initialize(dir.path().join("codegraph.db")).unwrap();
         let db = conn.get_db().unwrap();
@@ -16,15 +16,15 @@ mod concurrent_locking {
         assert!(ms <= 30_000); // far below the old 120000
     }
 
-    #[test]
-    fn runs_in_wal_mode_and_get_journal_mode_surfaces_it() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn runs_in_wal_mode_and_get_journal_mode_surfaces_it() {
         let dir = TempDir::new().unwrap();
         let conn = DatabaseConnection::initialize(dir.path().join("codegraph.db")).unwrap();
         assert_eq!(conn.get_journal_mode().unwrap(), "wal");
     }
 
-    #[test]
-    fn a_read_on_a_2nd_connection_succeeds_while_a_writer_holds_the_lock() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_read_on_a_2nd_connection_succeeds_while_a_writer_holds_the_lock() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("codegraph.db");
         let writer = DatabaseConnection::initialize(&db_path).unwrap();
@@ -56,16 +56,16 @@ mod concurrent_locking {
     /// (our own PID stands in for "another process") makes indexAll return the
     /// exact TS lock-failure result and sync return the zero-shape (#449) —
     /// without erroring, and recoverable once the lock clears.
-    #[test]
-    fn index_all_and_sync_surface_lock_contention_without_erroring() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn index_all_and_sync_surface_lock_contention_without_erroring() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_indexed(dir.path());
+        let cg = setup_indexed(dir.path()).await;
 
         let lock_path = dir.path().join(".codegraph").join("codegraph.lock");
         fs::write(&lock_path, format!("{}", std::process::id())).unwrap();
 
         // indexAll → the TS lock-failure shape
-        let result = cg.index_all(&IndexOptions::default()).unwrap();
+        let result = cg.index_all(&IndexOptions::default()).await.unwrap();
         assert!(!result.success);
         assert_eq!(result.files_indexed, 0);
         assert_eq!(result.duration_ms, 0);
@@ -76,7 +76,7 @@ mod concurrent_locking {
         assert_eq!(result.errors[0].severity, Severity::Error);
 
         // sync → the exact zero-shape the watcher detects (#449)
-        let sync_result = cg.sync(&IndexOptions::default()).unwrap();
+        let sync_result = cg.sync(&IndexOptions::default()).await.unwrap();
         assert_eq!(sync_result.files_checked, 0);
         assert_eq!(sync_result.duration_ms, 0);
 
@@ -85,23 +85,23 @@ mod concurrent_locking {
 
         // Once the other "process" releases, operations succeed again.
         fs::remove_file(&lock_path).unwrap();
-        let result = cg.index_all(&IndexOptions::default()).unwrap();
+        let result = cg.index_all(&IndexOptions::default()).await.unwrap();
         assert!(result.success);
-        let sync_result = cg.sync(&IndexOptions::default()).unwrap();
+        let sync_result = cg.sync(&IndexOptions::default()).await.unwrap();
         assert!(sync_result.files_checked > 0);
     }
 
     /// A stale lock from a dead process is taken over (FileLock semantics
     /// surfaced through the facade).
-    #[test]
-    fn index_all_takes_over_a_stale_lock_from_a_dead_process() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn index_all_takes_over_a_stale_lock_from_a_dead_process() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_indexed(dir.path());
+        let cg = setup_indexed(dir.path()).await;
 
         let lock_path = dir.path().join(".codegraph").join("codegraph.lock");
         fs::write(&lock_path, "99999999").unwrap(); // dead PID
 
-        let result = cg.index_all(&IndexOptions::default()).unwrap();
+        let result = cg.index_all(&IndexOptions::default()).await.unwrap();
         assert!(result.success);
         // Our run released the lock afterwards.
         assert!(!lock_path.exists());

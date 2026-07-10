@@ -1,7 +1,7 @@
 use crate::fixture::*;
 
-#[test]
-fn follows_default_re_export_of_a_svelte_component_629() {
+#[tokio::test(flavor = "current_thread")]
+async fn follows_default_re_export_of_a_svelte_component_629() {
     // `export { default as Foo } from './RealButton.svelte'` — alias differs
     // from the component's real name so only the import-chase (with the
     // component-node preference for default exports) can connect the edge.
@@ -58,14 +58,15 @@ fn follows_default_re_export_of_a_svelte_component_629() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let callers = incoming(&q, &real_button.id, EdgeKind::References);
     assert!(source_files(&q, &callers).contains(&"src/Bar.svelte".to_string()));
 }
 
-#[test]
-fn resolves_barrel_import_from_vue_sfc_script_block_629() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolves_barrel_import_from_vue_sfc_script_block_629() {
     // The barrel renames `realRun` → `run` so only the import-chase (not the
     // name-matcher) can connect the call from the .vue consumer.
     let fx = Fx::new();
@@ -113,14 +114,15 @@ fn resolves_barrel_import_from_vue_sfc_script_block_629() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let callers = incoming(&q, &real_run.id, EdgeKind::Calls);
     assert!(source_files(&q, &callers).contains(&"src/App.vue".to_string()));
 }
 
-#[test]
-fn follows_vue_component_in_template_through_default_re_export_barrel_629() {
+#[tokio::test(flavor = "current_thread")]
+async fn follows_vue_component_in_template_through_default_re_export_barrel_629() {
     // Vue analogue of the Svelte case: leaf is a `.vue` component
     // re-exported under an alias; the consumer uses it ONLY in markup.
     let fx = Fx::new();
@@ -175,6 +177,7 @@ fn follows_vue_component_in_template_through_default_re_export_barrel_629() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let callers = incoming(&q, &widget.id, EdgeKind::References);

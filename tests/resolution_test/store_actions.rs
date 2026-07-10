@@ -1,7 +1,7 @@
 use crate::fixture::*;
 
-#[test]
-fn resolves_callers_of_store_actions_across_files() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolves_callers_of_store_actions_across_files() {
     // Resolution half of the Zustand store case: extraction makes the
     // object-literal actions real `function` nodes; every call form reduces
     // to a bare-name ref that the exact-name matcher connects.
@@ -113,6 +113,7 @@ fn resolves_callers_of_store_actions_across_files() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let fetch_user_callers: Vec<String> = incoming(&q, &fetch_user.id, EdgeKind::Calls)

@@ -29,6 +29,7 @@ use crate::nodes::{NodeData, NodeId, NodeKind};
 pub struct TypeScriptAdapter {
     language_ts: Language,
     language_tsx: Language,
+    language_arkts: Language,
 }
 
 impl TypeScriptAdapter {
@@ -36,12 +37,14 @@ impl TypeScriptAdapter {
         Self {
             language_ts: tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             language_tsx: tree_sitter_typescript::LANGUAGE_TSX.into(),
+            language_arkts: tree_sitter_arkts::LANGUAGE.into(),
         }
     }
 
     fn language_for(&self, path: &Path) -> Language {
         match path.extension().and_then(|e| e.to_str()) {
             Some("tsx") => self.language_tsx.clone(),
+            Some("ets") => self.language_arkts.clone(),
             _ => self.language_ts.clone(),
         }
     }
@@ -53,7 +56,7 @@ impl LanguageAdapter for TypeScriptAdapter {
     }
 
     fn file_extensions(&self) -> &[&str] {
-        &["ts", "tsx", "mts", "cts"]
+        &["ts", "tsx", "mts", "cts", "ets"]
     }
 
     fn parse_file(&self, path: &Path, content: &str) -> Result<ParsedFile, AdapterError> {
@@ -136,7 +139,7 @@ fn walk_ts_node_inner(
                 out.push(nd);
             }
         }
-        "class_declaration" => {
+        "class_declaration" | "struct_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = text(name_node, source);
                 let qn = qualified(scope, &name);

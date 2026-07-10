@@ -2,7 +2,7 @@ use super::context::{named_children, strip_qualifier};
 use super::extractor::TreeSitterExtractor;
 use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
 use crate::extraction::tree_sitter_types::{NodeExtra, SyntaxNode};
-use crate::types::{EdgeKind, NodeKind, UnresolvedReference};
+use crate::types::{EdgeKind, Language, NodeKind, UnresolvedReference};
 
 impl<'a> TreeSitterExtractor<'a> {
     /// `new Foo(...)` / `Foo::new(...)` / object_creation_expression —
@@ -33,6 +33,12 @@ impl<'a> TreeSitterExtractor<'a> {
         if let Some(lt_idx) = class_name.find('<') {
             if lt_idx > 0 {
                 class_name.truncate(lt_idx);
+            }
+        }
+        if self.language == Language::Vbnet {
+            let lower = class_name.to_ascii_lowercase();
+            if let Some(of_idx) = lower.find("(of") {
+                class_name.truncate(of_idx);
             }
         }
         // For namespaced/qualified constructors (`new ns.Foo()`,

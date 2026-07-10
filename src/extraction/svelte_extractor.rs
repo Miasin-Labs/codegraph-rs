@@ -201,6 +201,7 @@ impl<'a> SvelteExtractor<'a> {
             size: None,
             docstring: None,
             signature: None,
+            return_type: None,
             visibility: None,
             is_exported: Some(true), // Svelte components are always importable
             is_async: None,

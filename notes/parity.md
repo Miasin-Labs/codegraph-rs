@@ -1,5 +1,28 @@
 # TS ↔ Rust behavioral parity report
 
+## 1.3.1 parity update (2026-07-09)
+
+The detailed counts below are the preserved 0.9.9 row-level snapshot. Since
+that run, the Rust implementation has incorporated the upstream 1.3.1 surfaces
+that materially changed compatibility and coverage:
+
+- schema v8 reconciles both incompatible schema-7 lineages, deduplicates
+  existing edges, and enforces a unique logical edge identity;
+- index metadata records extraction version, build state, partial/failure
+  outcomes, and discovered/indexed/skipped/error file accounting;
+- resolver snapshots use compact indexed storage and synthesized edges persist
+  in bounded chunks with language-gated passes;
+- receiver inference covers scoped locals, typed parameters, and chained
+  receivers, with Metal/CUDA preprocessing;
+- the current language, framework, and dynamic-dispatch matrices are wired,
+  including ArkTS, Razor, Astro, R, Solidity, Nix, CFML dialects, COBOL,
+  VB.NET, Erlang, and Terraform/OpenTofu;
+- `codegraph.json`, `explore`, `node`, `daemon`, telemetry, upgrade, version
+  aliases, prompt-hook, and Claude installer integration are present.
+
+This update did not overwrite the old count tables with incomparable numbers.
+A new two-arm row-level fixture run should be recorded as a separate snapshot.
+
 Date: 2026-06-06.
 Fixture: full repo copy (TS + Rust sources + SQL + MD, **353 indexed files**) at
 `/tmp/cg-parity/fixture`, excluding `.git`, `node_modules`, `dist`, `rust/target`,

@@ -1,6 +1,7 @@
-use super::ReferenceResolver;
 #[cfg(not(feature = "gpu"))]
-use super::cache::should_use_snapshot_resolution;
+use std::sync::Arc;
+
+use super::ReferenceResolver;
 #[cfg(not(feature = "gpu"))]
 use super::snapshot::{ResolverSnapshot, SnapshotContext};
 use crate::error::Result;
@@ -47,45 +48,36 @@ impl ReferenceResolver {
     }
 
     #[cfg(not(feature = "gpu"))]
-    pub(super) fn resolve_snapshot_batch(
+    pub(super) async fn resolve_snapshot_batch(
         &self,
         unresolved_refs: &[UnresolvedReference],
         snapshot: &ResolverSnapshot,
-    ) -> ResolutionResult {
+        on_progress: Option<&mut dyn FnMut(usize, usize)>,
+    ) -> Result<ResolutionResult> {
         let refs = self.materialize_refs_with_snapshot(unresolved_refs, snapshot.context());
-        super::parallel::resolve_all(&refs, snapshot.context(), &self.frameworks)
+        let frameworks = Arc::clone(&self.frameworks.borrow());
+        super::parallel::resolve_all(refs, snapshot.shared_context(), frameworks, on_progress).await
     }
 
     /// Resolve over an immutable in-memory snapshot. This is the benchmarkable
     /// CPU path used by full-index batched resolution; persistence still happens
     /// serially on the SQLite connection.
-    pub fn resolve_all_parallel(
+    pub async fn resolve_all_parallel(
         &self,
         unresolved_refs: &[UnresolvedReference],
         on_progress: Option<&mut dyn FnMut(usize, usize)>,
     ) -> Result<ResolutionResult> {
         #[cfg(feature = "gpu")]
         {
-            let result = self.resolve_all(unresolved_refs, None);
-            if let Some(cb) = on_progress {
-                cb(result.stats.total, result.stats.total);
-            }
-            Ok(result)
+            self.resolve_all(unresolved_refs, on_progress).await
         }
 
         #[cfg(not(feature = "gpu"))]
         {
-            if !should_use_snapshot_resolution(unresolved_refs.len()) {
-                return Ok(self.resolve_all(unresolved_refs, on_progress));
-            }
-
             let snapshot =
                 ResolverSnapshot::build(&self.context.project_root, &self.context.queries)?;
-            let result = self.resolve_snapshot_batch(unresolved_refs, &snapshot);
-            if let Some(cb) = on_progress {
-                cb(result.stats.total, result.stats.total);
-            }
-            Ok(result)
+            self.resolve_snapshot_batch(unresolved_refs, &snapshot, on_progress)
+                .await
         }
     }
 }

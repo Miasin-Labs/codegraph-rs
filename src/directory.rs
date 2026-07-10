@@ -5,11 +5,48 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::{CodeGraphError, Result};
 
-/// CodeGraph directory name.
+/// Default CodeGraph directory name.
 pub const CODEGRAPH_DIR: &str = ".codegraph";
+
+static WARNED_INVALID_CODEGRAPH_DIR: AtomicBool = AtomicBool::new(false);
+
+/// Active project data-directory name. `CODEGRAPH_DIR` may select a sibling
+/// index (for example `.codegraph-ci`) but must remain one plain path segment.
+pub fn codegraph_dir_name() -> String {
+    codegraph_dir_name_for(std::env::var("CODEGRAPH_DIR").ok().as_deref())
+}
+
+fn codegraph_dir_name_for(raw: Option<&str>) -> String {
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return CODEGRAPH_DIR.to_string();
+    };
+    let invalid = raw == "."
+        || raw.contains("..")
+        || raw.contains('/')
+        || raw.contains('\\')
+        || Path::new(raw).is_absolute();
+    if invalid {
+        if !WARNED_INVALID_CODEGRAPH_DIR.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "[codegraph] Ignoring invalid CODEGRAPH_DIR=\"{raw}\": it must be a plain directory name; using \"{CODEGRAPH_DIR}\""
+            );
+        }
+        CODEGRAPH_DIR.to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
+/// Whether a path segment is any CodeGraph-owned data directory.
+pub fn is_codegraph_data_dir(name: &str) -> bool {
+    name == CODEGRAPH_DIR
+        || name == codegraph_dir_name()
+        || name.starts_with(&format!("{CODEGRAPH_DIR}-"))
+}
 
 const GITIGNORE_CONTENT: &str = "# CodeGraph data files — local to each machine, not for committing.\n\
 # Ignore everything in .codegraph/ except this file itself, so transient\n\
@@ -19,7 +56,7 @@ const GITIGNORE_CONTENT: &str = "# CodeGraph data files — local to each machin
 
 /// Get the `.codegraph` directory path for a project.
 pub fn get_codegraph_dir(project_root: &Path) -> PathBuf {
-    project_root.join(CODEGRAPH_DIR)
+    project_root.join(codegraph_dir_name())
 }
 
 /// Check if a project has been initialized with CodeGraph.
@@ -236,6 +273,20 @@ pub fn validate_directory(project_root: &Path) -> DirectoryValidation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codegraph_dir_override_accepts_only_a_plain_directory_name() {
+        assert_eq!(codegraph_dir_name_for(None), ".codegraph");
+        assert_eq!(
+            codegraph_dir_name_for(Some(" .codegraph-ci ")),
+            ".codegraph-ci"
+        );
+        for invalid in [".", "..", "a/dir", "a\\dir", "/absolute", "foo..bar"] {
+            assert_eq!(codegraph_dir_name_for(Some(invalid)), ".codegraph");
+        }
+        assert!(is_codegraph_data_dir(".codegraph"));
+        assert!(is_codegraph_data_dir(".codegraph-ci"));
+    }
 
     #[test]
     fn create_and_validate_directory() {

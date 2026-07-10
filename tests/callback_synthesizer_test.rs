@@ -19,9 +19,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use codegraph::db::{DatabaseConnection, QueryBuilder};
+use codegraph::detect_language;
 use codegraph::resolution::callback_synthesizer::synthesize_callback_edges;
 use codegraph::resolution::types::{ImportMapping, ResolutionContext};
-use codegraph::types::{Edge, EdgeKind, Language, Node, NodeKind};
+use codegraph::types::{Edge, EdgeKind, FileRecord, Language, Node, NodeKind};
 use tempfile::tempdir;
 
 /// Test ResolutionContext backed by the real QueryBuilder + real files.
@@ -83,6 +84,19 @@ fn setup(files: &[(&str, &str)]) -> Fixture {
     let conn =
         DatabaseConnection::initialize(dir.path().join("codegraph.db")).expect("initialize db");
     let q = QueryBuilder::new(conn.get_db().expect("get_db"));
+    for (name, content) in files {
+        q.upsert_file(&FileRecord {
+            path: (*name).to_string(),
+            content_hash: String::new(),
+            language: detect_language(name, Some(content)),
+            size: content.len() as u64,
+            modified_at: 0,
+            indexed_at: 0,
+            node_count: 0,
+            errors: None,
+        })
+        .expect("track fixture file");
+    }
     let ctx = TestCtx {
         root: dir.path().to_path_buf(),
         root_str: dir.path().to_string_lossy().to_string(),

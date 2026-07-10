@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::QueryBuilder;
 use super::rows::file_from_row;
@@ -75,6 +75,17 @@ impl QueryBuilder {
             .prepare_cached("SELECT * FROM files ORDER BY path")?;
         let rows = stmt.query_map([], file_from_row)?;
         rows.map(|r| r.map_err(Into::into)).collect()
+    }
+
+    /// Languages present in the tracked file table. Synthesis uses this one
+    /// indexed query to skip whole-graph passes whose result must be empty.
+    pub fn get_distinct_file_languages(&self) -> Result<HashSet<String>> {
+        let mut stmt = self
+            .db
+            .conn()
+            .prepare_cached("SELECT DISTINCT language FROM files")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| row.map_err(Into::into)).collect()
     }
 
     /// Most recent index timestamp (ms since epoch) across all tracked files, or

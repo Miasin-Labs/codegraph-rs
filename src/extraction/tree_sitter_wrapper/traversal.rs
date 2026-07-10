@@ -4,7 +4,7 @@ use super::extractor::TreeSitterExtractor;
 use super::type_annotations::is_type_annotation_language;
 use crate::ensure_sufficient_stack;
 use crate::extraction::grammars::{create_parser, is_language_supported};
-use crate::extraction::tree_sitter_types::{ClassLikeKind, SyntaxNode};
+use crate::extraction::tree_sitter_types::{ClassLikeKind, ClassMemberKind, SyntaxNode};
 use crate::types::{ExtractionError, ExtractionResult, Language, Node, NodeKind, Severity};
 
 impl<'a> TreeSitterExtractor<'a> {
@@ -45,7 +45,12 @@ impl<'a> TreeSitterExtractor<'a> {
             };
         };
 
-        match parser.parse(self.source, None) {
+        let parsed_source = self
+            .extractor
+            .map(|extractor| extractor.pre_parse(self.source, &self.file_path))
+            .unwrap_or_else(|| std::borrow::Cow::Borrowed(self.source));
+
+        match parser.parse(parsed_source.as_ref(), None) {
             Some(tree) => {
                 // Create file node representing the source file
                 let file_node = Node {
@@ -66,6 +71,7 @@ impl<'a> TreeSitterExtractor<'a> {
                     size: None,
                     docstring: None,
                     signature: None,
+                    return_type: None,
                     visibility: None,
                     is_exported: Some(false),
                     is_async: None,
@@ -173,7 +179,17 @@ impl<'a> TreeSitterExtractor<'a> {
         }
         // Check for method declarations (only if not already handled by functionTypes)
         else if ext.method_types().contains(&node_type) {
-            self.extract_method(node);
+            if ext.classify_method_node(node, self.source) == ClassMemberKind::Property {
+                let property = self.extract_property(node);
+                if let (Some(property), Some(value)) = (property, node.child_by_field_name("value"))
+                {
+                    self.node_stack.push(property.id);
+                    self.visit_function_body(value, "");
+                    self.node_stack.pop();
+                }
+            } else {
+                self.extract_method(node);
+            }
             skip_children = true;
         }
         // Check for interface/protocol/trait declarations

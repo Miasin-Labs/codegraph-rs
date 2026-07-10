@@ -82,6 +82,37 @@ pub(crate) enum Commands {
         #[arg(short = 'j', long)]
         json: bool,
     },
+    /// Explore an area: relevant symbol source and call paths in one response
+    Explore {
+        #[arg(value_name = "query", required = true, num_args = 1..)]
+        query: Vec<String>,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Maximum number of files to include source from
+        #[arg(long = "max-files", value_name = "number")]
+        max_files: Option<String>,
+    },
+    /// Show one symbol with source/trail, or read one indexed file
+    Node {
+        #[arg(value_name = "name")]
+        name: Option<String>,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Read this file, or disambiguate a symbol to this file
+        #[arg(short = 'f', long, value_name = "file")]
+        file: Option<String>,
+        /// File mode: 1-based start line
+        #[arg(long, value_name = "number")]
+        offset: Option<String>,
+        /// File mode: maximum number of lines
+        #[arg(long, value_name = "number")]
+        limit: Option<String>,
+        /// File mode: print only the symbol map and dependents
+        #[arg(long = "symbols-only")]
+        symbols_only: bool,
+    },
     /// Show project file structure from the index
     Files {
         /// Project path
@@ -117,6 +148,22 @@ pub(crate) enum Commands {
         /// Disable the file watcher (no auto-sync; useful on slow filesystems like WSL2 /mnt drives)
         #[arg(long = "no-watch")]
         no_watch: bool,
+    },
+    /// List or stop CodeGraph background daemons
+    #[command(visible_alias = "daemons")]
+    Daemon {
+        /// Project path (used with --stop; defaults to nearest indexed project)
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Stop the daemon for this project
+        #[arg(long)]
+        stop: bool,
+        /// Stop every registered daemon
+        #[arg(long, requires = "stop")]
+        all: bool,
+        /// Output records/results as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
     },
     /// Remove a stale lock file that is blocking indexing
     Unlock {
@@ -270,4 +317,25 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: HistoryCommands,
     },
+    /// Show or change anonymous usage telemetry (status, on, off)
+    Telemetry {
+        #[arg(value_name = "action")]
+        action: Option<String>,
+    },
+    /// Update CodeGraph to the latest release (or a specific version)
+    Upgrade {
+        #[arg(value_name = "version")]
+        version: Option<String>,
+        /// Check whether an update is available without installing
+        #[arg(long)]
+        check: bool,
+        /// Reinstall even if already on the target version
+        #[arg(short = 'f', long)]
+        force: bool,
+    },
+    /// Claude UserPromptSubmit hook entry point
+    #[command(hide = true, name = "prompt-hook")]
+    PromptHook,
+    /// Print the installed CodeGraph version
+    Version,
 }

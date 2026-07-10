@@ -25,7 +25,6 @@ use crate::resolution::resolver::policy::{
     PYTHON_BUILT_INS,
     REACT_HOOKS,
     capitalize_first,
-    has_any_possible_match_in,
 };
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::{EdgeKind, Language};
@@ -49,6 +48,9 @@ impl ResolutionPolicy for SnapshotContext {
             return true;
         }
         if is_js_ts && REACT_HOOKS.contains(name) {
+            return true;
+        }
+        if reference.language == Language::Arkts && matches!(name, "$r" | "$rawfile") {
             return true;
         }
         if reference.language == Language::Python && PYTHON_BUILT_INS.contains(name) {
@@ -171,7 +173,44 @@ impl ResolutionPolicy for SnapshotContext {
     }
 
     fn has_any_possible_match(&self, name: &str) -> bool {
-        has_any_possible_match_in(&self.known_names, name)
+        if self.known_has(name) {
+            return true;
+        }
+
+        if let Some(dot_idx) = name.find('.') {
+            if dot_idx > 0 {
+                let receiver = &name[..dot_idx];
+                let member = &name[dot_idx + 1..];
+                if self.known_has(receiver) || self.known_has(member) {
+                    return true;
+                }
+                if self.known_has(&capitalize_first(receiver)) {
+                    return true;
+                }
+                let last_dot = name.rfind('.').unwrap_or(0);
+                if last_dot > dot_idx {
+                    let tail = &name[last_dot + 1..];
+                    if !tail.is_empty() && self.known_has(tail) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if let Some(colon_idx) = name.find("::") {
+            if colon_idx > 0 {
+                let receiver = &name[..colon_idx];
+                let member = &name[colon_idx + 2..];
+                if self.known_has(receiver) || self.known_has(member) {
+                    return true;
+                }
+            }
+        }
+        if let Some(slash_idx) = name.rfind('/') {
+            if slash_idx > 0 && self.known_has(&name[slash_idx + 1..]) {
+                return true;
+            }
+        }
+        false
     }
 
     fn has_any_possible_match_ci(&self, name: &str) -> bool {

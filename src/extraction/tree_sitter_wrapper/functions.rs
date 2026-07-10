@@ -80,6 +80,7 @@ impl<'a> TreeSitterExtractor<'a> {
         let is_exported = ext.is_exported(node, self.source);
         let is_async = ext.is_async(node, self.source);
         let is_static = ext.is_static(node, self.source);
+        let return_type = ext.get_return_type(node, self.source);
 
         let Some(func_node) = self.create_node(
             NodeKind::Function,
@@ -92,6 +93,7 @@ impl<'a> TreeSitterExtractor<'a> {
                 is_exported,
                 is_async,
                 is_static,
+                return_type,
                 ..Default::default()
             },
         ) else {

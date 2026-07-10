@@ -9,12 +9,24 @@ use crate::types::{EdgeKind, Node, NodeKind};
 
 pub(super) fn dot_call_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^([0-9A-Za-z_]+)\.([0-9A-Za-z_]+)$").expect("valid regex"))
+    RE.get_or_init(|| {
+        Regex::new(r"^([0-9A-Za-z_.]+)\.([0-9A-Za-z_]+(?::[0-9A-Za-z_]*)*)$").expect("valid regex")
+    })
 }
 
 pub(super) fn colon_call_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^([0-9A-Za-z_]+)::([0-9A-Za-z_]+)$").expect("valid regex"))
+}
+
+pub(super) fn lua_colon_call_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^([0-9A-Za-z_.]+):([0-9A-Za-z_]+)$").expect("valid regex"))
+}
+
+pub(super) fn r_dollar_call_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^([0-9A-Za-z_.]+)\$([0-9A-Za-z_]+)$").expect("valid regex"))
 }
 
 pub(super) fn cpp_keyword_re() -> &'static Regex {

@@ -54,6 +54,10 @@ pub struct IndexResult {
     pub files_indexed: usize,
     pub files_skipped: usize,
     pub files_errored: usize,
+    /// Number of indexable files found by a full project scan. `None` for
+    /// targeted `index_files` runs, where there is no scan ground truth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_discovered: Option<usize>,
     pub nodes_created: usize,
     pub edges_created: usize,
     pub errors: Vec<ExtractionError>,

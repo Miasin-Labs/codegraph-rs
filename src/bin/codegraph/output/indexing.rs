@@ -69,7 +69,7 @@ pub(crate) fn create_verbose_progress() -> impl Fn(&IndexProgress) {
 
 /// Run `indexAll` with either the verbose line logger or the shimmer renderer
 /// (TS init/index command bodies share this exact branch).
-pub(crate) fn run_index_all(cg: &CodeGraph, verbose: bool) -> codegraph::Result<IndexResult> {
+pub(crate) async fn run_index_all(cg: &CodeGraph, verbose: bool) -> codegraph::Result<IndexResult> {
     if verbose {
         let cb = create_verbose_progress();
         let cb_ref: &dyn Fn(&IndexProgress) = &cb;
@@ -78,6 +78,7 @@ pub(crate) fn run_index_all(cg: &CodeGraph, verbose: bool) -> codegraph::Result<
             signal: None,
             verbose: true,
         })
+        .await
     } else {
         println!("{DIM}{}{RESET}", get_glyphs().rail);
         let _ = io::stdout().flush();
@@ -96,6 +97,7 @@ pub(crate) fn run_index_all(cg: &CodeGraph, verbose: bool) -> codegraph::Result<
                 signal: None,
                 verbose: false,
             })
+            .await
         };
         progress.into_inner().stop();
         result
@@ -215,7 +217,10 @@ pub(crate) fn print_index_result(
 
         if let Some(pp) = project_path {
             write_error_log(pp, &result.errors);
-            clack_log_info("See .codegraph/errors.log for details");
+            clack_log_info(&format!(
+                "See {}/errors.log for details",
+                codegraph::directory::codegraph_dir_name()
+            ));
         }
 
         if result.files_indexed > 0 {
@@ -225,7 +230,7 @@ pub(crate) fn print_index_result(
             ));
         }
     } else if let Some(pp) = project_path {
-        let log_path = pp.join(".codegraph").join("errors.log");
+        let log_path = codegraph::directory::get_codegraph_dir(pp).join("errors.log");
         if log_path.exists() {
             let _ = std::fs::remove_file(&log_path);
         }

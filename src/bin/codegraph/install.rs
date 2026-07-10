@@ -73,6 +73,7 @@ pub(crate) fn cmd_install(
             }
         }),
         auto_allow,
+        prompt_hook: None,
         yes,
     };
 

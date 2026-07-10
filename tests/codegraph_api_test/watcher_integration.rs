@@ -1,10 +1,10 @@
 mod watcher_integration {
     use super::*;
 
-    #[test]
-    fn watch_and_unwatch_via_codegraph_api() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn watch_and_unwatch_via_codegraph_api() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_indexed(dir.path());
+        let cg = setup_indexed(dir.path()).await;
 
         assert!(!cg.is_watching());
 
@@ -22,10 +22,10 @@ mod watcher_integration {
         assert!(!cg.is_watching());
     }
 
-    #[test]
-    fn stops_watching_on_close() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn stops_watching_on_close() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_indexed(dir.path());
+        let cg = setup_indexed(dir.path()).await;
 
         cg.watch(WatchOptions {
             debounce_ms: Some(200),
@@ -38,15 +38,15 @@ mod watcher_integration {
         assert!(!cg.is_watching());
     }
 
-    #[test]
-    fn auto_syncs_when_files_change_while_watching_real_watcher_end_to_end() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_syncs_when_files_change_while_watching_real_watcher_end_to_end() {
         // The one test that exercises the genuine native watcher: a real file
         // write must propagate through OS events → debounce → sync into the
         // graph. The sync runs on the watcher's worker thread via a fresh
         // short-lived CodeGraph instance (this one is !Send); WAL makes the
         // write visible to this connection.
         let dir = TempDir::new().unwrap();
-        let cg = setup_indexed(dir.path());
+        let cg = setup_indexed(dir.path()).await;
 
         let initial_nodes = cg.get_stats().unwrap().node_count;
 

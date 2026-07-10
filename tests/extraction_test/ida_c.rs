@@ -4,8 +4,8 @@ use crate::extraction_test::fixture::*;
 // describe('IDA C Extraction')
 // =============================================================================
 
-#[test]
-fn ida_c_extracts_leading_dot_thunk_functions_and_alias_target() {
+#[tokio::test(flavor = "current_thread")]
+async fn ida_c_extracts_leading_dot_thunk_functions_and_alias_target() {
     let code = r#"
 // ============================================================
 // THUNK / TRAMPOLINE
@@ -38,8 +38,8 @@ void .mysql_init(/* see target signature */)
     assert!(!calls.iter().any(|r| r.reference_name == "mysql_init"));
 }
 
-#[test]
-fn ida_c_extracts_hexrays_sub_functions_and_call_references_without_tree_sitter() {
+#[tokio::test(flavor = "current_thread")]
+async fn ida_c_extracts_hexrays_sub_functions_and_call_references_without_tree_sitter() {
     let code = r#"
 __int64 __fastcall sub_E2F10(__int64 a1, int a2, unsigned __int8 *a3)
 {
@@ -70,8 +70,8 @@ __int64 __fastcall sub_E2F10(__int64 a1, int a2, unsigned __int8 *a3)
     assert!(!call_names.contains(&"LODWORD".to_string()));
 }
 
-#[test]
-fn ida_c_detects_named_decompiler_outputs_and_filters_pseudo_calls() {
+#[tokio::test(flavor = "current_thread")]
+async fn ida_c_detects_named_decompiler_outputs_and_filters_pseudo_calls() {
     let code = r#"
 __int64 __fastcall clang_Type_getNullability(
         __int64 a1,
@@ -113,8 +113,8 @@ __int64 __fastcall clang_Type_getNullability(
     );
 }
 
-#[test]
-fn ida_c_does_not_classify_plain_fastcall_c_without_decompiler_markers() {
+#[tokio::test(flavor = "current_thread")]
+async fn ida_c_does_not_classify_plain_fastcall_c_without_decompiler_markers() {
     let code = r#"
 __int64 __fastcall exported_function(__int64 value)
 {
@@ -125,8 +125,8 @@ __int64 __fastcall exported_function(__int64 value)
     assert!(!is_ida_generated_c("src/exported_function.c", code));
 }
 
-#[test]
-fn ida_c_filters_cpu_intrinsics_and_syntax_artifacts_without_dropping_real_calls() {
+#[tokio::test(flavor = "current_thread")]
+async fn ida_c_filters_cpu_intrinsics_and_syntax_artifacts_without_dropping_real_calls() {
     let code = r#"
 __int64 __fastcall sub_4400(__int64 a1)
 {
@@ -164,8 +164,8 @@ __int64 __fastcall sub_4400(__int64 a1)
     }
 }
 
-#[test]
-fn ida_c_extracts_alignment_and_function_table_data_symbols() {
+#[tokio::test(flavor = "current_thread")]
+async fn ida_c_extracts_alignment_and_function_table_data_symbols() {
     let code = r#"
 __int64 __fastcall sub_6600(__int64 a1)
 {
@@ -182,8 +182,8 @@ __int64 __fastcall sub_6600(__int64 a1)
     assert!(data_names.contains(&"tbyte_401000".to_string()));
 }
 
-#[test]
-fn ida_c_extracts_memory_call_role_and_cfg_facts() {
+#[tokio::test(flavor = "current_thread")]
+async fn ida_c_extracts_memory_call_role_and_cfg_facts() {
     let code = r#"
 __int64 __fastcall sub_7000(__int64 a1, char *dst, char *src)
 {
@@ -264,8 +264,8 @@ LABEL_3:
     assert!(cfg_roles.contains(&"jump_table"));
 }
 
-#[test]
-fn ida_c_extracts_parameters_locals_and_type_edges() {
+#[tokio::test(flavor = "current_thread")]
+async fn ida_c_extracts_parameters_locals_and_type_edges() {
     let code = r#"
 ida_mcp::mcp::Response *__fastcall ida_mcp::tools::debugger::make_response(
         ida_mcp::tools::debugger *this,
@@ -342,8 +342,8 @@ ida_mcp::mcp::Response *__fastcall ida_mcp::tools::debugger::make_response(
 // CodeGraph public API + reference resolution — deferred to the wiring wave
 // (see notes/extraction-orchestrator.md).
 
-#[test]
-fn ida_c_does_not_classify_ordinary_c_files_as_ida_dumps() {
+#[tokio::test(flavor = "current_thread")]
+async fn ida_c_does_not_classify_ordinary_c_files_as_ida_dumps() {
     let code = r#"
 int main(void) {
   return puts("hello");
@@ -352,8 +352,8 @@ int main(void) {
     assert!(!is_ida_generated_c("src/main.c", code));
 }
 
-#[test]
-fn ida_c_indexes_oversized_ida_dumps_with_the_lightweight_extractor() {
+#[tokio::test(flavor = "current_thread")]
+async fn ida_c_indexes_oversized_ida_dumps_with_the_lightweight_extractor() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     let file_path = temp_dir.path().join("sub_A743A0.c");
@@ -370,6 +370,7 @@ fn ida_c_indexes_oversized_ida_dumps_with_the_lightweight_extractor() {
     let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
     let result = orch
         .index_files(&["sub_A743A0.c".to_string()])
+        .await
         .expect("index_files");
     assert!(
         !result

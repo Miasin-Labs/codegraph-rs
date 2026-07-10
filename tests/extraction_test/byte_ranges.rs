@@ -4,8 +4,8 @@ use crate::extraction_test::fixture::*;
 // Byte ranges (schema v5) — tree-sitter start_byte()/end_byte() stored on nodes
 // =============================================================================
 
-#[test]
-fn byte_ranges_match_source_slices_for_typescript() {
+#[tokio::test(flavor = "current_thread")]
+async fn byte_ranges_match_source_slices_for_typescript() {
     let code = "export function add(a: number, b: number): number {\n  return a + b;\n}\n\nexport class Greeter {\n  greet(name: string): string {\n    return `hi ${name}`;\n  }\n}\n";
     let result = extract("src/bytes.ts", code);
 
@@ -45,8 +45,8 @@ fn byte_ranges_match_source_slices_for_typescript() {
     assert!(greet_src.contains("return `hi ${name}`;"));
 }
 
-#[test]
-fn byte_ranges_round_trip_through_full_indexing() {
+#[tokio::test(flavor = "current_thread")]
+async fn byte_ranges_round_trip_through_full_indexing() {
     let temp_dir = tempfile::tempdir().unwrap();
     let src_dir = temp_dir.path().join("src");
     fs::create_dir_all(&src_dir).unwrap();
@@ -55,7 +55,7 @@ fn byte_ranges_round_trip_through_full_indexing() {
 
     let (_conn, queries) = open_graph(temp_dir.path());
     let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
-    let result = orch.index_all(None, None, false).expect("index_all");
+    let result = orch.index_all(None, None, false).await.expect("index_all");
     assert!(result.success);
 
     // Byte offsets survive SQLite storage and slice the on-disk source back
@@ -73,8 +73,8 @@ fn byte_ranges_round_trip_through_full_indexing() {
     assert_eq!(file_node.byte_range(), Some(0..code.len()));
 }
 
-#[test]
-fn byte_ranges_svelte_script_nodes_are_whole_file_offsets() {
+#[tokio::test(flavor = "current_thread")]
+async fn byte_ranges_svelte_script_nodes_are_whole_file_offsets() {
     let code = "<script>\n  function bump(n) {\n    return n + 1;\n  }\n</script>\n\n<button on:click={() => bump(1)}>+</button>\n";
     let result = extract("src/Counter.svelte", code);
 
@@ -90,8 +90,8 @@ fn byte_ranges_svelte_script_nodes_are_whole_file_offsets() {
     assert!(code[range].starts_with("function bump"));
 }
 
-#[test]
-fn byte_ranges_vue_script_nodes_are_whole_file_offsets() {
+#[tokio::test(flavor = "current_thread")]
+async fn byte_ranges_vue_script_nodes_are_whole_file_offsets() {
     let code = "<template>\n  <button @click=\"bump\">+</button>\n</template>\n\n<script setup>\nfunction bump(n) {\n  return n + 1;\n}\n</script>\n";
     let result = extract("src/Counter.vue", code);
 
@@ -104,8 +104,8 @@ fn byte_ranges_vue_script_nodes_are_whole_file_offsets() {
     assert!(code[range].starts_with("function bump"));
 }
 
-#[test]
-fn byte_ranges_absent_for_extractors_without_offsets() {
+#[tokio::test(flavor = "current_thread")]
+async fn byte_ranges_absent_for_extractors_without_offsets() {
     // The IDA-C extractor tracks line/column only — its function nodes keep
     // NULL byte offsets (honest absence), while its file node spans the file.
     let code = "//----- (00000001800012F0) ----------------------------------------------------\n// Function: sub_1800012F0\n__int64 __fastcall sub_1800012F0(__int64 a1)\n{\n  return a1 + 1;\n}\n";

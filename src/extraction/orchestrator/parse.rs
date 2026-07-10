@@ -1,29 +1,38 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::Arc;
 
-use ws_deque::scheduler;
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 use super::progress::FileStats;
-use crate::error::log_warn;
+use crate::error::{CodeGraphError, Result, log_warn};
+use crate::extraction::astro_extractor::AstroExtractor;
+use crate::extraction::cfml_extractor::CfmlExtractor;
 use crate::extraction::dfm_extractor::DfmExtractor;
-use crate::extraction::grammars::{detect_language, is_file_level_only_language};
+use crate::extraction::grammars::{
+    detect_language,
+    detect_language_with_overrides,
+    is_file_level_only_language,
+};
 use crate::extraction::ida_c_extractor::{IdaCExtractor, is_ida_generated_c};
 use crate::extraction::languages;
 use crate::extraction::liquid_extractor::LiquidExtractor;
 use crate::extraction::lwc_template::LwcTemplateExtractor;
 use crate::extraction::mybatis_extractor::MyBatisExtractor;
+use crate::extraction::razor_extractor::RazorExtractor;
 use crate::extraction::salesforce_markup::SalesforceMarkupExtractor;
 use crate::extraction::svelte_extractor::SvelteExtractor;
 use crate::extraction::tree_sitter_wrapper::TreeSitterExtractor;
 use crate::extraction::unlace_extractor::{self, UnlaceCExtractor};
 use crate::extraction::vue_extractor::VueExtractor;
+use crate::project_config::ProjectConfig;
 use crate::resolution::frameworks::{get_all_framework_resolvers, get_applicable_frameworks};
 use crate::types::{ExtractionError, ExtractionResult, Language, Severity, UnresolvedReference};
 use crate::utils::validate_path_within_root;
 
 /// Number of files to read + parse in parallel per batch during indexing.
-/// Each batch fans out across the work-stealing scheduler, then results are stored
+/// Each batch fans out across Tokio's blocking pool, then results are stored
 /// serially (SQLite is single-threaded), so the batch size caps effective
 /// parallelism and amortizes the store barrier. Worst-case memory is
 /// `FILE_IO_BATCH_SIZE` files of held content (plus extraction results) — there
@@ -103,6 +112,12 @@ pub fn extract_from_source(
     } else if detected_language == Language::Vue {
         // Use custom extractor for Vue
         VueExtractor::new(file_path, source, languages::extractor_for).extract()
+    } else if detected_language == Language::Astro {
+        AstroExtractor::new(file_path, source).extract()
+    } else if detected_language == Language::Razor {
+        RazorExtractor::new(file_path, source).extract()
+    } else if matches!(detected_language, Language::Cfml | Language::Cfscript) {
+        CfmlExtractor::new(file_path, source, detected_language).extract()
     } else if detected_language == Language::Liquid {
         // Use custom extractor for Liquid
         LiquidExtractor::new(file_path, source).extract()
@@ -187,39 +202,78 @@ pub(super) struct BatchItem {
     pub(super) outcome: BatchOutcome,
 }
 
-pub(super) fn parse_batch(
+pub(super) async fn parse_batch(
     root_dir: &Path,
     batch: &[String],
     framework_names: &[String],
-) -> Vec<BatchItem> {
-    if batch.len() <= 1 {
-        return batch
-            .iter()
-            .map(|fp| read_and_parse(root_dir, fp, framework_names))
-            .collect();
+    project_config: &ProjectConfig,
+    cancellation: &CancellationToken,
+) -> Result<Vec<BatchItem>> {
+    let total = batch.len();
+    if total == 0 {
+        return Ok(Vec::new());
     }
 
-    let slots: Vec<Mutex<Option<BatchItem>>> = (0..batch.len()).map(|_| Mutex::new(None)).collect();
-    scheduler::run(
-        worker_count_for(batch.len()),
-        batch.iter().enumerate(),
-        |(index, fp), _| {
-            let item = read_and_parse(root_dir, fp, framework_names);
-            let mut slot = slots[index]
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            *slot = Some(item);
-        },
-    );
+    let root_dir = Arc::new(root_dir.to_path_buf());
+    let framework_names = Arc::new(framework_names.to_vec());
+    let project_config = Arc::new(project_config.clone());
+    let mut slots: Vec<Option<BatchItem>> = (0..total).map(|_| None).collect();
+    let mut workers = JoinSet::new();
+    let worker_limit = worker_count_for(total);
+    let mut next = 0usize;
+
+    while next < total || !workers.is_empty() {
+        while next < total && workers.len() < worker_limit && !cancellation.is_cancelled() {
+            let index = next;
+            let file_path = batch[index].clone();
+            let root_dir = Arc::clone(&root_dir);
+            let framework_names = Arc::clone(&framework_names);
+            let project_config = Arc::clone(&project_config);
+            let cancellation = cancellation.clone();
+            workers.spawn_blocking(move || {
+                let item = if cancellation.is_cancelled() {
+                    BatchItem {
+                        file_path,
+                        outcome: BatchOutcome::ReadError("Parsing cancelled".to_string()),
+                    }
+                } else {
+                    read_and_parse(
+                        root_dir.as_path(),
+                        &file_path,
+                        framework_names.as_slice(),
+                        project_config.as_ref(),
+                    )
+                };
+                (index, item)
+            });
+            next += 1;
+        }
+
+        if cancellation.is_cancelled() {
+            while workers.join_next().await.is_some() {}
+            return Err(CodeGraphError::other("parsing cancelled"));
+        }
+
+        match workers.join_next().await {
+            Some(Ok((index, item))) => slots[index] = Some(item),
+            Some(Err(error)) => {
+                cancellation.cancel();
+                while workers.join_next().await.is_some() {}
+                return Err(CodeGraphError::other(format!(
+                    "Tokio parse worker failed: {error}"
+                )));
+            }
+            None => break,
+        }
+    }
 
     slots
         .into_iter()
-        .map(|slot| match slot.into_inner() {
-            Ok(Some(item)) => item,
-            Ok(None) => panic!("parallel parse worker did not write a result"),
-            Err(poisoned) => poisoned
-                .into_inner()
-                .unwrap_or_else(|| panic!("parallel parse worker did not write a result")),
+        .enumerate()
+        .map(|(index, item)| {
+            item.ok_or_else(|| {
+                CodeGraphError::other(format!("parse worker did not return result {index}"))
+            })
         })
         .collect()
 }
@@ -255,12 +309,13 @@ pub(super) fn validate_io_path_within_root(
     }
 }
 
-/// Read + size-check + parse a single file. Runs on scheduler worker threads, so
-/// it must not touch the orchestrator (the DB handle is not `Sync`).
+/// Read + size-check + parse a single file. Runs on Tokio's blocking pool, so it
+/// must not touch the orchestrator (the DB handle is not `Sync`).
 pub(super) fn read_and_parse(
     root_dir: &Path,
     file_path: &str,
     framework_names: &[String],
+    project_config: &ProjectConfig,
 ) -> BatchItem {
     let Ok(full_path) = validate_io_path_within_root(root_dir, file_path) else {
         log_warn(
@@ -294,7 +349,11 @@ pub(super) fn read_and_parse(
     // hand-written sources — e.g. a 1.2 MiB expression printer — must not be
     // silently dropped). Pathological inputs are excluded by .gitignore /
     // ignore-dir / generated-file detection, not by a byte threshold.
-    let language = detect_language(file_path, Some(&content));
+    let language = detect_language_with_overrides(
+        file_path,
+        Some(&content),
+        project_config.extension_overrides(),
+    );
     let result = extract_from_source(file_path, &content, Some(language), Some(framework_names));
     BatchItem {
         file_path: file_path.to_string(),
@@ -321,5 +380,61 @@ pub(super) fn extraction_error_result(
             code: Some(code.to_string()),
         }],
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn parse_batch_preserves_input_order() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("first.rs"), "fn first() {}\n").unwrap();
+        fs::write(temp.path().join("second.rs"), "fn second() {}\n").unwrap();
+        let batch = vec!["second.rs".to_string(), "first.rs".to_string()];
+
+        let parsed = parse_batch(
+            temp.path(),
+            &batch,
+            &[],
+            &ProjectConfig::default(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            parsed
+                .iter()
+                .map(|item| item.file_path.as_str())
+                .collect::<Vec<_>>(),
+            ["second.rs", "first.rs"]
+        );
+        assert!(
+            parsed
+                .iter()
+                .all(|item| matches!(item.outcome, BatchOutcome::Parsed { .. }))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn parse_batch_observes_preexisting_cancellation() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let result = parse_batch(
+            Path::new("/missing"),
+            &["never-read.rs".to_string()],
+            &[],
+            &ProjectConfig::default(),
+            &cancellation,
+        )
+        .await;
+
+        match result {
+            Err(error) => assert!(error.to_string().contains("parsing cancelled")),
+            Ok(_) => panic!("cancelled parse unexpectedly succeeded"),
+        }
     }
 }

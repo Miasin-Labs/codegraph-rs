@@ -1,16 +1,33 @@
+#[cfg(feature = "gpu")]
 use std::collections::HashMap;
 
-use super::{ReferenceResolver, engine, gpu_batch};
-use crate::resolution::types::{ResolutionResult, ResolutionStats, ResolvedRef, UnresolvedRef};
+#[cfg(feature = "gpu")]
+use super::gpu_batch;
+use super::{ReferenceResolver, engine};
+use crate::error::Result;
+#[cfg(feature = "gpu")]
+use crate::resolution::types::ResolutionStats;
+use crate::resolution::types::{ResolutionResult, ResolvedRef, UnresolvedRef};
 use crate::types::UnresolvedReference;
 
 impl ReferenceResolver {
+    #[cfg(not(feature = "gpu"))]
+    pub async fn resolve_all(
+        &self,
+        unresolved_refs: &[UnresolvedReference],
+        on_progress: Option<&mut dyn FnMut(usize, usize)>,
+    ) -> Result<ResolutionResult> {
+        self.resolve_all_parallel(unresolved_refs, on_progress)
+            .await
+    }
+
     /// Resolve all unresolved references
-    pub fn resolve_all(
+    #[cfg(feature = "gpu")]
+    pub async fn resolve_all(
         &self,
         unresolved_refs: &[UnresolvedReference],
         mut on_progress: Option<&mut dyn FnMut(usize, usize)>,
-    ) -> ResolutionResult {
+    ) -> Result<ResolutionResult> {
         self.warm_caches();
 
         let mut resolved: Vec<ResolvedRef> = Vec::new();
@@ -86,7 +103,7 @@ impl ReferenceResolver {
             }
         }
 
-        ResolutionResult {
+        Ok(ResolutionResult {
             stats: ResolutionStats {
                 total,
                 resolved: resolved.len(),
@@ -95,7 +112,7 @@ impl ReferenceResolver {
             },
             resolved,
             unresolved,
-        }
+        })
     }
 
     pub fn resolve_one(&self, r: &UnresolvedRef) -> Option<ResolvedRef> {
@@ -115,10 +132,11 @@ impl ReferenceResolver {
         s12: Option<Option<(&crate::types::Node, bool)>>,
         fuzzy: Option<Option<(&crate::types::Node, bool)>>,
     ) -> Option<ResolvedRef> {
+        let frameworks = self.frameworks.borrow();
         engine::resolve_one(
             r,
             &self.context,
-            &self.frameworks,
+            frameworks.as_slice(),
             self,
             known_hint,
             ranked,

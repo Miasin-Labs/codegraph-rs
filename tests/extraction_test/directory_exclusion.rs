@@ -4,8 +4,8 @@ use crate::extraction_test::fixture::*;
 // describe('Directory Exclusion')
 // =============================================================================
 
-#[test]
-fn directory_exclusion_excludes_directories_listed_in_gitignore() {
+#[tokio::test(flavor = "current_thread")]
+async fn directory_exclusion_excludes_directories_listed_in_gitignore() {
     let temp_dir = tempfile::tempdir().unwrap();
     // Create structure: src/index.ts + node_modules/pkg/index.js, gitignore node_modules
     let src_dir = temp_dir.path().join("src");
@@ -22,8 +22,8 @@ fn directory_exclusion_excludes_directories_listed_in_gitignore() {
     assert!(files.iter().all(|f| !f.contains("node_modules")));
 }
 
-#[test]
-fn directory_exclusion_excludes_nested_node_modules_via_a_root_gitignore() {
+#[tokio::test(flavor = "current_thread")]
+async fn directory_exclusion_excludes_nested_node_modules_via_a_root_gitignore() {
     let temp_dir = tempfile::tempdir().unwrap();
     // A trailing-slash pattern with no leading slash matches at any depth.
     let src_dir = temp_dir.path().join("packages").join("app").join("src");
@@ -45,8 +45,8 @@ fn directory_exclusion_excludes_nested_node_modules_via_a_root_gitignore() {
     assert!(files.iter().all(|f| !f.contains("node_modules")));
 }
 
-#[test]
-fn directory_exclusion_excludes_tracked_files_listed_in_codegraphignore() {
+#[tokio::test(flavor = "current_thread")]
+async fn directory_exclusion_excludes_tracked_files_listed_in_codegraphignore() {
     let temp_dir = tempfile::tempdir().unwrap();
     let root = temp_dir.path();
 
@@ -76,8 +76,8 @@ fn directory_exclusion_excludes_tracked_files_listed_in_codegraphignore() {
     assert!(!files.contains(&"research/decompiled-references/all/generated.c".to_string()));
 }
 
-#[test]
-fn directory_exclusion_applies_a_nested_gitignore_only_to_its_own_subtree() {
+#[tokio::test(flavor = "current_thread")]
+async fn directory_exclusion_applies_a_nested_gitignore_only_to_its_own_subtree() {
     let temp_dir = tempfile::tempdir().unwrap();
     let app_src = temp_dir.path().join("app").join("src");
     fs::create_dir_all(&app_src).unwrap();
@@ -100,8 +100,8 @@ fn directory_exclusion_applies_a_nested_gitignore_only_to_its_own_subtree() {
     assert!(files.contains(&"other/src/skip.ts".to_string()));
 }
 
-#[test]
-fn directory_exclusion_nested_gitignore_negation_reincludes_file() {
+#[tokio::test(flavor = "current_thread")]
+async fn directory_exclusion_nested_gitignore_negation_reincludes_file() {
     let temp_dir = tempfile::tempdir().unwrap();
     let app_dir = temp_dir.path().join("app");
     fs::create_dir_all(&app_dir).unwrap();
@@ -116,8 +116,8 @@ fn directory_exclusion_nested_gitignore_negation_reincludes_file() {
     assert!(!files.contains(&"app/drop.ts".to_string()), "got {files:?}");
 }
 
-#[test]
-fn directory_exclusion_always_skips_git_directories() {
+#[tokio::test(flavor = "current_thread")]
+async fn directory_exclusion_always_skips_git_directories() {
     let temp_dir = tempfile::tempdir().unwrap();
     let src_dir = temp_dir.path().join("src");
     let git_dir = temp_dir.path().join(".git").join("objects");
@@ -132,8 +132,8 @@ fn directory_exclusion_always_skips_git_directories() {
     assert!(files.iter().all(|f| !f.contains(".git")));
 }
 
-#[test]
-fn directory_exclusion_returns_forward_slash_paths_on_all_platforms() {
+#[tokio::test(flavor = "current_thread")]
+async fn directory_exclusion_returns_forward_slash_paths_on_all_platforms() {
     let temp_dir = tempfile::tempdir().unwrap();
     let src_dir = temp_dir.path().join("src").join("components");
     fs::create_dir_all(&src_dir).unwrap();
@@ -147,8 +147,8 @@ fn directory_exclusion_returns_forward_slash_paths_on_all_platforms() {
 }
 
 #[cfg(unix)]
-#[test]
-fn directory_scan_skips_symlinked_source_files_outside_root() {
+#[tokio::test(flavor = "current_thread")]
+async fn directory_scan_skips_symlinked_source_files_outside_root() {
     let temp_dir = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     fs::create_dir_all(temp_dir.path().join("src")).unwrap();
@@ -165,8 +165,8 @@ fn directory_scan_skips_symlinked_source_files_outside_root() {
 }
 
 #[cfg(unix)]
-#[test]
-fn git_directory_scan_skips_tracked_symlinked_source_files_outside_root() {
+#[tokio::test(flavor = "current_thread")]
+async fn git_directory_scan_skips_tracked_symlinked_source_files_outside_root() {
     let temp_dir = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     let root = temp_dir.path();
@@ -186,8 +186,8 @@ fn git_directory_scan_skips_tracked_symlinked_source_files_outside_root() {
 }
 
 #[cfg(unix)]
-#[test]
-fn index_file_blocks_symlinked_source_files_outside_root() {
+#[tokio::test(flavor = "current_thread")]
+async fn index_file_blocks_symlinked_source_files_outside_root() {
     let temp_dir = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     fs::write(
@@ -203,7 +203,7 @@ fn index_file_blocks_symlinked_source_files_outside_root() {
 
     let (_conn, queries) = open_graph(temp_dir.path());
     let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
-    let result = orch.index_file("link.ts").unwrap();
+    let result = orch.index_file("link.ts").await.unwrap();
 
     assert!(result.errors.iter().any(|e| {
         e.code.as_deref() == Some("path_traversal") && e.message.contains("Path traversal blocked")
@@ -211,12 +211,12 @@ fn index_file_blocks_symlinked_source_files_outside_root() {
     assert!(queries.get_file_by_path("link.ts").unwrap().is_none());
 }
 
-#[test]
-fn index_file_reports_read_error_for_missing_files_inside_root() {
+#[tokio::test(flavor = "current_thread")]
+async fn index_file_reports_read_error_for_missing_files_inside_root() {
     let temp_dir = tempfile::tempdir().unwrap();
     let (_conn, queries) = open_graph(temp_dir.path());
     let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
-    let result = orch.index_file("missing.ts").unwrap();
+    let result = orch.index_file("missing.ts").await.unwrap();
 
     assert!(result.errors.iter().any(|e| {
         e.code.as_deref() == Some("read_error") && e.message.contains("Failed to read file")

@@ -129,17 +129,29 @@ pub(crate) fn pretty(value: &Value) -> String {
 }
 
 pub(crate) fn auto_allow() -> InstallOptions {
-    InstallOptions { auto_allow: true }
+    InstallOptions {
+        auto_allow: true,
+        prompt_hook: None,
+    }
 }
 
 pub(crate) fn no_allow() -> InstallOptions {
-    InstallOptions { auto_allow: false }
+    InstallOptions {
+        auto_allow: false,
+        prompt_hook: None,
+    }
+}
+
+pub(crate) fn prompt_hook(enabled: bool) -> InstallOptions {
+    InstallOptions {
+        auto_allow: false,
+        prompt_hook: Some(enabled),
+    }
 }
 
 /// A marker-delimited CodeGraph block exactly as a previous installer
-/// wrote it. Issue #529: the installer no longer writes an instructions
-/// file, but install (self-heal on upgrade) and uninstall both still
-/// strip a block a prior install left, so we plant this to exercise it.
+/// wrote it. Install must replace this stale long block with the current
+/// short guidance while preserving user-owned content around it.
 pub(crate) const LEGACY_BLOCK: &str = "<!-- CODEGRAPH_START -->\n## CodeGraph\n\nPrefer `codegraph_search` / `codegraph_callers` over grep.\n<!-- CODEGRAPH_END -->";
 
 pub(crate) fn list_all_files(dir: &Path) -> Vec<PathBuf> {

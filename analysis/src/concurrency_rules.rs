@@ -48,7 +48,7 @@ impl ConcurrencyRules {
     pub fn for_language(lang: &str) -> Option<&'static ConcurrencyRules> {
         match lang {
             "rust" => Some(&RUST_CONCURRENCY_RULES),
-            "typescript" | "javascript" => Some(&TYPESCRIPT_CONCURRENCY_RULES),
+            "typescript" | "javascript" | "arkts" => Some(&TYPESCRIPT_CONCURRENCY_RULES),
             "go" => Some(&GO_CONCURRENCY_RULES),
             _ => None,
         }

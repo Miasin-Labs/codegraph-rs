@@ -10,6 +10,7 @@ mod cache;
 mod context;
 mod edges;
 mod engine;
+#[cfg(feature = "gpu")]
 mod gpu_batch;
 #[cfg(feature = "gpu")]
 mod gpu_exact;
@@ -30,6 +31,9 @@ mod snapshot;
 #[cfg(test)]
 mod tests;
 
+use std::cell::RefCell;
+use std::sync::Arc;
+
 pub use context::ResolverContext;
 
 use super::frameworks::detect_frameworks;
@@ -41,20 +45,20 @@ use crate::db::QueryBuilder;
 /// Orchestrates reference resolution using multiple strategies.
 pub struct ReferenceResolver {
     context: ResolverContext,
-    frameworks: Vec<Box<dyn FrameworkResolver>>,
+    frameworks: RefCell<Arc<Vec<Box<dyn FrameworkResolver>>>>,
 }
 
 impl ReferenceResolver {
     pub fn new(project_root: impl Into<String>, queries: QueryBuilder) -> Self {
         ReferenceResolver {
             context: ResolverContext::new(project_root.into(), queries),
-            frameworks: Vec::new(),
+            frameworks: RefCell::new(Arc::new(Vec::new())),
         }
     }
 
     /// Initialize the resolver (detect frameworks, etc.)
-    pub fn initialize(&mut self) {
-        self.frameworks = detect_frameworks(&self.context);
+    pub fn initialize(&self) {
+        *self.frameworks.borrow_mut() = Arc::new(detect_frameworks(&self.context));
         self.clear_caches();
     }
 
@@ -71,7 +75,7 @@ pub fn create_resolver(
     project_root: impl Into<String>,
     queries: QueryBuilder,
 ) -> ReferenceResolver {
-    let mut resolver = ReferenceResolver::new(project_root, queries);
+    let resolver = ReferenceResolver::new(project_root, queries);
     resolver.initialize();
     resolver
 }

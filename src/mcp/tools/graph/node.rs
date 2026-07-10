@@ -1,6 +1,7 @@
 //! Node support for graph MCP tools.
 
 use std::collections::HashSet;
+use std::fs;
 
 use serde_json::{Map, Value};
 
@@ -10,18 +11,14 @@ use super::super::output::{NodeDetailOutput, NodeOutput, NodeSummary};
 use super::super::schema::ToolResult;
 use crate::codegraph::CodeGraph;
 use crate::error::Result;
-use crate::types::Node;
+use crate::types::{Language, Node, NodeKind};
+use crate::utils::validate_path_within_root;
 
 impl ToolHandler {
     pub(in crate::mcp::tools) fn handle_node(
         &self,
         args: &Map<String, Value>,
     ) -> Result<ToolResult> {
-        let symbol = match self.validate_string(args.get("symbol"), "symbol") {
-            Ok(s) => s,
-            Err(r) => return Ok(r),
-        };
-
         let cg = self.get_code_graph(args.get("projectPath").and_then(|v| v.as_str()))?;
         // Default to false to minimize context usage
         let include_code = args.get("includeCode") == Some(&Value::Bool(true));
@@ -34,6 +31,33 @@ impl ToolHandler {
             .get("line")
             .and_then(|v| v.as_f64())
             .filter(|&l| l > 0.0);
+        let offset = args
+            .get("offset")
+            .and_then(Value::as_f64)
+            .filter(|value| *value > 0.0)
+            .map(|value| value.floor() as usize);
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_f64)
+            .filter(|value| *value > 0.0)
+            .map(|value| value.floor() as usize);
+        let symbols_only = args.get("symbolsOnly") == Some(&Value::Bool(true));
+        let symbol_raw = args
+            .get("symbol")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+
+        if symbol_raw.is_empty() {
+            if let Some(file) = file_hint.as_deref() {
+                return self.handle_file_view(&cg, file, offset, limit, symbols_only);
+            }
+        }
+
+        let symbol = match self.validate_string(args.get("symbol"), "symbol") {
+            Ok(s) => s,
+            Err(r) => return Ok(r),
+        };
 
         let mut matches = self.find_symbol_matches(&cg, &symbol)?;
         if matches.is_empty() {
@@ -211,6 +235,227 @@ impl ToolHandler {
             matches: details,
         };
         self.structured_result(&self.truncate_output(&out.join("\n")), &output)
+    }
+
+    fn handle_file_view(
+        &self,
+        cg: &CodeGraph,
+        file_arg: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+        symbols_only: bool,
+    ) -> Result<ToolResult> {
+        fn normalize(path: &str) -> String {
+            path.replace('\\', "/")
+                .trim_start_matches("./")
+                .trim_matches('/')
+                .to_lowercase()
+        }
+
+        let wanted = normalize(file_arg);
+        let all_files = cg.get_files()?;
+        if all_files.is_empty() {
+            return Ok(self.text_result("No files indexed. Run `codegraph index` first."));
+        }
+
+        let mut resolved = all_files
+            .iter()
+            .find(|file| file.path.to_lowercase() == wanted);
+        let mut candidates = Vec::new();
+        if resolved.is_none() {
+            let suffix = format!("/{wanted}");
+            candidates = all_files
+                .iter()
+                .filter(|file| file.path.to_lowercase().ends_with(&suffix))
+                .collect();
+            if candidates.len() == 1 {
+                resolved = candidates.first().copied();
+            }
+        }
+        if resolved.is_none() && candidates.is_empty() {
+            candidates = all_files
+                .iter()
+                .filter(|file| file.path.to_lowercase().contains(&wanted))
+                .collect();
+            if candidates.len() == 1 {
+                resolved = candidates.first().copied();
+            }
+        }
+        if resolved.is_none() && candidates.len() > 1 {
+            let mut out = vec![
+                format!(
+                    "\"{file_arg}\" matches {} indexed files - pass a longer path:",
+                    candidates.len()
+                ),
+                String::new(),
+            ];
+            out.extend(
+                candidates
+                    .iter()
+                    .take(25)
+                    .map(|candidate| format!("- {}", candidate.path)),
+            );
+            return Ok(self.text_result(&out.join("\n")));
+        }
+        let Some(resolved) = resolved else {
+            return Ok(self.text_result(&format!(
+                "No indexed file matches \"{file_arg}\". Codegraph indexes source files; configs/docs it doesn't parse won't appear - read those directly."
+            )));
+        };
+
+        let file_path = &resolved.path;
+        let mut nodes = cg.get_nodes_in_file(file_path)?;
+        nodes.retain(|node| {
+            !matches!(
+                node.kind,
+                NodeKind::File | NodeKind::Import | NodeKind::Export
+            )
+        });
+        nodes.sort_by_key(|node| node.start_line);
+        let dependents = cg.get_file_dependents(file_path)?;
+        let dep_summary = if dependents.is_empty() {
+            "no other indexed file depends on it".to_string()
+        } else {
+            let shown = dependents.iter().take(8).cloned().collect::<Vec<_>>();
+            let overflow = dependents.len().saturating_sub(shown.len());
+            format!(
+                "used by {} file{}: {}{}",
+                dependents.len(),
+                if dependents.len() == 1 { "" } else { "s" },
+                shown.join(", "),
+                if overflow == 0 {
+                    String::new()
+                } else {
+                    format!(", +{overflow} more")
+                }
+            )
+        };
+
+        let symbol_map = |heading: &str| {
+            let mut lines = vec![heading.to_string()];
+            for node in nodes.iter().take(200) {
+                let signature = node
+                    .signature
+                    .as_deref()
+                    .map(|value| {
+                        format!(
+                            " {}",
+                            value.split_whitespace().collect::<Vec<_>>().join(" ")
+                        )
+                    })
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "- `{}` ({}){} - :{}",
+                    node.name,
+                    node.kind.as_str(),
+                    signature,
+                    node.start_line
+                ));
+            }
+            if nodes.len() > 200 {
+                lines.push(format!("- ... +{} more", nodes.len() - 200));
+            }
+            lines
+        };
+
+        if symbols_only {
+            let mut out = vec![
+                format!(
+                    "**{file_path}** - {} symbol{}, {dep_summary}",
+                    nodes.len(),
+                    if nodes.len() == 1 { "" } else { "s" }
+                ),
+                String::new(),
+            ];
+            if nodes.is_empty() {
+                out.push("_No indexed symbols in this file._".to_string());
+            } else {
+                out.extend(symbol_map("**Symbols**"));
+            }
+            out.push(String::new());
+            out.push(
+                "> Drop `symbolsOnly` (or pass `offset`/`limit`) to read the source, like Read."
+                    .to_string(),
+            );
+            return Ok(self.text_result(&self.truncate_output(&out.join("\n"))));
+        }
+
+        if matches!(resolved.language, Language::Yaml | Language::Properties) {
+            let mut out = vec![
+                format!("**{file_path}** - configuration/data file, {dep_summary}"),
+                String::new(),
+            ];
+            if !nodes.is_empty() {
+                out.extend(symbol_map("**Keys (values withheld for safety)**"));
+            }
+            out.push(String::new());
+            out.push(
+                "> Values may be secrets, so codegraph indexes keys only. Read the file directly if you need a value."
+                    .to_string(),
+            );
+            return Ok(self.text_result(&self.truncate_output(&out.join("\n"))));
+        }
+
+        let content = validate_path_within_root(cg.get_project_root(), file_path)
+            .and_then(|path| fs::read_to_string(path).ok());
+        let Some(content) = content else {
+            let mut out = vec![
+                format!(
+                    "**{file_path}** - could not read from disk (it may have moved since indexing). {dep_summary}"
+                ),
+                String::new(),
+            ];
+            if !nodes.is_empty() {
+                out.extend(symbol_map("**Symbols**"));
+            }
+            out.push(String::new());
+            out.push(format!(
+                "> Read `{file_path}` directly for its current content."
+            ));
+            return Ok(self.text_result(&self.truncate_output(&out.join("\n"))));
+        };
+
+        const DEFAULT_LIMIT: usize = 2_000;
+        const CHAR_BUDGET: usize = 38_000;
+        let file_lines = content.split('\n').collect::<Vec<_>>();
+        let total = file_lines.len();
+        let offset = offset.unwrap_or(1).max(1);
+        if offset > total {
+            return Ok(self.text_result(&format!(
+                "**{file_path}** has {total} line{} - offset {offset} is past the end. {dep_summary}",
+                if total == 1 { "" } else { "s" }
+            )));
+        }
+        let max_lines = limit.unwrap_or(DEFAULT_LIMIT).max(1);
+        let start = offset - 1;
+        let header = format!(
+            "**{file_path}** - {total} lines, {} symbol{} | {dep_summary}",
+            nodes.len(),
+            if nodes.len() == 1 { "" } else { "s" }
+        );
+        let mut numbered = Vec::new();
+        let mut used = header.len() + 8;
+        let mut index = start;
+        while index < total && numbered.len() < max_lines {
+            let line = format!("{}\t{}", index + 1, file_lines[index]);
+            if used + line.len() + 1 > CHAR_BUDGET && !numbered.is_empty() {
+                break;
+            }
+            used += line.len() + 1;
+            numbered.push(line);
+            index += 1;
+        }
+        let shown_end = start + numbered.len();
+        let complete = offset == 1 && shown_end >= total;
+        let mut out = vec![header, String::new()];
+        out.extend(numbered);
+        if !complete {
+            out.push(String::new());
+            out.push(format!(
+                "(lines {offset}-{shown_end} of {total} - pass `offset`/`limit` for another range, or `codegraph_node <symbol>` for one symbol in full)"
+            ));
+        }
+        Ok(self.text_result(&out.join("\n")))
     }
 
     fn render_node_detail(

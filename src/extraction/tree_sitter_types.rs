@@ -18,11 +18,55 @@
 //! because native tree-sitter nodes cannot produce text without the source
 //! (web-tree-sitter's `node.text` carried it implicitly).
 
+use std::borrow::Cow;
+
 use crate::types::{Node, NodeKind, UnresolvedReference, Visibility};
 
 /// Alias matching the TS sources' `SyntaxNode` import from web-tree-sitter.
 /// Per-language extractors should use this name for parity with the TS files.
 pub type SyntaxNode<'tree> = tree_sitter::Node<'tree>;
+
+/// Conservative cross-language normalization for a declared return type.
+/// The resolver always validates the resulting type actually owns the outer
+/// method, so an unsupported shape returns no edge rather than a wrong one.
+pub fn normalize_return_type_text(raw: &str) -> Option<String> {
+    let mut value = raw.trim().trim_start_matches("->").trim();
+    value = value.trim_start_matches(':').trim();
+    value = value.trim_start_matches('?').trim();
+    if value.is_empty() || value.contains('|') || value.contains(',') {
+        return None;
+    }
+
+    let end = value.find(['<', '[', '(', '{']).unwrap_or(value.len());
+    value = value[..end].trim();
+    value = value
+        .trim_matches(|ch: char| matches!(ch, '*' | '&' | '?' | '!' | '[' | ']'))
+        .trim();
+    let candidate = value
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, '.' | ':' | '\\' | '/'))
+        .rfind(|part| !part.is_empty())?;
+    let candidate = if candidate == "Self" || candidate == "static" {
+        "self"
+    } else {
+        candidate
+    };
+    const NON_RECEIVER_TYPES: [&str; 22] = [
+        "void", "bool", "boolean", "byte", "char", "short", "int", "integer", "long", "float",
+        "double", "number", "numeric", "string", "str", "object", "any", "unit", "never", "none",
+        "nil", "null",
+    ];
+    if candidate.is_empty()
+        || NON_RECEIVER_TYPES
+            .iter()
+            .any(|primitive| candidate.eq_ignore_ascii_case(primitive))
+        || !candidate
+            .chars()
+            .all(|ch| ch == '_' || ch == '$' || ch.is_alphanumeric())
+    {
+        return None;
+    }
+    Some(candidate.to_string())
+}
 
 /// Information returned by a language's `extract_import` hook.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +141,14 @@ pub enum ClassLikeKind {
     Trait,
 }
 
+/// Classification for grammars that reuse a method-shaped node for stored
+/// properties (TypeScript/ArkTS `public_field_definition`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassMemberKind {
+    Method,
+    Property,
+}
+
 /// Optional per-node attributes passed to `create_node` — the Rust shape of
 /// the TS `extra?: Partial<Node>` parameter. `None` fields are left unset on
 /// the created node (TS spread of `undefined` values).
@@ -104,6 +156,7 @@ pub enum ClassLikeKind {
 pub struct NodeExtra {
     pub docstring: Option<String>,
     pub signature: Option<String>,
+    pub return_type: Option<String>,
     pub visibility: Option<Visibility>,
     pub is_exported: Option<bool>,
     pub is_async: Option<bool>,
@@ -158,6 +211,12 @@ pub trait ExtractorContext {
 /// Implementations are stateless (typically unit structs) and registered as
 /// `&'static dyn LanguageExtractor` in `languages/mod.rs`.
 pub trait LanguageExtractor: Send + Sync {
+    /// Offset-preserving normalization applied before tree-sitter parses.
+    /// Extraction reads the original source through the resulting byte ranges.
+    fn pre_parse<'a>(&self, source: &'a str, _file_path: &str) -> Cow<'a, str> {
+        Cow::Borrowed(source)
+    }
+
     // --- Node type mappings ---
 
     /// Node types that represent functions
@@ -244,6 +303,11 @@ pub trait LanguageExtractor: Send + Sync {
         None
     }
 
+    /// Persist language-specific declaration modifiers on the graph node.
+    fn extract_modifiers(&self, _node: SyntaxNode<'_>, _source: &str) -> Option<Vec<String>> {
+        None
+    }
+
     // --- New config properties ---
 
     /// Additional node types to treat as class declarations (e.g. Dart: `mixin_declaration`)
@@ -298,6 +362,12 @@ pub trait LanguageExtractor: Send + Sync {
         ClassLikeKind::Class
     }
 
+    /// Classify a node listed in `method_types` when it may actually be a
+    /// stored property (TypeScript/ArkTS class fields).
+    fn classify_method_node(&self, _node: SyntaxNode<'_>, _source: &str) -> ClassMemberKind {
+        ClassMemberKind::Method
+    }
+
     /// Resolve the body node for a function/method/class when it's not a child field.
     /// (e.g. Dart puts function_body as a sibling, not a child.)
     /// Returning `None` falls back to `child_by_field_name(body_field)`.
@@ -323,6 +393,13 @@ pub trait LanguageExtractor: Send + Sync {
     /// included in the qualified name for better searchability.
     fn get_receiver_type(&self, _node: SyntaxNode<'_>, _source: &str) -> Option<String> {
         None
+    }
+
+    /// Extract a normalized result type for function/method receiver inference.
+    fn get_return_type(&self, node: SyntaxNode<'_>, source: &str) -> Option<String> {
+        let field = self.return_field()?;
+        let type_node = node.child_by_field_name(field)?;
+        normalize_return_type_text(source.get(type_node.byte_range())?)
     }
 
     /// Resolve the actual node kind for a type alias declaration.
@@ -371,5 +448,29 @@ pub trait LanguageExtractor: Send + Sync {
     /// Extract the dotted package name from a package declaration node.
     fn extract_package(&self, _node: SyntaxNode<'_>, _source: &str) -> Option<String> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_return_type_text;
+
+    #[test]
+    fn normalizes_common_declared_return_type_shapes() {
+        assert_eq!(
+            normalize_return_type_text("-> &mut client::Client"),
+            Some("Client".into())
+        );
+        assert_eq!(
+            normalize_return_type_text(": Repository<User>"),
+            Some("Repository".into())
+        );
+        assert_eq!(
+            normalize_return_type_text("?\\App\\Service"),
+            Some("Service".into())
+        );
+        assert_eq!(normalize_return_type_text("Self"), Some("self".into()));
+        assert_eq!(normalize_return_type_text("void"), None);
+        assert_eq!(normalize_return_type_text("Foo | null"), None);
     }
 }

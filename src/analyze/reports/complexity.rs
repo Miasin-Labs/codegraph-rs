@@ -62,6 +62,7 @@ pub(crate) fn complexity_lang_id(language: Language) -> Option<&'static str> {
     Some(match language {
         Language::Rust => "rust",
         Language::Typescript | Language::Tsx | Language::Javascript | Language::Jsx => "typescript",
+        Language::Arkts => "arkts",
         Language::Python => "python",
         Language::Go => "go",
         Language::Java => "java",
@@ -72,6 +73,13 @@ pub(crate) fn complexity_lang_id(language: Language) -> Option<&'static str> {
         Language::Swift => "swift",
         Language::Csharp => "csharp",
         Language::Ruby => "ruby",
+        Language::R => "r",
+        Language::Solidity => "solidity",
+        Language::Nix => "nix",
+        Language::Cfml => "cfml",
+        Language::Cfscript => "cfscript",
+        Language::Cfquery => "cfquery",
+        Language::Erlang => "erlang",
         _ => return None,
     })
 }

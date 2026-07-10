@@ -44,10 +44,11 @@ pub struct ResolverContext {
     pub(super) workspace_packages: OnceCell<Option<WorkspacePackages>>,
 }
 
-/// `/\.(?:d\.ts|[cm]?tsx?|[cm]?jsx?)$/i` — is this file in the JS/TS family?
+/// JS/TS/ArkTS source files that use ES module import syntax.
 pub(super) fn is_js_family_path(file_path: &str) -> bool {
     static RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"(?i)\.(?:d\.ts|[cm]?tsx?|[cm]?jsx?)$").expect("valid js-family regex")
+        regex::Regex::new(r"(?i)\.(?:d\.ts|[cm]?tsx?|[cm]?jsx?|ets)$")
+            .expect("valid js-family regex")
     });
     RE.is_match(file_path)
 }
@@ -55,7 +56,11 @@ pub(super) fn is_js_family_path(file_path: &str) -> bool {
 pub(super) fn is_js_ts_language(language: Language) -> bool {
     matches!(
         language,
-        Language::Typescript | Language::Javascript | Language::Tsx | Language::Jsx
+        Language::Typescript
+            | Language::Javascript
+            | Language::Tsx
+            | Language::Jsx
+            | Language::Arkts
     )
 }
 

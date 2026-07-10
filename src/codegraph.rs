@@ -8,10 +8,13 @@
 //! cross-process file locking, and the auto-sync file watcher.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+
+use tokio::sync::{Mutex, MutexGuard};
 
 use crate::context::{ContextBuilder, create_context_builder};
 // =============================================================================
@@ -35,8 +38,10 @@ pub use crate::db::{
 };
 pub use crate::directory::{
     CODEGRAPH_DIR,
+    codegraph_dir_name,
     find_nearest_codegraph_root,
     get_codegraph_dir,
+    is_codegraph_data_dir,
     is_initialized,
 };
 use crate::directory::{create_directory, remove_directory, validate_directory};
@@ -44,6 +49,7 @@ use crate::error::{CodeGraphError, Result};
 pub use crate::error::{DefaultLogger, set_logger};
 pub use crate::extraction::{
     ChangedFiles,
+    EXTRACTION_VERSION,
     IndexProgress,
     IndexResult,
     SyncResult,
@@ -63,6 +69,7 @@ pub use crate::graph::{NodeMetrics, PathStep};
 pub use crate::mcp::MCPServer;
 pub use crate::resolution::ResolutionResult;
 use crate::resolution::{ReferenceResolver, create_resolver};
+use crate::search::split_identifier_segments;
 use crate::sync::{DEFAULT_READY_TIMEOUT_MS, SyncError, SyncFn, WatchSyncResult};
 pub use crate::sync::{FileWatcher, LockUnavailableError, PendingFile, WatchOptions};
 use crate::types::{
@@ -88,6 +95,17 @@ use crate::types::{
     UnresolvedReference,
 };
 pub use crate::utils::FileLock;
+
+/// A graph-verified symbol matched from prose through identifier segments.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentMatch {
+    pub name: String,
+    pub kind: NodeKind,
+    pub file_path: String,
+    pub start_line: u32,
+    pub matched_words: Vec<String>,
+}
 
 // =============================================================================
 // Options
@@ -120,6 +138,43 @@ pub struct IndexOptions<'a> {
     pub verbose: bool,
 }
 
+/// Completeness of the most recent full-index run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexState {
+    Indexing,
+    Complete,
+    Partial,
+    Failed,
+}
+
+impl IndexState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Indexing => "indexing",
+            Self::Complete => "complete",
+            Self::Partial => "partial",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "indexing" => Some(Self::Indexing),
+            "complete" => Some(Self::Complete),
+            "partial" => Some(Self::Partial),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+/// Engine versions recorded by the last successful, non-empty full index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexBuildInfo {
+    pub version: Option<String>,
+    pub extraction_version: Option<u32>,
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -139,6 +194,7 @@ fn lock_failure_index_result() -> IndexResult {
         files_indexed: 0,
         files_skipped: 0,
         files_errored: 0,
+        files_discovered: None,
         nodes_created: 0,
         edges_created: 0,
         errors: vec![ExtractionError {
@@ -224,7 +280,7 @@ pub struct CodeGraph {
     db: RefCell<DatabaseConnection>,
     queries: Rc<QueryBuilder>,
     project_root: PathBuf,
-    resolver: RefCell<ReferenceResolver>,
+    resolver: ReferenceResolver,
     graph_manager: GraphQueryManager,
     traverser: GraphTraverser,
     context_builder: ContextBuilder,
@@ -240,6 +296,47 @@ pub struct CodeGraph {
 
     /// File watcher for auto-sync on file changes.
     watcher: RefCell<Option<FileWatcher>>,
+
+    /// Runtime borrowed from the process boundary. Watcher threads use this
+    /// handle to drive async sync work without constructing nested runtimes.
+    runtime: Option<tokio::runtime::Handle>,
+}
+
+fn segment_lookup_variants(word: &str) -> Vec<String> {
+    let mut variants = vec![word.to_string()];
+    let char_count = word.chars().count();
+    if ["xes", "shes", "sses", "zzes"]
+        .iter()
+        .any(|ending| word.ends_with(ending))
+    {
+        if char_count >= 6 {
+            variants.push(word[..word.len() - 2].to_string());
+        }
+    } else if ["ches", "ses", "zes", "oes"]
+        .iter()
+        .any(|ending| word.ends_with(ending))
+    {
+        if char_count >= 6 {
+            variants.push(word[..word.len() - 2].to_string());
+        }
+        if char_count >= 5 {
+            variants.push(word[..word.len() - 1].to_string());
+        }
+    } else if word.ends_with('s') && !word.ends_with("ss") && char_count >= 5 {
+        variants.push(word[..word.len() - 1].to_string());
+    }
+    variants
+}
+
+fn words_matching_name(name: &str, variant_to_word: &HashMap<String, String>) -> HashSet<String> {
+    let segments = split_identifier_segments(name)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    variant_to_word
+        .iter()
+        .filter(|(variant, _)| segments.contains(*variant))
+        .map(|(_, word)| word.clone())
+        .collect()
 }
 
 impl CodeGraph {
@@ -259,18 +356,19 @@ impl CodeGraph {
             Rc::clone(&queries),
             GraphTraverser::new(Rc::clone(&queries)),
         );
-        let file_lock = FileLock::new(project_root.join(".codegraph").join("codegraph.lock"));
+        let file_lock = FileLock::new(get_codegraph_dir(&project_root).join("codegraph.lock"));
         Ok(CodeGraph {
             db: RefCell::new(db),
             queries,
             project_root,
-            resolver: RefCell::new(resolver),
+            resolver,
             graph_manager,
             traverser,
             context_builder,
             index_mutex: Mutex::new(()),
             file_lock: RefCell::new(file_lock),
             watcher: RefCell::new(None),
+            runtime: tokio::runtime::Handle::try_current().ok(),
         })
     }
 
@@ -280,9 +378,12 @@ impl CodeGraph {
 
     /// Initialize a new CodeGraph project.
     ///
-    /// Creates the .codegraph directory, database, and configuration.
-    /// (TS `static async init` — grammars are native here, so this is sync.)
-    pub fn init(project_root: impl AsRef<Path>, options: &InitOptions) -> Result<CodeGraph> {
+    /// Creates the .codegraph directory, database, configuration, and initial
+    /// index. Native grammar setup is synchronous; indexing is Tokio-backed.
+    pub async fn init(
+        project_root: impl AsRef<Path>,
+        options: &InitOptions<'_>,
+    ) -> Result<CodeGraph> {
         init_grammars();
         let resolved_root = resolve_root(project_root.as_ref());
 
@@ -304,10 +405,12 @@ impl CodeGraph {
 
         let instance = Self::build(db, queries, resolved_root)?;
 
-        instance.index_all(&IndexOptions {
-            on_progress: options.on_progress,
-            ..Default::default()
-        })?;
+        instance
+            .index_all(&IndexOptions {
+                on_progress: options.on_progress,
+                ..Default::default()
+            })
+            .await?;
 
         Ok(instance)
     }
@@ -336,7 +439,10 @@ impl CodeGraph {
     }
 
     /// Open an existing CodeGraph project.
-    pub fn open(project_root: impl AsRef<Path>, options: &OpenOptions) -> Result<CodeGraph> {
+    pub async fn open_async(
+        project_root: impl AsRef<Path>,
+        options: &OpenOptions,
+    ) -> Result<CodeGraph> {
         init_grammars();
         let resolved_root = resolve_root(project_root.as_ref());
 
@@ -366,10 +472,23 @@ impl CodeGraph {
 
         // Sync if requested
         if options.sync {
-            instance.sync(&IndexOptions::default())?;
+            instance.sync(&IndexOptions::default()).await?;
         }
 
         Ok(instance)
+    }
+
+    /// Open without running an index sync. Use [`Self::open_async`] when
+    /// `OpenOptions::sync` is enabled so the caller's Tokio runtime owns the
+    /// asynchronous parsing and resolution work.
+    pub fn open(project_root: impl AsRef<Path>, options: &OpenOptions) -> Result<CodeGraph> {
+        if options.sync {
+            return Err(CodeGraphError::other(
+                "OpenOptions::sync requires CodeGraph::open_async",
+            ));
+        }
+        init_grammars();
+        Self::open_sync(project_root)
     }
 
     /// Open synchronously (without sync).
@@ -433,30 +552,115 @@ impl CodeGraph {
         ExtractionOrchestrator::new(self.project_root.clone(), self.queries.as_ref())
     }
 
-    fn lock_index_mutex(&self) -> MutexGuard<'_, ()> {
-        self.index_mutex
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    async fn lock_index_mutex(&self) -> MutexGuard<'_, ()> {
+        self.index_mutex.lock().await
     }
 
     /// Index all files in the project.
     ///
     /// Uses a mutex to prevent concurrent indexing operations.
-    pub fn index_all(&self, options: &IndexOptions) -> Result<IndexResult> {
-        let _guard = self.lock_index_mutex();
+    pub async fn index_all(&self, options: &IndexOptions<'_>) -> Result<IndexResult> {
+        let _guard = self.lock_index_mutex().await;
         if self.file_lock.borrow_mut().acquire().is_err() {
             return Ok(lock_failure_index_result());
         }
-        let result = self.index_all_locked(options);
+        // Persist this before the first graph read/write. If the process is
+        // killed during extraction, resolution, or maintenance, status can
+        // distinguish the truncated database from a completed index.
+        let _ = self
+            .queries
+            .set_metadata("index_state", IndexState::Indexing.as_str());
+        let mut result = self.index_all_locked(options).await;
+        match result.as_mut() {
+            Ok(index_result) => self.finalize_full_index_metadata(index_result),
+            Err(_) => {
+                let _ = self
+                    .queries
+                    .set_metadata("index_state", IndexState::Failed.as_str());
+            }
+        }
         self.file_lock.borrow_mut().release();
         result
     }
 
-    fn index_all_locked(&self, options: &IndexOptions) -> Result<IndexResult> {
+    fn finalize_full_index_metadata(&self, result: &mut IndexResult) {
+        if !result.success {
+            let _ = self
+                .queries
+                .set_metadata("index_state", IndexState::Failed.as_str());
+            return;
+        }
+
+        // Rebuild from persisted nodes after the scan. Clearing before the scan
+        // loses vocabulary when unchanged files are skipped or indexing aborts.
+        if let Err(error) = self.queries.rebuild_name_segment_vocab(2_000) {
+            result.success = false;
+            result.errors.push(ExtractionError {
+                message: format!("Failed to rebuild name-segment vocabulary: {error}"),
+                file_path: None,
+                line: None,
+                column: None,
+                severity: Severity::Error,
+                code: Some("vocabulary_rebuild_failed".to_string()),
+            });
+            let _ = self
+                .queries
+                .set_metadata("index_state", IndexState::Failed.as_str());
+            return;
+        }
+
+        // A targeted sync cannot make an older index current, so these are
+        // deliberately written only by this full-index lifecycle.
+        if result.files_indexed > 0 {
+            let _ = self
+                .queries
+                .set_metadata("indexed_with_version", env!("CARGO_PKG_VERSION"));
+            let _ = self.queries.set_metadata(
+                "indexed_with_extraction_version",
+                &EXTRACTION_VERSION.to_string(),
+            );
+        }
+
+        let accounted = result.files_indexed + result.files_skipped + result.files_errored;
+        if let Some(discovered) = result.files_discovered {
+            let _ = self
+                .queries
+                .set_metadata("index_files_discovered", &discovered.to_string());
+            let _ = self
+                .queries
+                .set_metadata("index_files_accounted", &accounted.to_string());
+
+            if accounted < discovered {
+                let missing = discovered - accounted;
+                let _ = self
+                    .queries
+                    .set_metadata("index_state", IndexState::Partial.as_str());
+                result.errors.push(ExtractionError {
+                    message: format!(
+                        "Index is missing {missing} of {discovered} discovered files (indexed {}, skipped {}, errored {}). The index is PARTIAL - re-run `codegraph index`.",
+                        result.files_indexed, result.files_skipped, result.files_errored
+                    ),
+                    file_path: None,
+                    line: None,
+                    column: None,
+                    severity: Severity::Warning,
+                    code: Some("index_partial".to_string()),
+                });
+                return;
+            }
+        }
+
+        let _ = self
+            .queries
+            .set_metadata("index_state", IndexState::Complete.as_str());
+    }
+
+    async fn index_all_locked(&self, options: &IndexOptions<'_>) -> Result<IndexResult> {
         let before = self.queries.get_node_and_edge_count()?;
         let orchestrator = self.orchestrator();
-        let mut result =
-            orchestrator.index_all(options.on_progress, options.signal, options.verbose)?;
+        let mut result = orchestrator
+            .index_all(options.on_progress, options.signal, options.verbose)
+            .await?;
         let reconcile_removed = if result.success {
             orchestrator.reconcile_removed_files()?.files_removed
         } else {
@@ -472,10 +676,10 @@ impl CodeGraph {
         // and silently drop themselves. Re-initializing here gives them a
         // chance to see the actual project before resolution runs.
         if touched {
-            self.resolver.borrow_mut().initialize();
+            self.resolver.initialize();
             // Cross-file finalization (e.g. NestJS RouterModule prefixes). Runs
             // before resolution so updated names show up in subsequent reads.
-            self.resolver.borrow().run_post_extract();
+            self.resolver.run_post_extract();
         }
 
         // Resolve references to create call/import/extends edges
@@ -489,8 +693,8 @@ impl CodeGraph {
                 emit_resolving(options.on_progress, current, total);
             };
             self.resolver
-                .borrow()
-                .resolve_and_persist_batched(Some(&mut cb), None)?;
+                .resolve_and_persist_batched(Some(&mut cb), None)
+                .await?;
         }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
@@ -514,17 +718,17 @@ impl CodeGraph {
     /// Index specific files.
     ///
     /// Uses a mutex to prevent concurrent indexing operations.
-    pub fn index_files(&self, file_paths: &[String]) -> Result<IndexResult> {
-        let _guard = self.lock_index_mutex();
+    pub async fn index_files(&self, file_paths: &[String]) -> Result<IndexResult> {
+        let _guard = self.lock_index_mutex().await;
         if self.file_lock.borrow_mut().acquire().is_err() {
             return Ok(lock_failure_index_result());
         }
-        let result = self.index_files_locked(file_paths);
+        let result = self.index_files_locked(file_paths).await;
         self.file_lock.borrow_mut().release();
         result
     }
 
-    fn index_files_locked(&self, file_paths: &[String]) -> Result<IndexResult> {
+    async fn index_files_locked(&self, file_paths: &[String]) -> Result<IndexResult> {
         let before = self.queries.get_node_and_edge_count()?;
 
         // Symbol names present BEFORE re-indexing. A symbol that the edit
@@ -541,13 +745,13 @@ impl CodeGraph {
         }
 
         let orchestrator = self.orchestrator();
-        let mut result = orchestrator.index_files(file_paths)?;
+        let mut result = orchestrator.index_files(file_paths).await?;
         let touched = result.success && result.files_indexed > 0;
 
         if touched {
             orchestrator.reset_detected_frameworks();
-            self.resolver.borrow_mut().initialize();
-            self.resolver.borrow().run_post_extract();
+            self.resolver.initialize();
+            self.resolver.run_post_extract();
 
             // Union in the post-index names (newly added or renamed-to
             // symbols) so both sides of a rename get their references
@@ -568,8 +772,8 @@ impl CodeGraph {
                 .get_unresolved_references_by_names(&changed_node_names)?;
             let unresolved_refs = dedupe_unresolved_refs(by_file, by_name);
             self.resolver
-                .borrow()
-                .resolve_and_persist(&unresolved_refs, None)?;
+                .resolve_and_persist(&unresolved_refs, None)
+                .await?;
 
             self.db.borrow().run_maintenance();
 
@@ -584,26 +788,27 @@ impl CodeGraph {
     /// Sync with current file state (incremental update).
     ///
     /// Uses a mutex to prevent concurrent indexing operations.
-    pub fn sync(&self, options: &IndexOptions) -> Result<SyncResult> {
-        let _guard = self.lock_index_mutex();
+    pub async fn sync(&self, options: &IndexOptions<'_>) -> Result<SyncResult> {
+        let _guard = self.lock_index_mutex().await;
         if self.file_lock.borrow_mut().acquire().is_err() {
             return Ok(lock_failure_sync_result());
         }
-        let result = self.sync_locked(options);
+        let result = self.sync_locked(options).await;
         self.file_lock.borrow_mut().release();
         result
     }
 
-    fn sync_locked(&self, options: &IndexOptions) -> Result<SyncResult> {
+    async fn sync_locked(&self, options: &IndexOptions<'_>) -> Result<SyncResult> {
+        let vocab_was_empty = self.queries.is_name_segment_vocab_empty().unwrap_or(false);
         let orchestrator = self.orchestrator();
-        let result = orchestrator.sync(options.on_progress)?;
+        let result = orchestrator.sync(options.on_progress).await?;
 
         let touched =
             result.files_added > 0 || result.files_modified > 0 || result.files_removed > 0;
 
         if touched {
             orchestrator.reset_detected_frameworks();
-            self.resolver.borrow_mut().initialize();
+            self.resolver.initialize();
         }
 
         // Cross-file finalization (e.g. NestJS RouterModule prefixes). Run on
@@ -611,7 +816,7 @@ impl CodeGraph {
         // to controllers in unchanged files. The pass is idempotent and cheap
         // (regex over *.module.ts only).
         if touched {
-            self.resolver.borrow().run_post_extract();
+            self.resolver.run_post_extract();
         }
 
         // Resolve references if files were updated
@@ -633,8 +838,8 @@ impl CodeGraph {
                     emit_resolving(options.on_progress, current, total);
                 };
                 self.resolver
-                    .borrow()
-                    .resolve_and_persist(&unresolved_refs, Some(&mut cb))?;
+                    .resolve_and_persist(&unresolved_refs, Some(&mut cb))
+                    .await?;
             } else {
                 // No git info — use batched resolution to avoid OOM
                 let unresolved_count = self.queries.get_unresolved_references_count()? as usize;
@@ -645,9 +850,15 @@ impl CodeGraph {
                     emit_resolving(options.on_progress, current, total);
                 };
                 self.resolver
-                    .borrow()
-                    .resolve_and_persist_batched(Some(&mut cb), None)?;
+                    .resolve_and_persist_batched(Some(&mut cb), None)
+                    .await?;
             }
+        }
+
+        // Migrated databases start with an empty vocabulary. Incremental node
+        // writes only cover changed files, so heal the unchanged bulk here.
+        if vocab_was_empty && self.queries.get_node_and_edge_count()?.nodes > 0 {
+            self.queries.rebuild_name_segment_vocab(2_000)?;
         }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
@@ -660,11 +871,132 @@ impl CodeGraph {
 
     /// Check if an indexing operation is currently in progress.
     pub fn is_indexing(&self) -> bool {
-        match self.index_mutex.try_lock() {
-            Ok(_guard) => false,
-            Err(TryLockError::WouldBlock) => true,
-            Err(TryLockError::Poisoned(_)) => false,
+        self.index_mutex.try_lock().is_err()
+    }
+
+    /// One-shot upgrade heal for read-mostly callers such as the prompt hook.
+    /// Returns false only for an empty graph or when another writer owns the
+    /// project lock and will perform the same heal itself.
+    pub fn heal_segment_vocab_if_empty(&self) -> Result<bool> {
+        if !self.queries.is_name_segment_vocab_empty()? {
+            return Ok(true);
         }
+        if self.queries.get_node_and_edge_count()?.nodes == 0 {
+            return Ok(false);
+        }
+
+        let Ok(_guard) = self.index_mutex.try_lock() else {
+            return Ok(false);
+        };
+        if self.file_lock.borrow_mut().acquire().is_err() {
+            return Ok(false);
+        }
+        let result = self
+            .queries
+            .is_name_segment_vocab_empty()
+            .and_then(|empty| {
+                if empty {
+                    self.queries.rebuild_name_segment_vocab(2_000)
+                } else {
+                    Ok(())
+                }
+            });
+        self.file_lock.borrow_mut().release();
+        result.map(|()| true)
+    }
+
+    /// Match prompt prose to live symbols through the materialized identifier
+    /// segment vocabulary. Two words on one name are strong evidence; a lone
+    /// word must be both rare and repeated across names in this repository.
+    pub fn get_segment_matches(&self, words: &[String], limit: usize) -> Result<Vec<SegmentMatch>> {
+        const SEGMENT_RARITY_CEILING: usize = 25;
+        if words.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut variant_to_word = HashMap::new();
+        let mut variants = Vec::new();
+        for word in words {
+            for variant in segment_lookup_variants(word) {
+                if !variant_to_word.contains_key(&variant) {
+                    variant_to_word.insert(variant.clone(), word.clone());
+                    variants.push(variant);
+                }
+            }
+        }
+        let variant_pairs = variants
+            .iter()
+            .map(|variant| (variant.clone(), variant_to_word[variant].clone()))
+            .collect::<Vec<_>>();
+        let mut candidates: Vec<(String, HashSet<String>)> = Vec::new();
+        for (name, _) in self
+            .queries
+            .get_segment_co_occurrence(&variant_pairs, 2, 24)?
+        {
+            let matched = words_matching_name(&name, &variant_to_word);
+            if matched.len() >= 2 {
+                candidates.push((name, matched));
+            }
+        }
+
+        if candidates.is_empty() {
+            let single_variants = variants
+                .iter()
+                .filter(|variant| variant_to_word[*variant].chars().count() >= 5)
+                .cloned()
+                .collect::<Vec<_>>();
+            let counts = self.queries.get_segment_name_counts(&single_variants)?;
+            let mut rare = counts
+                .into_iter()
+                .filter(|(_, count)| *count >= 2 && *count <= SEGMENT_RARITY_CEILING)
+                .collect::<Vec<_>>();
+            rare.sort_by(|(left_name, left_count), (right_name, right_count)| {
+                left_count
+                    .cmp(right_count)
+                    .then_with(|| left_name.cmp(right_name))
+            });
+            for (variant, _) in rare.into_iter().take(2) {
+                let original = variant_to_word[&variant].clone();
+                for name in self.queries.get_names_for_segment(&variant, 12)? {
+                    if split_identifier_segments(&name).len() >= 2 {
+                        candidates.push((name, HashSet::from([original.clone()])));
+                    }
+                }
+            }
+        }
+
+        candidates.sort_by(|(left_name, left_words), (right_name, right_words)| {
+            right_words
+                .len()
+                .cmp(&left_words.len())
+                .then_with(|| left_name.len().cmp(&right_name.len()))
+                .then_with(|| left_name.cmp(right_name))
+        });
+        let mut seen = HashSet::new();
+        let mut output = Vec::new();
+        for (name, matched_words) in candidates {
+            if output.len() >= limit || !seen.insert(name.clone()) {
+                continue;
+            }
+            let Some(node) = self
+                .queries
+                .get_nodes_by_name(&name)?
+                .into_iter()
+                .find(|node| !matches!(node.kind, NodeKind::File | NodeKind::Import))
+            else {
+                continue;
+            };
+            let mut matched_words = matched_words.into_iter().collect::<Vec<_>>();
+            matched_words.sort();
+            output.push(SegmentMatch {
+                name,
+                kind: node.kind,
+                file_path: node.file_path,
+                start_line: node.start_line,
+                matched_words,
+            });
+        }
+        Ok(output)
     }
 
     // =========================================================================
@@ -691,10 +1023,13 @@ impl CodeGraph {
             }
         }
 
+        let Some(runtime) = self.runtime.clone() else {
+            return false;
+        };
         let root = self.project_root.clone();
         let sync_fn: SyncFn = Arc::new(move || {
             let cg = CodeGraph::open_sync(&root).map_err(|e| Box::new(e) as SyncError)?;
-            let result = cg.sync(&IndexOptions::default());
+            let result = runtime.block_on(cg.sync(&IndexOptions::default()));
             cg.close();
             let result = result.map_err(|e| Box::new(e) as SyncError)?;
             // sync() returns this exact zero-shape iff it failed to acquire the
@@ -776,9 +1111,49 @@ impl CodeGraph {
         self.queries.get_last_indexed_at()
     }
 
+    /// Completeness marker left by the most recent full-index attempt.
+    pub fn get_index_state(&self) -> Result<Option<IndexState>> {
+        Ok(self
+            .queries
+            .get_metadata("index_state")?
+            .as_deref()
+            .and_then(IndexState::parse))
+    }
+
+    /// Engine and extraction versions stamped by the most recent non-empty
+    /// successful full index.
+    pub fn get_index_build_info(&self) -> Result<IndexBuildInfo> {
+        let version = self.queries.get_metadata("indexed_with_version")?;
+        let extraction_version = self
+            .queries
+            .get_metadata("indexed_with_extraction_version")?
+            .and_then(|value| value.parse::<u32>().ok());
+        Ok(IndexBuildInfo {
+            version,
+            extraction_version,
+        })
+    }
+
+    /// Whether an existing graph predates the current extraction semantics.
+    pub fn is_index_stale(&self) -> Result<bool> {
+        if self.get_last_indexed_at()?.is_none() {
+            return Ok(false);
+        }
+        Ok(self
+            .get_index_build_info()?
+            .extraction_version
+            .is_none_or(|version| version < EXTRACTION_VERSION))
+    }
+
     /// Extract nodes and edges from source code (without storing).
     pub fn extract_from_source(&self, file_path: &str, source: &str) -> ExtractionResult {
-        extract_from_source(file_path, source, None, None)
+        let config = crate::project_config::load_project_config(&self.project_root);
+        let language = crate::extraction::detect_language_with_overrides(
+            file_path,
+            Some(source),
+            config.extension_overrides(),
+        );
+        extract_from_source(file_path, source, Some(language), None)
     }
 
     // =========================================================================
@@ -792,37 +1167,37 @@ impl CodeGraph {
     /// - Framework-specific patterns (React, Express, Laravel)
     /// - Import-based resolution
     /// - Name-based symbol matching
-    pub fn resolve_references(
+    pub async fn resolve_references(
         &self,
         on_progress: Option<&mut dyn FnMut(usize, usize)>,
     ) -> Result<ResolutionResult> {
         // Get all unresolved references from the database
         let unresolved_refs = self.queries.get_unresolved_references()?;
         self.resolver
-            .borrow()
             .resolve_and_persist(&unresolved_refs, on_progress)
+            .await
     }
 
     /// Resolve references in batches to keep memory bounded on large
     /// codebases. Processes chunks of unresolved refs, persisting results
     /// after each batch.
-    pub fn resolve_references_batched(
+    pub async fn resolve_references_batched(
         &self,
         on_progress: Option<&mut dyn FnMut(usize, usize)>,
     ) -> Result<ResolutionResult> {
         self.resolver
-            .borrow()
             .resolve_and_persist_batched(on_progress, None)
+            .await
     }
 
     /// Get detected frameworks in the project.
     pub fn get_detected_frameworks(&self) -> Vec<String> {
-        self.resolver.borrow().get_detected_frameworks()
+        self.resolver.get_detected_frameworks()
     }
 
     /// Re-initialize the resolver (useful after adding new files).
     pub fn reinitialize_resolver(&self) {
-        self.resolver.borrow_mut().initialize();
+        self.resolver.initialize();
     }
 
     // =========================================================================
@@ -861,8 +1236,8 @@ impl CodeGraph {
     /// throughput report. Hidden harness behind `codegraph resolve-bench` so
     /// resolver changes (memoization, parallelism, GPU offload) are measured
     /// against real project databases instead of microbenchmarks.
-    pub fn resolve_bench(&self, limit: usize) -> Result<String> {
-        let _guard = self.lock_index_mutex();
+    pub async fn resolve_bench(&self, limit: usize) -> Result<String> {
+        let _guard = self.lock_index_mutex().await;
 
         // Page refs in stable id order, exactly like the real resolve pass.
         let mut refs = Vec::new();
@@ -883,13 +1258,13 @@ impl CodeGraph {
         }
 
         // Same setup the real pass performs (framework detection + caches).
-        self.resolver.borrow_mut().initialize();
+        self.resolver.initialize();
         let load_start = std::time::Instant::now();
-        self.resolver.borrow().warm_caches();
+        self.resolver.warm_caches();
         let warm_ms = load_start.elapsed().as_millis();
 
         let start = std::time::Instant::now();
-        let result = self.resolver.borrow().resolve_all_parallel(&refs, None)?;
+        let result = self.resolver.resolve_all_parallel(&refs, None).await?;
         let elapsed = start.elapsed();
 
         let per_ref_us = elapsed.as_micros() as f64 / refs.len() as f64;

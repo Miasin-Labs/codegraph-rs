@@ -149,8 +149,12 @@ pub struct RunInstallerOptions {
     pub location: Option<Location>,
     /// Skip the auto-allow prompt; use this value directly.
     pub auto_allow: Option<bool>,
+    /// Skip the Claude prompt-hook prompt; install/remove when set.
+    /// `None` asks interactively when Claude is selected, except `--yes`
+    /// which enables the hook by default.
+    pub prompt_hook: Option<bool>,
     /// Skip every confirm and use defaults: location=global,
-    /// auto_allow=true, target=auto. For scripting / CI.
+    /// auto_allow=true, prompt_hook=true, target=auto. For scripting / CI.
     pub yes: bool,
 }
 
@@ -267,6 +271,28 @@ pub fn run_installer_with_options(opts: &RunInstallerOptions) -> Result<()> {
         false
     };
 
+    // Step 4b: front-load CodeGraph for structural Claude prompts. Claude's
+    // UserPromptSubmit hook runs `codegraph prompt-hook`; other targets ignore
+    // the option. An explicit false removes a hook written by a prior install.
+    let prompt_hook: Option<bool> = if let Some(v) = opts.prompt_hook {
+        Some(v)
+    } else if targets.iter().any(|t| t.id() == TargetId::Claude) {
+        if use_defaults {
+            Some(true)
+        } else {
+            let ans = prompt_confirm(
+                "Front-load CodeGraph on how / where / trace prompts? Auto-injects structural context so answers need fewer steps (adds a moment to those prompts; Claude Code only).",
+                true,
+            );
+            match ans {
+                None => cancel("Installation cancelled."),
+                Some(v) => Some(v),
+            }
+        }
+    } else {
+        None
+    };
+
     // Step 5: per-target install loop.
     for target in &targets {
         if !target.supports_location(location) {
@@ -276,7 +302,13 @@ pub fn run_installer_with_options(opts: &RunInstallerOptions) -> Result<()> {
             ));
             continue;
         }
-        let result = target.install(location, &InstallOptions { auto_allow });
+        let result = target.install(
+            location,
+            &InstallOptions {
+                auto_allow,
+                prompt_hook,
+            },
+        );
         for file in &result.files {
             let verb = match file.action {
                 FileAction::Unchanged => "Unchanged",
@@ -495,10 +527,11 @@ pub fn run_uninstaller(opts: &RunUninstallerOptions) -> Result<()> {
 
     // Step 4: for local uninstall, the index dir is separate — point at
     // `uninit` so the user knows it's still there (and how to remove it).
-    if location == Location::Local && cwd().join(".codegraph").exists() {
-        log_info(
-            "The .codegraph/ index for this project is still here. Run `codegraph uninit` to delete it.",
-        );
+    let data_dir = crate::directory::codegraph_dir_name();
+    if location == Location::Local && cwd().join(&data_dir).exists() {
+        log_info(&format!(
+            "The {data_dir}/ index for this project is still here. Run `codegraph uninit` to delete it."
+        ));
     }
 
     // Step 5: summary.

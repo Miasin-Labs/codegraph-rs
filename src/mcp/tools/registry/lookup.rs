@@ -164,13 +164,16 @@ pub(in crate::mcp::tools::registry) fn push_node_tool(out: &mut Vec<ToolDefiniti
         let mut props = Map::new();
         props.insert(
             "symbol".into(),
-            prop("string", "Name of the symbol to get details for"),
+            prop(
+                "string",
+                "Name of the symbol to read (symbol mode). Omit it and pass `file` alone to read a whole file.",
+            ),
         );
         props.insert(
             "includeCode".into(),
             prop_default(
                 "boolean",
-                "Include full source code (default: false to minimize context)",
+                "Symbol mode: include full source code (default: false). Ignored in file mode.",
                 Value::from(false),
             ),
         );
@@ -178,7 +181,23 @@ pub(in crate::mcp::tools::registry) fn push_node_tool(out: &mut Vec<ToolDefiniti
             "file".into(),
             prop(
                 "string",
-                "Optional: disambiguate an overloaded name to the definition in this file (path or basename, e.g. \"harness.rs\").",
+                "A file path or basename. Pass alone to read the file, or with `symbol` to disambiguate an overloaded definition.",
+            ),
+        );
+        props.insert(
+            "offset".into(),
+            prop("number", "File mode: 1-based line to start reading from."),
+        );
+        props.insert(
+            "limit".into(),
+            prop("number", "File mode: maximum number of lines to return."),
+        );
+        props.insert(
+            "symbolsOnly".into(),
+            prop_default(
+                "boolean",
+                "File mode: return only the symbol map and dependents.",
+                Value::from(false),
             ),
         );
         props.insert(
@@ -191,11 +210,11 @@ pub(in crate::mcp::tools::registry) fn push_node_tool(out: &mut Vec<ToolDefiniti
         props.insert("projectPath".into(), project_path_property());
         out.push(ToolDefinition {
             name: "codegraph_node".into(),
-            description: "SECONDARY (after codegraph_explore): get ONE symbol in full — its location, signature, callers/callees trail, and verbatim body (includeCode=true). When the name is AMBIGUOUS (an overloaded method, or the same method name on different types), it returns EVERY matching definition's full body in a single call — so you never need to Read a file to find the specific overload you want. For a heavily-overloaded name, pass `file` (and/or `line`) to pin the exact definition — e.g. the `file:line` a trail or another tool already showed you. Reach for this when explore trimmed a body you need. Use codegraph_explore for several related symbols or the full flow.".into(),
+            description: "Two modes: read an indexed file with line numbers and dependents by passing `file`, or inspect one symbol with source and its caller/callee trail by passing `symbol`. Use codegraph_explore for several related symbols or the full flow.".into(),
             input_schema: InputSchema {
                 schema_type: "object".into(),
                 properties: props,
-                required: Some(vec!["symbol".into()]),
+                required: Some(Vec::new()),
             },
             output_schema: Some(node_output_schema()),
             annotations: read_only_annotations(),

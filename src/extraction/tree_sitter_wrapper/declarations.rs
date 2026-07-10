@@ -65,12 +65,15 @@ impl<'a> TreeSitterExtractor<'a> {
             size: None,
             docstring: extra.docstring,
             signature: extra.signature,
+            return_type: extra.return_type,
             visibility: extra.visibility,
             is_exported: extra.is_exported,
             is_async: extra.is_async,
             is_static: extra.is_static,
             is_abstract: extra.is_abstract,
-            decorators: None,
+            decorators: self
+                .extractor
+                .and_then(|ext| ext.extract_modifiers(node, self.source)),
             type_parameters: None,
             updated_at: now_ms(),
         };

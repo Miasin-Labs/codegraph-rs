@@ -11,6 +11,13 @@ use std::{env, fs};
 
 use serde_json::{Map, Value, json};
 
+use super::types::{FileAction, FileWrite};
+use crate::installer::instructions_template::{
+    CODEGRAPH_INSTRUCTIONS_BLOCK,
+    CODEGRAPH_SECTION_END,
+    CODEGRAPH_SECTION_START,
+};
+
 /// Node `os.homedir()` parity: `$HOME` first on POSIX (`%USERPROFILE%`
 /// on Windows), falling back to the OS account database. The test
 /// suite redirects home via these env vars, same as the TS suite.
@@ -212,7 +219,26 @@ pub fn replace_or_append_marked_section(
     MarkedSectionAction::Appended
 }
 
-use super::types::FileAction;
+/// Upsert the current short CodeGraph block into an agent instructions file.
+/// Existing content outside the marker fence is preserved verbatim, stale
+/// fenced blocks are replaced, and byte-identical re-runs do not rewrite.
+pub fn upsert_instructions_entry(file_path: &Path) -> FileWrite {
+    let action = replace_or_append_marked_section(
+        file_path,
+        CODEGRAPH_INSTRUCTIONS_BLOCK,
+        CODEGRAPH_SECTION_START,
+        CODEGRAPH_SECTION_END,
+    );
+    let action = match action {
+        MarkedSectionAction::Created => FileAction::Created,
+        MarkedSectionAction::Updated | MarkedSectionAction::Appended => FileAction::Updated,
+        MarkedSectionAction::Unchanged => FileAction::Unchanged,
+    };
+    FileWrite {
+        path: file_path.to_path_buf(),
+        action,
+    }
+}
 
 /// Inverse of [`replace_or_append_marked_section`]. Strips the marker
 /// block from `file_path` if present. If the file becomes empty after

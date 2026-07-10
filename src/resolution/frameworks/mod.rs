@@ -18,13 +18,16 @@
 use crate::resolution::types::{FrameworkResolver, ResolutionContext};
 use crate::types::Language;
 
+pub mod astro;
 pub mod cargo_workspace;
+pub mod cics;
 pub mod csharp;
 pub mod drupal;
 pub mod expo_modules;
 pub mod express;
 pub mod fabric;
 pub mod go;
+pub mod goframe;
 pub mod java;
 pub mod laravel;
 pub mod nestjs;
@@ -38,16 +41,20 @@ pub mod salesforce;
 pub mod svelte;
 pub mod swift;
 pub mod swift_objc;
+pub mod terraform;
 pub mod vue;
 
 // Re-export framework resolvers (mirrors the TS `export { fooResolver }`
 // re-exports at the bottom of frameworks/index.ts).
+pub use astro::AstroResolver;
+pub use cics::CicsResolver;
 pub use csharp::AspnetResolver;
 pub use drupal::DrupalResolver;
 pub use expo_modules::ExpoModulesResolver;
 pub use express::ExpressResolver;
 pub use fabric::FabricViewResolver;
 pub use go::GoResolver;
+pub use goframe::GoFrameResolver;
 pub use java::SpringResolver;
 pub use laravel::{FACADE_MAPPINGS, LaravelResolver};
 pub use nestjs::NestjsResolver;
@@ -61,6 +68,7 @@ pub use salesforce::SalesforceResolver;
 pub use svelte::SvelteResolver;
 pub use swift::{SwiftUIResolver, UIKitResolver, VaporResolver};
 pub use swift_objc::SwiftObjcBridgeResolver;
+pub use terraform::TerraformResolver;
 pub use vue::VueResolver;
 
 /// All registered framework resolvers, in the exact TS
@@ -77,6 +85,7 @@ fn build_framework_resolvers() -> Vec<Box<dyn FrameworkResolver>> {
         Box::new(ReactResolver),
         Box::new(SvelteResolver),
         Box::new(VueResolver),
+        Box::new(AstroResolver),
         // Python
         Box::new(DjangoResolver),
         Box::new(FlaskResolver),
@@ -88,6 +97,7 @@ fn build_framework_resolvers() -> Vec<Box<dyn FrameworkResolver>> {
         Box::new(PlayResolver),
         // Go
         Box::new(GoResolver),
+        Box::new(GoFrameResolver),
         // Rust
         Box::new(RustResolver::new()),
         // C#
@@ -104,6 +114,9 @@ fn build_framework_resolvers() -> Vec<Box<dyn FrameworkResolver>> {
         Box::new(ExpoModulesResolver),
         // React Native Fabric / Codegen view components — TS spec → component nodes
         Box::new(FabricViewResolver),
+        // Mainframe transaction and infrastructure-as-code resolvers
+        Box::new(CicsResolver::new()),
+        Box::new(TerraformResolver),
         // Salesforce LWC ↔ Apex bridge (`@salesforce/apex/Class.method` imports)
         Box::new(SalesforceResolver),
     ]

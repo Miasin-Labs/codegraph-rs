@@ -1,7 +1,6 @@
 pub(crate) use std::fs;
 pub(crate) use std::path::Path;
 pub(crate) use std::rc::Rc;
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub(crate) use codegraph::mcp::tools::{
     ToolHandler,
@@ -13,15 +12,16 @@ pub(crate) use codegraph::mcp::tools::{
 pub(crate) use codegraph::{CodeGraph, EdgeKind, IndexOptions, NodeKind};
 pub(crate) use serde_json::json;
 pub(crate) use tempfile::TempDir;
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-static ENV_LOCK: RwLock<()> = RwLock::new(());
+static ENV_LOCK: RwLock<()> = RwLock::const_new(());
 
-pub(crate) fn env_read() -> RwLockReadGuard<'static, ()> {
-    ENV_LOCK.read().unwrap_or_else(|e| e.into_inner())
+pub(crate) async fn env_read() -> RwLockReadGuard<'static, ()> {
+    ENV_LOCK.read().await
 }
 
-pub(crate) fn env_write() -> RwLockWriteGuard<'static, ()> {
-    ENV_LOCK.write().unwrap_or_else(|e| e.into_inner())
+pub(crate) async fn env_write() -> RwLockWriteGuard<'static, ()> {
+    ENV_LOCK.write().await
 }
 
 pub(crate) struct EnvVarGuard {

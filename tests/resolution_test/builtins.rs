@@ -1,7 +1,7 @@
 use crate::fixture::*;
 
-#[test]
-fn go_leaves_stdlib_calls_external() {
+#[tokio::test(flavor = "current_thread")]
+async fn go_leaves_stdlib_calls_external() {
     let fx = Fx::new();
     let q = fx.q();
     fx.write("go.mod", "module github.com/example/myproject\n\ngo 1.21\n");
@@ -34,6 +34,7 @@ fn go_leaves_stdlib_calls_external() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     // No spurious in-project edge — fmt.* must stay unresolved/external.
@@ -45,8 +46,8 @@ fn go_leaves_stdlib_calls_external() {
 // tsconfig path aliases (resolution.test.ts)
 // =============================================================================
 
-#[test]
-fn resolve_one_skips_builtins_best_candidate_api() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolve_one_skips_builtins_best_candidate_api() {
     // "Best-Candidate Resolution" — TS only asserted resolveOne exists on
     // the prototype; in Rust that's a compile-time fact, so exercise the
     // built-in short-circuit through the public API instead.

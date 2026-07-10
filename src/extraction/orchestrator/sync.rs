@@ -2,6 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
+use tokio_util::sync::CancellationToken;
+
+use super::parse::{FILE_IO_BATCH_SIZE, parse_batch};
 use super::pipeline::ExtractionOrchestrator;
 use super::progress::{
     ChangedFiles,
@@ -13,11 +16,16 @@ use super::progress::{
     now_ms,
 };
 use super::reconcile::restore_unresolved_refs_for_removed_targets;
-use super::scan::scan_directory;
+use super::scan::scan_directory_with_config;
 use super::store::hash_content;
 use crate::db::QueryBuilder;
 use crate::error::{Result, log_debug};
-use crate::extraction::grammars::{detect_language, init_grammars, load_grammars_for_languages};
+use crate::extraction::grammars::{
+    detect_language_with_overrides,
+    init_grammars,
+    load_grammars_for_languages,
+};
+use crate::project_config::ProjectConfig;
 use crate::types::{FileRecord, Language};
 
 // =============================================================================
@@ -38,8 +46,9 @@ struct FileDiffResult {
 fn diff_filesystem_against_index(
     root_dir: &Path,
     queries: &QueryBuilder,
+    project_config: &ProjectConfig,
 ) -> Result<FileDiffResult> {
-    let current_files = scan_directory(root_dir, None);
+    let current_files = scan_directory_with_config(root_dir, None, project_config);
     let current_set: HashSet<&str> = current_files.iter().map(|s| s.as_str()).collect();
     let tracked_files = queries.get_all_files()?;
     let tracked_map: HashMap<&str, &FileRecord> =
@@ -134,7 +143,7 @@ impl<'a> ExtractionOrchestrator<'a> {
     /// pre-filter skips unchanged files, then a content-hash compare confirms real
     /// changes. This works in non-git projects and catches committed changes from
     /// `git pull`/`checkout`/`merge`/`rebase` that `git status` cannot see.
-    pub fn sync(&self, on_progress: Option<&dyn Fn(&IndexProgress)>) -> Result<SyncResult> {
+    pub async fn sync(&self, on_progress: Option<&dyn Fn(&IndexProgress)>) -> Result<SyncResult> {
         init_grammars();
         let start_time = now_ms();
         let mut nodes_updated = 0usize;
@@ -153,7 +162,8 @@ impl<'a> ExtractionOrchestrator<'a> {
             },
         );
 
-        let diff = diff_filesystem_against_index(&self.root_dir, self.queries)?;
+        let diff =
+            diff_filesystem_against_index(&self.root_dir, self.queries, &self.project_config)?;
         let files_checked = diff.files_checked;
         let files_added = diff.added.len();
         let files_modified = diff.modified.len();
@@ -185,7 +195,11 @@ impl<'a> ExtractionOrchestrator<'a> {
         if !files_to_index.is_empty() {
             let mut needed_languages: Vec<Language> = Vec::new();
             for f in &files_to_index {
-                let lang = detect_language(f, None);
+                let lang = detect_language_with_overrides(
+                    f,
+                    None,
+                    self.project_config.extension_overrides(),
+                );
                 if !needed_languages.contains(&lang) {
                     needed_languages.push(lang);
                 }
@@ -198,41 +212,62 @@ impl<'a> ExtractionOrchestrator<'a> {
             load_grammars_for_languages(&needed_languages);
         }
 
-        // Index changed files
+        // Capture the old state before any changed file is replaced. A rename
+        // needs both the removed and added symbol names for targeted repair.
         let total = files_to_index.len();
-        for (i, file_path) in files_to_index.iter().enumerate() {
-            emit(
-                on_progress,
-                IndexProgress {
-                    phase: IndexPhase::Parsing,
-                    current: i + 1,
-                    total,
-                    current_file: Some(file_path.clone()),
-                },
-            );
-
-            let before_file = self.queries.get_file_by_path(file_path)?;
+        let mut before_files = HashMap::with_capacity(total);
+        for file_path in &files_to_index {
+            before_files.insert(file_path.clone(), self.queries.get_file_by_path(file_path)?);
             for node in self.queries.get_nodes_by_file(file_path)? {
                 if changed_seen.insert(node.name.clone()) {
                     changed_node_names.push(node.name);
                 }
             }
+        }
 
-            let result = self.index_file(file_path)?;
-            nodes_updated += result.nodes.len();
-            for node in &result.nodes {
-                if changed_seen.insert(node.name.clone()) {
-                    changed_node_names.push(node.name.clone());
+        // Parse changed files through the same bounded Tokio blocking pool used
+        // by a full index; persistence remains ordered on the SQLite owner.
+        let framework_names = self.ensure_detected_frameworks(None);
+        let cancellation = CancellationToken::new();
+        let mut processed = 0usize;
+        for batch in files_to_index.chunks(FILE_IO_BATCH_SIZE) {
+            let items = parse_batch(
+                &self.root_dir,
+                batch,
+                &framework_names,
+                &self.project_config,
+                &cancellation,
+            )
+            .await?;
+            for item in items {
+                processed += 1;
+                let file_path = item.file_path.clone();
+                emit(
+                    on_progress,
+                    IndexProgress {
+                        phase: IndexPhase::Parsing,
+                        current: processed,
+                        total,
+                        current_file: Some(file_path.clone()),
+                    },
+                );
+
+                let result = self.persist_batch_item(item)?;
+                nodes_updated += result.nodes.len();
+                for node in &result.nodes {
+                    if changed_seen.insert(node.name.clone()) {
+                        changed_node_names.push(node.name.clone());
+                    }
                 }
-            }
 
-            // If a previously-indexed file is now unreadable, too large, or otherwise
-            // unindexable, remove its old graph state. Missing beats stale: callers can
-            // fall back to direct file reads, but stale symbols make tool answers wrong.
-            let after_file = self.queries.get_file_by_path(file_path)?;
-            if let (Some(before), Some(after)) = (&before_file, &after_file) {
-                if after.content_hash == before.content_hash {
-                    self.queries.delete_file(file_path)?;
+                // If a previously-indexed file is now unreadable or otherwise
+                // unindexable, remove its old graph state. Missing beats stale.
+                let before_file = before_files.remove(&file_path).flatten();
+                let after_file = self.queries.get_file_by_path(&file_path)?;
+                if let (Some(before), Some(after)) = (&before_file, &after_file) {
+                    if after.content_hash == before.content_hash {
+                        self.queries.delete_file(&file_path)?;
+                    }
                 }
             }
         }
@@ -261,7 +296,8 @@ impl<'a> ExtractionOrchestrator<'a> {
     /// Uses filesystem-vs-DB state rather than git status so clean-tree changes
     /// from pull/checkout/merge are still reported as stale.
     pub fn get_changed_files(&self) -> Result<ChangedFiles> {
-        let diff = diff_filesystem_against_index(&self.root_dir, self.queries)?;
+        let diff =
+            diff_filesystem_against_index(&self.root_dir, self.queries, &self.project_config)?;
         Ok(ChangedFiles {
             added: diff.added,
             modified: diff.modified,

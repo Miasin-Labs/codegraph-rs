@@ -28,10 +28,14 @@ pub fn extract_import_mappings(
     let mut mappings: Vec<ImportMapping> = Vec::new();
 
     match language {
-        Language::Typescript | Language::Javascript | Language::Tsx | Language::Jsx => {
+        Language::Typescript
+        | Language::Javascript
+        | Language::Tsx
+        | Language::Jsx
+        | Language::Arkts => {
             mappings.extend(js::extract_js_imports(content));
         }
-        Language::Svelte | Language::Vue => {
+        Language::Svelte | Language::Vue | Language::Astro => {
             // Svelte/Vue single-file components import via plain ES6 inside their
             // `<script>` block. Without this, a `.svelte`/`.vue` consumer produces
             // zero import mappings, so `resolveViaImport` can't run and a barrel

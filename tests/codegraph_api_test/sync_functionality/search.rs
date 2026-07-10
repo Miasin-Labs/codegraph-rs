@@ -1,7 +1,7 @@
-#[test]
-fn search_pagination_pages_after_final_scoring_and_filtering() {
+#[tokio::test(flavor = "current_thread")]
+async fn search_pagination_pages_after_final_scoring_and_filtering() {
     let dir = TempDir::new().unwrap();
-    let cg = setup_indexed(dir.path());
+    let cg = setup_indexed(dir.path()).await;
 
     for i in 0..130 {
         write(
@@ -15,7 +15,7 @@ fn search_pagination_pages_after_final_scoring_and_filtering() {
             &format!("export function alphaFocused{i}() {{ return {i}; }}"),
         );
     }
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
 
     let all = cg
         .search_nodes(

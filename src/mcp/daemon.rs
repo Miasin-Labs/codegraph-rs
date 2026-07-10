@@ -226,7 +226,7 @@ pub fn clear_stale_daemon_lock(pid_path: &Path, expected_dead_pid: Option<i64>) 
             }
         }
         // Holder is actually alive — never clear a live daemon's lock.
-        if info.pid > 0 && is_process_alive(info.pid as u32) {
+        if u32::try_from(info.pid).is_ok_and(is_process_alive) {
             return false;
         }
     }
@@ -321,6 +321,7 @@ mod unix_daemon {
         now_ms,
         resolve_idle_timeout_ms,
     };
+    use crate::mcp::daemon_registry::{deregister_daemon, register_daemon};
 
     /// Per-connection session + shared engine seam.
     ///
@@ -485,6 +486,7 @@ mod unix_daemon {
                 socket_path: inner.socket_path.to_string_lossy().to_string(),
                 started_at: now_ms(),
             };
+            register_daemon(&inner.project_root, &lock);
 
             eprintln!(
                 "[CodeGraph daemon] Listening on {} (pid {}, v{}). Idle timeout {}ms.",
@@ -752,6 +754,7 @@ mod unix_daemon {
             self.factory.stop_engine();
             self.cleanup_lockfile();
             let _ = fs::remove_file(&self.socket_path); // may already be gone
+            deregister_daemon(&self.project_root);
             {
                 let mut st = self.state.lock().unwrap();
                 st.stopped = true;

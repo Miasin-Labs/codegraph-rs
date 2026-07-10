@@ -106,6 +106,71 @@ fn get_nodes_by_ids_chunks_over_param_limit() {
 }
 
 #[test]
+fn node_writes_populate_name_segment_vocabulary() {
+    let (_dir, _db, q) = setup();
+    let mut state_machine = make_node("state", "OrderStateMachine");
+    let mut checkout = make_node("checkout", "CheckoutService");
+    checkout.kind = NodeKind::Class;
+    let mut file = make_node("file", "checkout_service.ts");
+    file.kind = NodeKind::File;
+    q.insert_nodes(&[state_machine.clone(), checkout, file])
+        .unwrap();
+
+    assert_eq!(
+        q.get_names_for_segment("state", 10).unwrap(),
+        ["OrderStateMachine"]
+    );
+    assert!(
+        q.get_names_for_segment("checkout", 10)
+            .unwrap()
+            .contains(&"CheckoutService".to_string())
+    );
+    assert!(
+        q.get_names_for_segment("ts", 10).unwrap().is_empty(),
+        "file basenames must not contribute vocabulary rows"
+    );
+
+    let matches = q
+        .get_segment_co_occurrence(
+            &[
+                ("state".into(), "state".into()),
+                ("machine".into(), "machine".into()),
+            ],
+            2,
+            10,
+        )
+        .unwrap();
+    assert_eq!(matches, [("OrderStateMachine".to_string(), 2)]);
+
+    state_machine.name = "OrderWorkflow".into();
+    state_machine.qualified_name = "OrderWorkflow".into();
+    q.update_node(&state_machine).unwrap();
+    assert_eq!(
+        q.get_names_for_segment("workflow", 10).unwrap(),
+        ["OrderWorkflow"]
+    );
+}
+
+#[test]
+fn segment_vocabulary_can_be_rebuilt_without_orphans() {
+    let (_dir, _db, q) = setup();
+    let mut node = make_node("n", "BeforeRename");
+    q.insert_node(&node).unwrap();
+    node.name = "AfterRename".into();
+    node.qualified_name = "AfterRename".into();
+    q.update_node(&node).unwrap();
+    assert!(!q.get_names_for_segment("before", 10).unwrap().is_empty());
+
+    q.rebuild_name_segment_vocab(1).unwrap();
+    assert!(q.get_names_for_segment("before", 10).unwrap().is_empty());
+    assert_eq!(
+        q.get_names_for_segment("after", 10).unwrap(),
+        ["AfterRename"]
+    );
+    assert!(!q.is_name_segment_vocab_empty().unwrap());
+}
+
+#[test]
 fn get_nodes_by_ids_serves_cache_hits_from_memory() {
     let (_dir, db, q) = setup();
     q.insert_nodes(&[
@@ -205,6 +270,33 @@ fn insert_edges_does_not_trust_stale_cached_nodes() {
     );
 }
 
+#[test]
+fn edge_identity_index_deduplicates_coordinate_less_edges() {
+    let (_dir, _db, q) = setup();
+    q.insert_nodes(&[make_node("source", "source"), make_node("target", "target")])
+        .unwrap();
+
+    let mut extracted = Edge::new("source", "target", EdgeKind::Calls);
+    extracted.metadata = Some(
+        serde_json::json!({"pass": "extraction"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    let mut synthesized = Edge::new("source", "target", EdgeKind::Calls);
+    synthesized.metadata = Some(
+        serde_json::json!({"pass": "synthesis"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    synthesized.provenance = Some(codegraph::types::Provenance::Heuristic);
+
+    q.insert_edges(&[extracted, synthesized]).unwrap();
+    let edges = q.get_outgoing_edges("source", None, None).unwrap();
+    assert_eq!(edges.len(), 1);
+}
+
 // =============================================================================
 // db-perf.test.ts — runMaintenance
 // =============================================================================
@@ -252,8 +344,8 @@ fn gets_schema_version() {
     let (_dir, db, _q) = setup();
     let version = db.get_schema_version().unwrap();
     assert!(version.is_some());
-    assert_eq!(version.unwrap().version, 7);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 7);
+    assert_eq!(version.unwrap().version, 8);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 8);
 }
 
 #[test]
@@ -707,7 +799,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 7);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 8);
 
     let handle = db.get_db().unwrap();
     // Migration 2 added columns + project_metadata
@@ -748,7 +840,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     // History records each applied migration
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8]);
 }
 
 #[test]
@@ -759,12 +851,12 @@ fn open_does_not_rerun_migrations_on_current_database() {
         let _db = DatabaseConnection::initialize(&db_path).unwrap();
     }
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 7);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 8);
     let handle = db.get_db().unwrap();
     assert!(!codegraph::db::needs_migration(&handle));
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 7]);
+    assert_eq!(versions, vec![1, 8]);
 }
 
 #[test]
@@ -820,7 +912,7 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 7);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 8);
     let handle = db.get_db().unwrap();
 
     // v5 added the nullable byte-offset columns.
@@ -848,6 +940,7 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
     assert_eq!(legacy.byte_range(), None);
     assert_eq!(legacy.address, None);
     assert_eq!(legacy.size, None);
+    assert_eq!(legacy.return_type, None);
 
     // New writes round-trip byte offsets + address/size through the migration.
     let mut node = make_node("new1", "fresh");
@@ -855,6 +948,7 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
     node.end_byte = Some(42);
     node.address = Some(0x1719D0);
     node.size = Some(308);
+    node.return_type = Some("Widget".to_string());
     q.insert_node(&node).unwrap();
     q.clear_cache();
     let fresh = q.get_node_by_id("new1").unwrap().expect("fresh row");
@@ -863,10 +957,195 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
     assert_eq!(fresh.byte_range(), Some(10..42));
     assert_eq!(fresh.address, Some(0x1719D0));
     assert_eq!(fresh.size, Some(308));
+    assert_eq!(fresh.return_type.as_deref(), Some("Widget"));
 
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+}
+
+#[test]
+fn open_migrates_rust_v7_shape_and_enforces_edge_identity() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("rust-v7.db");
+
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_versions (
+               version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, description TEXT
+             );
+             INSERT INTO schema_versions VALUES (7, 0, 'Rust schema 7');
+             CREATE TABLE nodes (
+               id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,
+               qualified_name TEXT NOT NULL, file_path TEXT NOT NULL,
+               language TEXT NOT NULL, start_line INTEGER NOT NULL,
+               end_line INTEGER NOT NULL, start_column INTEGER NOT NULL,
+               end_column INTEGER NOT NULL, start_byte INTEGER, end_byte INTEGER,
+               address INTEGER, size INTEGER, docstring TEXT, signature TEXT,
+               visibility TEXT, is_exported INTEGER DEFAULT 0,
+               is_async INTEGER DEFAULT 0, is_static INTEGER DEFAULT 0,
+               is_abstract INTEGER DEFAULT 0, decorators TEXT,
+               type_parameters TEXT, updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE edges (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+               target TEXT NOT NULL, kind TEXT NOT NULL, metadata TEXT,
+               line INTEGER, col INTEGER, provenance TEXT DEFAULT NULL
+             );
+             CREATE TABLE unresolved_refs (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, from_node_id TEXT NOT NULL,
+               reference_name TEXT NOT NULL, reference_kind TEXT NOT NULL,
+               line INTEGER NOT NULL, col INTEGER NOT NULL, candidates TEXT,
+               metadata TEXT, file_path TEXT NOT NULL DEFAULT '',
+               language TEXT NOT NULL DEFAULT 'unknown'
+             );
+             INSERT INTO edges (source, target, kind, metadata, line, col, provenance)
+               VALUES ('a', 'b', 'calls', '{\"first\":true}', NULL, NULL, 'tree-sitter');
+             INSERT INTO edges (source, target, kind, metadata, line, col, provenance)
+               VALUES ('a', 'b', 'calls', '{\"second\":true}', NULL, NULL, 'heuristic');
+             INSERT INTO edges (source, target, kind, line, col)
+               VALUES ('a', 'b', 'calls', 10, 4);
+             INSERT INTO edges (source, target, kind, line, col)
+               VALUES ('a', 'b', 'calls', 10, 4);",
+        )
+        .unwrap();
+    }
+
+    let db = DatabaseConnection::open(&db_path).unwrap();
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 8);
+    let handle = db.get_db().unwrap();
+
+    let return_type_exists: i64 = handle
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('nodes') WHERE name = 'return_type'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(return_type_exists, 1);
+
+    let edge_count: i64 = handle
+        .conn()
+        .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(edge_count, 2);
+
+    let identity_index: i64 = handle
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_edges_identity'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(identity_index, 1);
+
+    let vocab_table: i64 = handle
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'name_segment_vocab'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(vocab_table, 1);
+
+    let inserted = handle
+        .conn()
+        .execute(
+            "INSERT OR IGNORE INTO edges (source, target, kind, line, col) VALUES ('a', 'b', 'calls', NULL, NULL)",
+            [],
+        )
+        .unwrap();
+    assert_eq!(inserted, 0);
+}
+
+#[test]
+fn open_migrates_typescript_v7_shape_without_duplicate_column_failures() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("typescript-v7.db");
+
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_versions (
+               version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, description TEXT
+             );
+             INSERT INTO schema_versions VALUES (7, 0, 'TypeScript schema 7');
+             CREATE TABLE nodes (
+               id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,
+               qualified_name TEXT NOT NULL, file_path TEXT NOT NULL,
+               language TEXT NOT NULL, start_line INTEGER NOT NULL,
+               end_line INTEGER NOT NULL, start_column INTEGER NOT NULL,
+               end_column INTEGER NOT NULL, docstring TEXT, signature TEXT,
+               return_type TEXT, visibility TEXT, is_exported INTEGER DEFAULT 0,
+               is_async INTEGER DEFAULT 0, is_static INTEGER DEFAULT 0,
+               is_abstract INTEGER DEFAULT 0, decorators TEXT,
+               type_parameters TEXT, updated_at INTEGER NOT NULL
+             );
+             INSERT INTO nodes (
+               id, kind, name, qualified_name, file_path, language,
+               start_line, end_line, start_column, end_column, return_type, updated_at
+             ) VALUES (
+               'factory', 'function', 'makeWidget', 'makeWidget', 'a.cpp', 'cpp',
+               1, 1, 0, 10, 'Widget', 0
+             );
+             CREATE TABLE edges (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+               target TEXT NOT NULL, kind TEXT NOT NULL, metadata TEXT,
+               line INTEGER, col INTEGER, provenance TEXT DEFAULT NULL
+             );
+             CREATE UNIQUE INDEX idx_edges_identity
+               ON edges(source, target, kind, IFNULL(line, -1), IFNULL(col, -1));
+             CREATE TABLE unresolved_refs (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, from_node_id TEXT NOT NULL,
+               reference_name TEXT NOT NULL, reference_kind TEXT NOT NULL,
+               line INTEGER NOT NULL, col INTEGER NOT NULL, candidates TEXT,
+               file_path TEXT NOT NULL DEFAULT '', language TEXT NOT NULL DEFAULT 'unknown'
+             );
+             CREATE TABLE name_segment_vocab (
+               segment TEXT NOT NULL, name TEXT NOT NULL,
+               PRIMARY KEY (segment, name)
+             ) WITHOUT ROWID;",
+        )
+        .unwrap();
+    }
+
+    let db = DatabaseConnection::open(&db_path).unwrap();
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 8);
+    let handle = db.get_db().unwrap();
+
+    let node_columns: Vec<String> = {
+        let mut stmt = handle
+            .conn()
+            .prepare("SELECT name FROM pragma_table_info('nodes')")
+            .unwrap();
+        stmt.query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    for expected in ["start_byte", "end_byte", "address", "size", "return_type"] {
+        assert!(node_columns.iter().any(|column| column == expected));
+    }
+
+    let unresolved_metadata: i64 = handle
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('unresolved_refs') WHERE name = 'metadata'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(unresolved_metadata, 1);
+
+    let q = QueryBuilder::new(handle);
+    let factory = q.get_node_by_id("factory").unwrap().expect("factory row");
+    assert_eq!(factory.return_type.as_deref(), Some("Widget"));
+    assert_eq!(factory.start_byte, None);
+    assert_eq!(factory.address, None);
 }
 
 // =============================================================================
@@ -1300,6 +1579,7 @@ fn node_json_roundtrips_optional_fields() {
     let mut node = make_node("d1", "decorated");
     node.docstring = Some("Does things.".to_string());
     node.signature = Some("fn decorated()".to_string());
+    node.return_type = Some("Widget".to_string());
     node.visibility = Some(codegraph::types::Visibility::Private);
     node.is_async = Some(true);
     node.decorators = Some(vec!["@deprecated".to_string()]);
@@ -1310,6 +1590,7 @@ fn node_json_roundtrips_optional_fields() {
     let got = q.get_node_by_id("d1").unwrap().unwrap();
     assert_eq!(got.docstring.as_deref(), Some("Does things."));
     assert_eq!(got.signature.as_deref(), Some("fn decorated()"));
+    assert_eq!(got.return_type.as_deref(), Some("Widget"));
     assert_eq!(got.visibility, Some(codegraph::types::Visibility::Private));
     assert_eq!(got.is_async, Some(true));
     assert_eq!(got.is_exported, Some(false));
@@ -1323,10 +1604,12 @@ fn update_and_delete_node() {
     q.insert_node(&make_node("n1", "before")).unwrap();
     let mut changed = make_node("n1", "after");
     changed.start_line = 7;
+    changed.return_type = Some("Updated".to_string());
     q.update_node(&changed).unwrap();
     let got = q.get_node_by_id("n1").unwrap().unwrap();
     assert_eq!(got.name, "after");
     assert_eq!(got.start_line, 7);
+    assert_eq!(got.return_type.as_deref(), Some("Updated"));
 
     q.delete_node("n1").unwrap();
     assert!(q.get_node_by_id("n1").unwrap().is_none());

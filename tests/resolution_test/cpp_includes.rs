@@ -1,7 +1,7 @@
 use crate::fixture::*;
 
-#[test]
-fn connects_include_to_real_header_file_via_include_dir_scan() {
+#[tokio::test(flavor = "current_thread")]
+async fn connects_include_to_real_header_file_via_include_dir_scan() {
     clear_cpp_include_dir_cache();
     let fx = Fx::new();
     let q = fx.q();
@@ -62,6 +62,7 @@ fn connects_include_to_real_header_file_via_include_dir_scan() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
     clear_cpp_include_dir_cache();
 
@@ -88,8 +89,8 @@ fn connects_include_to_real_header_file_via_include_dir_scan() {
 // object-literal method resolution, end-to-end (object-literal-methods.test.ts)
 // =============================================================================
 
-#[test]
-fn resolve_one_skips_c_stdlib_calls_unless_declared_locally() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolve_one_skips_c_stdlib_calls_unless_declared_locally() {
     let fx = Fx::new();
     let q = fx.q();
     let caller = node(

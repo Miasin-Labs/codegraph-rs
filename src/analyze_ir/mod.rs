@@ -8,12 +8,14 @@
 //!   source file with the host grammars and locating the function at the
 //!   node's recorded line/column — the same proven anchor pattern
 //!   `analyze complexity` uses. CFG rules cover Rust, TypeScript/TSX,
-//!   JavaScript/JSX, Python, Go, Java, C, C++, and PHP; other languages get
-//!   an honest capability note, never a silent empty graph.
+//!   JavaScript/JSX, ArkTS, Python, Go, Java, C, C++, PHP, R, Solidity,
+//!   Nix, CFML/CFScript/CFQuery, and Erlang; other languages get an honest
+//!   capability note, never a silent empty graph.
 //! - **`analyze dataflow <symbol>`** ([`dataflow_report`]) — per-function
 //!   dataflow facts (`dataflow::extract_dataflow`: params, returns,
 //!   assignments, argument flows, mutations), same anchoring. Rules cover
-//!   Rust, TypeScript/TSX, JavaScript/JSX, Python, and Go.
+//!   Rust, TypeScript/TSX, JavaScript/JSX, ArkTS, Python, Go, R, Solidity,
+//!   Nix, CFML/CFScript/CFQuery, and Erlang.
 //! - **`analyze slice|taint --value-level`** ([`value_slice_report`],
 //!   [`value_taint_report`]) — upgrades the call-graph oracle to the
 //!   engine's interprocedural points-to oracle by lowering each function to
@@ -69,11 +71,10 @@ use crate::extraction::{create_parser, detect_language};
 use crate::types::Language;
 
 /// Human list of CFG-rule-covered languages, for capability notes.
-const CFG_COVERED_LANGUAGES: &str =
-    "Rust, TypeScript/TSX, JavaScript/JSX, Python, Go, Java, C, C++, and PHP";
+const CFG_COVERED_LANGUAGES: &str = "Rust, TypeScript/TSX, JavaScript/JSX, ArkTS, Python, Go, Java, C, C++, PHP, R, Solidity, Nix, CFML/CFScript/CFQuery, and Erlang";
 
 /// Human list of dataflow-rule-covered languages, for capability notes.
-const DATAFLOW_COVERED_LANGUAGES: &str = "Rust, TypeScript/TSX, JavaScript/JSX, Python, and Go";
+const DATAFLOW_COVERED_LANGUAGES: &str = "Rust, TypeScript/TSX, JavaScript/JSX, ArkTS, Python, Go, R, Solidity, Nix, CFML/CFScript/CFQuery, and Erlang";
 
 /// Human list of IR-lowering-covered languages, for capability notes.
 const IR_COVERED_LANGUAGES: &str = "Rust, Python, TypeScript/TSX, JavaScript/JSX, and Go";
@@ -89,12 +90,20 @@ fn cfg_lang_id(language: Language) -> Option<&'static str> {
         Language::Rust => "rust",
         Language::Typescript | Language::Tsx => "typescript",
         Language::Javascript | Language::Jsx => "javascript",
+        Language::Arkts => "arkts",
         Language::Python => "python",
         Language::Go => "go",
         Language::Java => "java",
         Language::C => "c",
         Language::Cpp => "cpp",
         Language::Php => "php",
+        Language::R => "r",
+        Language::Solidity => "solidity",
+        Language::Nix => "nix",
+        Language::Cfml => "cfml",
+        Language::Cfscript => "cfscript",
+        Language::Cfquery => "cfquery",
+        Language::Erlang => "erlang",
         _ => return None,
     })
 }
@@ -106,8 +115,16 @@ fn dataflow_lang_id(language: Language) -> Option<&'static str> {
         Language::Rust => "rust",
         Language::Typescript | Language::Tsx => "typescript",
         Language::Javascript | Language::Jsx => "javascript",
+        Language::Arkts => "arkts",
         Language::Python => "python",
         Language::Go => "go",
+        Language::R => "r",
+        Language::Solidity => "solidity",
+        Language::Nix => "nix",
+        Language::Cfml => "cfml",
+        Language::Cfscript => "cfscript",
+        Language::Cfquery => "cfquery",
+        Language::Erlang => "erlang",
         _ => return None,
     })
 }
@@ -1305,12 +1322,20 @@ mod tests {
             Language::Tsx,
             Language::Javascript,
             Language::Jsx,
+            Language::Arkts,
             Language::Python,
             Language::Go,
             Language::Java,
             Language::C,
             Language::Cpp,
             Language::Php,
+            Language::R,
+            Language::Solidity,
+            Language::Nix,
+            Language::Cfml,
+            Language::Cfscript,
+            Language::Cfquery,
+            Language::Erlang,
         ] {
             let id = cfg_lang_id(lang).expect("cfg-covered");
             assert!(CfgRules::for_language(id).is_some(), "cfg rules for {id}");
@@ -1320,8 +1345,16 @@ mod tests {
             Language::Rust,
             Language::Typescript,
             Language::Javascript,
+            Language::Arkts,
             Language::Python,
             Language::Go,
+            Language::R,
+            Language::Solidity,
+            Language::Nix,
+            Language::Cfml,
+            Language::Cfscript,
+            Language::Cfquery,
+            Language::Erlang,
         ] {
             let id = dataflow_lang_id(lang).expect("dataflow-covered");
             assert!(

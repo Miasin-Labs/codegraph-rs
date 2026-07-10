@@ -38,6 +38,7 @@ fn lang_id_for_ext(ext: &str) -> Option<&'static str> {
         "rs" => "rust",
         "py" | "pyi" => "python",
         "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => "typescript",
+        "ets" => "arkts",
         "go" => "go",
         _ => return None,
     })
@@ -50,6 +51,7 @@ fn parser_for(lang_id: &str) -> Option<Parser> {
         "rust" => tree_sitter_rust::LANGUAGE.into(),
         "python" => tree_sitter_python::LANGUAGE.into(),
         "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        "arkts" => tree_sitter_arkts::LANGUAGE.into(),
         "go" => tree_sitter_go::LANGUAGE.into(),
         _ => return None,
     };

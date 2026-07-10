@@ -25,7 +25,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use codegraph::mcp::tools::{ToolHandler, ToolResult};
@@ -33,15 +33,16 @@ use codegraph::sync::{WatchOptions, emit_watch_event_for_tests};
 use codegraph::{CodeGraph, IndexOptions, InitOptions};
 use serde_json::{Value, json};
 use tempfile::TempDir;
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-static ENV_LOCK: RwLock<()> = RwLock::new(());
+static ENV_LOCK: RwLock<()> = RwLock::const_new(());
 
-fn env_read() -> RwLockReadGuard<'static, ()> {
-    ENV_LOCK.read().unwrap_or_else(|e| e.into_inner())
+async fn env_read() -> RwLockReadGuard<'static, ()> {
+    ENV_LOCK.read().await
 }
 
-fn env_write() -> RwLockWriteGuard<'static, ()> {
-    ENV_LOCK.write().unwrap_or_else(|e| e.into_inner())
+async fn env_write() -> RwLockWriteGuard<'static, ()> {
+    ENV_LOCK.write().await
 }
 
 /// Sets an env var for the test's duration, restoring the prior value on drop
@@ -271,8 +272,10 @@ fn initialize_msg(
     json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": Value::Object(params) })
 }
 
-fn init_project(dir: &Path) {
-    let cg = CodeGraph::init(dir, &InitOptions::default()).expect("CodeGraph.init");
+async fn init_project(dir: &Path) {
+    let cg = CodeGraph::init(dir, &InitOptions::default())
+        .await
+        .expect("CodeGraph.init");
     cg.close();
 }
 
@@ -284,8 +287,8 @@ fn first_text(result: &ToolResult) -> &str {
 // SERVER_INSTRUCTIONS — byte parity with the TS single source of truth (#529)
 // =============================================================================
 
-#[test]
-fn server_instructions_are_byte_identical_to_the_ts_source() {
+#[tokio::test(flavor = "current_thread")]
+async fn server_instructions_are_byte_identical_to_the_ts_source() {
     // The TS tree lives elsewhere now that the crate is standalone — point
     // CODEGRAPH_TS_REPO at a checkout of colbymchenry/codegraph to enable this
     // parity check; falls back to the old in-repo layout (../src).
@@ -317,9 +320,9 @@ fn server_instructions_are_byte_identical_to_the_ts_source() {
 // MCP initialize handshake (issue #172) — __tests__/mcp-initialize.test.ts
 // =============================================================================
 
-#[test]
-fn responds_to_initialize_quickly_when_no_codegraph_exists_in_cwd() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn responds_to_initialize_quickly_when_no_codegraph_exists_in_cwd() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &[], true);
     server.send(&initialize_msg(Some(tmp.path()), "2025-11-25", json!({})));
@@ -332,9 +335,9 @@ fn responds_to_initialize_quickly_when_no_codegraph_exists_in_cwd() {
     assert!(parsed["result"]["capabilities"]["tools"].is_object());
 }
 
-#[test]
-fn advertises_the_2025_06_18_mcp_protocol_to_newer_clients() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn advertises_the_2025_06_18_mcp_protocol_to_newer_clients() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &[], true);
     server.send(&initialize_msg(Some(tmp.path()), "2025-11-25", json!({})));
@@ -344,9 +347,9 @@ fn advertises_the_2025_06_18_mcp_protocol_to_newer_clients() {
     assert_eq!(parsed["result"]["protocolVersion"], "2025-06-18");
 }
 
-#[test]
-fn negotiates_down_to_a_known_older_client_protocol() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn negotiates_down_to_a_known_older_client_protocol() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &[], true);
     server.send(&initialize_msg(Some(tmp.path()), "2024-11-05", json!({})));
@@ -356,16 +359,16 @@ fn negotiates_down_to_a_known_older_client_protocol() {
     assert_eq!(parsed["result"]["protocolVersion"], "2024-11-05");
 }
 
-#[test]
-fn sends_initialize_response_before_try_initialize_default_finishes() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn sends_initialize_response_before_try_initialize_default_finishes() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     // Seed a real .codegraph so the server's init path runs its full body:
     // CodeGraph::open() and then start_watching() (which logs "File watcher
     // active" to stderr). That stderr log is observable evidence that the
     // default-project init has completed. The contract we're protecting: the
     // JSON-RPC response on stdout must arrive BEFORE that stderr log.
-    init_project(tmp.path());
+    init_project(tmp.path()).await;
 
     let mut server = spawn_server(tmp.path(), &[], true);
     server.send(&initialize_msg(Some(tmp.path()), "2025-11-25", json!({})));
@@ -385,9 +388,9 @@ fn sends_initialize_response_before_try_initialize_default_finishes() {
     assert_eq!(parsed["result"]["serverInfo"]["name"], "codegraph");
 }
 
-#[test]
-fn answers_resources_list_and_prompts_list_with_empty_lists_not_32601() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn answers_resources_list_and_prompts_list_with_empty_lists_not_32601() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &[], true);
     server.send(&initialize_msg(Some(tmp.path()), "2025-11-25", json!({})));
@@ -409,12 +412,12 @@ fn answers_resources_list_and_prompts_list_with_empty_lists_not_32601() {
 // MCP project resolution via roots/list (issue #196) — __tests__/mcp-roots.test.ts
 // =============================================================================
 
-#[test]
-fn resolves_the_project_from_the_client_roots_list_when_no_root_uri_is_sent() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn resolves_the_project_from_the_client_roots_list_when_no_root_uri_is_sent() {
+    let _guard = env_read().await;
     let cwd_dir = TempDir::new().unwrap(); // where the server is launched — has NO .codegraph
     let project_dir = TempDir::new().unwrap(); // the real indexed project the client reports
-    init_project(project_dir.path());
+    init_project(project_dir.path()).await;
 
     // --no-watch keeps the test deterministic and avoids watcher startup noise.
     let mut server = spawn_server(cwd_dir.path(), &["--no-watch"], false);
@@ -449,9 +452,9 @@ fn resolves_the_project_from_the_client_roots_list_when_no_root_uri_is_sent() {
     assert!(!text.contains("No CodeGraph project is loaded"));
 }
 
-#[test]
-fn returns_an_actionable_error_when_there_is_no_root_uri_and_no_roots_capability() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn returns_an_actionable_error_when_there_is_no_root_uri_and_no_roots_capability() {
+    let _guard = env_read().await;
     let cwd_dir = TempDir::new().unwrap();
     let mut server = spawn_server(cwd_dir.path(), &["--no-watch"], false);
 
@@ -489,12 +492,12 @@ fn returns_an_actionable_error_when_there_is_no_root_uri_and_no_roots_capability
     );
 }
 
-#[test]
-fn honors_an_explicit_root_uri_without_asking_the_client_for_roots() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn honors_an_explicit_root_uri_without_asking_the_client_for_roots() {
+    let _guard = env_read().await;
     let cwd_dir = TempDir::new().unwrap();
     let project_dir = TempDir::new().unwrap();
-    init_project(project_dir.path());
+    init_project(project_dir.path()).await;
 
     let mut server = spawn_server(cwd_dir.path(), &["--no-watch"], false);
 
@@ -532,7 +535,7 @@ fn honors_an_explicit_root_uri_without_asking_the_client_for_roots() {
 
 /// Fixture: three isolated files with no cross-references — keeps each test's
 /// "which path does the response mention?" assertion unambiguous.
-fn staleness_fixture() -> (TempDir, Rc<CodeGraph>, ToolHandler) {
+async fn staleness_fixture() -> (TempDir, Rc<CodeGraph>, ToolHandler) {
     let tmp = TempDir::new().unwrap();
     let src = tmp.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -553,7 +556,7 @@ fn staleness_fixture() -> (TempDir, Rc<CodeGraph>, ToolHandler) {
     .unwrap();
 
     let cg = Rc::new(CodeGraph::init_sync(tmp.path()).unwrap());
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::clone(&cg)));
     (tmp, cg, handler)
 }
@@ -568,11 +571,11 @@ fn watcher_test_env() -> (EnvVarGuard, EnvVarGuard) {
     )
 }
 
-#[test]
-fn prepends_a_stale_banner_when_the_response_references_a_pending_file() {
-    let _lock = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn prepends_a_stale_banner_when_the_response_references_a_pending_file() {
+    let _lock = env_write().await;
     let _env = watcher_test_env();
-    let (tmp, cg, handler) = staleness_fixture();
+    let (tmp, cg, handler) = staleness_fixture().await;
 
     // Long debounce so the edit lingers in pending files while we query.
     assert!(cg.watch(WatchOptions {
@@ -617,11 +620,11 @@ fn prepends_a_stale_banner_when_the_response_references_a_pending_file() {
     cg.close();
 }
 
-#[test]
-fn uses_the_footer_not_the_banner_when_pending_files_are_not_referenced() {
-    let _lock = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn uses_the_footer_not_the_banner_when_pending_files_are_not_referenced() {
+    let _lock = env_write().await;
     let _env = watcher_test_env();
-    let (tmp, cg, handler) = staleness_fixture();
+    let (tmp, cg, handler) = staleness_fixture().await;
 
     assert!(cg.watch(WatchOptions {
         debounce_ms: Some(4000),
@@ -663,11 +666,11 @@ fn uses_the_footer_not_the_banner_when_pending_files_are_not_referenced() {
     cg.close();
 }
 
-#[test]
-fn drops_the_banner_once_the_sync_completes_and_clears_the_pending_entry() {
-    let _lock = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn drops_the_banner_once_the_sync_completes_and_clears_the_pending_entry() {
+    let _lock = env_write().await;
     let _env = watcher_test_env();
-    let (tmp, cg, handler) = staleness_fixture();
+    let (tmp, cg, handler) = staleness_fixture().await;
 
     assert!(cg.watch(WatchOptions {
         debounce_ms: Some(200),
@@ -695,11 +698,11 @@ fn drops_the_banner_once_the_sync_completes_and_clears_the_pending_entry() {
     cg.close();
 }
 
-#[test]
-fn lists_pending_files_under_pending_sync_in_codegraph_status() {
-    let _lock = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn lists_pending_files_under_pending_sync_in_codegraph_status() {
+    let _lock = env_write().await;
     let _env = watcher_test_env();
-    let (tmp, cg, handler) = staleness_fixture();
+    let (tmp, cg, handler) = staleness_fixture().await;
 
     assert!(cg.watch(WatchOptions {
         debounce_ms: Some(4000),
@@ -737,10 +740,10 @@ fn lists_pending_files_under_pending_sync_in_codegraph_status() {
     cg.close();
 }
 
-#[test]
-fn returns_zero_pending_files_when_no_watcher_is_active() {
-    let _lock = env_read();
-    let (_tmp, cg, _handler) = staleness_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn returns_zero_pending_files_when_no_watcher_is_active() {
+    let _lock = env_read().await;
+    let (_tmp, cg, _handler) = staleness_fixture().await;
     assert!(cg.get_pending_files().is_empty());
     cg.close();
 }
@@ -749,7 +752,7 @@ fn returns_zero_pending_files_when_no_watcher_is_active() {
 // MCP catch-up gate — __tests__/mcp-catchup-gate.test.ts (server-side remainder)
 // =============================================================================
 
-fn catchup_fixture() -> (TempDir, Rc<CodeGraph>, ToolHandler) {
+async fn catchup_fixture() -> (TempDir, Rc<CodeGraph>, ToolHandler) {
     let tmp = TempDir::new().unwrap();
     let src = tmp.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -765,15 +768,15 @@ fn catchup_fixture() -> (TempDir, Rc<CodeGraph>, ToolHandler) {
     .unwrap();
 
     let cg = Rc::new(CodeGraph::init_sync(tmp.path()).unwrap());
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::clone(&cg)));
     (tmp, cg, handler)
 }
 
-#[test]
-fn awaits_the_gate_before_serving_the_first_tool_call() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = catchup_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn awaits_the_gate_before_serving_the_first_tool_call() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = catchup_fixture().await;
 
     let gate_resolved = Rc::new(std::cell::Cell::new(false));
     let flag = Rc::clone(&gate_resolved);
@@ -789,10 +792,10 @@ fn awaits_the_gate_before_serving_the_first_tool_call() {
     cg.close();
 }
 
-#[test]
-fn drops_the_gate_after_first_await_second_call_does_not_re_wait() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = catchup_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn drops_the_gate_after_first_await_second_call_does_not_re_wait() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = catchup_fixture().await;
 
     let run_count = Rc::new(std::cell::Cell::new(0u32));
     let counter = Rc::clone(&run_count);
@@ -810,10 +813,10 @@ fn drops_the_gate_after_first_await_second_call_does_not_re_wait() {
     cg.close();
 }
 
-#[test]
-fn catch_up_reconciles_a_deleted_file_before_the_first_tool_call_sees_it() {
-    let _lock = env_read();
-    let (tmp, cg, handler) = catchup_fixture();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn catch_up_reconciles_a_deleted_file_before_the_first_tool_call_sees_it() {
+    let _lock = env_read().await;
+    let (tmp, cg, handler) = catchup_fixture().await;
 
     // Simulate the empty-project / deleted-files startup case: file is in
     // the DB (we indexed it above) but vanishes from disk before the MCP
@@ -825,7 +828,9 @@ fn catch_up_reconciles_a_deleted_file_before_the_first_tool_call_sees_it() {
     // uses (the engine's gate closure runs `cg.sync()` and swallows errors).
     let cg_for_gate = Rc::clone(&cg);
     handler.set_catch_up_gate(Some(Box::new(move || {
-        let _ = cg_for_gate.sync(&IndexOptions::default());
+        let _ = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(cg_for_gate.sync(&IndexOptions::default()))
+        });
     })));
 
     let res = handler.execute("codegraph_search", &json!({ "query": "deletedLater" }));
@@ -834,10 +839,10 @@ fn catch_up_reconciles_a_deleted_file_before_the_first_tool_call_sees_it() {
     cg.close();
 }
 
-#[test]
-fn catch_up_that_converges_the_project_to_0_files_clears_all_rows() {
-    let _lock = env_read();
-    let (tmp, cg, handler) = catchup_fixture();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn catch_up_that_converges_the_project_to_0_files_clears_all_rows() {
+    let _lock = env_read().await;
+    let (tmp, cg, handler) = catchup_fixture().await;
 
     // Worst case: every source file is gone between sessions. Without the
     // gate, the first tool call serves whatever was in the DB. With the gate
@@ -847,7 +852,9 @@ fn catch_up_that_converges_the_project_to_0_files_clears_all_rows() {
 
     let cg_for_gate = Rc::clone(&cg);
     handler.set_catch_up_gate(Some(Box::new(move || {
-        let _ = cg_for_gate.sync(&IndexOptions::default());
+        let _ = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(cg_for_gate.sync(&IndexOptions::default()))
+        });
     })));
 
     let res = handler.execute("codegraph_search", &json!({ "query": "survivor" }));
@@ -856,10 +863,10 @@ fn catch_up_that_converges_the_project_to_0_files_clears_all_rows() {
     cg.close();
 }
 
-#[test]
-fn gate_that_fails_does_not_break_the_tool_call() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = catchup_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn gate_that_fails_does_not_break_the_tool_call() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = catchup_fixture().await;
 
     // A catch-up sync failure (lock contention, transient FS error) must not
     // poison tool dispatch — the engine's gate closure logs and swallows the
@@ -883,7 +890,7 @@ fn gate_that_fails_does_not_break_the_tool_call() {
 // per notes/ui.md)
 // =============================================================================
 
-fn security_fixture() -> (TempDir, Rc<CodeGraph>, ToolHandler) {
+async fn security_fixture() -> (TempDir, Rc<CodeGraph>, ToolHandler) {
     let tmp = TempDir::new().unwrap();
     let src = tmp.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -894,15 +901,15 @@ fn security_fixture() -> (TempDir, Rc<CodeGraph>, ToolHandler) {
     .unwrap();
 
     let cg = Rc::new(CodeGraph::init_sync(tmp.path()).unwrap());
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::clone(&cg)));
     (tmp, cg, handler)
 }
 
-#[test]
-fn rejects_non_string_query_in_codegraph_search() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_non_string_query_in_codegraph_search() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     let res = handler.execute("codegraph_search", &json!({ "query": null }));
     assert_eq!(res.is_error, Some(true));
     assert!(first_text(&res).contains("non-empty string"));
@@ -913,20 +920,20 @@ fn rejects_non_string_query_in_codegraph_search() {
     cg.close();
 }
 
-#[test]
-fn rejects_empty_string_query_in_codegraph_search() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_empty_string_query_in_codegraph_search() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     let res = handler.execute("codegraph_search", &json!({ "query": "" }));
     assert_eq!(res.is_error, Some(true));
     assert!(first_text(&res).contains("non-empty string"));
     cg.close();
 }
 
-#[test]
-fn accepts_valid_query_in_codegraph_search() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn accepts_valid_query_in_codegraph_search() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     let res = handler.execute("codegraph_search", &json!({ "query": "example" }));
     assert_ne!(res.is_error, Some(true));
     let structured = res.structured_content.as_ref().expect("structured search");
@@ -936,10 +943,10 @@ fn accepts_valid_query_in_codegraph_search() {
     cg.close();
 }
 
-#[test]
-fn codegraph_search_kind_type_matches_type_aliases() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn codegraph_search_kind_type_matches_type_aliases() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     let res = handler.execute(
         "codegraph_search",
         &json!({ "query": "ExampleType", "kind": "type" }),
@@ -956,10 +963,10 @@ fn codegraph_search_kind_type_matches_type_aliases() {
     cg.close();
 }
 
-#[test]
-fn clamps_limit_to_valid_range_in_codegraph_search() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn clamps_limit_to_valid_range_in_codegraph_search() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     // Extremely large limit should still work (clamped to 100).
     let res = handler.execute(
         "codegraph_search",
@@ -969,20 +976,20 @@ fn clamps_limit_to_valid_range_in_codegraph_search() {
     cg.close();
 }
 
-#[test]
-fn rejects_non_string_symbol_in_codegraph_callers() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_non_string_symbol_in_codegraph_callers() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     let res = handler.execute("codegraph_callers", &json!({ "symbol": 123 }));
     assert_eq!(res.is_error, Some(true));
     assert!(first_text(&res).contains("non-empty string"));
     cg.close();
 }
 
-#[test]
-fn rejects_non_string_query_in_codegraph_explore() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_non_string_query_in_codegraph_explore() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     // TS passes `query: undefined` — the key is absent on the wire.
     let res = handler.execute("codegraph_explore", &json!({}));
     assert_eq!(res.is_error, Some(true));
@@ -990,9 +997,9 @@ fn rejects_non_string_query_in_codegraph_explore() {
     cg.close();
 }
 
-#[test]
-fn truncates_oversized_tool_output_only_when_cap_env_is_set() {
-    let _lock = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn truncates_oversized_tool_output_only_when_cap_env_is_set() {
+    let _lock = env_write().await;
     // Server-side truncation is opt-in via CODEGRAPH_MAX_OUTPUT_CHARS; by
     // default the host owns inline-size policy and output is complete.
     let tmp = TempDir::new().unwrap();
@@ -1008,7 +1015,7 @@ fn truncates_oversized_tool_output_only_when_cap_env_is_set() {
     std::fs::write(src.join("trunc.ts"), content).unwrap();
 
     let cg = Rc::new(CodeGraph::init_sync(tmp.path()).unwrap());
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::clone(&cg)));
     let args = json!({ "query": "trunc", "limit": 999999 });
 
@@ -1033,28 +1040,28 @@ fn truncates_oversized_tool_output_only_when_cap_env_is_set() {
     cg.close();
 }
 
-#[test]
-fn rejects_non_string_symbol_in_codegraph_impact() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_non_string_symbol_in_codegraph_impact() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     let res = handler.execute("codegraph_impact", &json!({ "symbol": [] }));
     assert_eq!(res.is_error, Some(true));
     cg.close();
 }
 
-#[test]
-fn rejects_non_string_symbol_in_codegraph_node() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_non_string_symbol_in_codegraph_node() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     let res = handler.execute("codegraph_node", &json!({ "symbol": false }));
     assert_eq!(res.is_error, Some(true));
     cg.close();
 }
 
-#[test]
-fn rejects_oversized_file_hint_in_codegraph_node() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_oversized_file_hint_in_codegraph_node() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     let oversized_file = "x".repeat(4097);
     let res = handler.execute(
         "codegraph_node",
@@ -1065,19 +1072,19 @@ fn rejects_oversized_file_hint_in_codegraph_node() {
     cg.close();
 }
 
-#[test]
-fn rejects_non_string_symbol_in_codegraph_callees() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_non_string_symbol_in_codegraph_callees() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     let res = handler.execute("codegraph_callees", &json!({ "symbol": {} }));
     assert_eq!(res.is_error, Some(true));
     cg.close();
 }
 
-#[test]
-fn handles_nan_limit_gracefully() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn handles_nan_limit_gracefully() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     let res = handler.execute(
         "codegraph_search",
         &json!({ "query": "example", "limit": "abc" }),
@@ -1086,10 +1093,10 @@ fn handles_nan_limit_gracefully() {
     cg.close();
 }
 
-#[test]
-fn handles_negative_limit_gracefully() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn handles_negative_limit_gracefully() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     let res = handler.execute(
         "codegraph_search",
         &json!({ "query": "example", "limit": -5 }),
@@ -1103,10 +1110,10 @@ fn handles_negative_limit_gracefully() {
 // catch as an isError result. /etc is sensitive on POSIX; C:\Windows on
 // Windows (path resolution is platform-specific, so each case is gated).
 #[cfg(unix)]
-#[test]
-fn rejects_a_sensitive_posix_project_path_via_the_mcp_handler() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_a_sensitive_posix_project_path_via_the_mcp_handler() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     let res = handler.execute(
         "codegraph_search",
         &json!({ "query": "example", "projectPath": "/etc" }),
@@ -1121,10 +1128,10 @@ fn rejects_a_sensitive_posix_project_path_via_the_mcp_handler() {
 }
 
 #[cfg(windows)]
-#[test]
-fn rejects_a_sensitive_windows_project_path_via_the_mcp_handler() {
-    let _lock = env_read();
-    let (_tmp, cg, handler) = security_fixture();
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_a_sensitive_windows_project_path_via_the_mcp_handler() {
+    let _lock = env_read().await;
+    let (_tmp, cg, handler) = security_fixture().await;
     let res = handler.execute(
         "codegraph_search",
         &json!({ "query": "example", "projectPath": "C:\\Windows" }),

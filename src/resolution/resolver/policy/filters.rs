@@ -90,6 +90,9 @@ impl ReferenceResolver {
         if is_js_ts && REACT_HOOKS.contains(name) {
             return true;
         }
+        if r.language == Language::Arkts && matches!(name, "$r" | "$rawfile") {
+            return true;
+        }
         if r.language == Language::Python && PYTHON_BUILT_INS.contains(name) {
             return true;
         }

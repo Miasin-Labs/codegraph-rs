@@ -192,6 +192,7 @@ impl<'a> VueExtractor<'a> {
             size: None,
             docstring: None,
             signature: None,
+            return_type: None,
             visibility: None,
             is_exported: Some(true), // Vue components are always importable
             is_async: None,

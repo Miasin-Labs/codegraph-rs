@@ -1,4 +1,4 @@
-fn budget_fixture(root: &Path) -> CodeGraph {
+async fn budget_fixture(root: &Path) -> CodeGraph {
     let src_dir = root.join("src");
     let mut fat_lines: Vec<String> = vec!["export class Session {".to_string()];
     for i in 0..30 {
@@ -22,7 +22,7 @@ fn budget_fixture(root: &Path) -> CodeGraph {
     }
 
     let cg = CodeGraph::init_sync(root).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     cg
 }
 

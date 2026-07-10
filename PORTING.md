@@ -1,12 +1,12 @@
 # CodeGraph TypeScript → Rust porting conventions
 
-> **STATUS: COMPLETE — 2026-06-06.** All modules, the CLI, the MCP server,
-> the installer, and the test suite are ported and green: 1,324 tests pass
-> (`cargo test --all-targets`), `cargo clippy --all-targets` and
-> `cargo fmt --check` are clean. Behavioral parity vs the TS arm is verified
-> in [`notes/parity.md`](notes/parity.md) (nodes/IDs/files byte-identical;
-> edges within 0.19%). See [`README.md`](README.md) for the crate overview.
-> The conventions below are kept for future maintenance work.
+> **STATUS: CURRENT THROUGH 1.3.1 - 2026-07-09.** The original 2026-06-06
+> row-level comparison and full test run remain historical evidence in
+> [`notes/parity.md`](notes/parity.md). The 1.3.1 parity wave reconciles schema
+> v8, bounded indexing, current language/framework/dispatch coverage, receiver
+> inference, project config, operator commands, and the Claude prompt hook.
+> See [`README.md`](README.md) for the current surface and verification status.
+> The conventions below remain the maintenance contract.
 
 Read this BEFORE porting any module. The TS source of truth is `src/**/*.ts` in a checkout of colbymchenry/codegraph (originally `../src` when this crate lived inside that repo)
 (relative to this `rust/` directory). Tests live in `../__tests__/`.
@@ -34,9 +34,13 @@ Read this BEFORE porting any module. The TS source of truth is `src/**/*.ts` in 
      `validate_path_within_root`, `is_path_within_root[_real]`,
      `validate_project_path`, `FileLock`, `is_process_alive`, `lexical_resolve`.
    - `crate::directory` — `.codegraph/` dir management.
-5. **No async runtime.** TS `async` exists for Node's event loop; rusqlite and
-   tree-sitter are sync. Use plain sync fns. Parallelism: `rayon` (parsing),
-   `std::thread` + `crossbeam-channel` (watcher, daemon, MCP transport).
+5. **One Tokio runtime at process boundaries.** CLI and MCP binaries create a
+   multi-thread Tokio runtime. Parsing and reference-resolution APIs are async,
+   but their synchronous tree-sitter and CPU kernels run in bounded
+   `spawn_blocking` `JoinSet`s; SQLite writes stay serialized on the owning
+   thread. Watcher and MCP worker threads borrow the process runtime handle
+   instead of constructing nested runtimes. Other blocking transports may use
+   dedicated `std::thread`s.
 6. **Timestamps** are epoch milliseconds as `i64` (`Date.now()` parity):
    `std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64`.
 7. **JSON wire-parity matters.** MCP tool responses, `--json` CLI output, and

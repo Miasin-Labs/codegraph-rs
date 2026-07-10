@@ -99,17 +99,17 @@ pub fn encode_lock_info(info: &DaemonLockInfo) -> String {
 
 /// Validate a decoded pid before it is trusted by the liveness/clear paths.
 ///
-/// A real OS pid is a positive integer that fits in a `u32` — the liveness
-/// checks in `daemon.rs`/`server.rs` narrow `info.pid as u32` before calling
-/// [`crate::utils::is_process_alive`], and an out-of-range value silently wraps:
-/// `2^32` truncates to `0` (which `libc::kill(0, …)` treats as the *caller's
-/// own process group*, reporting a dead daemon as alive and wedging startup),
-/// and a negative pid would otherwise leave an unclearable stale lock. Rejecting
-/// such values here routes a corrupt/hostile lockfile to `None` ("treat as a
-/// dead/unknown holder, clearable") instead of a bogus "live" pid. Mirrors the
-/// bound check already enforced by `proxy::parse_pid`.
+/// A real OS pid is a positive integer that fits the platform's process-id
+/// type. On Unix, values above `pid_t::MAX` wrap negative and acquire special
+/// process-group/all-process semantics in `kill(2)`. Reject corrupt or hostile
+/// lockfiles before any liveness or termination path can observe such a value.
+#[cfg(unix)]
+const MAX_DAEMON_PID: f64 = libc::pid_t::MAX as f64;
+#[cfg(windows)]
+const MAX_DAEMON_PID: f64 = u32::MAX as f64;
+
 fn pid_in_valid_range(pid: f64) -> bool {
-    pid.is_finite() && pid.fract() == 0.0 && pid > 1.0 && pid <= u32::MAX as f64
+    pid.is_finite() && pid.fract() == 0.0 && pid > 1.0 && pid <= MAX_DAEMON_PID
 }
 
 /// Parse a pidfile body. Tolerant of old-format pidfiles (plain pid that fails
@@ -136,9 +136,7 @@ pub fn decode_lock_info(raw: &str) -> Option<DaemonLockInfo> {
         if let (Some(pid), Some(version), Some(socket_path), Some(started_at)) =
             (pid, version, socket_path, started_at)
         {
-            // Reject pids that can't be a real process (out of u32 range,
-            // non-positive, fractional) so the downstream `as u32` narrowing
-            // can never wrap into a live-looking pid.
+            // Reject pids that cannot be signalled safely on this platform.
             if !pid_in_valid_range(pid) {
                 return None;
             }
@@ -245,6 +243,16 @@ mod tests {
         assert_eq!(decode_lock_info(&json("1e300")), None); // huge float
         // In-range pid still decodes.
         assert_eq!(decode_lock_info(&json("4242")).map(|i| i.pid), Some(4242));
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                decode_lock_info(&json("2147483647")).map(|i| i.pid),
+                Some(i32::MAX as i64)
+            );
+            assert_eq!(decode_lock_info(&json("2147483648")), None);
+            assert_eq!(decode_lock_info(&json("4294967295")), None);
+        }
+        #[cfg(windows)]
         assert_eq!(
             decode_lock_info(&json("4294967295")).map(|i| i.pid),
             Some(u32::MAX as i64)

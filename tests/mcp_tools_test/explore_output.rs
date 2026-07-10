@@ -1,8 +1,8 @@
-#[test]
-fn keeps_total_output_under_the_small_project_cap() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn keeps_total_output_under_the_small_project_cap() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = budget_fixture(dir.path());
+    let cg = budget_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore(&handler, "Session method helper");
     let small_budget = get_explore_output_budget(100);
@@ -13,9 +13,9 @@ fn keeps_total_output_under_the_small_project_cap() {
     );
 }
 
-#[test]
-fn explore_returns_complete_output_without_destructive_cuts() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn explore_returns_complete_output_without_destructive_cuts() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     let src_dir = dir.path().join("src");
     for f in 0..12 {
@@ -34,7 +34,7 @@ fn explore_returns_complete_output_without_destructive_cuts() {
         write(&src_dir.join(format!("service{f}.ts")), &lines.join("\n"));
     }
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore(
         &handler,
@@ -47,11 +47,11 @@ fn explore_returns_complete_output_without_destructive_cuts() {
     assert_eq!(text.matches("```").count() % 2, 0, "unbalanced code fences");
 }
 
-#[test]
-fn explore_uses_qualified_symbol_labels() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn explore_uses_qualified_symbol_labels() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = budget_fixture(dir.path());
+    let cg = budget_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore(&handler, "Session method0 helper0");
     assert!(
@@ -60,11 +60,11 @@ fn explore_uses_qualified_symbol_labels() {
     );
 }
 
-#[test]
-fn omits_the_meta_text_gated_off_for_small_projects() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn omits_the_meta_text_gated_off_for_small_projects() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = budget_fixture(dir.path());
+    let cg = budget_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore(&handler, "Session method helper");
     assert!(!text.contains("### Additional relevant files"));
@@ -72,11 +72,11 @@ fn omits_the_meta_text_gated_off_for_small_projects() {
     assert!(!text.contains("Explore budget:"));
 }
 
-#[test]
-fn still_includes_the_relationships_section_or_source() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn still_includes_the_relationships_section_or_source() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = budget_fixture(dir.path());
+    let cg = budget_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore(&handler, "Session method helper");
     let has_relationships = text.contains("### Relationships");
@@ -84,62 +84,62 @@ fn still_includes_the_relationships_section_or_source() {
     assert!(has_relationships || source_follows_header);
 }
 
-#[test]
-fn prefixes_source_lines_with_line_numbers_by_default() {
-    let _env = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn prefixes_source_lines_with_line_numbers_by_default() {
+    let _env = env_write().await;
     let _guard = EnvVarGuard::unset("CODEGRAPH_EXPLORE_LINENUMS");
     let dir = TempDir::new().unwrap();
-    let cg = budget_fixture(dir.path());
+    let cg = budget_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore(&handler, "Session method helper");
     let re = regex::Regex::new(r"\n\d+\t").unwrap();
     assert!(re.is_match(&text));
 }
 
-#[test]
-fn omits_line_numbers_when_linenums_env_is_zero() {
-    let _env = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn omits_line_numbers_when_linenums_env_is_zero() {
+    let _env = env_write().await;
     let _guard = EnvVarGuard::set("CODEGRAPH_EXPLORE_LINENUMS", "0");
     let dir = TempDir::new().unwrap();
-    let cg = budget_fixture(dir.path());
+    let cg = budget_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore(&handler, "Session method helper");
     let re = regex::Regex::new(r"\n\d+\t(?:export|  )").unwrap();
     assert!(!re.is_match(&text));
 }
 
-#[test]
-fn uses_language_neutral_omission_markers() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn uses_language_neutral_omission_markers() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = budget_fixture(dir.path());
+    let cg = budget_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore(&handler, "Session method helper");
     assert!(!text.contains("// ... (gap)"));
     assert!(!text.contains("// ... trimmed"));
 }
 
-#[test]
-fn does_not_collapse_a_whole_file_class_into_just_its_header() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn does_not_collapse_a_whole_file_class_into_just_its_header() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = budget_fixture(dir.path());
+    let cg = budget_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore(&handler, "Session method helper");
     let re = regex::Regex::new(r"method\d+\(arg: string\)").unwrap();
     assert!(re.is_match(&text));
 }
 
-#[test]
-fn explore_surfaces_literal_content_matches_without_symbol_hits() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn explore_surfaces_literal_content_matches_without_symbol_hits() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     write(
         &dir.path().join("src/state.ts"),
         "export const ready = true;\n// TODO: not implemented: persist project cache gaps\n",
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let text = explore(&handler, "TODO not implemented");
@@ -148,16 +148,16 @@ fn explore_surfaces_literal_content_matches_without_symbol_hits() {
     assert!(text.contains("persist project cache gaps"), "{text}");
 }
 
-#[test]
-fn explore_surfaces_short_raw_literal_queries() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn explore_surfaces_short_raw_literal_queries() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     write(
         &dir.path().join("src/state.ts"),
         "export const ready = true;\n// persist project cache gaps after restart\n",
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let text = explore(&handler, "persist project cache gaps");
@@ -165,16 +165,16 @@ fn explore_surfaces_short_raw_literal_queries() {
     assert!(text.contains("src/state.ts:2"), "{text}");
 }
 
-#[test]
-fn explore_returns_structured_payload() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn explore_returns_structured_payload() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     write(
         &dir.path().join("src/state.ts"),
         "export function target(): number { return 1; }\n// persist project cache gaps after restart\n",
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let result = handler.execute("codegraph_explore", &json!({ "query": "target persist" }));
@@ -191,9 +191,9 @@ fn explore_returns_structured_payload() {
     assert!(structured["sourceFiles"][0]["body"].as_str().unwrap().contains("target"));
 }
 
-#[test]
-fn explore_structured_source_respects_output_cap() {
-    let _env = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn explore_structured_source_respects_output_cap() {
+    let _env = env_write().await;
     let _guard = EnvVarGuard::set("CODEGRAPH_MAX_OUTPUT_CHARS", "600");
     let dir = TempDir::new().unwrap();
     let repeated = "x".repeat(5000);
@@ -202,7 +202,7 @@ fn explore_structured_source_respects_output_cap() {
         &format!("export function target(): string {{ return \"{repeated}\"; }}\n"),
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let result = handler.execute("codegraph_explore", &json!({ "query": "target" }));
@@ -212,9 +212,9 @@ fn explore_structured_source_respects_output_cap() {
     assert!(body.len() < repeated.len(), "structured body was not capped");
 }
 
-#[test]
-fn oversized_whole_file_skip_emits_linkscope_event() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn oversized_whole_file_skip_emits_linkscope_event() {
+    let _env = env_read().await;
     linkscope::trace_enable();
     let dir = TempDir::new().unwrap();
     let mut lines = Vec::new();
@@ -223,7 +223,7 @@ fn oversized_whole_file_skip_emits_linkscope_event() {
     }
     write(&dir.path().join("src/huge.ts"), &lines.join("\n"));
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let result = handler.execute("codegraph_explore", &json!({ "query": "value399 huge" }));
@@ -236,9 +236,9 @@ fn oversized_whole_file_skip_emits_linkscope_event() {
 }
 
 #[cfg(unix)]
-#[test]
-fn explore_literal_scan_rejects_symlink_replacement_escape() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn explore_literal_scan_rejects_symlink_replacement_escape() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     let outside = TempDir::new().unwrap();
     let indexed_path = dir.path().join("src/state.ts");
@@ -248,7 +248,7 @@ fn explore_literal_scan_rejects_symlink_replacement_escape() {
         "export const secret = 'outside-only-token leak marker';\n",
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     std::fs::remove_file(&indexed_path).unwrap();
     std::os::unix::fs::symlink(outside.path().join("secret.ts"), &indexed_path).unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));

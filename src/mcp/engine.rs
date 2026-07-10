@@ -29,6 +29,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crossbeam_channel::{Receiver, Sender};
 use serde_json::{Value, json};
+use tokio::runtime::Handle;
 
 use crate::codegraph::{CodeGraph, IndexOptions, OpenOptions};
 use crate::directory::find_nearest_codegraph_root;
@@ -172,6 +173,7 @@ pub struct MCPEngine {
     /// Mirrors `[CodeGraph MCP]` stderr diagnostics to subscribed sessions
     /// (EXCEEDS TS — MCP `logging` capability).
     logs: LogBroadcaster,
+    runtime: Handle,
 }
 
 impl MCPEngine {
@@ -182,6 +184,10 @@ impl MCPEngine {
     /// Construct with a shared [`LogBroadcaster`] (daemon/direct wiring hands
     /// the same broadcaster to every session via [`EngineHandle`]).
     pub fn with_log_broadcaster(opts: MCPEngineOptions, logs: LogBroadcaster) -> MCPEngine {
+        Self::with_runtime(opts, logs, Handle::current())
+    }
+
+    fn with_runtime(opts: MCPEngineOptions, logs: LogBroadcaster, runtime: Handle) -> MCPEngine {
         MCPEngine {
             cg: RefCell::new(None),
             tool_handler: ToolHandler::new(None),
@@ -190,6 +196,7 @@ impl MCPEngine {
             opts,
             closed: Cell::new(false),
             logs,
+            runtime,
         }
     }
 
@@ -254,7 +261,10 @@ impl MCPEngine {
         if let Some(prev) = self.cg.borrow_mut().take() {
             prev.close();
         }
-        match CodeGraph::open_sync(&resolved_root) {
+        match self.runtime.block_on(CodeGraph::open_async(
+            &resolved_root,
+            &OpenOptions::default(),
+        )) {
             Ok(cg) => {
                 let cg = Rc::new(cg);
                 *self.cg.borrow_mut() = Some(Rc::clone(&cg));
@@ -296,7 +306,10 @@ impl MCPEngine {
         };
 
         *self.project_path.borrow_mut() = Some(resolved_root.to_string_lossy().to_string());
-        match CodeGraph::open(&resolved_root, &OpenOptions::default()) {
+        match self.runtime.block_on(CodeGraph::open_async(
+            &resolved_root,
+            &OpenOptions::default(),
+        )) {
             Ok(cg) => {
                 let cg = Rc::new(cg);
                 *self.cg.borrow_mut() = Some(Rc::clone(&cg));
@@ -423,6 +436,7 @@ impl MCPEngine {
         // unsolicited.
         let ctx = self.tool_handler.call_context();
         let logs = self.logs.clone();
+        let runtime = self.runtime.clone();
         let gate: Box<dyn FnOnce()> = Box::new(move || {
             ctx.emit_progress(0.0, None, Some("Catching up index with filesystem changes"));
             // Monotonic counter (the spec requires progress to increase);
@@ -444,7 +458,7 @@ impl MCPEngine {
                 on_progress: Some(&on_progress),
                 ..IndexOptions::default()
             };
-            match cg.sync(&options) {
+            match runtime.block_on(cg.sync(&options)) {
                 Ok(result) => {
                     let changed = result.files_added + result.files_modified + result.files_removed;
                     if changed > 0 {
@@ -537,6 +551,13 @@ pub struct EngineHandle {
 impl EngineHandle {
     /// Spawn the engine thread and return a handle to it.
     pub fn spawn(opts: MCPEngineOptions) -> EngineHandle {
+        let runtime = Handle::current();
+        Self::spawn_on(opts, runtime)
+    }
+
+    /// Spawn from a non-Tokio worker using a runtime captured at the process
+    /// boundary (for example, the degraded proxy's stdin thread).
+    pub(crate) fn spawn_on(opts: MCPEngineOptions, runtime: Handle) -> EngineHandle {
         let (tx, rx) = crossbeam_channel::unbounded::<EngineCommand>();
         let logs = LogBroadcaster::default();
         let engine_logs = logs.clone();
@@ -547,7 +568,7 @@ impl EngineHandle {
             // stacker-guarded; a roomy base stack avoids segment churn.
             .stack_size(16 * 1024 * 1024)
             .spawn(move || {
-                let engine = MCPEngine::with_log_broadcaster(opts, engine_logs);
+                let engine = MCPEngine::with_runtime(opts, engine_logs, runtime);
                 for cmd in rx {
                     match cmd {
                         EngineCommand::SetProjectPathHint(p) => engine.set_project_path_hint(&p),

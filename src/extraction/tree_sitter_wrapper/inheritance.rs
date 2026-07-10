@@ -1,8 +1,18 @@
 use super::context::{find_named_child, named_children};
 use super::extractor::TreeSitterExtractor;
+use crate::extraction::languages::c_cpp::strip_cpp_template_args;
 use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
 use crate::extraction::tree_sitter_types::SyntaxNode;
-use crate::types::{EdgeKind, UnresolvedReference};
+use crate::types::{EdgeKind, Language, UnresolvedReference};
+
+fn normalize_vbnet_type_name(raw: &str) -> String {
+    let mut value = raw.trim();
+    let lower = value.to_ascii_lowercase();
+    if let Some(index) = lower.find("(of") {
+        value = value[..index].trim();
+    }
+    value.rsplit('.').next().unwrap_or(value).trim().to_string()
+}
 
 impl<'a> TreeSitterExtractor<'a> {
     /// Push an unresolved reference (shared shorthand for inheritance refs).
@@ -56,6 +66,7 @@ impl<'a> TreeSitterExtractor<'a> {
                 child.kind(),
                 "extends_clause" | "superclass" | "base_clause" /* PHP class extends */
                 | "extends_interfaces" // Java interface extends
+                | "inherits_clause" | "inherits_statement" // VB.NET grammar variants
             ) {
                 // Extract parent class/interface names
                 // Java uses type_list wrapper: superclass -> type_identifier,
@@ -66,7 +77,12 @@ impl<'a> TreeSitterExtractor<'a> {
                     None => vec![child.named_child(0)],
                 };
                 for target in targets.into_iter().flatten() {
-                    let name = get_node_text(target, self.source).to_string();
+                    let raw = get_node_text(target, self.source);
+                    let name = if self.language == Language::Vbnet {
+                        normalize_vbnet_type_name(raw)
+                    } else {
+                        raw.to_string()
+                    };
                     self.push_ref(class_id, name, EdgeKind::Extends, target);
                 }
             }
@@ -80,7 +96,12 @@ impl<'a> TreeSitterExtractor<'a> {
                         t.kind(),
                         "type_identifier" | "qualified_identifier" | "template_type"
                     ) {
-                        let name = get_node_text(t, self.source).to_string();
+                        let raw = get_node_text(t, self.source);
+                        let name = if self.language == Language::Cpp {
+                            strip_cpp_template_args(raw)
+                        } else {
+                            raw.to_string()
+                        };
                         self.push_ref(class_id, name, EdgeKind::Extends, t);
                     }
                 }
@@ -91,6 +112,7 @@ impl<'a> TreeSitterExtractor<'a> {
                 "implements_clause" | "class_interface_clause"
                 | "super_interfaces" // Java class implements
                 | "interfaces" // Dart
+                | "implements_statement" // VB.NET vendored grammar
             ) {
                 // Extract implemented interfaces
                 // Java uses type_list wrapper: super_interfaces -> type_list -> type_identifier
@@ -100,7 +122,12 @@ impl<'a> TreeSitterExtractor<'a> {
                     None => named_children(child),
                 };
                 for iface in targets {
-                    let name = get_node_text(iface, self.source).to_string();
+                    let raw = get_node_text(iface, self.source);
+                    let name = if self.language == Language::Vbnet {
+                        normalize_vbnet_type_name(raw)
+                    } else {
+                        raw.to_string()
+                    };
                     self.push_ref(class_id, name, EdgeKind::Implements, iface);
                 }
             }

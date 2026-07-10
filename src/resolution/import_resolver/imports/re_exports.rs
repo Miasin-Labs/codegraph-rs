@@ -92,7 +92,12 @@ fn utf8_len(first_byte: u8) -> usize {
 pub fn extract_re_exports(content: &str, language: Language) -> Vec<ReExport> {
     if !matches!(
         language,
-        Language::Typescript | Language::Javascript | Language::Tsx | Language::Jsx
+        Language::Typescript
+            | Language::Javascript
+            | Language::Tsx
+            | Language::Jsx
+            | Language::Arkts
+            | Language::Astro
     ) {
         return Vec::new();
     }

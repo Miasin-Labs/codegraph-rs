@@ -19,17 +19,28 @@ fn claude_local_install_writes_mcp_json_not_claude_json() {
 }
 
 #[test]
-fn claude_install_does_not_create_claude_md() {
+fn claude_install_creates_short_claude_md_guidance() {
     let env = TestEnv::new();
     let claude = get_target("claude").unwrap();
     let result = claude.install(Location::Local, &no_allow());
     let claude_md = env.cwd().join(".claude").join("CLAUDE.md");
-    assert!(!claude_md.exists());
-    assert!(!result.files.iter().any(|f| f.path.ends_with("CLAUDE.md")));
+    let body = read(&claude_md);
+    assert!(body.contains("<!-- CODEGRAPH_START -->"));
+    assert!(body.contains("codegraph_explore"));
+    assert!(body.contains("codegraph explore \"<symbol names or question>\""));
+    assert!(body.contains("If there is no `.codegraph/` directory"));
+    assert_eq!(
+        result
+            .files
+            .iter()
+            .find(|f| f.path.ends_with("CLAUDE.md"))
+            .map(|f| f.action),
+        Some(FileAction::Created)
+    );
 }
 
 #[test]
-fn claude_install_strips_legacy_claude_md_block_keeping_user_content() {
+fn claude_install_replaces_legacy_claude_md_block_keeping_user_content() {
     let env = TestEnv::new();
     let claude = get_target("claude").unwrap();
     let claude_md = env.cwd().join(".claude").join("CLAUDE.md");
@@ -43,14 +54,37 @@ fn claude_install_strips_legacy_claude_md_block_keeping_user_content() {
     let body = read(&claude_md);
     assert!(body.contains("# My project rules"));
     assert!(body.contains("Use tabs."));
-    assert!(!body.contains("CODEGRAPH_START"));
+    assert_eq!(body.matches("CODEGRAPH_START").count(), 1);
+    assert!(body.contains("codegraph_explore"));
+    assert!(!body.contains("Prefer `codegraph_search`"));
     assert_eq!(
         result
             .files
             .iter()
             .find(|f| f.path.ends_with("CLAUDE.md"))
             .map(|f| f.action),
-        Some(FileAction::Removed)
+        Some(FileAction::Updated)
+    );
+}
+
+#[test]
+fn claude_instructions_are_byte_identical_on_reinstall() {
+    let env = TestEnv::new();
+    let claude = get_target("claude").unwrap();
+    let claude_md = env.cwd().join(".claude").join("CLAUDE.md");
+
+    claude.install(Location::Local, &no_allow());
+    let first = read(&claude_md);
+    let second = claude.install(Location::Local, &no_allow());
+
+    assert_eq!(read(&claude_md), first);
+    assert_eq!(
+        second
+            .files
+            .iter()
+            .find(|f| f.path.ends_with("CLAUDE.md"))
+            .map(|f| f.action),
+        Some(FileAction::Unchanged)
     );
 }
 

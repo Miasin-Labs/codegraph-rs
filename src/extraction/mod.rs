@@ -6,7 +6,10 @@
 //! TS files exported individually (extractors, `LanguageExtractor` contract,
 //! `generateNodeId`, `isGeneratedFile`).
 
+pub mod astro_extractor;
+pub mod cfml_extractor;
 pub mod dfm_extractor;
+pub mod extraction_version;
 pub mod generated_detection;
 pub mod grammars;
 pub mod ida_c_extractor;
@@ -16,6 +19,7 @@ pub mod liquid_extractor;
 pub mod lwc_template;
 pub mod mybatis_extractor;
 pub mod orchestrator;
+pub mod razor_extractor;
 pub mod salesforce_markup;
 pub mod svelte_extractor;
 pub mod tree_sitter_helpers;
@@ -26,7 +30,10 @@ pub mod vue_extractor;
 
 // ---- src/extraction/index.ts exports ----
 // ---- per-file TS exports re-surfaced at the barrel ----
+pub use astro_extractor::AstroExtractor;
+pub use cfml_extractor::CfmlExtractor;
 pub use dfm_extractor::DfmExtractor;
+pub use extraction_version::EXTRACTION_VERSION;
 pub use generated_detection::is_generated_file;
 // `export { detectLanguage, isSourceFile, isLanguageSupported, isGrammarLoaded,
 //  getSupportedLanguages, initGrammars, loadGrammarsForLanguages, loadAllGrammars }
@@ -52,6 +59,7 @@ pub use orchestrator::{
     hash_content,
     scan_directory,
 };
+pub use razor_extractor::RazorExtractor;
 pub use salesforce_markup::SalesforceMarkupExtractor;
 pub use svelte_extractor::{ScriptExtractorLookup, SvelteExtractor};
 pub use tree_sitter_helpers::{

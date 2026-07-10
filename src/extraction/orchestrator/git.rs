@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::ignore::{build_default_ignore, gitignore_ignores};
+use super::ignore::{build_default_ignore, build_defaults_only_ignore, gitignore_ignores};
+use crate::directory::is_codegraph_data_dir;
+use crate::project_config::{ProjectConfig, matcher_matches};
 use crate::utils::normalize_path;
 
 // =============================================================================
@@ -153,7 +155,10 @@ pub(super) fn collect_git_files(
 /// Respects .gitignore at all levels (root, subdirectories) and descends into
 /// embedded (nested, non-submodule) git repos. Returns `None` on failure
 /// (non-git project) so callers can fall back to a filesystem walk.
-pub(super) fn get_git_visible_files(root_dir: &Path) -> Option<Vec<String>> {
+pub(super) fn get_git_visible_files(
+    root_dir: &Path,
+    config: &ProjectConfig,
+) -> Option<Vec<String>> {
     let short = Duration::from_millis(5_000);
 
     // Check if the project directory is gitignored by a parent repo.
@@ -183,14 +188,111 @@ pub(super) fn get_git_visible_files(root_dir: &Path) -> Option<Vec<String>> {
     let mut files = Vec::new();
     let mut seen = HashSet::new();
     collect_git_files(root_dir, "", &mut files, &mut seen)?;
+    let mut opted_in_files = HashSet::new();
+    collect_opted_in_embedded_repos(root_dir, config, &mut files, &mut seen, &mut opted_in_files);
     // Apply built-in default ignores uniformly — to tracked files too, since
     // committing a dependency/build dir doesn't make it project code. A
     // `.gitignore` negation (e.g. `!vendor/`) is the explicit opt-in. (issue #407)
     let ig = build_default_ignore(root_dir);
+    let defaults = build_defaults_only_ignore(root_dir);
     Some(
         files
             .into_iter()
-            .filter(|f| !gitignore_ignores(&ig, f, false))
+            .filter(|file| {
+                if opted_in_files.contains(file) {
+                    !gitignore_ignores(&defaults, file, false)
+                } else {
+                    !gitignore_ignores(&ig, file, false)
+                }
+            })
             .collect(),
     )
+}
+
+/// Discover embedded repositories hidden by `.gitignore` only when the project
+/// explicitly opts their containing path in through `includeIgnored`.
+fn collect_opted_in_embedded_repos(
+    root_dir: &Path,
+    config: &ProjectConfig,
+    files: &mut Vec<String>,
+    seen_files: &mut HashSet<String>,
+    opted_in_files: &mut HashSet<String>,
+) {
+    let Some(include) = config.include_ignored_matcher(root_dir) else {
+        return;
+    };
+    let defaults = build_defaults_only_ignore(root_dir);
+    let mut visited = HashSet::new();
+
+    fn walk(
+        dir: &Path,
+        root_dir: &Path,
+        include: &ignore::gitignore::Gitignore,
+        defaults: &ignore::gitignore::Gitignore,
+        visited: &mut HashSet<PathBuf>,
+        files: &mut Vec<String>,
+        seen_files: &mut HashSet<String>,
+        opted_in_files: &mut HashSet<String>,
+    ) {
+        let real = match fs::canonicalize(dir) {
+            Ok(real) if real.starts_with(root_dir) || real == root_dir => real,
+            _ => return,
+        };
+        if !visited.insert(real) {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() || file_type.is_symlink() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == ".git" || is_codegraph_data_dir(&name) {
+                continue;
+            }
+            let path = entry.path();
+            let Ok(relative) = path.strip_prefix(root_dir) else {
+                continue;
+            };
+            let mut relative = normalize_path(&relative.to_string_lossy());
+            relative.push('/');
+            if gitignore_ignores(defaults, &relative, true) {
+                continue;
+            }
+
+            if path.join(".git").exists() && matcher_matches(Some(include), &relative, true) {
+                let before = files.len();
+                let _ = collect_git_files(&path, &relative, files, seen_files);
+                opted_in_files.extend(files[before..].iter().cloned());
+            }
+            walk(
+                &path,
+                root_dir,
+                include,
+                defaults,
+                visited,
+                files,
+                seen_files,
+                opted_in_files,
+            );
+        }
+    }
+
+    let canonical_root = fs::canonicalize(root_dir).unwrap_or_else(|_| root_dir.to_path_buf());
+    walk(
+        &canonical_root,
+        &canonical_root,
+        &include,
+        &defaults,
+        &mut visited,
+        files,
+        seen_files,
+        opted_in_files,
+    );
 }

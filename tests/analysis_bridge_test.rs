@@ -7,9 +7,9 @@
 //! analyses (communities, callers/callees, centrality, DSL queries).
 //!
 //! Fixture ground truth (verified against the real extractor):
-//! - TS class fields like `speed: number = 0` are extracted as `method`
-//!   nodes (→ Function), NOT `property` — the property/field fold-in path
-//!   is therefore exercised with hand-planted rows.
+//! - TS class fields like `speed: number = 0` are extracted as `property`
+//!   nodes, so their containment edges exercise the property/field fold-in.
+//!   A hand-planted property additionally covers accessed-field metadata.
 //! - TS enums produce `enum` + `enum_member` nodes with `contains` edges →
 //!   the `variants` metadata fold-in runs on the real pipeline.
 
@@ -80,13 +80,15 @@ export function lonely() {
 
 /// Index the fixture with the real pipeline, then drop the handle so tests
 /// can open their own read connection.
-fn index_fixture(root: &Path) {
+async fn index_fixture(root: &Path) {
     let cg = if CodeGraph::is_initialized(root) {
         CodeGraph::open_sync(root).expect("open")
     } else {
         CodeGraph::init_sync(root).expect("init")
     };
-    cg.index_all(&IndexOptions::default()).expect("index_all");
+    cg.index_all(&IndexOptions::default())
+        .await
+        .expect("index_all");
     cg.close();
 }
 
@@ -133,11 +135,11 @@ fn db_node_id(qb: &QueryBuilder, name: &str, kind: NodeKind) -> String {
 // Node mapping over the real pipeline
 // =============================================================================
 
-#[test]
-fn bridges_nodes_with_expected_kinds_and_counts() {
+#[tokio::test(flavor = "current_thread")]
+async fn bridges_nodes_with_expected_kinds_and_counts() {
     let dir = TempDir::new().unwrap();
     write_fixture(dir.path());
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
 
     let (_conn, qb) = open_queries(dir.path());
     let result = build_analysis_graph(&qb).expect("bridge");
@@ -227,11 +229,11 @@ fn bridges_nodes_with_expected_kinds_and_counts() {
 // Edge mapping over the real pipeline
 // =============================================================================
 
-#[test]
-fn bridges_edges_calls_contains_implements_usestype() {
+#[tokio::test(flavor = "current_thread")]
+async fn bridges_edges_calls_contains_implements_usestype() {
     let dir = TempDir::new().unwrap();
     write_fixture(dir.path());
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
     let result = bridge(dir.path());
 
     let helper = node_id_by_name(&result, "helper", ANodeKind::Function);
@@ -277,8 +279,8 @@ fn bridges_edges_calls_contains_implements_usestype() {
         result.stats.edges_total
     );
     assert!(result.stats.edges_mapped > 0);
-    // Mode→Fast/Slow contains edges were folded into metadata.
-    assert_eq!(result.stats.edges_enriched, 2);
+    // Mode→Fast/Slow and Engine→speed contains edges were folded into metadata.
+    assert_eq!(result.stats.edges_enriched, 3);
     let skipped_reason_total: usize = result.stats.skipped_edge_reasons.values().sum();
     assert_eq!(skipped_reason_total, result.stats.edges_skipped);
     // The only skips for this fixture are edges touching the import node.
@@ -290,11 +292,11 @@ fn bridges_edges_calls_contains_implements_usestype() {
     );
 }
 
-#[test]
-fn unresolved_calls_become_unresolved_call_edges_to_placeholders() {
+#[tokio::test(flavor = "current_thread")]
+async fn unresolved_calls_become_unresolved_call_edges_to_placeholders() {
     let dir = TempDir::new().unwrap();
     write_fixture(dir.path());
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
 
     let (_conn, qb) = open_queries(dir.path());
     let unresolved = qb.get_unresolved_references().expect("unresolved");
@@ -341,15 +343,13 @@ fn unresolved_calls_become_unresolved_call_edges_to_placeholders() {
 // Skipped-kind information folded into metadata (hand-planted rows)
 // =============================================================================
 
-/// The TS extractor doesn't emit `property` nodes for class fields, so the
-/// `fields` / `accessed_fields` fold-in is exercised by planting rows
-/// directly — which also proves the bridge works on any DB shape, not just
-/// what today's extractors emit.
-#[test]
-fn property_rows_fold_into_fields_and_accessed_fields_metadata() {
+/// Plant an additional property row to exercise `accessed_fields` fold-in and
+/// prove the bridge works on any DB shape, not just what today's extractors emit.
+#[tokio::test(flavor = "current_thread")]
+async fn property_rows_fold_into_fields_and_accessed_fields_metadata() {
     let dir = TempDir::new().unwrap();
     write_fixture(dir.path());
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
 
     let (_conn, qb) = open_queries(dir.path());
     let engine_id = db_node_id(&qb, "Engine", NodeKind::Class);
@@ -375,11 +375,11 @@ fn property_rows_fold_into_fields_and_accessed_fields_metadata() {
 
     // The property never became a node...
     assert!(result.graph.find_by_name("color").is_empty());
-    assert_eq!(result.stats.skipped_node_kinds.get("property"), Some(&1));
+    assert_eq!(result.stats.skipped_node_kinds.get("property"), Some(&2));
 
     // ...but both relationships survived as metadata.
     let engine = node_id_by_name(&result, "Engine", ANodeKind::Struct);
-    let fields: Vec<String> = serde_json::from_str(
+    let mut fields: Vec<String> = serde_json::from_str(
         result
             .graph
             .get_node(&engine)
@@ -389,7 +389,8 @@ fn property_rows_fold_into_fields_and_accessed_fields_metadata() {
             .expect("fields key on Engine"),
     )
     .unwrap();
-    assert_eq!(fields, vec!["color".to_string()]);
+    fields.sort();
+    assert_eq!(fields, vec!["color".to_string(), "speed".to_string()]);
 
     let main = node_id_by_name(&result, "main", ANodeKind::Function);
     let accessed: Vec<String> = serde_json::from_str(
@@ -404,15 +405,16 @@ fn property_rows_fold_into_fields_and_accessed_fields_metadata() {
     .unwrap();
     assert_eq!(accessed, vec!["color".to_string()]);
 
-    // Both edges counted as enriched (plus the 2 enum-variant edges).
-    assert_eq!(result.stats.edges_enriched, 4);
+    // Both planted edges are enriched, along with the existing field and two
+    // enum-variant containment edges.
+    assert_eq!(result.stats.edges_enriched, 5);
 }
 
-#[test]
-fn data_symbols_strings_and_ida_facts_bridge_into_constants_and_metadata() {
+#[tokio::test(flavor = "current_thread")]
+async fn data_symbols_strings_and_ida_facts_bridge_into_constants_and_metadata() {
     let dir = TempDir::new().unwrap();
     write_fixture(dir.path());
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
 
     let (_conn, qb) = open_queries(dir.path());
     let main_id = db_node_id(&qb, "main", NodeKind::Function);
@@ -549,11 +551,11 @@ fn data_symbols_strings_and_ida_facts_bridge_into_constants_and_metadata() {
 // End-to-end analyses over the bridged graph
 // =============================================================================
 
-#[test]
-fn analyses_run_end_to_end_over_bridged_graph() {
+#[tokio::test(flavor = "current_thread")]
+async fn analyses_run_end_to_end_over_bridged_graph() {
     let dir = TempDir::new().unwrap();
     write_fixture(dir.path());
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
     let result = bridge(dir.path());
 
     // Louvain community detection: total assignment coverage, sane labels.
@@ -574,11 +576,11 @@ fn analyses_run_end_to_end_over_bridged_graph() {
     assert!(analysis::independent_module_count(&result.graph) >= 1);
 }
 
-#[test]
-fn bridged_graph_powers_a_graph_session() {
+#[tokio::test(flavor = "current_thread")]
+async fn bridged_graph_powers_a_graph_session() {
     let dir = TempDir::new().unwrap();
     write_fixture(dir.path());
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
     let result = bridge(dir.path());
 
     let node_count = result.graph.node_count();
@@ -601,11 +603,11 @@ fn bridged_graph_powers_a_graph_session() {
 // Determinism
 // =============================================================================
 
-#[test]
-fn rebuild_yields_identical_fingerprint_and_ids() {
+#[tokio::test(flavor = "current_thread")]
+async fn rebuild_yields_identical_fingerprint_and_ids() {
     let dir = TempDir::new().unwrap();
     write_fixture(dir.path());
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
 
     // Bridge the same index twice through independent connections.
     let first = bridge(dir.path());
@@ -620,7 +622,7 @@ fn rebuild_yields_identical_fingerprint_and_ids() {
     assert_eq!(first.graph.edge_count(), second.graph.edge_count());
 
     // Re-index over the existing index (incremental path), bridge again.
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
     let third = bridge(dir.path());
     assert_eq!(first.graph.fingerprint(), third.graph.fingerprint());
 
@@ -632,7 +634,7 @@ fn rebuild_yields_identical_fingerprint_and_ids() {
         .expect("db lives in .codegraph/")
         .to_path_buf();
     fs::remove_dir_all(&codegraph_dir).expect("remove .codegraph");
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
     let fourth = bridge(dir.path());
     assert_eq!(
         first.graph.fingerprint(),
@@ -642,11 +644,11 @@ fn rebuild_yields_identical_fingerprint_and_ids() {
     assert_eq!(first.id_map, fourth.id_map);
 }
 
-#[test]
-fn node_ids_are_content_addressed_not_positional() {
+#[tokio::test(flavor = "current_thread")]
+async fn node_ids_are_content_addressed_not_positional() {
     let dir = TempDir::new().unwrap();
     write_fixture(dir.path());
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
     let result = bridge(dir.path());
 
     // Recomputing an id from (file_path, qualified_name, kind) alone must
@@ -665,11 +667,11 @@ fn node_ids_are_content_addressed_not_positional() {
 // Invariant-violating rows are skipped, not panicking
 // =============================================================================
 
-#[test]
-fn invariant_violating_rows_are_skipped_and_counted() {
+#[tokio::test(flavor = "current_thread")]
+async fn invariant_violating_rows_are_skipped_and_counted() {
     let dir = TempDir::new().unwrap();
     write_fixture(dir.path());
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
 
     let (_conn, qb) = open_queries(dir.path());
     let baseline = build_analysis_graph(&qb).expect("bridge");
@@ -760,11 +762,11 @@ fn invariant_violating_rows_are_skipped_and_counted() {
 // Byte ranges (host schema v5) — spans carry real tree-sitter byte offsets
 // =============================================================================
 
-#[test]
-fn bridged_spans_carry_real_byte_ranges() {
+#[tokio::test(flavor = "current_thread")]
+async fn bridged_spans_carry_real_byte_ranges() {
     let dir = TempDir::new().unwrap();
     write_fixture(dir.path());
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
     let result = bridge(dir.path());
 
     // A freshly indexed fixture stores tree-sitter byte offsets for every
@@ -792,11 +794,11 @@ fn bridged_spans_carry_real_byte_ranges() {
     assert!(main_src[engine_span.byte_range.clone()].starts_with("class Engine"));
 }
 
-#[test]
-fn nodes_without_byte_offsets_degrade_to_zero_range_and_are_counted() {
+#[tokio::test(flavor = "current_thread")]
+async fn nodes_without_byte_offsets_degrade_to_zero_range_and_are_counted() {
     let dir = TempDir::new().unwrap();
     write_fixture(dir.path());
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
 
     // Plant a function row with NULL byte offsets — the shape of any row
     // indexed before schema v5 (the migration backfills NULL).
@@ -828,11 +830,11 @@ fn nodes_without_byte_offsets_degrade_to_zero_range_and_are_counted() {
     );
 }
 
-#[test]
-fn index_fingerprint_incorporates_schema_version() {
+#[tokio::test(flavor = "current_thread")]
+async fn index_fingerprint_incorporates_schema_version() {
     let dir = TempDir::new().unwrap();
     write_fixture(dir.path());
-    index_fixture(dir.path());
+    index_fixture(dir.path()).await;
 
     let (_conn, qb) = open_queries(dir.path());
     let before = codegraph::analysis_bridge::compute_index_fingerprint(&qb).expect("fingerprint");

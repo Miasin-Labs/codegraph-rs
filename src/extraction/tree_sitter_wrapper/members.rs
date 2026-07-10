@@ -11,8 +11,8 @@ use crate::types::NodeKind;
 impl<'a> TreeSitterExtractor<'a> {
     /// Extract a class property declaration (e.g. C# `public string Name { get; set; }`).
     /// Extracts as 'property' kind node inside the owning class.
-    pub(super) fn extract_property(&mut self, node: SyntaxNode<'_>) {
-        let Some(ext) = self.extractor else { return };
+    pub(super) fn extract_property(&mut self, node: SyntaxNode<'_>) -> Option<crate::types::Node> {
+        let ext = self.extractor?;
 
         let docstring = get_preceding_docstring(node, self.source);
         let visibility = ext.get_visibility(node, self.source);
@@ -27,14 +27,11 @@ impl<'a> TreeSitterExtractor<'a> {
                         .into_iter()
                         .find(|c| c.kind() == "identifier")
                 });
-                match name_node {
-                    Some(n) => get_node_text(n, self.source).to_string(),
-                    None => return,
-                }
+                get_node_text(name_node?, self.source).to_string()
             }
         };
         if name.is_empty() {
-            return;
+            return None;
         }
 
         // Get property type from the type child (first named child that isn't modifier or identifier)
@@ -70,13 +67,14 @@ impl<'a> TreeSitterExtractor<'a> {
 
         // `@Inject() private svc: Foo` and similar — capture the
         // decorator->target relationship for class properties too.
-        if let Some(prop_node) = prop_node {
+        if let Some(ref prop_node) = prop_node {
             self.extract_decorators_for(node, &prop_node.id);
             // Emit `references` edges from the property to types named in its
             // type annotation (#381). The generic walker handles TS-style
             // `type_annotation` children; the C# branch walks the `type` field.
             self.extract_type_annotations(node, &prop_node.id);
         }
+        prop_node
     }
 
     /// Extract a class field declaration (e.g. Java field_declaration, C# field_declaration).

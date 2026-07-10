@@ -106,6 +106,17 @@ pub(super) fn default_ignore_patterns() -> Vec<String> {
     patterns
 }
 
+/// Built-in ignores without project `.gitignore`/`.codegraphignore` rules.
+/// Used by `codegraph.json` `include` so explicit includes may override the
+/// project's ignore file, but can never revive dependency/build output.
+pub(super) fn build_defaults_only_ignore(root_dir: &Path) -> Gitignore {
+    let mut builder = GitignoreBuilder::new(root_dir);
+    for pattern in default_ignore_patterns() {
+        let _ = builder.add_line(None, &pattern);
+    }
+    builder.build().unwrap_or_else(|_| Gitignore::empty())
+}
+
 /// An ignore matcher seeded with the built-in defaults, merged with the project's
 /// root .gitignore and .codegraphignore. `.codegraphignore` is intentionally
 /// CodeGraph-only: it can exclude tracked reference/generated corpora that should

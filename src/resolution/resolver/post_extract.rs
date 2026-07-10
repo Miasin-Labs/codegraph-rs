@@ -11,7 +11,8 @@ impl ReferenceResolver {
     pub fn run_post_extract(&self) -> usize {
         let mut updated = 0usize;
         self.clear_caches();
-        for fw in &self.frameworks {
+        let frameworks = self.frameworks.borrow();
+        for fw in frameworks.iter() {
             let Some(nodes) = fw.post_extract(&self.context) else {
                 continue;
             };

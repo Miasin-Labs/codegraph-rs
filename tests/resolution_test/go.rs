@@ -1,7 +1,7 @@
 use crate::fixture::*;
 
-#[test]
-fn resolves_go_cross_package_qualified_calls_via_go_mod_388() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolves_go_cross_package_qualified_calls_via_go_mod_388() {
     let fx = Fx::new();
     let q = fx.q();
     fx.write("go.mod", "module github.com/example/myproject\n\ngo 1.21\n");
@@ -67,6 +67,7 @@ fn resolves_go_cross_package_qualified_calls_via_go_mod_388() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let call_edges = outgoing(&q, &use_pkga.id, EdgeKind::Calls);
@@ -77,8 +78,8 @@ fn resolves_go_cross_package_qualified_calls_via_go_mod_388() {
     assert_eq!(target.file_path.replace('\\', "/"), "pkga/conv.go");
 }
 
-#[test]
-fn resolves_go_aliased_imports_across_packages_388() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolves_go_aliased_imports_across_packages_388() {
     let fx = Fx::new();
     let q = fx.q();
     fx.write("go.mod", "module github.com/example/myproject\n\ngo 1.21\n");
@@ -137,6 +138,7 @@ fn resolves_go_aliased_imports_across_packages_388() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     // fmt.Println is stdlib — must stay external. alias.Compute must resolve.
@@ -147,8 +149,8 @@ fn resolves_go_aliased_imports_across_packages_388() {
     assert_eq!(target.file_path.replace('\\', "/"), "pkgb/lib.go");
 }
 
-#[test]
-fn resolves_go_cross_package_calls_from_nested_module_root() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolves_go_cross_package_calls_from_nested_module_root() {
     let fx = Fx::new();
     let q = fx.q();
     fx.write(
@@ -223,6 +225,7 @@ fn resolves_go_cross_package_calls_from_nested_module_root() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let call_edges = outgoing(&q, &main_fn.id, EdgeKind::Calls);

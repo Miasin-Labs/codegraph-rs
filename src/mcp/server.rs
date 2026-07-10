@@ -352,7 +352,7 @@ impl MCPServer {
                     // serves (or is binding) — we're redundant; exit cleanly
                     // so the launcher proxies to it.
                     if let Some(info) = &existing {
-                        if info.pid > 0 && crate::utils::is_process_alive(info.pid as u32) {
+                        if u32::try_from(info.pid).is_ok_and(crate::utils::is_process_alive) {
                             eprintln!(
                                 "[CodeGraph daemon] Another daemon (pid {}) already holds the lock; exiting.",
                                 info.pid
@@ -569,8 +569,9 @@ fn run_proxy_with_local_handshake(root: &std::path::Path) -> ! {
     }
 
     let executor_root = root.to_path_buf();
+    let executor_runtime = tokio::runtime::Handle::current();
     let make_local_executor = Box::new(move || -> Box<dyn LocalToolExecutor> {
-        let engine = EngineHandle::spawn(MCPEngineOptions::default());
+        let engine = EngineHandle::spawn_on(MCPEngineOptions::default(), executor_runtime.clone());
         // TS: `engine.ensureInitialized(root).catch(() => {/* degraded */})`
         // — backgrounded; the engine thread serializes the first execute
         // behind it.

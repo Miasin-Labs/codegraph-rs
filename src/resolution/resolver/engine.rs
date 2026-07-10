@@ -39,7 +39,21 @@ where
         (ranked, s12, fuzzy)
     };
 
-    if !known_hint.unwrap_or_else(|| policy.has_any_possible_match(&reference.reference_name))
+    let existence_name = if reference.language == Language::Arkts {
+        reference
+            .reference_name
+            .strip_prefix('.')
+            .unwrap_or(&reference.reference_name)
+    } else {
+        &reference.reference_name
+    };
+    let has_possible_match = if existence_name != reference.reference_name {
+        policy.has_any_possible_match(existence_name)
+    } else {
+        known_hint.unwrap_or_else(|| policy.has_any_possible_match(existence_name))
+    };
+
+    if !has_possible_match
         && !(reference.language == Language::Apex
             && policy.has_any_possible_match_ci(&reference.reference_name))
         && !policy.matches_any_import(reference)

@@ -2,7 +2,7 @@ use super::context::find_named_child;
 use super::extractor::TreeSitterExtractor;
 use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
 use crate::extraction::tree_sitter_types::SyntaxNode;
-use crate::types::{EdgeKind, UnresolvedReference};
+use crate::types::{EdgeKind, Language, UnresolvedReference};
 
 /// Tree-sitter node kinds that represent constructor invocations
 /// (`new Foo()` and friends). Used by extract_instantiation to emit
@@ -14,11 +14,245 @@ pub(super) const INSTANTIATION_KINDS: &[&str] = &[
 ];
 
 impl<'a> TreeSitterExtractor<'a> {
+    fn push_call_reference(&mut self, caller_id: &str, name: String, node: SyntaxNode<'_>) {
+        if name.is_empty() {
+            return;
+        }
+        self.unresolved_references.push(UnresolvedReference {
+            from_node_id: caller_id.to_string(),
+            reference_name: name,
+            reference_kind: EdgeKind::Calls,
+            line: node.start_position().row as u32 + 1,
+            column: node.start_position().column as u32,
+            file_path: None,
+            language: None,
+            candidates: None,
+            metadata: None,
+        });
+    }
+
+    fn emit_arkui_attribute(&mut self, caller_id: &str, name_node: SyntaxNode<'_>) {
+        let name = get_node_text(name_node, self.source).to_string();
+        if !name.is_empty() {
+            self.push_call_reference(caller_id, format!(".{name}"), name_node);
+        }
+    }
+
+    fn emit_arkui_this_handlers(&mut self, caller_id: &str, args: Option<SyntaxNode<'_>>) {
+        let Some(args) = args else { return };
+        for i in 0..args.named_child_count() as u32 {
+            let Some(arg) = args.named_child(i) else {
+                continue;
+            };
+            if arg.kind() != "member_expression" {
+                continue;
+            }
+            let Some(object) = get_child_by_field(arg, "object") else {
+                continue;
+            };
+            let Some(property) = get_child_by_field(arg, "property") else {
+                continue;
+            };
+            if object.kind() == "this" {
+                let name = get_node_text(property, self.source).to_string();
+                self.push_call_reference(caller_id, name, arg);
+            }
+        }
+    }
+
+    fn is_arkui_event_attribute(&self, node: SyntaxNode<'_>) -> bool {
+        let name = get_node_text(node, self.source);
+        name.strip_prefix("on")
+            .and_then(|tail| tail.chars().next())
+            .is_some_and(char::is_uppercase)
+    }
+
+    /// VB.NET permits the same parenthesized syntax for calls and index reads.
+    /// Support both the upstream vendored grammar and the native crate's AST;
+    /// false-positive index reads simply remain unresolved.
+    fn extract_vbnet_call(&mut self, node: SyntaxNode<'_>, caller_id: &str) -> bool {
+        if self.language != Language::Vbnet
+            || !matches!(
+                node.kind(),
+                "array_access_expression"
+                    | "invocation_expression"
+                    | "generic_invocation_expression"
+                    | "invocation"
+            )
+        {
+            return false;
+        }
+
+        let Some(function) = get_child_by_field(node, "target")
+            .or_else(|| get_child_by_field(node, "function"))
+            .or_else(|| get_child_by_field(node, "array"))
+        else {
+            return true;
+        };
+
+        let callee_name = if matches!(
+            function.kind(),
+            "member_access" | "member_access_expression"
+        ) {
+            let member = get_child_by_field(function, "member")
+                .or_else(|| get_child_by_field(function, "name"));
+            let Some(member) = member else { return true };
+            let method_name = get_node_text(member, self.source);
+            let receiver = get_child_by_field(function, "object");
+            match receiver {
+                Some(receiver)
+                    if matches!(receiver.kind(), "identifier" | "simple_name")
+                        && !matches!(
+                            get_node_text(receiver, self.source)
+                                .to_ascii_lowercase()
+                                .as_str(),
+                            "me" | "mybase" | "myclass"
+                        ) =>
+                {
+                    format!("{}.{}", get_node_text(receiver, self.source), method_name)
+                }
+                _ => method_name.to_string(),
+            }
+        } else if matches!(function.kind(), "identifier" | "simple_name") {
+            get_node_text(function, self.source).to_string()
+        } else {
+            return true;
+        };
+
+        self.push_call_reference(caller_id, callee_name, node);
+        true
+    }
+
+    /// Extract ArkUI declarative component/attribute chains. Attribute names
+    /// carry a leading dot so resolution can restrict them to decorated
+    /// `@Extend`/`@Styles`/`@Builder` helpers instead of matching ubiquitous
+    /// framework attributes to unrelated symbols.
+    fn extract_arkui_call(&mut self, node: SyntaxNode<'_>, caller_id: &str) -> bool {
+        if self.language != crate::types::Language::Arkts {
+            return false;
+        }
+
+        if node.kind() == "arkui_component_expression" {
+            if let Some(component) = get_child_by_field(node, "function") {
+                if component.kind() == "identifier" {
+                    let name = get_node_text(component, self.source).to_string();
+                    self.push_call_reference(caller_id, name, node);
+                }
+            }
+
+            for i in 0..node.child_count() as u32 {
+                let Some(child) = node.child(i) else {
+                    continue;
+                };
+                if child.kind() != "property_identifier" {
+                    continue;
+                }
+                self.emit_arkui_attribute(caller_id, child);
+                if !self.is_arkui_event_attribute(child) {
+                    continue;
+                }
+                let mut args = None;
+                for j in i + 1..node.child_count() as u32 {
+                    let Some(next) = node.child(j) else {
+                        continue;
+                    };
+                    if next.kind() == "property_identifier" {
+                        break;
+                    }
+                    if next.kind() == "arguments" {
+                        args = Some(next);
+                        break;
+                    }
+                }
+                self.emit_arkui_this_handlers(caller_id, args);
+            }
+            return true;
+        }
+
+        if node.kind() == "call_expression" {
+            let function = get_child_by_field(node, "function");
+            if let Some(function) = function {
+                if matches!(
+                    function.kind(),
+                    "member_expression" | "arkui_dsl_decorator_member_expression"
+                ) {
+                    let object = get_child_by_field(function, "object");
+                    let property = get_child_by_field(function, "property");
+                    if let Some(property) = property {
+                        let is_attribute = function.kind()
+                            == "arkui_dsl_decorator_member_expression"
+                            || object.is_some_and(|object| {
+                                matches!(
+                                    object.kind(),
+                                    "call_expression" | "arkui_component_expression"
+                                )
+                            });
+                        if is_attribute {
+                            self.emit_arkui_attribute(caller_id, property);
+                            if self.is_arkui_event_attribute(property) {
+                                self.emit_arkui_this_handlers(
+                                    caller_id,
+                                    get_child_by_field(node, "arguments"),
+                                );
+                            }
+                            return true;
+                        }
+                    }
+                }
+
+                if function.kind() == "identifier" {
+                    let mut parent = node.parent();
+                    while parent.is_some_and(|p| {
+                        matches!(p.kind(), "member_expression" | "call_expression")
+                    }) {
+                        parent = parent.and_then(|p| p.parent());
+                    }
+                    if parent.is_some_and(|p| p.kind() == "leading_dot_expression") {
+                        self.emit_arkui_attribute(caller_id, function);
+                        if self.is_arkui_event_attribute(function) {
+                            self.emit_arkui_this_handlers(
+                                caller_id,
+                                get_child_by_field(node, "arguments"),
+                            );
+                        }
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if node.kind() == "leading_dot_expression" {
+            if node.named_child_count() == 1 {
+                if let Some(name) = node.named_child(0).filter(|n| n.kind() == "identifier") {
+                    self.emit_arkui_attribute(caller_id, name);
+                    if self.is_arkui_event_attribute(name) {
+                        let paren = node
+                            .parent()
+                            .and_then(|statement| statement.next_named_sibling())
+                            .and_then(|statement| statement.named_child(0))
+                            .filter(|child| child.kind() == "parenthesized_expression");
+                        self.emit_arkui_this_handlers(caller_id, paren);
+                    }
+                }
+            }
+            return true;
+        }
+
+        false
+    }
+
     /// Extract a function call
     pub(super) fn extract_call(&mut self, node: SyntaxNode<'_>) {
         let Some(caller_id) = self.node_stack.last().cloned() else {
             return;
         };
+
+        if self.extract_arkui_call(node, &caller_id) {
+            return;
+        }
+        if self.extract_vbnet_call(node, &caller_id) {
+            return;
+        }
 
         // Get the function/method being called
         let mut callee_name = String::new();
@@ -186,17 +420,7 @@ impl<'a> TreeSitterExtractor<'a> {
         }
 
         if !callee_name.is_empty() {
-            self.unresolved_references.push(UnresolvedReference {
-                from_node_id: caller_id,
-                reference_name: callee_name,
-                reference_kind: EdgeKind::Calls,
-                line: node.start_position().row as u32 + 1,
-                column: node.start_position().column as u32,
-                file_path: None,
-                language: None,
-                candidates: None,
-                metadata: None,
-            });
+            self.push_call_reference(&caller_id, callee_name, node);
         }
     }
 }

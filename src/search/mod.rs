@@ -6,9 +6,11 @@
 //! (db queries, context builder, MCP tools) import the files directly, so
 //! everything public is re-exported here for convenience.
 
+pub mod identifier_segments;
 pub mod query_parser;
 pub mod query_utils;
 
+pub use identifier_segments::split_identifier_segments;
 pub use query_parser::{ParsedQuery, bounded_edit_distance, parse_query};
 pub use query_utils::{
     STOP_WORDS,

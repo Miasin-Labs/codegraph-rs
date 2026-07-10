@@ -347,8 +347,5 @@ pub const DATABASE_FILENAME: &str = "codegraph.db";
 
 /// Get the default database path for a project.
 pub fn get_database_path(project_root: impl AsRef<Path>) -> PathBuf {
-    project_root
-        .as_ref()
-        .join(".codegraph")
-        .join(DATABASE_FILENAME)
+    crate::directory::get_codegraph_dir(project_root.as_ref()).join(DATABASE_FILENAME)
 }

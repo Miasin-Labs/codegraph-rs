@@ -5,8 +5,8 @@ mod end_to_end {
 
     /// extraction.test.ts — "should resolve IDA sub callers and callees after
     /// indexAll" (deferred by notes/extraction-orchestrator.md).
-    #[test]
-    fn resolves_ida_sub_callers_and_callees_after_index_all() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolves_ida_sub_callers_and_callees_after_index_all() {
         let dir = TempDir::new().unwrap();
         write(
             &dir.path().join("sub_1000.c"),
@@ -17,7 +17,7 @@ mod end_to_end {
             "__int64 __fastcall sub_2000(__int64 a1)\n{\n  return a1 + 1;\n}\n",
         );
 
-        let cg = CodeGraph::init(dir.path(), &codegraph::InitOptions::default()).unwrap();
+        let cg = CodeGraph::init(dir.path(), &codegraph::InitOptions::default()).await.unwrap();
 
         let caller = cg
             .get_nodes_in_file("sub_1000.c")
@@ -52,8 +52,8 @@ mod end_to_end {
     /// object-literal-methods.test.ts — "resolves callers of store actions
     /// across files (destructured + chained getState())" (deferred by
     /// notes/resolution-stitch.md).
-    #[test]
-    fn resolves_callers_of_store_actions_across_files() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolves_callers_of_store_actions_across_files() {
         let dir = TempDir::new().unwrap();
         write(
             &dir.path().join("package.json"),
@@ -85,7 +85,7 @@ mod end_to_end {
         );
 
         let cg = CodeGraph::init_sync(dir.path()).unwrap();
-        cg.index_all(&IndexOptions::default()).unwrap();
+        cg.index_all(&IndexOptions::default()).await.unwrap();
 
         let fns = cg.get_nodes_by_kind(NodeKind::Function).unwrap();
         let fetch_user = fns
@@ -123,8 +123,8 @@ mod end_to_end {
     /// Smoke test: index a small fixture project end-to-end; node/edge counts
     /// are stable across a re-index, and callers/callees resolve through
     /// import-based resolution.
-    #[test]
-    fn smoke_index_fixture_counts_stable_and_call_edges_resolve() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn smoke_index_fixture_counts_stable_and_call_edges_resolve() {
         let dir = TempDir::new().unwrap();
         write(
             &dir.path().join("src/a.ts"),
@@ -139,7 +139,7 @@ mod end_to_end {
         );
 
         let cg = CodeGraph::init_sync(dir.path()).unwrap();
-        let first = cg.index_all(&IndexOptions::default()).unwrap();
+        let first = cg.index_all(&IndexOptions::default()).await.unwrap();
         assert!(first.success);
         assert_eq!(first.files_indexed, 2);
         assert!(first.nodes_created > 0);
@@ -151,7 +151,7 @@ mod end_to_end {
         assert_eq!(stats_first.file_count, 2);
 
         // Re-index: no node/edge explosion, counts stable.
-        let second = cg.index_all(&IndexOptions::default()).unwrap();
+        let second = cg.index_all(&IndexOptions::default()).await.unwrap();
         assert!(second.success);
         let stats_second = cg.get_stats().unwrap();
         assert_eq!(stats_second.node_count, stats_first.node_count);

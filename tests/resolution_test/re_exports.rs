@@ -1,7 +1,7 @@
 use crate::fixture::*;
 
-#[test]
-fn chases_a_3_hop_barrel_chain_wildcard_named_declaration() {
+#[tokio::test(flavor = "current_thread")]
+async fn chases_a_3_hop_barrel_chain_wildcard_named_declaration() {
     // main.ts → all.ts (wildcard) → index.ts (named) → auth.ts (declaration).
     let fx = Fx::new();
     let q = fx.q();
@@ -60,14 +60,15 @@ fn chases_a_3_hop_barrel_chain_wildcard_named_declaration() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let callers = incoming(&q, &sign_in.id, EdgeKind::Calls);
     assert!(source_files(&q, &callers).contains(&"src/main.ts".to_string()));
 }
 
-#[test]
-fn follows_a_renamed_named_re_export() {
+#[tokio::test(flavor = "current_thread")]
+async fn follows_a_renamed_named_re_export() {
     // `export { signIn as login } from './auth'` — the chase looks up
     // `signIn` upstream even though the importer asked for `login`.
     let fx = Fx::new();
@@ -120,6 +121,7 @@ fn follows_a_renamed_named_re_export() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let callers = incoming(&q, &sign_in.id, EdgeKind::Calls);

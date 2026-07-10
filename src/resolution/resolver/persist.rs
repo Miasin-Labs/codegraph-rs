@@ -1,8 +1,6 @@
 use super::super::callback_synthesizer::synthesize_callback_edges;
 use super::ReferenceResolver;
 #[cfg(not(feature = "gpu"))]
-use super::cache::should_use_snapshot_resolution;
-#[cfg(not(feature = "gpu"))]
 use super::snapshot::ResolverSnapshot;
 use crate::db::ResolvedRefKey;
 use crate::error::Result;
@@ -10,12 +8,12 @@ use crate::resolution::types::{ResolutionResult, ResolutionStats};
 
 impl ReferenceResolver {
     /// Resolve and persist edges to database
-    pub fn resolve_and_persist(
+    pub async fn resolve_and_persist(
         &self,
         unresolved_refs: &[crate::types::UnresolvedReference],
         on_progress: Option<&mut dyn FnMut(usize, usize)>,
     ) -> Result<ResolutionResult> {
-        let result = self.resolve_all(unresolved_refs, on_progress);
+        let result = self.resolve_all(unresolved_refs, on_progress).await?;
         let edges = self.create_edges(&result.resolved);
         if !edges.is_empty() {
             self.context.queries.insert_edges(&edges)?;
@@ -43,7 +41,7 @@ impl ReferenceResolver {
     /// up resolved refs after each batch to avoid accumulating large arrays.
     ///
     /// `batch_size: None` uses the TS default of 5000.
-    pub fn resolve_and_persist_batched(
+    pub async fn resolve_and_persist_batched(
         &self,
         mut on_progress: Option<&mut dyn FnMut(usize, usize)>,
         batch_size: Option<usize>,
@@ -51,7 +49,7 @@ impl ReferenceResolver {
         let batch_size = batch_size.unwrap_or(5000);
         let total = self.context.queries.get_unresolved_references_count()? as usize;
         #[cfg(not(feature = "gpu"))]
-        let snapshot = if should_use_snapshot_resolution(total) {
+        let snapshot = if total > 0 {
             Some(ResolverSnapshot::build(
                 &self.context.project_root,
                 &self.context.queries,
@@ -75,11 +73,11 @@ impl ReferenceResolver {
             last_seen_ref_id = batch_page.last_id;
 
             #[cfg(feature = "gpu")]
-            let result = self.resolve_all(&batch, None);
+            let result = self.resolve_all(&batch, None).await?;
             #[cfg(not(feature = "gpu"))]
             let result = match snapshot.as_ref() {
-                Some(snapshot) => self.resolve_snapshot_batch(&batch, snapshot),
-                None => self.resolve_all(&batch, None),
+                Some(snapshot) => self.resolve_snapshot_batch(&batch, snapshot, None).await?,
+                None => self.resolve_all(&batch, None).await?,
             };
 
             let edges = self.create_edges(&result.resolved);

@@ -46,7 +46,7 @@ impl LangRules {
     pub fn for_language(language_id: &str) -> Option<&'static LangRules> {
         match language_id {
             "rust" => Some(&RUST_RULES),
-            "typescript" => Some(&TYPESCRIPT_RULES),
+            "typescript" | "arkts" => Some(&TYPESCRIPT_RULES),
             "python" => Some(&PYTHON_RULES),
             "go" => Some(&GO_RULES),
             "java" => Some(&JAVA_RULES),
@@ -57,6 +57,13 @@ impl LangRules {
             "swift" => Some(&SWIFT_RULES),
             "csharp" => Some(&CSHARP_RULES),
             "ruby" => Some(&RUBY_RULES),
+            "r" => Some(&R_RULES),
+            "solidity" => Some(&SOLIDITY_RULES),
+            "nix" => Some(&NIX_RULES),
+            "cfml" | "cfscript" | "cfquery" => Some(&CFSCRIPT_RULES),
+            "erlang" => Some(&ERLANG_RULES),
+            // VB.NET and COBOL bodies are unfielded/synthetic, while Terraform
+            // has no function construct. Complexity requires a body field.
             _ => None,
         }
     }
@@ -615,6 +622,270 @@ static RUBY_RULES: LangRules = LangRules {
     operator_container_nodes: &["binary", "unary", "assignment", "operator_assignment"],
 };
 
+// ─── R ───────────────────────────────────────────────────────────────────────
+
+static R_RULES: LangRules = LangRules {
+    branch_nodes: &[
+        "if_statement",
+        "for_statement",
+        "while_statement",
+        "repeat_statement",
+    ],
+    case_nodes: &[],
+    logical_op_nodes: &["binary_operator"],
+    logical_operators: &["&&", "||"],
+    nesting_nodes: &[
+        "if_statement",
+        "for_statement",
+        "while_statement",
+        "repeat_statement",
+        "function_definition",
+    ],
+    function_nodes: &["function_definition"],
+    body_field_names: &["body"],
+    operator_nodes: &[
+        "if_statement",
+        "for_statement",
+        "while_statement",
+        "repeat_statement",
+        "break",
+        "next",
+    ],
+    operand_nodes: &[
+        "identifier",
+        "complex",
+        "float",
+        "integer",
+        "string",
+        "true",
+        "false",
+        "null",
+        "na",
+        "nan",
+        "inf",
+    ],
+    operator_container_nodes: &["binary_operator", "unary_operator"],
+};
+
+// ─── Solidity ────────────────────────────────────────────────────────────────
+
+static SOLIDITY_RULES: LangRules = LangRules {
+    branch_nodes: &[
+        "if_statement",
+        "for_statement",
+        "while_statement",
+        "do_while_statement",
+        "catch_clause",
+        "ternary_expression",
+        "yul_if_statement",
+        "yul_for_statement",
+        "yul_switch_statement",
+    ],
+    // Yul cases are not represented by named nodes in this grammar.
+    case_nodes: &[],
+    logical_op_nodes: &["binary_expression"],
+    logical_operators: &["&&", "||"],
+    nesting_nodes: &[
+        "if_statement",
+        "for_statement",
+        "while_statement",
+        "do_while_statement",
+        "try_statement",
+        "yul_if_statement",
+        "yul_for_statement",
+        "yul_switch_statement",
+    ],
+    function_nodes: &[
+        "function_definition",
+        "modifier_definition",
+        "constructor_definition",
+        "fallback_receive_definition",
+    ],
+    body_field_names: &["body"],
+    operator_nodes: &[
+        "return_statement",
+        "revert_statement",
+        "emit_statement",
+        "if_statement",
+        "for_statement",
+        "while_statement",
+        "do_while_statement",
+        "variable_declaration_statement",
+        "yul_if_statement",
+        "yul_for_statement",
+        "yul_switch_statement",
+        "yul_variable_declaration",
+    ],
+    operand_nodes: &[
+        "identifier",
+        "boolean_literal",
+        "number_literal",
+        "string_literal",
+        "hex_string_literal",
+        "unicode_string_literal",
+        "yul_identifier",
+        "yul_boolean",
+        "yul_decimal_number",
+        "yul_hex_number",
+        "yul_string_literal",
+        "yul_hex_string_literal",
+    ],
+    operator_container_nodes: &[
+        "binary_expression",
+        "unary_expression",
+        "assignment_expression",
+        "augmented_assignment_expression",
+        "update_expression",
+        "ternary_expression",
+    ],
+};
+
+// ─── Nix ─────────────────────────────────────────────────────────────────────
+
+static NIX_RULES: LangRules = LangRules {
+    branch_nodes: &["if_expression", "assert_expression"],
+    case_nodes: &[],
+    logical_op_nodes: &["binary_expression"],
+    logical_operators: &["&&", "||"],
+    nesting_nodes: &["if_expression", "assert_expression", "function_expression"],
+    function_nodes: &["function_expression"],
+    body_field_names: &["body"],
+    operator_nodes: &[
+        "if_expression",
+        "assert_expression",
+        "let_expression",
+        "with_expression",
+        "binding",
+    ],
+    operand_nodes: &[
+        "variable_expression",
+        "identifier",
+        "float_expression",
+        "integer_expression",
+        "string_expression",
+        "indented_string_expression",
+        "path_expression",
+        "hpath_expression",
+        "spath_expression",
+        "uri_expression",
+    ],
+    operator_container_nodes: &["binary_expression", "unary_expression"],
+};
+
+// ─── CFML / CFScript / CFQuery ───────────────────────────────────────────────
+
+static CFSCRIPT_RULES: LangRules = LangRules {
+    branch_nodes: &[
+        "if_statement",
+        "for_statement",
+        "for_in_statement",
+        "while_statement",
+        "do_statement",
+        "switch_statement",
+        "catch_clause",
+        "ternary_expression",
+        "elvis_expression",
+    ],
+    case_nodes: &["switch_case", "switch_default"],
+    logical_op_nodes: &["binary_expression"],
+    logical_operators: &["&&", "||", "??", "and", "or", "AND", "OR", "And", "Or"],
+    nesting_nodes: &[
+        "if_statement",
+        "for_statement",
+        "for_in_statement",
+        "while_statement",
+        "do_statement",
+        "switch_statement",
+        "try_statement",
+        "arrow_function",
+    ],
+    function_nodes: &[
+        "function_declaration",
+        "function_expression",
+        "method_definition",
+        "arrow_function",
+    ],
+    body_field_names: &["body"],
+    operator_nodes: &[
+        "return_statement",
+        "throw_statement",
+        "if_statement",
+        "for_statement",
+        "for_in_statement",
+        "while_statement",
+        "do_statement",
+        "switch_statement",
+        "variable_declaration",
+    ],
+    operand_nodes: &[
+        "identifier",
+        "number",
+        "string",
+        "template_string",
+        "true",
+        "false",
+        "null",
+        "undefined",
+    ],
+    operator_container_nodes: &[
+        "binary_expression",
+        "unary_expression",
+        "assignment_expression",
+        "augmented_assignment_expression",
+        "update_expression",
+        "ternary_expression",
+        "elvis_expression",
+    ],
+};
+
+// ─── Erlang ──────────────────────────────────────────────────────────────────
+
+static ERLANG_RULES: LangRules = LangRules {
+    branch_nodes: &[
+        "if_expr",
+        "case_expr",
+        "receive_expr",
+        "try_expr",
+        "catch_clause",
+        "maybe_expr",
+        "list_comprehension",
+        "binary_comprehension",
+        "map_comprehension",
+    ],
+    case_nodes: &["if_clause", "cr_clause", "catch_clause", "receive_after"],
+    logical_op_nodes: &["binary_op_expr"],
+    logical_operators: &["and", "or", "xor", "andalso", "orelse"],
+    nesting_nodes: &[
+        "if_expr",
+        "case_expr",
+        "receive_expr",
+        "try_expr",
+        "maybe_expr",
+        "list_comprehension",
+        "binary_comprehension",
+        "map_comprehension",
+        "anonymous_fun",
+    ],
+    function_nodes: &["function_clause", "fun_clause"],
+    body_field_names: &["body"],
+    operator_nodes: &[
+        "if_expr",
+        "case_expr",
+        "receive_expr",
+        "try_expr",
+        "catch_expr",
+        "maybe_expr",
+        "match_expr",
+        "list_comprehension",
+        "binary_comprehension",
+        "map_comprehension",
+    ],
+    operand_nodes: &[
+        "var", "atom", "char", "float", "integer", "string", "binary", "list", "tuple",
+    ],
+    operator_container_nodes: &["binary_op_expr", "unary_op_expr", "match_expr"],
+};
+
 // ─── Kotlin ──────────────────────────────────────────────────────────────────
 
 pub static KOTLIN_RULES: LangRules = LangRules {
@@ -730,5 +1001,3 @@ pub static SWIFT_RULES: LangRules = LangRules {
         "ternary_expression",
     ],
 };
-
-// ─── Kotlin ──────────────────────────────────────────────────────────────────

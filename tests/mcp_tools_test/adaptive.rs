@@ -13,7 +13,7 @@ fn spare_query() -> String {
 
 /// The OkHttp-interceptor-chain-in-miniature fixture (see the TS test header
 /// for the full design rationale).
-fn adaptive_fixture(root: &Path) -> CodeGraph {
+async fn adaptive_fixture(root: &Path) -> CodeGraph {
     let src = root.join("src");
 
     // The interchangeable contract — 4+ implementers below => sibling family.
@@ -73,7 +73,7 @@ fn adaptive_fixture(root: &Path) -> CodeGraph {
     );
 
     let cg = CodeGraph::init_sync(root).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     cg
 }
 
@@ -86,11 +86,11 @@ fn explore_with_max_files(handler: &ToolHandler, query: &str, max_files: u32) ->
     res.text().to_string()
 }
 
-#[test]
-fn fixture_sanity_interceptor_has_3_plus_implementers_formatter_has_fewer() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn fixture_sanity_interceptor_has_3_plus_implementers_formatter_has_fewer() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = adaptive_fixture(dir.path());
+    let cg = adaptive_fixture(dir.path()).await;
 
     let find = |name: &str, kind: NodeKind| {
         cg.search_nodes(name, None)
@@ -117,12 +117,12 @@ fn fixture_sanity_interceptor_has_3_plus_implementers_formatter_has_fewer() {
     assert!(implementers(&formatter.id) < 3);
 }
 
-#[test]
-fn skeletonizes_off_spine_polymorphic_siblings() {
-    let _env = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn skeletonizes_off_spine_polymorphic_siblings() {
+    let _env = env_write().await;
     let _guard = EnvVarGuard::unset("CODEGRAPH_ADAPTIVE_EXPLORE");
     let dir = TempDir::new().unwrap();
-    let cg = adaptive_fixture(dir.path());
+    let cg = adaptive_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore_with_max_files(&handler, QUERY, 12);
 
@@ -155,12 +155,12 @@ fn skeletonizes_off_spine_polymorphic_siblings() {
     }
 }
 
-#[test]
-fn keeps_the_on_spine_exemplar_full_even_though_it_is_a_sibling() {
-    let _env = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn keeps_the_on_spine_exemplar_full_even_though_it_is_a_sibling() {
+    let _env = env_write().await;
     let _guard = EnvVarGuard::unset("CODEGRAPH_ADAPTIVE_EXPLORE");
     let dir = TempDir::new().unwrap();
-    let cg = adaptive_fixture(dir.path());
+    let cg = adaptive_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore_with_max_files(&handler, QUERY, 12);
 
@@ -177,12 +177,12 @@ fn keeps_the_on_spine_exemplar_full_even_though_it_is_a_sibling() {
     assert!(section.contains("LOGGING_BODY_MARKER"));
 }
 
-#[test]
-fn keeps_a_distinct_step_full() {
-    let _env = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn keeps_a_distinct_step_full() {
+    let _env = env_write().await;
     let _guard = EnvVarGuard::unset("CODEGRAPH_ADAPTIVE_EXPLORE");
     let dir = TempDir::new().unwrap();
-    let cg = adaptive_fixture(dir.path());
+    let cg = adaptive_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore_with_max_files(&handler, QUERY, 12);
 
@@ -198,12 +198,12 @@ fn keeps_a_distinct_step_full() {
     assert!(section.contains("FORMATTER_BODY_MARKER"));
 }
 
-#[test]
-fn adaptive_explore_env_zero_disables_skeletonization() {
-    let _env = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn adaptive_explore_env_zero_disables_skeletonization() {
+    let _env = env_write().await;
     let _guard = EnvVarGuard::set("CODEGRAPH_ADAPTIVE_EXPLORE", "0");
     let dir = TempDir::new().unwrap();
-    let cg = adaptive_fixture(dir.path());
+    let cg = adaptive_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore_with_max_files(&handler, QUERY, 12);
 
@@ -217,12 +217,12 @@ fn adaptive_explore_env_zero_disables_skeletonization() {
     assert!(section.contains("BRIDGE_BODY_MARKER"));
 }
 
-#[test]
-fn spares_an_off_spine_sibling_when_the_agent_named_a_callable_in_it() {
-    let _env = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn spares_an_off_spine_sibling_when_the_agent_named_a_callable_in_it() {
+    let _env = env_write().await;
     let _guard = EnvVarGuard::unset("CODEGRAPH_ADAPTIVE_EXPLORE");
     let dir = TempDir::new().unwrap();
-    let cg = adaptive_fixture(dir.path());
+    let cg = adaptive_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore_with_max_files(&handler, &spare_query(), 15);
     assert!(text.contains("## Flow (call path among the symbols you queried)"));
@@ -248,12 +248,12 @@ fn spares_an_off_spine_sibling_when_the_agent_named_a_callable_in_it() {
     assert!(!bridge.contains("BRIDGE_BODY_MARKER"));
 }
 
-#[test]
-fn collapses_a_base_plus_subclasses_family_file_to_a_focused_view() {
-    let _env = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn collapses_a_base_plus_subclasses_family_file_to_a_focused_view() {
+    let _env = env_write().await;
     let _guard = EnvVarGuard::unset("CODEGRAPH_ADAPTIVE_EXPLORE");
     let dir = TempDir::new().unwrap();
-    let cg = adaptive_fixture(dir.path());
+    let cg = adaptive_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore_with_max_files(&handler, &spare_query(), 15);
 
@@ -277,12 +277,12 @@ fn collapses_a_base_plus_subclasses_family_file_to_a_focused_view() {
     );
 }
 
-#[test]
-fn naming_a_shared_polymorphic_method_does_not_spare_the_siblings() {
-    let _env = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn naming_a_shared_polymorphic_method_does_not_spare_the_siblings() {
+    let _env = env_write().await;
     let _guard = EnvVarGuard::unset("CODEGRAPH_ADAPTIVE_EXPLORE");
     let dir = TempDir::new().unwrap();
-    let cg = adaptive_fixture(dir.path());
+    let cg = adaptive_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     // `intercept` is implemented by every interceptor — a polymorphic name,
     // not a unique one. Naming it must NOT keep all five full.

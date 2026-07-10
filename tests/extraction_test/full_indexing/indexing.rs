@@ -1,7 +1,7 @@
 use crate::extraction_test::fixture::*;
 
-#[test]
-fn full_indexing_indexes_a_typescript_file() {
+#[tokio::test(flavor = "current_thread")]
+async fn full_indexing_indexes_a_typescript_file() {
     let temp_dir = tempfile::tempdir().unwrap();
     let src_dir = temp_dir.path().join("src");
     fs::create_dir(&src_dir).unwrap();
@@ -21,7 +21,7 @@ export function multiply(a: number, b: number): number {
 
     let (_conn, queries) = open_graph(temp_dir.path());
     let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
-    let result = orch.index_all(None, None, false).expect("index_all");
+    let result = orch.index_all(None, None, false).await.expect("index_all");
 
     assert!(result.success);
     assert_eq!(result.files_indexed, 1);
@@ -34,8 +34,8 @@ export function multiply(a: number, b: number): number {
     assert_eq!(add_func.kind, NodeKind::Function);
 }
 
-#[test]
-fn full_indexing_indexes_multiple_files() {
+#[tokio::test(flavor = "current_thread")]
+async fn full_indexing_indexes_multiple_files() {
     let temp_dir = tempfile::tempdir().unwrap();
     let src_dir = temp_dir.path().join("src");
     fs::create_dir(&src_dir).unwrap();
@@ -53,7 +53,7 @@ fn full_indexing_indexes_multiple_files() {
 
     let (_conn, queries) = open_graph(temp_dir.path());
     let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
-    let result = orch.index_all(None, None, false).expect("index_all");
+    let result = orch.index_all(None, None, false).await.expect("index_all");
 
     assert!(result.success);
     assert_eq!(result.files_indexed, 2);
@@ -70,8 +70,8 @@ fn full_indexing_indexes_multiple_files() {
     );
 }
 
-#[test]
-fn full_indexing_tracks_file_hashes_for_incremental_updates() {
+#[tokio::test(flavor = "current_thread")]
+async fn full_indexing_tracks_file_hashes_for_incremental_updates() {
     let temp_dir = tempfile::tempdir().unwrap();
     let src_dir = temp_dir.path().join("src");
     fs::create_dir(&src_dir).unwrap();
@@ -79,7 +79,7 @@ fn full_indexing_tracks_file_hashes_for_incremental_updates() {
 
     let (_conn, queries) = open_graph(temp_dir.path());
     let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
-    orch.index_all(None, None, false).expect("index_all");
+    orch.index_all(None, None, false).await.expect("index_all");
 
     let file = queries.get_file_by_path("src/main.ts").unwrap();
     let file = file.expect("tracked file");
@@ -91,8 +91,8 @@ fn full_indexing_tracks_file_hashes_for_incremental_updates() {
     assert!(changes.modified.contains(&"src/main.ts".to_string()));
 }
 
-#[test]
-fn full_indexing_syncs_and_detects_changes() {
+#[tokio::test(flavor = "current_thread")]
+async fn full_indexing_syncs_and_detects_changes() {
     let temp_dir = tempfile::tempdir().unwrap();
     let src_dir = temp_dir.path().join("src");
     fs::create_dir(&src_dir).unwrap();
@@ -104,7 +104,7 @@ fn full_indexing_syncs_and_detects_changes() {
 
     let (_conn, queries) = open_graph(temp_dir.path());
     let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
-    orch.index_all(None, None, false).expect("index_all");
+    orch.index_all(None, None, false).await.expect("index_all");
 
     let initial_nodes = queries.get_nodes_by_file("src/main.ts").unwrap();
     assert!(initial_nodes.iter().any(|n| n.name == "original"));
@@ -115,7 +115,7 @@ fn full_indexing_syncs_and_detects_changes() {
     )
     .unwrap();
 
-    let sync_result = orch.sync(None).expect("sync");
+    let sync_result = orch.sync(None).await.expect("sync");
     assert_eq!(sync_result.files_modified, 1);
 
     let updated_nodes = queries.get_nodes_by_file("src/main.ts").unwrap();
@@ -123,8 +123,8 @@ fn full_indexing_syncs_and_detects_changes() {
     assert!(!updated_nodes.iter().any(|n| n.name == "original"));
 }
 
-#[test]
-fn full_indexing_sync_refreshes_metadata_when_content_hash_is_unchanged() {
+#[tokio::test(flavor = "current_thread")]
+async fn full_indexing_sync_refreshes_metadata_when_content_hash_is_unchanged() {
     let temp_dir = tempfile::tempdir().unwrap();
     let src_dir = temp_dir.path().join("src");
     fs::create_dir(&src_dir).unwrap();
@@ -134,7 +134,7 @@ fn full_indexing_sync_refreshes_metadata_when_content_hash_is_unchanged() {
 
     let (_conn, queries) = open_graph(temp_dir.path());
     let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
-    orch.index_all(None, None, false).expect("index_all");
+    orch.index_all(None, None, false).await.expect("index_all");
 
     let before = queries
         .get_file_by_path("src/main.ts")
@@ -156,7 +156,7 @@ fn full_indexing_sync_refreshes_metadata_when_content_hash_is_unchanged() {
         "test setup failed to change mtime"
     );
 
-    let sync_result = orch.sync(None).expect("sync");
+    let sync_result = orch.sync(None).await.expect("sync");
 
     assert_eq!(sync_result.files_modified, 0);
     let after = queries

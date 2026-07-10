@@ -1,7 +1,7 @@
 use crate::fixture::*;
 
-#[test]
-fn resolves_aliased_import_to_alias_mapped_file() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolves_aliased_import_to_alias_mapped_file() {
     let fx = Fx::new();
     let q = fx.q();
     fx.write(
@@ -68,6 +68,7 @@ fn resolves_aliased_import_to_alias_mapped_file() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let utils_callers = incoming(&q, &utils_pick.id, EdgeKind::Calls);
@@ -79,8 +80,8 @@ fn resolves_aliased_import_to_alias_mapped_file() {
     assert!(!source_files(&q, &legacy_callers).contains(&"src/main.ts".to_string()));
 }
 
-#[test]
-fn falls_back_gracefully_when_tsconfig_is_absent() {
+#[tokio::test(flavor = "current_thread")]
+async fn falls_back_gracefully_when_tsconfig_is_absent() {
     let fx = Fx::new();
     let q = fx.q();
     fx.write("src/a.ts", "export function aFn(): void {}\n");
@@ -124,6 +125,7 @@ fn falls_back_gracefully_when_tsconfig_is_absent() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let callers = incoming(&q, &a_fn.id, EdgeKind::Calls);

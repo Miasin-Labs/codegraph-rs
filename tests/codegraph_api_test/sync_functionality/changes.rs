@@ -1,7 +1,7 @@
-#[test]
-fn get_changed_files_detects_added_files() {
+#[tokio::test(flavor = "current_thread")]
+async fn get_changed_files_detects_added_files() {
     let dir = TempDir::new().unwrap();
-    let cg = setup_indexed(dir.path());
+    let cg = setup_indexed(dir.path()).await;
 
     write(
         &dir.path().join("src/new.ts"),
@@ -14,10 +14,10 @@ fn get_changed_files_detects_added_files() {
     assert!(changes.removed.is_empty());
 }
 
-#[test]
-fn get_changed_files_detects_modified_files() {
+#[tokio::test(flavor = "current_thread")]
+async fn get_changed_files_detects_modified_files() {
     let dir = TempDir::new().unwrap();
-    let cg = setup_indexed(dir.path());
+    let cg = setup_indexed(dir.path()).await;
 
     write(
         &dir.path().join("src/index.ts"),
@@ -30,10 +30,10 @@ fn get_changed_files_detects_modified_files() {
     assert!(changes.removed.is_empty());
 }
 
-#[test]
-fn get_changed_files_detects_removed_files() {
+#[tokio::test(flavor = "current_thread")]
+async fn get_changed_files_detects_removed_files() {
     let dir = TempDir::new().unwrap();
-    let cg = setup_indexed(dir.path());
+    let cg = setup_indexed(dir.path()).await;
 
     fs::remove_file(dir.path().join("src/index.ts")).unwrap();
 

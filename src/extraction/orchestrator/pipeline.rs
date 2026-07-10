@@ -11,7 +11,7 @@
 //! Node-isms dropped (documented in `notes/extraction-orchestrator.md`):
 //! - `parse-worker.ts` and the whole worker lifecycle (spawn/recycle/timeout,
 //!   `PARSE_TIMEOUT_MS`, `WORKER_RECYCLE_INTERVAL`) — parsing is native and
-//!   in-process; parallelism is work-stealing over read batches instead.
+//!   in-process; bounded Tokio blocking tasks parse read batches instead.
 //! - The WASM memory-corruption retry pass (fresh-worker retry + comment
 //!   stripping) — there is no WASM heap to corrupt.
 //! - `scanDirectoryAsync` — only existed to yield to the Node event loop;
@@ -21,11 +21,13 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 use crate::db::QueryBuilder;
+use crate::project_config::{ProjectConfig, load_project_config};
 
 /// Extraction orchestrator.
 pub struct ExtractionOrchestrator<'a> {
     pub(super) root_dir: PathBuf,
     pub(super) queries: &'a QueryBuilder,
+    pub(super) project_config: ProjectConfig,
     /// Names of frameworks detected for this project, populated by `index_all()`.
     /// Passed to `extract_from_source` so framework-specific extractors (route
     /// nodes, middleware, etc.) run after the tree-sitter pass. Cleared if
@@ -37,8 +39,10 @@ pub struct ExtractionOrchestrator<'a> {
 
 impl<'a> ExtractionOrchestrator<'a> {
     pub fn new(root_dir: impl Into<PathBuf>, queries: &'a QueryBuilder) -> Self {
+        let root_dir = root_dir.into();
         ExtractionOrchestrator {
-            root_dir: root_dir.into(),
+            project_config: load_project_config(&root_dir),
+            root_dir,
             queries,
             detected_framework_names: RefCell::new(None),
         }

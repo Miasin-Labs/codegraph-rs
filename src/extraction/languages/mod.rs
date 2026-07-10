@@ -8,46 +8,66 @@
 //! Ported from `src/extraction/languages/index.ts`.
 
 pub mod apex;
+pub mod arkts;
 pub mod bash;
 pub mod c_cpp;
+pub mod cfquery;
+pub mod cfscript;
+pub mod cobol;
 pub mod csharp;
 pub mod dart;
+pub mod erlang;
 pub mod go;
 pub mod java;
 pub mod javascript;
 pub mod kotlin;
 pub mod lua;
 pub mod luau;
+pub mod nix;
 pub mod objc;
 pub mod pascal;
 pub mod php;
 pub mod python;
+pub mod r;
 pub mod ruby;
 pub mod rust;
 pub mod scala;
+pub mod solidity;
 pub mod swift;
+pub mod terraform;
 pub mod typescript;
+pub mod vbnet;
 
 pub use apex::ApexExtractor;
+pub use arkts::ArktsExtractor;
 pub use bash::BashExtractor;
 pub use c_cpp::{CExtractor, CppExtractor};
+pub use cfquery::CfqueryExtractor;
+pub use cfscript::CfscriptExtractor;
+pub use cobol::CobolExtractor;
 pub use csharp::CsharpExtractor;
 pub use dart::DartExtractor;
+pub use erlang::ErlangExtractor;
 pub use go::GoExtractor;
 pub use java::JavaExtractor;
 pub use javascript::JavascriptExtractor;
 pub use kotlin::KotlinExtractor;
 pub use lua::LuaExtractor;
 pub use luau::LuauExtractor;
+pub use nix::NixExtractor;
 pub use objc::ObjcExtractor;
 pub use pascal::PascalExtractor;
 pub use php::PhpExtractor;
 pub use python::PythonExtractor;
+pub use r::RExtractor;
 pub use ruby::RubyExtractor;
 pub use rust::RustExtractor;
 pub use scala::ScalaExtractor;
+pub use solidity::SolidityExtractor;
 pub use swift::SwiftExtractor;
+pub use terraform::TerraformExtractor;
 pub use typescript::TypescriptExtractor;
+pub use vbnet::VbnetExtractor;
 
 use crate::extraction::tree_sitter_types::{LanguageExtractor, SyntaxNode};
 use crate::types::Language;
@@ -69,6 +89,7 @@ pub(crate) fn find_named_child<'t>(node: SyntaxNode<'t>, kind: &str) -> Option<S
 pub fn extractor_for(language: Language) -> Option<&'static dyn LanguageExtractor> {
     match language {
         Language::Typescript | Language::Tsx => Some(&TypescriptExtractor),
+        Language::Arkts => Some(&ArktsExtractor),
         Language::Javascript | Language::Jsx => Some(&JavascriptExtractor),
         Language::Python => Some(&PythonExtractor),
         Language::Go => Some(&GoExtractor),
@@ -87,6 +108,15 @@ pub fn extractor_for(language: Language) -> Option<&'static dyn LanguageExtracto
         Language::Lua => Some(&LuaExtractor),
         Language::Luau => Some(&LuauExtractor),
         Language::Objc => Some(&ObjcExtractor),
+        Language::R => Some(&RExtractor),
+        Language::Solidity => Some(&SolidityExtractor),
+        Language::Nix => Some(&NixExtractor),
+        Language::Cfscript => Some(&CfscriptExtractor),
+        Language::Cfquery => Some(&CfqueryExtractor),
+        Language::Cobol => Some(&CobolExtractor),
+        Language::Vbnet => Some(&VbnetExtractor),
+        Language::Erlang => Some(&ErlangExtractor),
+        Language::Terraform => Some(&TerraformExtractor),
         Language::Apex => Some(&ApexExtractor),
         Language::Bash => Some(&BashExtractor),
         _ => None,
@@ -100,7 +130,7 @@ mod tests {
 
     #[test]
     fn extractor_map_matches_ts_extractors() {
-        // The 21 keys of the TS EXTRACTORS map, plus Rust-native Apex.
+        // The upstream extractor keys plus Rust-native Apex and Bash.
         let mapped: Vec<Language> = LANGUAGES
             .iter()
             .copied()
@@ -113,6 +143,7 @@ mod tests {
                 Language::Javascript,
                 Language::Tsx,
                 Language::Jsx,
+                Language::Arkts,
                 Language::Python,
                 Language::Go,
                 Language::Rust,
@@ -130,8 +161,17 @@ mod tests {
                 Language::Lua,
                 Language::Luau,
                 Language::Objc,
+                Language::R,
+                Language::Solidity,
+                Language::Nix,
                 Language::Apex,
                 Language::Bash,
+                Language::Cfscript,
+                Language::Cfquery,
+                Language::Cobol,
+                Language::Vbnet,
+                Language::Erlang,
+                Language::Terraform,
             ]
         );
         // tsx/jsx share the typescript/javascript extractor configs.
@@ -148,6 +188,7 @@ mod tests {
             Language::Svelte,
             Language::Vue,
             Language::Liquid,
+            Language::Cfml,
             Language::Html,
             Language::Visualforce,
             Language::Aura,

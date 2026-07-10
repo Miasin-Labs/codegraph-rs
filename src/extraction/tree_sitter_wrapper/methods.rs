@@ -60,6 +60,7 @@ impl<'a> TreeSitterExtractor<'a> {
         let visibility = ext.get_visibility(node, self.source);
         let is_async = ext.is_async(node, self.source);
         let is_static = ext.is_static(node, self.source);
+        let return_type = ext.get_return_type(node, self.source);
         let qualified_name = receiver_type.as_ref().map(|r| format!("{}::{}", r, name));
 
         let Some(method_node) = self.create_node(
@@ -72,6 +73,7 @@ impl<'a> TreeSitterExtractor<'a> {
                 visibility,
                 is_async,
                 is_static,
+                return_type,
                 qualified_name,
                 ..Default::default()
             },

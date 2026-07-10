@@ -20,7 +20,8 @@
 
 use codegraph::mcp::MCPServer;
 
-fn main() {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() {
     let mut project_path: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {

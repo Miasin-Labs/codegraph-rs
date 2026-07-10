@@ -1,7 +1,7 @@
 use crate::fixture::*;
 
-#[test]
-fn java_import_disambiguates_same_name_classes_across_modules_314() {
+#[tokio::test(flavor = "current_thread")]
+async fn java_import_disambiguates_same_name_classes_across_modules_314() {
     let fx = Fx::new();
     let q = fx.q();
     let dao = "dao/src/main/java/com/example/dao/converter/FooConverter.java";
@@ -117,6 +117,7 @@ fn java_import_disambiguates_same_name_classes_across_modules_314() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let calls = outgoing(&q, &use_method.id, EdgeKind::Calls);
@@ -129,8 +130,8 @@ fn java_import_disambiguates_same_name_classes_across_modules_314() {
     assert_eq!(target.file_path.replace('\\', "/"), service);
 }
 
-#[test]
-fn kotlin_imports_without_semicolon_resolve_top_level_symbols_by_qualified_name() {
+#[tokio::test(flavor = "current_thread")]
+async fn kotlin_imports_without_semicolon_resolve_top_level_symbols_by_qualified_name() {
     let fx = Fx::new();
     let q = fx.q();
     let helper_file = "src/main/kotlin/com/example/foo/Helpers.kt";
@@ -216,6 +217,7 @@ fn kotlin_imports_without_semicolon_resolve_top_level_symbols_by_qualified_name(
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let direct = outgoing(&q, &use_fn.id, EdgeKind::Calls);
@@ -226,8 +228,8 @@ fn kotlin_imports_without_semicolon_resolve_top_level_symbols_by_qualified_name(
     assert_eq!(alias[0].target, aliased.id);
 }
 
-#[test]
-fn resolve_one_skips_jvm_namespace_segments_but_not_types() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolve_one_skips_jvm_namespace_segments_but_not_types() {
     let fx = Fx::new();
     let q = fx.q();
     let caller = node(
@@ -307,8 +309,8 @@ fn resolve_one_skips_jvm_namespace_segments_but_not_types() {
     assert!(resolver.resolve_one(&stdlib_type).is_none());
 }
 
-#[test]
-fn resolve_one_keeps_project_classes_that_match_jvm_stdlib_names() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolve_one_keeps_project_classes_that_match_jvm_stdlib_names() {
     let fx = Fx::new();
     let q = fx.q();
     let caller = node(

@@ -1,7 +1,7 @@
 use crate::fixture::*;
 
-#[test]
-fn warm_caches_and_resolve_completes() {
+#[tokio::test(flavor = "current_thread")]
+async fn warm_caches_and_resolve_completes() {
     // "Resolution Warm Caches" — resolveReferences internally warms caches
     // and completes without error.
     let fx = Fx::new();
@@ -46,7 +46,10 @@ fn warm_caches_and_resolve_completes() {
 
     let resolver = fx.resolver();
     resolver.warm_caches();
-    let result = resolver.resolve_and_persist_batched(None, None).unwrap();
+    let result = resolver
+        .resolve_and_persist_batched(None, None)
+        .await
+        .unwrap();
 
     assert!(result.stats.total >= 1);
     assert_eq!(result.stats.resolved, 1);
@@ -56,8 +59,8 @@ fn warm_caches_and_resolve_completes() {
     assert_eq!(q.get_unresolved_references_count().unwrap(), 0);
 }
 
-#[test]
-fn resolve_all_reports_progress_and_stats() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolve_all_reports_progress_and_stats() {
     let fx = Fx::new();
     let q = fx.q();
     fx.write("src/x.ts", "export function target(): void {}\n");
@@ -107,7 +110,7 @@ fn resolve_all_reports_progress_and_stats() {
     let resolver = fx.resolver();
     let mut calls: Vec<(usize, usize)> = Vec::new();
     let mut cb = |current: usize, total: usize| calls.push((current, total));
-    let result = resolver.resolve_all(&refs, Some(&mut cb));
+    let result = resolver.resolve_all(&refs, Some(&mut cb)).await.unwrap();
 
     assert_eq!(result.stats.total, 2);
     assert_eq!(result.stats.resolved, 1);
@@ -129,7 +132,10 @@ fn resolve_all_reports_progress_and_stats() {
         candidates: None,
         metadata: None,
     };
-    let result = resolver.resolve_all(std::slice::from_ref(&bare), None);
+    let result = resolver
+        .resolve_all(std::slice::from_ref(&bare), None)
+        .await
+        .unwrap();
     assert_eq!(result.stats.resolved, 1);
     assert_eq!(result.resolved[0].original.file_path, "src/x.ts");
     assert_eq!(result.resolved[0].original.language, Language::Typescript);

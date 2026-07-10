@@ -204,7 +204,7 @@ notes/mcp-server.md. No new env vars introduced.
 ## For the integration/packaging wave
 
 - TS reads `package.json` for the version; the port uses
-  `env!("CARGO_PKG_VERSION")` (Cargo.toml currently 0.9.9 — keep in sync
+  `env!("CARGO_PKG_VERSION")` (Cargo.toml currently 1.3.1 - keep in sync
   with the npm version at release time).
 - Installer Step 6 (`initialize_local_project`) and `offer_watch_fallback`
   are still reduced/stubbed in the installer module (notes/installer.md

@@ -41,12 +41,12 @@ use super::{
 // =============================================================================
 
 /// codegraph init [path]
-pub(crate) fn cmd_init(path_arg: Option<&str>, verbose: bool) {
+pub(crate) async fn cmd_init(path_arg: Option<&str>, verbose: bool) {
     let project_path = resolve_absolute(path_arg);
 
     clack_intro("Initializing CodeGraph");
 
-    let body = || -> Result<(), String> {
+    let body = async {
         if is_initialized(&project_path) {
             clack_log_warn(&format!(
                 "Already initialized in {}",
@@ -62,7 +62,9 @@ pub(crate) fn cmd_init(path_arg: Option<&str>, verbose: bool) {
         let cg = CodeGraph::init_sync(&project_path).map_err(|e| e.to_string())?;
         clack_log_success(&format!("Initialized in {}", project_path.display()));
 
-        let result = run_index_all(&cg, verbose).map_err(|e| e.to_string())?;
+        let result = run_index_all(&cg, verbose)
+            .await
+            .map_err(|e| e.to_string())?;
         let totals = cg.get_stats().ok().map(|s| (s.node_count, s.edge_count));
         print_index_result(&result, Some(&project_path), totals);
 
@@ -71,10 +73,10 @@ pub(crate) fn cmd_init(path_arg: Option<&str>, verbose: bool) {
 
         clack_outro("Done");
         cg.close();
-        Ok(())
+        Ok::<(), String>(())
     };
 
-    if let Err(msg) = body() {
+    if let Err(msg) = body.await {
         clack_log_error(&format!("Failed: {msg}"));
         process::exit(1);
     }
@@ -139,10 +141,10 @@ pub(crate) fn cmd_uninit(path_arg: Option<&str>, force: bool) {
 }
 
 /// codegraph index [path]
-pub(crate) fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, verbose: bool) {
+pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, verbose: bool) {
     let project_path = resolve_project_path(path_arg);
 
-    let body = || -> Result<(), String> {
+    let body = async {
         if !is_initialized(&project_path) {
             error_msg(&format!(
                 "CodeGraph not initialized in {}",
@@ -162,6 +164,7 @@ pub(crate) fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, verbos
             }
             let result = cg
                 .index_all(&IndexOptions::default())
+                .await
                 .map_err(|e| e.to_string())?;
             if !result.success {
                 process::exit(1);
@@ -177,7 +180,9 @@ pub(crate) fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, verbos
             clack_log_info("Cleared existing index");
         }
 
-        let result = run_index_all(&cg, verbose).map_err(|e| e.to_string())?;
+        let result = run_index_all(&cg, verbose)
+            .await
+            .map_err(|e| e.to_string())?;
 
         let totals = cg.get_stats().ok().map(|s| (s.node_count, s.edge_count));
         print_index_result(&result, Some(&project_path), totals);
@@ -188,20 +193,20 @@ pub(crate) fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, verbos
 
         clack_outro("Done");
         cg.close();
-        Ok(())
+        Ok::<(), String>(())
     };
 
-    if let Err(msg) = body() {
+    if let Err(msg) = body.await {
         error_msg(&format!("Failed to index: {msg}"));
         process::exit(1);
     }
 }
 
 /// codegraph sync [path]
-pub(crate) fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
+pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
     let project_path = resolve_project_path(path_arg);
 
-    let body = || -> Result<(), String> {
+    let body = async {
         if !is_initialized(&project_path) {
             if !quiet {
                 error_msg(&format!(
@@ -217,6 +222,7 @@ pub(crate) fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
 
         if quiet {
             cg.sync(&IndexOptions::default())
+                .await
                 .map_err(|e| e.to_string())?;
             cg.close();
             return Ok(());
@@ -242,6 +248,7 @@ pub(crate) fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
                 signal: None,
                 verbose: false,
             })
+            .await
         };
 
         progress.into_inner().stop();
@@ -277,10 +284,10 @@ pub(crate) fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
 
         clack_outro("Done");
         cg.close();
-        Ok(())
+        Ok::<(), String>(())
     };
 
-    if let Err(msg) = body() {
+    if let Err(msg) = body.await {
         if !quiet {
             error_msg(&format!("Failed to sync: {msg}"));
         }

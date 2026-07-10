@@ -16,7 +16,15 @@ use std::sync::{Mutex, OnceLock};
 /// succeeds for zombies (matters for daemon liveness checks in containers).
 #[cfg(unix)]
 pub fn is_process_alive(pid: u32) -> bool {
-    let alive = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // POSIX gives pid 0 and negative values process-group/all-process
+    // semantics. Never let an untrusted daemon lockfile reach those forms.
+    if pid <= 1 {
+        return false;
+    }
+    let alive = unsafe { libc::kill(pid, 0) };
     if alive != 0 {
         // EPERM means the process exists but we can't signal it
         return std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);

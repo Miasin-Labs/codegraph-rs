@@ -55,9 +55,16 @@ impl DataflowRules {
     pub fn for_language(lang: &str) -> Option<&'static DataflowRules> {
         match lang {
             "rust" => Some(&RUST_DATAFLOW_RULES),
-            "typescript" | "javascript" => Some(&TYPESCRIPT_DATAFLOW_RULES),
+            "typescript" | "javascript" | "arkts" => Some(&TYPESCRIPT_DATAFLOW_RULES),
             "python" => Some(&PYTHON_DATAFLOW_RULES),
             "go" => Some(&GO_DATAFLOW_RULES),
+            "r" => Some(&R_DATAFLOW_RULES),
+            "solidity" => Some(&SOLIDITY_DATAFLOW_RULES),
+            "nix" => Some(&NIX_DATAFLOW_RULES),
+            "cfml" | "cfscript" | "cfquery" => Some(&CFSCRIPT_DATAFLOW_RULES),
+            "erlang" => Some(&ERLANG_DATAFLOW_RULES),
+            // VB.NET and COBOL bodies are unfielded/synthetic, while Terraform
+            // has no function construct. `extract_dataflow` requires a body field.
             _ => None,
         }
     }
@@ -213,4 +220,180 @@ static GO_DATAFLOW_RULES: DataflowRules = DataflowRules {
     method_call_object_field: "",
     method_call_name_field: "",
     method_call_args_field: "arguments",
+};
+
+// ─── R ───────────────────────────────────────────────────────────────────────
+
+static R_DATAFLOW_RULES: DataflowRules = DataflowRules {
+    function_nodes: &["function_definition"],
+    param_list_field: "parameters",
+    param_identifier: "identifier",
+    body_field: "body",
+    // `return(...)` is an ordinary call in tree-sitter-r.
+    return_node: "",
+    // Assignments and ordinary binary expressions share `binary_operator`;
+    // the table cannot filter its operator field without false assignments.
+    assignment_nodes: &[],
+    assign_left_field: "lhs",
+    assign_right_field: "rhs",
+    call_nodes: &["call"],
+    call_function_field: "function",
+    call_args_field: "arguments",
+    member_node: "extract_operator",
+    member_object_field: "lhs",
+    member_property_field: "rhs",
+    // R values are copy-on-modify; common collection functions return a value.
+    mutating_methods: &[],
+    identifier_node: "identifier",
+    literal_nodes: &[
+        "complex", "float", "integer", "string", "true", "false", "null", "na", "nan", "inf",
+    ],
+    method_call_node: "call",
+    method_call_object_field: "",
+    method_call_name_field: "",
+    method_call_args_field: "arguments",
+};
+
+// ─── Solidity ────────────────────────────────────────────────────────────────
+
+static SOLIDITY_DATAFLOW_RULES: DataflowRules = DataflowRules {
+    function_nodes: &[
+        "function_definition",
+        "modifier_definition",
+        "constructor_definition",
+        "fallback_receive_definition",
+    ],
+    // Parameters and call arguments are direct children in this grammar.
+    param_list_field: "",
+    param_identifier: "identifier",
+    body_field: "body",
+    return_node: "return_statement",
+    assignment_nodes: &["assignment_expression", "augmented_assignment_expression"],
+    assign_left_field: "left",
+    assign_right_field: "right",
+    call_nodes: &["call_expression"],
+    call_function_field: "function",
+    call_args_field: "",
+    member_node: "member_expression",
+    member_object_field: "object",
+    member_property_field: "property",
+    mutating_methods: &["push", "pop"],
+    identifier_node: "identifier",
+    literal_nodes: &[
+        "boolean_literal",
+        "number_literal",
+        "string_literal",
+        "hex_string_literal",
+        "unicode_string_literal",
+    ],
+    method_call_node: "call_expression",
+    method_call_object_field: "",
+    method_call_name_field: "",
+    method_call_args_field: "",
+};
+
+// ─── Nix ─────────────────────────────────────────────────────────────────────
+
+static NIX_DATAFLOW_RULES: DataflowRules = DataflowRules {
+    function_nodes: &["function_expression"],
+    // Attribute-set parameters use `formals`; simple parameters use the
+    // sibling `universal` field and cannot share this single table field.
+    param_list_field: "formals",
+    param_identifier: "identifier",
+    body_field: "body",
+    // A Nix function's body expression is its implicit return value.
+    return_node: "",
+    assignment_nodes: &["binding"],
+    assign_left_field: "attrpath",
+    assign_right_field: "expression",
+    call_nodes: &["apply_expression"],
+    call_function_field: "function",
+    call_args_field: "argument",
+    member_node: "select_expression",
+    member_object_field: "expression",
+    member_property_field: "attrpath",
+    mutating_methods: &[],
+    identifier_node: "variable_expression",
+    literal_nodes: &[
+        "float_expression",
+        "integer_expression",
+        "string_expression",
+        "indented_string_expression",
+        "path_expression",
+        "hpath_expression",
+        "spath_expression",
+        "uri_expression",
+    ],
+    method_call_node: "apply_expression",
+    method_call_object_field: "",
+    method_call_name_field: "",
+    method_call_args_field: "argument",
+};
+
+// ─── CFML / CFScript / CFQuery ───────────────────────────────────────────────
+
+static CFSCRIPT_DATAFLOW_RULES: DataflowRules = DataflowRules {
+    function_nodes: &[
+        "function_declaration",
+        "function_expression",
+        "method_definition",
+        "arrow_function",
+    ],
+    param_list_field: "parameters",
+    param_identifier: "identifier",
+    body_field: "body",
+    return_node: "return_statement",
+    assignment_nodes: &["assignment_expression", "augmented_assignment_expression"],
+    assign_left_field: "left",
+    assign_right_field: "right",
+    call_nodes: &["call_expression"],
+    call_function_field: "function",
+    call_args_field: "arguments",
+    member_node: "member_expression",
+    member_object_field: "object",
+    member_property_field: "property",
+    mutating_methods: &[
+        "append", "clear", "delete", "insert", "pop", "push", "remove", "sort",
+    ],
+    identifier_node: "identifier",
+    literal_nodes: &[
+        "number",
+        "string",
+        "template_string",
+        "true",
+        "false",
+        "null",
+        "undefined",
+    ],
+    method_call_node: "call_expression",
+    method_call_object_field: "",
+    method_call_name_field: "",
+    method_call_args_field: "arguments",
+};
+
+// ─── Erlang ──────────────────────────────────────────────────────────────────
+
+static ERLANG_DATAFLOW_RULES: DataflowRules = DataflowRules {
+    function_nodes: &["function_clause", "fun_clause"],
+    param_list_field: "args",
+    param_identifier: "var",
+    body_field: "body",
+    // Erlang returns the final expression in a clause implicitly.
+    return_node: "",
+    assignment_nodes: &["match_expr"],
+    assign_left_field: "lhs",
+    assign_right_field: "rhs",
+    call_nodes: &["call"],
+    call_function_field: "expr",
+    call_args_field: "args",
+    member_node: "remote",
+    member_object_field: "module",
+    member_property_field: "fun",
+    mutating_methods: &[],
+    identifier_node: "var",
+    literal_nodes: &["atom", "char", "float", "integer", "string"],
+    method_call_node: "call",
+    method_call_object_field: "",
+    method_call_name_field: "",
+    method_call_args_field: "args",
 };

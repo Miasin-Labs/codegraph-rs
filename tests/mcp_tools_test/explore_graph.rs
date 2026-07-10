@@ -1,6 +1,6 @@
-#[test]
-fn arch_overview_lists_in_scope_modules_and_symbols_only() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn arch_overview_lists_in_scope_modules_and_symbols_only() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     write(
         &dir.path().join("src/core/util.ts"),
@@ -11,7 +11,7 @@ fn arch_overview_lists_in_scope_modules_and_symbols_only() {
         "import { helper } from \"./core/util\";\nexport function run(): number { return helper(); }\n",
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let res = handler.execute("codegraph_arch", &json!({ "path": "src/core" }));
@@ -38,16 +38,16 @@ fn arch_overview_lists_in_scope_modules_and_symbols_only() {
     );
 }
 
-#[test]
-fn xref_lists_incoming_references_to_a_symbol() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn xref_lists_incoming_references_to_a_symbol() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     write(
         &dir.path().join("src/lib.ts"),
         "export function target(): number { return 1; }\nexport function caller(): number { return target(); }\n",
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let res = handler.execute("codegraph_xref", &json!({ "symbol": "target" }));
@@ -58,16 +58,16 @@ fn xref_lists_incoming_references_to_a_symbol() {
     assert!(text.contains("caller"), "missing incoming caller: {text}");
 }
 
-#[test]
-fn node_returns_structured_payload() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn node_returns_structured_payload() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     write(
         &dir.path().join("src/lib.ts"),
         "export function target(): number { return 1; }\nexport function caller(): number { return target(); }\n",
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let res = handler.execute(
@@ -82,9 +82,9 @@ fn node_returns_structured_payload() {
     assert!(structured["matches"][0]["code"].as_str().unwrap().contains("target"));
 }
 
-#[test]
-fn node_structured_code_respects_output_cap() {
-    let _env = env_write();
+#[tokio::test(flavor = "current_thread")]
+async fn node_structured_code_respects_output_cap() {
+    let _env = env_write().await;
     let _guard = EnvVarGuard::set("CODEGRAPH_MAX_OUTPUT_CHARS", "600");
     let dir = TempDir::new().unwrap();
     let repeated = "x".repeat(5000);
@@ -93,7 +93,7 @@ fn node_structured_code_respects_output_cap() {
         &format!("export function target(): string {{ return \"{repeated}\"; }}\n"),
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let res = handler.execute(
@@ -106,16 +106,16 @@ fn node_structured_code_respects_output_cap() {
     assert!(code.len() < repeated.len(), "structured code was not capped");
 }
 
-#[test]
-fn paths_finds_call_chain_from_source_to_sink() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn paths_finds_call_chain_from_source_to_sink() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     write(
         &dir.path().join("src/lib.ts"),
         "export function sink(): number { return 1; }\nexport function mid(): number { return sink(); }\nexport function source(): number { return mid(); }\n",
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let res = handler.execute(
@@ -132,9 +132,9 @@ fn paths_finds_call_chain_from_source_to_sink() {
     assert!(text.contains("mid"), "path should traverse mid: {text}");
 }
 
-#[test]
-fn verify_roles_proposes_then_proves_emitting_the_deviant_caller() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn verify_roles_proposes_then_proves_emitting_the_deviant_caller() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     write(
         &dir.path().join("src/lib.rs"),
@@ -147,7 +147,7 @@ fn verify_roles_proposes_then_proves_emitting_the_deviant_caller() {
          pub fn handler_e() {\n    delete_order();\n}\n",
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let res = handler.execute(
@@ -188,16 +188,16 @@ fn verify_roles_proposes_then_proves_emitting_the_deviant_caller() {
     );
 }
 
-#[test]
-fn verify_roles_drops_hallucinated_sink_without_enough_callers() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn verify_roles_drops_hallucinated_sink_without_enough_callers() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     write(
         &dir.path().join("src/lib.rs"),
         "pub fn never_called() {}\npub fn auth() -> bool { true }\n",
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let res = handler.execute(

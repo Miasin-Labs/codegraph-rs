@@ -16,10 +16,10 @@ use super::{
 ///
 /// Dry-runs the resolver over pending unresolved refs and prints throughput.
 /// Measurement harness for resolver optimization work — no writes.
-pub(crate) fn cmd_resolve_bench(path_arg: Option<&str>, limit: usize) {
+pub(crate) async fn cmd_resolve_bench(path_arg: Option<&str>, limit: usize) {
     let project_path = resolve_project_path(path_arg);
 
-    let body = || -> Result<(), String> {
+    let body = async {
         if !is_initialized(&project_path) {
             error_msg(&format!(
                 "CodeGraph not initialized in {}",
@@ -29,13 +29,13 @@ pub(crate) fn cmd_resolve_bench(path_arg: Option<&str>, limit: usize) {
         }
         let cg =
             CodeGraph::open(&project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
-        let report = cg.resolve_bench(limit).map_err(|e| e.to_string())?;
+        let report = cg.resolve_bench(limit).await.map_err(|e| e.to_string())?;
         println!("{report}");
         cg.close();
-        Ok(())
+        Ok::<(), String>(())
     };
 
-    if let Err(msg) = body() {
+    if let Err(msg) = body.await {
         error_msg(&format!("resolve-bench failed: {msg}"));
         process::exit(1);
     }

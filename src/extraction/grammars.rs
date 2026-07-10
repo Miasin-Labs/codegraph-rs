@@ -33,6 +33,9 @@ pub const EXTENSION_MAP: &[(&str, Language)] = &[
     // ESM/CJS TypeScript module extensions — parsed as TS (no JSX). (#366)
     (".mts", Language::Typescript),
     (".cts", Language::Typescript),
+    // ArkTS (HarmonyOS / OpenHarmony) is a TypeScript superset with its own
+    // grammar for `@Component struct` declarations and the ArkUI build DSL.
+    (".ets", Language::Arkts),
     (".js", Language::Javascript),
     (".mjs", Language::Javascript),
     (".cjs", Language::Javascript),
@@ -52,7 +55,13 @@ pub const EXTENSION_MAP: &[(&str, Language)] = &[
     (".cxx", Language::Cpp),
     (".hpp", Language::Cpp),
     (".hxx", Language::Cpp),
+    (".metal", Language::Cpp),
+    (".cu", Language::Cpp),
+    (".cuh", Language::Cpp),
     (".cs", Language::Csharp),
+    // ASP.NET Razor / Blazor markup is handled by the custom Razor extractor.
+    (".cshtml", Language::Razor),
+    (".razor", Language::Razor),
     (".php", Language::Php),
     // Drupal-specific PHP file extensions
     (".module", Language::Php),
@@ -73,6 +82,8 @@ pub const EXTENSION_MAP: &[(&str, Language)] = &[
     (".liquid", Language::Liquid),
     (".svelte", Language::Svelte),
     (".vue", Language::Vue),
+    (".astro", Language::Astro),
+    (".r", Language::R),
     (".pas", Language::Pascal),
     (".dpr", Language::Pascal),
     (".dpk", Language::Pascal),
@@ -85,6 +96,21 @@ pub const EXTENSION_MAP: &[(&str, Language)] = &[
     (".luau", Language::Luau),
     (".m", Language::Objc),
     (".mm", Language::Objc),
+    (".sol", Language::Solidity),
+    // ColdFusion markup/components and standalone CFScript.
+    (".cfc", Language::Cfml),
+    (".cfm", Language::Cfml),
+    (".cfs", Language::Cfscript),
+    (".nix", Language::Nix),
+    // COBOL programs and copybooks.
+    (".cbl", Language::Cobol),
+    (".cob", Language::Cobol),
+    (".cobol", Language::Cobol),
+    (".cpy", Language::Cobol),
+    (".vb", Language::Vbnet),
+    (".erl", Language::Erlang),
+    (".hrl", Language::Erlang),
+    (".escript", Language::Erlang),
     // Salesforce Apex: classes, triggers, and anonymous-execute scripts.
     // `.cls` is claimed for Apex unconditionally — a stray LaTeX/VB `.cls`
     // parses with errors and yields ~no symbols, which extraction tolerates.
@@ -113,6 +139,10 @@ pub const EXTENSION_MAP: &[(&str, Language)] = &[
     // shape as the `.yml` variants — the YAML/properties extractor emits one node
     // per leaf key, and the Spring resolver links `@Value("${k}")` references.
     (".properties", Language::Properties),
+    // Terraform, OpenTofu, and variable files share the HCL grammar.
+    (".tf", Language::Terraform),
+    (".tfvars", Language::Terraform),
+    (".tofu", Language::Terraform),
 ];
 
 /// Look up the language for a (lowercase, dot-prefixed) file extension.
@@ -123,15 +153,40 @@ pub fn language_for_extension(ext: &str) -> Option<Language> {
         .map(|(_, l)| *l)
 }
 
+/// Look up an extension after applying project-scoped overrides.
+pub fn language_for_extension_with_overrides(
+    ext: &str,
+    overrides: &HashMap<String, Language>,
+) -> Option<Language> {
+    overrides
+        .get(ext)
+        .copied()
+        .or_else(|| language_for_extension(ext))
+}
+
 /// Whether a file is one CodeGraph can parse, based purely on its extension.
 /// This is the single source of truth for "should we index this file" — derived
 /// from EXTENSION_MAP so parser support and indexing selection never drift.
 pub fn is_source_file(file_path: &str) -> bool {
+    is_source_file_with_overrides(file_path, &HashMap::new())
+}
+
+/// Project-aware source-file check. Custom mappings override the built-in map.
+pub fn is_source_file_with_overrides(
+    file_path: &str,
+    overrides: &HashMap<String, Language>,
+) -> bool {
     if is_play_routes_file(file_path) {
         return true; // Play `conf/routes` is extensionless
     }
+    if is_erlang_app_file(file_path) {
+        return true;
+    }
     match file_path.rfind('.') {
-        Some(dot) => language_for_extension(&file_path[dot..].to_lowercase()).is_some(),
+        Some(dot) => {
+            language_for_extension_with_overrides(&file_path[dot..].to_lowercase(), overrides)
+                .is_some()
+        }
         None => false,
     }
 }
@@ -145,6 +200,13 @@ pub fn is_play_routes_file(file_path: &str) -> bool {
         || file_path.ends_with(".routes")
 }
 
+/// OTP application resource files contain Erlang terms but use a compound
+/// suffix whose final extension (`.src`) is too generic to register globally.
+pub fn is_erlang_app_file(file_path: &str) -> bool {
+    let lower = file_path.to_ascii_lowercase();
+    lower.ends_with(".app") || lower.ends_with(".app.src")
+}
+
 /// Whether `language` has a tree-sitter grammar compiled into this binary.
 /// Mirrors the TS `GrammarLanguage` type (every `Language` except the
 /// custom-extractor and file-level-only ones).
@@ -153,7 +215,9 @@ pub fn has_grammar(language: Language) -> bool {
         language,
         Language::Svelte
             | Language::Vue
+            | Language::Astro
             | Language::Liquid
+            | Language::Razor
             | Language::Html
             | Language::Visualforce
             | Language::Aura
@@ -169,6 +233,7 @@ pub fn has_grammar(language: Language) -> bool {
 const GRAMMAR_LANGUAGES: &[Language] = &[
     Language::Typescript,
     Language::Tsx,
+    Language::Arkts,
     Language::Javascript,
     Language::Jsx,
     Language::Python,
@@ -188,6 +253,16 @@ const GRAMMAR_LANGUAGES: &[Language] = &[
     Language::Lua,
     Language::Luau,
     Language::Objc,
+    Language::R,
+    Language::Solidity,
+    Language::Nix,
+    Language::Cfml,
+    Language::Cfscript,
+    Language::Cfquery,
+    Language::Cobol,
+    Language::Vbnet,
+    Language::Erlang,
+    Language::Terraform,
     Language::Apex,
     Language::Bash,
 ];
@@ -195,9 +270,13 @@ const GRAMMAR_LANGUAGES: &[Language] = &[
 /// The native tree-sitter grammar for a language, or `None` when the
 /// language has no grammar (custom extractors / file-level-only formats).
 pub fn grammar_language(language: Language) -> Option<tree_sitter::Language> {
+    if language == Language::Cobol {
+        return Some(tree_sitter_cobol::language());
+    }
     let lang_fn = match language {
         Language::Typescript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
         Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX,
+        Language::Arkts => tree_sitter_arkts::LANGUAGE,
         // `javascript` covers `jsx` (same grammar).
         Language::Javascript | Language::Jsx => tree_sitter_javascript::LANGUAGE,
         Language::Python => tree_sitter_python::LANGUAGE,
@@ -218,11 +297,23 @@ pub fn grammar_language(language: Language) -> Option<tree_sitter::Language> {
         Language::Lua => tree_sitter_lua::LANGUAGE,
         Language::Luau => tree_sitter_luau::LANGUAGE,
         Language::Objc => tree_sitter_objc::LANGUAGE,
+        Language::R => tree_sitter_r::LANGUAGE,
+        Language::Solidity => tree_sitter_solidity::LANGUAGE,
+        Language::Nix => tree_sitter_nix::LANGUAGE,
+        Language::Cfml => tree_sitter_cfml::LANGUAGE_CFML,
+        Language::Cfscript => tree_sitter_cfml::LANGUAGE_CFSCRIPT,
+        Language::Cfquery => tree_sitter_cfml::LANGUAGE_CFQUERY,
+        Language::Cobol => unreachable!("handled before LanguageFn dispatch"),
+        Language::Vbnet => tree_sitter_vb_dotnet::LANGUAGE,
+        Language::Erlang => tree_sitter_erlang::LANGUAGE,
+        Language::Terraform => tree_sitter_hcl::LANGUAGE,
         Language::Apex => tree_sitter_sfapex::apex::LANGUAGE,
         Language::Bash => tree_sitter_bash::LANGUAGE,
         Language::Svelte
         | Language::Vue
+        | Language::Astro
         | Language::Liquid
+        | Language::Razor
         | Language::Html
         | Language::Visualforce
         | Language::Aura
@@ -278,12 +369,37 @@ fn looks_like_objc(source: &str) -> bool {
     OBJC_HEURISTIC.is_match(sample(source))
 }
 
+/// Salesforce Aura applications also use `.app`; distinguish their XML root
+/// from OTP application resource terms when source is available.
+fn looks_like_aura_app(source: &str) -> bool {
+    sample(source)
+        .to_ascii_lowercase()
+        .contains("<aura:application")
+}
+
 /// Detect language from file extension
 pub fn detect_language(file_path: &str, source: Option<&str>) -> Language {
+    detect_language_with_overrides(file_path, source, &HashMap::new())
+}
+
+/// Detect a language with project-scoped extension mappings taking precedence.
+pub fn detect_language_with_overrides(
+    file_path: &str,
+    source: Option<&str>,
+    overrides: &HashMap<String, Language>,
+) -> Language {
     // Play `conf/routes` has no grammar — route through the no-symbol path; the
     // Play framework resolver extracts route nodes from it.
     if is_play_routes_file(file_path) {
         return Language::Yaml;
+    }
+    if is_erlang_app_file(file_path) {
+        if file_path.to_ascii_lowercase().ends_with(".app")
+            && source.is_some_and(looks_like_aura_app)
+        {
+            return Language::Aura;
+        }
+        return Language::Erlang;
     }
     // TS `filePath.substring(filePath.lastIndexOf('.'))` — when there is no
     // dot, JS clamps -1 to 0, so the "extension" is the whole path (which
@@ -292,7 +408,7 @@ pub fn detect_language(file_path: &str, source: Option<&str>) -> Language {
         Some(dot) => file_path[dot..].to_lowercase(),
         None => file_path.to_lowercase(),
     };
-    let lang = language_for_extension(&ext).unwrap_or(Language::Unknown);
+    let lang = language_for_extension_with_overrides(&ext, overrides).unwrap_or(Language::Unknown);
 
     // .h files could be C, C++, or Objective-C — check source content
     if lang == Language::C && ext == ".h" {
@@ -315,7 +431,9 @@ pub fn is_language_supported(language: Language) -> bool {
     match language {
         Language::Svelte => true,      // custom extractor (script block delegation)
         Language::Vue => true,         // custom extractor (script block delegation)
+        Language::Astro => true,       // custom extractor (frontmatter/script delegation)
         Language::Liquid => true,      // custom regex extractor
+        Language::Razor => true,       // custom extractor (C# block delegation)
         Language::Html => true,        // file node + LWC template bindings
         Language::Visualforce => true, // custom regex extractor (controller/bindings)
         Language::Aura => true,        // custom regex extractor (controller/actions)
@@ -333,7 +451,9 @@ pub fn is_language_supported(language: Language) -> bool {
 /// (plus the custom-extractor/file-level languages, mirroring TS).
 pub fn is_grammar_loaded(language: Language) -> bool {
     match language {
-        Language::Svelte | Language::Vue | Language::Liquid => true,
+        Language::Svelte | Language::Vue | Language::Astro | Language::Liquid | Language::Razor => {
+            true
+        }
         Language::Yaml | Language::Twig => true, // no grammar needed
         Language::Xml | Language::Properties => true, // no grammar needed
         _ => has_grammar(language),
@@ -360,7 +480,9 @@ pub fn get_supported_languages() -> Vec<Language> {
     out.extend([
         Language::Svelte,
         Language::Vue,
+        Language::Astro,
         Language::Liquid,
+        Language::Razor,
         Language::Html,
         Language::Visualforce,
         Language::Aura,
@@ -404,6 +526,7 @@ pub fn get_language_display_name(language: Language) -> &'static str {
         Language::Javascript => "JavaScript",
         Language::Tsx => "TypeScript (TSX)",
         Language::Jsx => "JavaScript (JSX)",
+        Language::Arkts => "ArkTS",
         Language::Python => "Python",
         Language::Go => "Go",
         Language::Rust => "Rust",
@@ -411,6 +534,7 @@ pub fn get_language_display_name(language: Language) -> &'static str {
         Language::C => "C",
         Language::Cpp => "C++",
         Language::Csharp => "C#",
+        Language::Razor => "Razor / Blazor",
         Language::Php => "PHP",
         Language::Ruby => "Ruby",
         Language::Swift => "Swift",
@@ -418,12 +542,16 @@ pub fn get_language_display_name(language: Language) -> &'static str {
         Language::Dart => "Dart",
         Language::Svelte => "Svelte",
         Language::Vue => "Vue",
+        Language::Astro => "Astro",
         Language::Liquid => "Liquid",
         Language::Pascal => "Pascal / Delphi",
         Language::Scala => "Scala",
         Language::Lua => "Lua",
         Language::Luau => "Luau",
         Language::Objc => "Objective-C",
+        Language::R => "R",
+        Language::Solidity => "Solidity",
+        Language::Nix => "Nix",
         Language::Apex => "Apex",
         Language::Bash => "Shell (Bash)",
         Language::Html => "HTML",
@@ -433,6 +561,13 @@ pub fn get_language_display_name(language: Language) -> &'static str {
         Language::Twig => "Twig",
         Language::Xml => "XML",
         Language::Properties => "Java properties",
+        Language::Cfml => "CFML",
+        Language::Cfscript => "CFScript",
+        Language::Cfquery => "CFQuery (SQL)",
+        Language::Cobol => "COBOL",
+        Language::Vbnet => "Visual Basic .NET",
+        Language::Erlang => "Erlang",
+        Language::Terraform => "Terraform / OpenTofu",
         Language::Unknown => "Unknown",
     }
 }
@@ -451,6 +586,14 @@ mod tests {
         assert_eq!(detect_language("conf/routes", None), Language::Yaml);
         assert_eq!(detect_language("app/conf/routes", None), Language::Yaml);
         assert_eq!(detect_language("conf/dev.routes", None), Language::Yaml);
+        assert_eq!(detect_language("ebin/demo.app", None), Language::Erlang);
+        assert_eq!(
+            detect_language(
+                "force-app/main/default/aura/Demo/Demo.app",
+                Some("<aura:application extends=\"force:slds\" />")
+            ),
+            Language::Aura
+        );
     }
 
     #[test]
@@ -495,6 +638,6 @@ mod tests {
         assert!(is_language_supported(Language::Html));
         assert!(is_language_supported(Language::Visualforce));
         assert!(is_language_supported(Language::Aura));
-        assert_eq!(get_supported_languages().len(), 29);
+        assert_eq!(get_supported_languages().len(), 42);
     }
 }

@@ -27,9 +27,9 @@
 //! `notes/resolution-types.md`); this file re-exports it and implements
 //! only the loader + import rewrite.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -46,9 +46,6 @@ use crate::error::log_debug;
 /// the same way it does `load_project_aliases` / `load_go_module`.
 pub fn load_workspace_packages(project_root: &str) -> Option<WorkspacePackages> {
     let patterns = read_workspace_globs(project_root);
-    if patterns.is_empty() {
-        return None;
-    }
 
     let mut by_name: HashMap<String, String> = HashMap::new();
     for pattern in &patterns {
@@ -60,6 +57,16 @@ pub fn load_workspace_packages(project_root: &str) -> Option<WorkspacePackages> 
             }
         }
     }
+    let mut entry_by_name = HashMap::new();
+    for (name, dir) in collect_ohpm_file_dependencies(project_root) {
+        if by_name.contains_key(&name) {
+            continue;
+        }
+        if let Some(entry) = read_ohpm_main(project_root, &dir) {
+            entry_by_name.insert(name.clone(), entry);
+        }
+        by_name.insert(name, dir);
+    }
     if by_name.is_empty() {
         return None;
     }
@@ -68,7 +75,10 @@ pub fn load_workspace_packages(project_root: &str) -> Option<WorkspacePackages> 
         "workspace packages loaded",
         Some(&serde_json::json!({ "count": by_name.len() })),
     );
-    Some(WorkspacePackages { by_name })
+    Some(WorkspacePackages {
+        by_name,
+        entry_by_name,
+    })
 }
 
 /// Rewrite a bare workspace import to a path relative to projectRoot,
@@ -90,6 +100,11 @@ pub fn resolve_workspace_import(import_path: &str, ws: &WorkspacePackages) -> Op
     let best_name = best_name?;
     let dir = ws.by_name.get(best_name).expect("key just found");
     let subpath = &import_path[best_name.len()..]; // '' or '/widgets'
+    if subpath.is_empty() {
+        if let Some(entry) = ws.entry_by_name.get(best_name) {
+            return Some(entry.clone());
+        }
+    }
     Some(collapse_slashes(&format!("{dir}{subpath}")))
 }
 
@@ -98,6 +113,148 @@ fn collapse_slashes(s: &str) -> String {
     static MULTI_SLASH_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"/{2,}").expect("valid regex"));
     MULTI_SLASH_RE.replace_all(s, "/").into_owned()
+}
+
+const OHPM_MANIFEST: &str = "oh-package.json5";
+const OHPM_MAX_DEPTH: usize = 6;
+const OHPM_DIR_BUDGET: usize = 8_000;
+const OHPM_SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "oh_modules",
+    ".git",
+    ".codegraph",
+    ".hvigor",
+    ".preview",
+    "build",
+    "dist",
+    "out",
+];
+
+fn parse_jsonc(text: &str) -> Option<serde_json::Value> {
+    use jsonc_parser::{JsonValue as J, ParseOptions};
+
+    fn convert(value: J<'_>) -> serde_json::Value {
+        match value {
+            J::Null => serde_json::Value::Null,
+            J::Boolean(value) => serde_json::Value::Bool(value),
+            J::Number(value) => value
+                .parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map_or(serde_json::Value::Null, serde_json::Value::Number),
+            J::String(value) => serde_json::Value::String(value.into_owned()),
+            J::Array(values) => {
+                serde_json::Value::Array(values.take_inner().into_iter().map(convert).collect())
+            }
+            J::Object(values) => serde_json::Value::Object(
+                values
+                    .into_iter()
+                    .map(|(key, value)| (key, convert(value)))
+                    .collect(),
+            ),
+        }
+    }
+
+    jsonc_parser::parse_to_value(text, &ParseOptions::default())
+        .ok()
+        .flatten()
+        .map(convert)
+}
+
+fn read_ohpm_file_dependencies(manifest: &Path) -> Vec<(String, String)> {
+    let Some(value) = fs::read_to_string(manifest)
+        .ok()
+        .and_then(|text| parse_jsonc(&text))
+    else {
+        return Vec::new();
+    };
+    let Some(dependencies) = value
+        .get("dependencies")
+        .and_then(|value| value.as_object())
+    else {
+        return Vec::new();
+    };
+    dependencies
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .as_str()?
+                .strip_prefix("file:")
+                .map(str::trim)
+                .filter(|target| !target.is_empty())
+                .map(|target| (name.clone(), target.to_string()))
+        })
+        .collect()
+}
+
+fn project_relative_existing(project_root: &Path, path: &Path) -> Option<String> {
+    let root = fs::canonicalize(project_root).ok()?;
+    let path = fs::canonicalize(path).ok()?;
+    let relative = path.strip_prefix(root).ok()?;
+    Some(relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn collect_ohpm_file_dependencies(project_root: &str) -> HashMap<String, String> {
+    let root = Path::new(project_root);
+    let mut queue = VecDeque::from([(PathBuf::new(), 0usize)]);
+    let mut visited = 0usize;
+    let mut by_name = HashMap::new();
+    let mut ambiguous = HashSet::new();
+
+    while let Some((relative, depth)) = queue.pop_front() {
+        visited += 1;
+        if visited > OHPM_DIR_BUDGET {
+            break;
+        }
+        let directory = root.join(&relative);
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                if depth < OHPM_MAX_DEPTH
+                    && !name.starts_with('.')
+                    && !OHPM_SKIP_DIRS.contains(&name.as_str())
+                {
+                    queue.push_back((relative.join(name), depth + 1));
+                }
+                continue;
+            }
+            if name != OHPM_MANIFEST {
+                continue;
+            }
+            for (dependency, target) in read_ohpm_file_dependencies(&entry.path()) {
+                let Some(target) = project_relative_existing(root, &directory.join(target)) else {
+                    continue;
+                };
+                match by_name.get(&dependency) {
+                    None if !ambiguous.contains(&dependency) => {
+                        by_name.insert(dependency, target);
+                    }
+                    Some(existing) if existing != &target => {
+                        by_name.remove(&dependency);
+                        ambiguous.insert(dependency);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    by_name
+}
+
+fn read_ohpm_main(project_root: &str, directory: &str) -> Option<String> {
+    let root = Path::new(project_root);
+    let manifest = root.join(directory).join(OHPM_MANIFEST);
+    let value = fs::read_to_string(manifest)
+        .ok()
+        .and_then(|text| parse_jsonc(&text))?;
+    let main = value.get("main")?.as_str()?.trim();
+    if main.is_empty() {
+        return None;
+    }
+    project_relative_existing(root, &root.join(directory).join(main))
 }
 
 /// Read workspace glob patterns from package.json + pnpm-workspace.yaml.
@@ -337,7 +494,10 @@ mod tests {
     fn resolve_workspace_import_rewrites_subpaths() {
         let mut by_name = HashMap::new();
         by_name.insert("@scope/ui".to_string(), "packages/ui".to_string());
-        let ws = WorkspacePackages { by_name };
+        let ws = WorkspacePackages {
+            by_name,
+            entry_by_name: HashMap::new(),
+        };
 
         assert_eq!(
             resolve_workspace_import("@scope/ui", &ws).as_deref(),
@@ -357,7 +517,10 @@ mod tests {
         let mut by_name = HashMap::new();
         by_name.insert("@scope/ui".to_string(), "packages/ui".to_string());
         by_name.insert("@scope/ui/core".to_string(), "packages/ui-core".to_string());
-        let ws = WorkspacePackages { by_name };
+        let ws = WorkspacePackages {
+            by_name,
+            entry_by_name: HashMap::new(),
+        };
 
         assert_eq!(
             resolve_workspace_import("@scope/ui/core", &ws).as_deref(),

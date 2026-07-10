@@ -1,7 +1,7 @@
 use crate::fixture::*;
 
-#[test]
-fn resolves_bare_directory_import_to_index_ts_629() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolves_bare_directory_import_to_index_ts_629() {
     // `import { helper } from '.'` (and './') must map to the directory's
     // index.ts before the rename chase can run.
     let fx = Fx::new();
@@ -77,6 +77,7 @@ fn resolves_bare_directory_import_to_index_ts_629() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let callers = incoming(&q, &real_helper.id, EdgeKind::Calls);
@@ -85,8 +86,8 @@ fn resolves_bare_directory_import_to_index_ts_629() {
     assert!(files.contains(&"src/main2.ts".to_string()));
 }
 
-#[test]
-fn resolves_workspace_package_subpath_barrel_629() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolves_workspace_package_subpath_barrel_629() {
     // bun/npm/pnpm workspace: `@scope/ui/widgets` → the `ui` member's
     // widgets/ subdir index, which re-exports a .svelte component under an
     // alias that defeats the name-matcher.
@@ -149,6 +150,7 @@ fn resolves_workspace_package_subpath_barrel_629() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let callers = incoming(&q, &widget.id, EdgeKind::References);

@@ -5,6 +5,12 @@
 /.jfc/
 # research corpus (259MB, embedded vendored checkouts) — on disk, versioned in jfc
 /analysis/research/
+# Keep the narrow tree-sitter ABI compatibility crate versioned even when a
+# user-level gitignore excludes vendor directories.
+!/vendor/
+/vendor/*
+!/vendor/tree-sitter-compat-0-20/
+!/vendor/tree-sitter-compat-0-20/**
 .codex/
 .omo/
 .claude/

@@ -17,31 +17,37 @@ use crate::types::{Language, Node, NodeKind};
 
 impl ResolutionContext for SnapshotContext {
     fn get_nodes_in_file(&self, file_path: &str) -> Vec<Node> {
-        self.nodes_by_file
-            .get(file_path)
-            .cloned()
-            .unwrap_or_default()
+        self.lookup_nodes(&self.nodes_by_file, file_path, |node, key| {
+            node.file_path == key
+        })
     }
 
     fn get_nodes_by_name(&self, name: &str) -> Vec<Node> {
-        self.nodes_by_name.get(name).cloned().unwrap_or_default()
+        self.lookup_nodes(&self.nodes_by_name, name, |node, key| node.name == key)
     }
 
     fn get_nodes_by_qualified_name(&self, qualified_name: &str) -> Vec<Node> {
-        self.nodes_by_qualified_name
-            .get(qualified_name)
-            .cloned()
-            .unwrap_or_default()
+        self.lookup_nodes(
+            &self.nodes_by_qualified_name,
+            qualified_name,
+            |node, key| node.qualified_name == key,
+        )
     }
 
     fn get_nodes_by_kind(&self, kind: NodeKind) -> Vec<Node> {
-        self.nodes_by_kind.get(&kind).cloned().unwrap_or_default()
+        self.nodes_by_kind
+            .get(&kind)
+            .into_iter()
+            .flat_map(super::IndexBucket::as_slice)
+            .filter_map(|index| self.nodes.get(*index as usize))
+            .cloned()
+            .collect()
     }
 
     fn file_exists(&self, file_path: &str) -> bool {
         let normalized = file_path.replace('\\', "/");
-        self.known_files.contains(file_path)
-            || self.known_files.contains(&normalized)
+        self.known_file(file_path)
+            || self.known_file(&normalized)
             || Path::new(&self.project_root).join(file_path).exists()
     }
 
@@ -85,10 +91,9 @@ impl ResolutionContext for SnapshotContext {
     }
 
     fn get_nodes_by_lower_name(&self, lower_name: &str) -> Vec<Node> {
-        self.nodes_by_lower_name
-            .get(lower_name)
-            .cloned()
-            .unwrap_or_default()
+        self.lookup_nodes(&self.nodes_by_lower_name, lower_name, |node, key| {
+            node.name.to_lowercase() == key
+        })
     }
 
     fn get_import_mappings(&self, file_path: &str, language: Language) -> Vec<ImportMapping> {

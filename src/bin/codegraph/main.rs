@@ -13,6 +13,8 @@
 //!   codegraph sync [path]        Sync changes since last index
 //!   codegraph status [path]      Show index status
 //!   codegraph query <search>     Search for symbols
+//!   codegraph explore <query...> Explore symbols and call paths
+//!   codegraph node [name]        Show a symbol or read an indexed file
 //!   codegraph files [options]    Show project file structure
 //!   codegraph callers <symbol>   Find what calls a function/method
 //!   codegraph callees <symbol>   Find what a function/method calls
@@ -28,6 +30,8 @@
 //!                                boundaries, capabilities, schema, stats,
 //!                                cfg, dataflow)
 //!   codegraph serve --mcp        Run as an MCP server over stdio
+//!   codegraph daemon             List or stop background daemons
+//!   codegraph version            Print the installed version
 //!   codegraph unlock [path]      Remove a stale lock file
 //!
 //! Node-ecosystem-only pieces of the TS entry point that have no Rust
@@ -75,6 +79,7 @@ use codegraph::sync::{
     remove_git_sync_hook,
     worktree_mismatch_warning,
 };
+use codegraph::telemetry::Telemetry;
 use codegraph::ui::{IndexProgress as UiIndexProgress, create_shimmer_progress, get_glyphs};
 use codegraph::utils::lexical_resolve;
 use codegraph::{
@@ -108,6 +113,7 @@ mod install;
 mod output;
 mod path;
 mod serve;
+mod tool_commands;
 
 use analyze::{bridge_project_with_options, cmd_analyze, print_json};
 use cli::{AnalyzeCommands, Cli, Commands, HistoryCommands};
@@ -146,6 +152,7 @@ use output::{
     info,
     iso_from_epoch_ms,
     js_to_fixed,
+    now_ms,
     parse_int_js,
     print_index_result,
     red,
@@ -157,7 +164,55 @@ use output::{
 };
 use path::{resolve_absolute, resolve_project_path};
 use serve::cmd_serve;
-pub(crate) fn main() {
+use tool_commands::{
+    cmd_daemon,
+    cmd_explore,
+    cmd_node,
+    cmd_prompt_hook,
+    cmd_telemetry,
+    cmd_upgrade,
+};
+
+fn record_command_telemetry(command: &Commands) {
+    if std::env::var_os("CODEGRAPH_DAEMON_INTERNAL").is_some() {
+        return;
+    }
+    let name = match command {
+        Commands::Init { .. } => "init",
+        Commands::Uninit { .. } => "uninit",
+        Commands::Index { .. } => "index",
+        Commands::Sync { .. } => "sync",
+        Commands::Status { .. } => "status",
+        Commands::Query { .. } => "query",
+        Commands::Explore { .. } => "explore",
+        Commands::Node { .. } => "node",
+        Commands::Files { .. } => "files",
+        Commands::Serve { .. } => "serve",
+        Commands::Daemon { .. } => "daemon",
+        Commands::Unlock { .. } => "unlock",
+        Commands::ResolveBench { .. } => "resolve-bench",
+        Commands::Callers { .. } => "callers",
+        Commands::Callees { .. } => "callees",
+        Commands::Impact { .. } => "impact",
+        Commands::Affected { .. } => "affected",
+        Commands::Context { .. } => "context",
+        Commands::Analyze { .. } => "analyze",
+        Commands::History { .. } => "history",
+        Commands::Upgrade { .. } => "upgrade",
+        Commands::PromptHook => "prompt-hook",
+        Commands::Version => "version",
+        Commands::Telemetry { .. } | Commands::Install { .. } | Commands::Uninstall { .. } => {
+            return;
+        }
+    };
+    let telemetry = Telemetry::default();
+    telemetry.record_usage("cli_command", name, true);
+    if matches!(name, "init" | "uninit" | "index" | "sync" | "upgrade") {
+        telemetry.flush();
+    }
+}
+
+pub(crate) async fn main() {
     let argv: Vec<String> = std::env::args().collect();
 
     // Check if running with no arguments - run installer (TS argv.length === 2)
@@ -172,7 +227,7 @@ pub(crate) fn main() {
 
     // commander's `.version()` prints the bare version string; clap would
     // prefix the binary name — intercept for byte parity.
-    if argv.len() == 2 && (argv[1] == "--version" || argv[1] == "-V") {
+    if argv.len() == 2 && matches!(argv[1].as_str(), "--version" | "-V" | "-v" | "-version") {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return;
     }
@@ -193,16 +248,18 @@ pub(crate) fn main() {
         }
     };
 
+    record_command_telemetry(&cli.command);
+
     match cli.command {
-        Commands::Init { path, verbose } => cmd_init(path.as_deref(), verbose),
+        Commands::Init { path, verbose } => cmd_init(path.as_deref(), verbose).await,
         Commands::Uninit { path, force } => cmd_uninit(path.as_deref(), force),
         Commands::Index {
             path,
             force,
             quiet,
             verbose,
-        } => cmd_index(path.as_deref(), force, quiet, verbose),
-        Commands::Sync { path, quiet } => cmd_sync(path.as_deref(), quiet),
+        } => cmd_index(path.as_deref(), force, quiet, verbose).await,
+        Commands::Sync { path, quiet } => cmd_sync(path.as_deref(), quiet).await,
         Commands::Status { path, json } => cmd_status(path.as_deref(), json),
         Commands::Query {
             search,
@@ -211,6 +268,26 @@ pub(crate) fn main() {
             kind,
             json,
         } => cmd_query(&search, path.as_deref(), &limit, kind.as_deref(), json),
+        Commands::Explore {
+            query,
+            path,
+            max_files,
+        } => cmd_explore(&query, path.as_deref(), max_files.as_deref()),
+        Commands::Node {
+            name,
+            path,
+            file,
+            offset,
+            limit,
+            symbols_only,
+        } => cmd_node(
+            name.as_deref(),
+            path.as_deref(),
+            file.as_deref(),
+            offset.as_deref(),
+            limit.as_deref(),
+            symbols_only,
+        ),
         Commands::Files {
             path,
             filter,
@@ -233,8 +310,14 @@ pub(crate) fn main() {
             mcp,
             no_watch,
         } => cmd_serve(path.as_deref(), mcp, no_watch),
+        Commands::Daemon {
+            path,
+            stop,
+            all,
+            json,
+        } => cmd_daemon(path.as_deref(), stop, all, json),
         Commands::Unlock { path } => cmd_unlock(path.as_deref()),
-        Commands::ResolveBench { path, limit } => cmd_resolve_bench(path.as_deref(), limit),
+        Commands::ResolveBench { path, limit } => cmd_resolve_bench(path.as_deref(), limit).await,
         Commands::Callers {
             symbol,
             path,
@@ -301,6 +384,14 @@ pub(crate) fn main() {
         ),
         Commands::Analyze { command } => cmd_analyze(command),
         Commands::History { command } => cmd_history(command),
+        Commands::Telemetry { action } => cmd_telemetry(action.as_deref()),
+        Commands::Upgrade {
+            version,
+            check,
+            force,
+        } => cmd_upgrade(version.as_deref(), check, force),
+        Commands::PromptHook => cmd_prompt_hook(),
+        Commands::Version => println!("{}", env!("CARGO_PKG_VERSION")),
         Commands::Install {
             target,
             location,

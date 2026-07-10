@@ -1,14 +1,14 @@
 use crate::extraction_test::fixture::*;
 
-#[test]
-fn full_indexing_counts_file_level_tracked_yaml_files_as_indexed() {
+#[tokio::test(flavor = "current_thread")]
+async fn full_indexing_counts_file_level_tracked_yaml_files_as_indexed() {
     let temp_dir = tempfile::tempdir().unwrap();
     fs::write(temp_dir.path().join("app.yaml"), "name: test\n").unwrap();
     fs::write(temp_dir.path().join("routes.yml"), "route: value\n").unwrap();
 
     let (_conn, queries) = open_graph(temp_dir.path());
     let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
-    let result = orch.index_all(None, None, false).expect("index_all");
+    let result = orch.index_all(None, None, false).await.expect("index_all");
 
     assert!(result.success);
     assert_eq!(result.files_indexed, 2);
@@ -23,8 +23,8 @@ fn full_indexing_counts_file_level_tracked_yaml_files_as_indexed() {
     assert_eq!(tracked, vec!["app.yaml", "routes.yml"]);
 }
 
-#[test]
-fn full_indexing_counts_file_level_tracked_yaml_twig_files_as_indexed_in_index_files() {
+#[tokio::test(flavor = "current_thread")]
+async fn full_indexing_counts_file_level_tracked_yaml_twig_files_as_indexed_in_index_files() {
     let temp_dir = tempfile::tempdir().unwrap();
     fs::write(temp_dir.path().join("app.yaml"), "name: test\n").unwrap();
     fs::write(temp_dir.path().join("view.twig"), "{{ title }}\n").unwrap();
@@ -33,6 +33,7 @@ fn full_indexing_counts_file_level_tracked_yaml_twig_files_as_indexed_in_index_f
     let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
     let result = orch
         .index_files(&["app.yaml".to_string(), "view.twig".to_string()])
+        .await
         .expect("index_files");
 
     assert!(result.success);
@@ -49,8 +50,8 @@ fn full_indexing_counts_file_level_tracked_yaml_twig_files_as_indexed_in_index_f
     assert_eq!(tracked, vec!["app.yaml:yaml", "view.twig:twig"]);
 }
 
-#[test]
-fn full_indexing_counts_file_level_tracked_properties_files_as_indexed() {
+#[tokio::test(flavor = "current_thread")]
+async fn full_indexing_counts_file_level_tracked_properties_files_as_indexed() {
     let temp_dir = tempfile::tempdir().unwrap();
     fs::write(
         temp_dir.path().join("application.properties"),
@@ -61,15 +62,15 @@ fn full_indexing_counts_file_level_tracked_properties_files_as_indexed() {
 
     let (_conn, queries) = open_graph(temp_dir.path());
     let orch = ExtractionOrchestrator::new(temp_dir.path(), &queries);
-    let result = orch.index_all(None, None, false).expect("index_all");
+    let result = orch.index_all(None, None, false).await.expect("index_all");
 
     assert!(result.success);
     assert_eq!(result.files_indexed, 2);
     assert_eq!(result.files_skipped, 0);
 }
 
-#[test]
-fn full_indexing_counts_the_full_file_level_tracked_class_in_index_files() {
+#[tokio::test(flavor = "current_thread")]
+async fn full_indexing_counts_the_full_file_level_tracked_class_in_index_files() {
     let temp_dir = tempfile::tempdir().unwrap();
     fs::write(temp_dir.path().join("app.yaml"), "name: test\n").unwrap();
     fs::write(temp_dir.path().join("view.twig"), "{{ title }}\n").unwrap();
@@ -87,6 +88,7 @@ fn full_indexing_counts_the_full_file_level_tracked_class_in_index_files() {
             "view.twig".to_string(),
             "application.properties".to_string(),
         ])
+        .await
         .expect("index_files");
 
     assert!(result.success);

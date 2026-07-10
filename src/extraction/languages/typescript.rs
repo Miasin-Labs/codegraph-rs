@@ -4,6 +4,7 @@
 
 use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
 use crate::extraction::tree_sitter_types::{
+    ClassMemberKind,
     ImportInfo,
     ImportOutcome,
     LanguageExtractor,
@@ -12,6 +13,36 @@ use crate::extraction::tree_sitter_types::{
 use crate::types::Visibility;
 
 pub struct TypescriptExtractor;
+
+/// TypeScript/ArkTS class fields are callable methods only when their value is
+/// an arrow/function expression (or a HOF wrapping one). Plain fields are
+/// properties, even though the grammar uses the same node kind for both.
+pub(crate) fn classify_ts_class_member(node: SyntaxNode<'_>) -> ClassMemberKind {
+    if !matches!(node.kind(), "public_field_definition" | "field_definition") {
+        return ClassMemberKind::Method;
+    }
+    for i in 0..node.named_child_count() as u32 {
+        let Some(child) = node.named_child(i) else {
+            continue;
+        };
+        if matches!(child.kind(), "arrow_function" | "function_expression") {
+            return ClassMemberKind::Method;
+        }
+        if child.kind() == "call_expression" {
+            let Some(args) = get_child_by_field(child, "arguments") else {
+                continue;
+            };
+            for j in 0..args.named_child_count() as u32 {
+                if args.named_child(j).is_some_and(|arg| {
+                    matches!(arg.kind(), "arrow_function" | "function_expression")
+                }) {
+                    return ClassMemberKind::Method;
+                }
+            }
+        }
+    }
+    ClassMemberKind::Property
+}
 
 impl LanguageExtractor for TypescriptExtractor {
     fn function_types(&self) -> &[&str] {
@@ -62,6 +93,10 @@ impl LanguageExtractor for TypescriptExtractor {
     }
     fn return_field(&self) -> Option<&str> {
         Some("return_type")
+    }
+
+    fn classify_method_node(&self, node: SyntaxNode<'_>, _source: &str) -> ClassMemberKind {
+        classify_ts_class_member(node)
     }
 
     fn resolve_body<'t>(&self, node: SyntaxNode<'t>, body_field: &str) -> Option<SyntaxNode<'t>> {

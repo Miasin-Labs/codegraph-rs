@@ -131,8 +131,8 @@ fn parse_iso_ms(s: &str) -> i64 {
 // status --json — CI fields (#329) — port of __tests__/status-json.test.ts
 // =============================================================================
 
-#[test]
-fn get_last_indexed_at_is_null_before_indexing_and_a_recent_ms_timestamp_after() {
+#[tokio::test(flavor = "current_thread")]
+async fn get_last_indexed_at_is_null_before_indexing_and_a_recent_ms_timestamp_after() {
     let (_dir, root) = temp_project();
 
     let cg = CodeGraph::init_sync(&root).expect("init_sync");
@@ -140,7 +140,10 @@ fn get_last_indexed_at_is_null_before_indexing_and_a_recent_ms_timestamp_after()
 
     fs::write(root.join("a.ts"), "export const x = 1;\n").unwrap();
     let before = now_ms();
-    let result = cg.index_all(&IndexOptions::default()).expect("index_all");
+    let result = cg
+        .index_all(&IndexOptions::default())
+        .await
+        .expect("index_all");
     assert!(result.success, "indexAll should succeed");
     let after = now_ms();
 
@@ -151,8 +154,8 @@ fn get_last_indexed_at_is_null_before_indexing_and_a_recent_ms_timestamp_after()
     cg.close();
 }
 
-#[test]
-fn status_json_on_an_uninitialized_project_reports_version_index_path_last_indexed_null() {
+#[tokio::test(flavor = "current_thread")]
+async fn status_json_on_an_uninitialized_project_reports_version_index_path_last_indexed_null() {
     let (_dir, root) = temp_project_without_parent_index();
 
     let out = run_status_json(&root);
@@ -163,15 +166,19 @@ fn status_json_on_an_uninitialized_project_reports_version_index_path_last_index
     assert!(out["lastIndexed"].is_null());
 }
 
-#[test]
-fn status_json_on_an_indexed_project_reports_version_index_path_and_round_trippable_last_indexed() {
+#[tokio::test(flavor = "current_thread")]
+async fn status_json_on_an_indexed_project_reports_version_index_path_and_round_trippable_last_indexed()
+ {
     let (_dir, root) = temp_project();
     fs::write(root.join("a.ts"), "export const x = 1;\n").unwrap();
 
     let before = now_ms();
     {
         let cg = CodeGraph::init_sync(&root).expect("init_sync");
-        let result = cg.index_all(&IndexOptions::default()).expect("index_all");
+        let result = cg
+            .index_all(&IndexOptions::default())
+            .await
+            .expect("index_all");
         assert!(result.success);
         cg.close();
     }
@@ -225,8 +232,8 @@ fn write_smoke_fixture(root: &Path) {
     .unwrap();
 }
 
-#[test]
-fn end_to_end_smoke_init_query_affected_uninit() {
+#[tokio::test(flavor = "current_thread")]
+async fn end_to_end_smoke_init_query_affected_uninit() {
     let (_dir, root) = temp_project_without_parent_index();
     write_smoke_fixture(&root);
 
@@ -318,8 +325,8 @@ fn end_to_end_smoke_init_query_affected_uninit() {
 // unlock
 // =============================================================================
 
-#[test]
-fn unlock_removes_a_stale_lock_file_and_is_a_noop_without_one() {
+#[tokio::test(flavor = "current_thread")]
+async fn unlock_removes_a_stale_lock_file_and_is_a_noop_without_one() {
     let (_dir, root) = temp_project();
     {
         let cg = CodeGraph::init_sync(&root).expect("init_sync");
@@ -344,8 +351,8 @@ fn unlock_removes_a_stale_lock_file_and_is_a_noop_without_one() {
 // Help / version / parse-error exit codes
 // =============================================================================
 
-#[test]
-fn help_lists_every_subcommand() {
+#[tokio::test(flavor = "current_thread")]
+async fn help_lists_every_subcommand() {
     let (_dir, root) = temp_project();
     let out = run_cli(&root, &["--help"]);
     assert!(out.status.success(), "--help should exit 0");
@@ -374,8 +381,8 @@ fn help_lists_every_subcommand() {
     }
 }
 
-#[test]
-fn init_rejects_removed_index_flag() {
+#[tokio::test(flavor = "current_thread")]
+async fn init_rejects_removed_index_flag() {
     let (_dir, root) = temp_project();
     let out = run_cli(&root, &["init", "-i"]);
 
@@ -387,8 +394,8 @@ fn init_rejects_removed_index_flag() {
     );
 }
 
-#[test]
-fn version_prints_the_bare_package_version() {
+#[tokio::test(flavor = "current_thread")]
+async fn version_prints_the_bare_package_version() {
     let (_dir, root) = temp_project();
     let out = run_cli(&root, &["--version"]);
     assert!(out.status.success());
@@ -396,15 +403,15 @@ fn version_prints_the_bare_package_version() {
     assert_eq!(stdout_str(&out), format!("{PKG_VERSION}\n"));
 }
 
-#[test]
-fn unknown_command_exits_1_like_commander() {
+#[tokio::test(flavor = "current_thread")]
+async fn unknown_command_exits_1_like_commander() {
     let (_dir, root) = temp_project();
     let out = run_cli(&root, &["definitely-not-a-command"]);
     assert_eq!(out.status.code(), Some(1));
 }
 
-#[test]
-fn status_human_output_reports_not_initialized() {
+#[tokio::test(flavor = "current_thread")]
+async fn status_human_output_reports_not_initialized() {
     let (_dir, root) = temp_project_without_parent_index();
     let out = run_cli(&root, &["status"]);
     assert!(out.status.success());

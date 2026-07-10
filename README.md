@@ -1,4 +1,4 @@
-# CodeGraph — Rust port
+# CodeGraph - native Rust implementation
 
 A complete Rust port of the TypeScript CodeGraph implementation ([colbymchenry/codegraph](https://github.com/colbymchenry/codegraph)):
 a local-first code-intelligence library + CLI + MCP server. It parses any supported
@@ -7,9 +7,9 @@ the knowledge graph to AI agents (Claude Code, Cursor, Codex CLI, opencode, …)
 MCP. Per-project data lives in `.codegraph/`; extraction is deterministic — derived
 from the AST, never LLM-summarized.
 
-The port is **behavior-faithful by construction**: one `.ts` file maps to one `.rs`
-file, same algorithms, same constants, same node-ID hashing (sha256 of identical
-strings), same JSON wire shapes (camelCase, same key order where it matters).
+The implementation tracks the TypeScript reference closely: the same algorithms,
+constants, node-ID hashing, and JSON wire shapes, with Rust-specific analysis,
+decompiler, GPU, Salesforce, and MCP capabilities layered on top.
 See [`PORTING.md`](PORTING.md) for the conventions and [`notes/`](notes/) for
 per-module porting notes and documented deviations.
 
@@ -28,11 +28,16 @@ the npm package's `dist/bin/codegraph.js`:
 ```bash
 codegraph init [path]        # initialize .codegraph/ and build the index
 codegraph index|sync|status  # maintain the index
-codegraph query|files|context|affected   # query the graph
+codegraph query|explore|node|files       # inspect symbols, source, and structure
+codegraph callers|callees|impact|affected|context
 codegraph analyze <cmd>      # analysis engine: complexity, communities, dominators,
                              # slice, cycles, impact (cascade), taint — see below
 codegraph install            # wire the MCP server into agents (Claude Code, Cursor, …)
 codegraph serve --mcp        # run as an MCP server over stdio
+codegraph daemon             # list/stop shared MCP daemons
+codegraph telemetry [status|on|off]
+codegraph upgrade [version] [--check] [--force]
+codegraph version            # also: -v, -V, -version, --version
 codegraph uninit [path]      # remove .codegraph/
 ```
 
@@ -40,9 +45,36 @@ All `CODEGRAPH_*` environment variables keep their exact TS names and semantics
 (`CODEGRAPH_NO_DAEMON`, `CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS`,
 `CODEGRAPH_WATCH_DEBOUNCE_MS`, `CODEGRAPH_NO_WATCH`, …).
 
+Project-specific discovery rules live in an optional `codegraph.json` at the
+project root. Patterns use gitignore syntax; extension mappings override the
+built-in detector:
+
+```json
+{
+  "extensions": { ".inc": "php", ".component": "typescript" },
+  "includeIgnored": ["vendor/embedded-repo/**"],
+  "include": ["generated/api/**"],
+  "exclude": ["fixtures/**", "dist/**"]
+}
+```
+
 There is also a small auxiliary binary, `codegraph-mcp-server` (stdio MCP server
 only), kept for the integration suite; `codegraph serve --mcp` is the canonical
 entry point.
+
+## Supported languages
+
+The indexer recognizes TypeScript, JavaScript, TSX, JSX, ArkTS, Python, Go,
+Rust, Java, C, C++, C#, Razor/Blazor, PHP, Ruby, Swift, Kotlin, Dart, Svelte,
+Vue, Astro, Liquid, Pascal/Delphi, Scala, Lua, Luau, Objective-C, R, Solidity,
+Nix, Salesforce Apex, Bash, HTML, Visualforce, Aura, YAML, Twig, XML,
+properties files, CFML, CFScript, embedded CFQuery, COBOL/copybooks, VB.NET,
+Erlang/OTP resources, and Terraform/OpenTofu.
+
+Metal (`.metal`) and CUDA (`.cu`, `.cuh`) use the C++ extractor after
+line-preserving syntax preprocessing. Razor, Astro, Svelte, Vue, Liquid, and
+CFML use dedicated wrappers for their embedded languages. Terraform and
+OpenTofu share the HCL grammar and one `terraform` graph language ID.
 
 ## Module map (mirrors the TS repo’s `src/`)
 
@@ -51,8 +83,8 @@ entry point.
 | `src/lib.rs` + `src/codegraph.rs` | `src/index.ts` | Public API — the `CodeGraph` struct: `init`/`open`/`close`, `index_all`, `sync`, `search_nodes`, `get_callers`/`get_callees`, `get_impact_radius`, `build_context`, `watch`/`unwatch` |
 | `src/types.rs`, `src/error.rs`, `src/utils.rs`, `src/directory.rs` | `src/types.ts`, `src/utils.ts` | `Node`/`Edge`/`NodeKind`/`EdgeKind`/`Language`, errors, hashing/path helpers, `.codegraph/` dir management |
 | `src/db/` | `src/db/` | `DatabaseConnection`, `QueryBuilder` (prepared statements), `schema.sql` (embedded via `include_str!`), migrations — rusqlite (bundled SQLite + FTS5) |
-| `src/extraction/` | `src/extraction/` | `ExtractionOrchestrator`, tree-sitter wrapper/helpers, 19 per-language extractors under `languages/`, standalone extractors (`svelte`, `vue`, `liquid`, `dfm` for Delphi, `mybatis`, `ida_c`), generated-file detection |
-| `src/resolution/` | `src/resolution/` | `ReferenceResolver` orchestrating `import_resolver` (+ `path_aliases`, `workspace_packages`, `go_module`), `name_matcher`, `callback_synthesizer` (dynamic-dispatch edge synthesis), `swift_objc_bridge`, and 20 framework resolvers under `frameworks/` |
+| `src/extraction/` | `src/extraction/` | `ExtractionOrchestrator`, tree-sitter wrapper/helpers, per-language and embedded-language extractors, generated-file detection |
+| `src/resolution/` | `src/resolution/` | `ReferenceResolver` orchestrating imports, receiver/type matching, dynamic-dispatch synthesis, cross-language bridges, and framework resolvers |
 | `src/graph/` | `src/graph/` | `GraphTraverser` (BFS/DFS, impact radius, path finding) and `GraphQueryManager` |
 | `src/context/` | `src/context/` | `ContextBuilder` + formatter for markdown/JSON output |
 | `src/search/` | `src/search/` | FTS5 query parser and ranking helpers |
@@ -103,7 +135,7 @@ codegraph analyze export [-s <symbol> -d N]   # Graphviz DOT export (whole graph
 codegraph analyze slice <symbol> [--direction fwd|bwd] [--value-level]
                                               # program slice: call-graph hops, or
                                               # value-level over dataflow IR on
-                                              # schema-v5 indexes (byte offsets)
+                                              # schema-v5+ indexes (current: v8)
 codegraph analyze taint <source> <sink> [--value-level]
                                               # source → sink paths, each hop
                                               # annotated; --suggest ranks candidate
@@ -227,14 +259,14 @@ than over-claiming):
   `traits`, `diff`, `co-change`, `coverage`, and the call-graph–granularity
   `slice`/`taint` are pure graph algorithms over the bridged index, so they
   work for every language the indexer supports.
-- **12 languages** — `complexity` (and `diff`'s complexity deltas) re-parses
-  on-disk sources with the compiled tree-sitter grammars and runs the
-  engine's metrics; rules exist for Rust, TypeScript/JavaScript, Python, Go,
-  Java, C, C++, C#, PHP, Kotlin, Swift, and Ruby. Functions in other
-  languages are counted in the report's `skipped` breakdown.
+- **Rule-backed source analysis** — `complexity` (and `diff`'s complexity
+  deltas) re-parses on-disk sources with the compiled tree-sitter grammars.
+  Rules cover Rust, TypeScript/JavaScript, ArkTS, Python, Go, Java, C, C++,
+  C#, PHP, Kotlin, Swift, Ruby, R, Solidity, Nix, CFML/CFScript/CFQuery, and
+  Erlang. Other languages are counted in the report's `skipped` breakdown.
 - **Value level needs IR** — `slice`/`taint --value-level` lower the
   engine's per-function dataflow IR by re-parsing on-disk sources anchored
-  at the indexed byte offsets (schema-v5 indexes; re-index pre-v5 projects
+  at the indexed byte offsets (schema-v5+ indexes; re-index pre-v5 projects
   to enable). IR lowering covers Rust, TypeScript/JavaScript, Python, and
   Go; `cfg`/`dataflow` use the same anchor pattern with their own rule
   tables. Without `--value-level` (or on pre-v5 indexes), `slice` and
@@ -247,11 +279,12 @@ than over-claiming):
 Collected from [`notes/*.md`](notes/); each module's notes file documents its own
 deviations exhaustively. The big ones:
 
-- **No async runtime.** TS `async` exists for Node's event loop; rusqlite and
-  tree-sitter are synchronous. Everything is plain sync Rust. Parallelism comes
-  from `rayon` (parsing), and `std::thread` + `crossbeam-channel` (file watcher,
-  daemon, MCP transport — one thread per transport instead of event-loop
-  interleaving; behavior-identical).
+- **Tokio orchestration with synchronous kernels.** CLI and MCP binaries own one
+  multi-thread runtime. File parsing and reference resolution use bounded
+  `spawn_blocking` task sets and restore input order after completion-order
+  processing; SQLite persistence remains serialized on its owning thread.
+  Watcher and MCP worker threads borrow the same runtime handle, while blocking
+  transports retain dedicated `std::thread`s.
 - **Single SQLite backend.** The TS dual backend (better-sqlite3 native with a
   node-sqlite3-wasm fallback) collapses to rusqlite with bundled SQLite + FTS5.
   `codegraph status` still reports the backend string as `"native"` for output
@@ -261,9 +294,9 @@ deviations exhaustively. The big ones:
   `dist/*.wasm` copy step disappear entirely. No runtime grammar loading.
 - **Node-isms dropped.** `MemoryMonitor`, `processInBatches`, event-loop
   `debounce`/`throttle` helpers, and the parse worker-thread pool are gone or
-  replaced by their natural Rust equivalents (the watcher implements its own
-  debounce; rayon replaces the worker pool). The Node 25 hard-exit check is
-  irrelevant and not ported.
+  replaced by their Rust equivalents (the watcher implements its own debounce;
+  Tokio's blocking pool runs synchronous parser jobs). The Node 25 hard-exit
+  check is irrelevant and not ported.
 - **String offsets are UTF-8 bytes, not UTF-16 code units.** Affects only
   column-ish internals on non-ASCII lines; line numbers (what the graph stores)
   are identical.
@@ -278,53 +311,33 @@ deviations exhaustively. The big ones:
   sometimes serializes `null` (e.g. `"visibility": null` in `query --json`). Key
   names, casing, and ordering otherwise match the TS wire format.
 
-## Test suite
+## Verification
 
-`cargo test --workspace --all-targets`: **2,154 tests, 0 failures**:
+The repository's release gates are:
 
-- 427 unit tests in `src/` (`#[cfg(test)]`, alongside the code they cover)
-- 944 integration tests in `tests/` — 24 suites ported from `../__tests__/*.test.ts`
-  plus the Rust-only analysis suites (extraction 289+3, frameworks 64/67/33,
-  installer targets 80, db 50, codegraph API 42, MCP tools/server/protocol/daemon
-  41/32/15/20, resolution 30+29+6, graph 31, sync 26, context 23, security 15,
-  analyze CLI 12, analysis bridge 9, CLI 9, foundation 8, git hooks 7, grammars 3)
-- 783 tests in the `codegraph-analysis` crate (773 unit + the golden
-  `fingerprint_stability` and `node_id_stability` suites)
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace
+cargo test --workspace
+```
 
-Same testing philosophy as the TS suite: temp dirs (`tempfile::tempdir()`), real
-files, real SQLite — no mocking. Platform-specific behavior is gated with
-`#[cfg(unix)]` / `#[cfg(windows)]`. `cargo clippy --all-targets` and
-`cargo fmt --check` are clean.
+Tests use temporary directories, real files, and real SQLite databases rather
+than mocks. The June 6 test totals and row-level results remain recorded in the
+historical parity report; they are not a claim about the current worktree.
 
 ## Parity with the TS implementation
 
-Full report: [`notes/parity.md`](notes/parity.md) (2026-06-06; both arms indexing
-an identical 353-file fixture — the full TS+Rust repo tree).
+The original row-level comparison remains in [`notes/parity.md`](notes/parity.md)
+(2026-06-06). It is intentionally preserved as a reproducible historical
+snapshot rather than rewritten after every upstream commit.
 
-**Headline: nodes, node IDs, and files are byte-identical (9,105 nodes, sha256 ID
-set exactly equal); edges differ by 58 rows (0.19%).** Both arms are individually
-100% deterministic. Rust indexed the fixture in 1.7s vs 3.2s for TS.
-
-Every divergent edge row was classified:
-
-1. **Ambiguous-name tie-breaks (net 0):** equally-scored same-named candidates,
-   different winner (JS Map insertion order vs Rust sort order). Neither is more
-   correct.
-2. **Batch-boundary duplicate-reference loss (TS −35, Rust −57):** a pre-existing
-   *upstream TS bug*, faithfully ported — the post-batch resolved-reference delete
-   isn't line-aware, so duplicate refs straddling a 5000-row page boundary are
-   dropped. It hits different victims per arm because insertion order differs. The
-   only aggregate over 2% (`instantiates` +3.1%) is this bug on the TS side — the
-   **Rust count is the correct one**.
-3. **Name-matcher receiver-type-inference gap (~33 `calls`, 0.2%):** TS resolves
-   `var.member` refs by scanning source for the receiver's type; the Rust port
-   leaves them unresolved. The TS edges in this class are wrong-target junk, so
-   Rust's conservatism yields a more correct graph — but it is a documented
-   divergence from the reference implementation.
-4. **Cosmetic:** unresolved-ref *text* differs for some Rust field calls
-   (receiver-qualified vs bare member); no edge impact.
-
-Functional spot checks (`query --json`, `affected --json`, `callers --json`,
-`--help` surfaces) are identical after normalizing timestamps and TS's serialized
-`null`s. Verdict: **within tolerance** — where the arms disagree beyond noise, the
-Rust output is the more correct of the two.
+The July 9 parity wave closes the later upstream gaps that snapshot did not
+cover: schema v8 reconciles the incompatible Rust/TypeScript schema-7 lineages
+and enforces unique logical edges; indexing records extraction version, state,
+and file accounting; resolver snapshots and synthesized-edge writes are bounded;
+receiver inference handles scoped locals, typed parameters, and chained calls;
+the expanded framework/dynamic-dispatch matrix is registered; `codegraph.json`,
+`explore`, `node`, `daemon`, telemetry, upgrade, explicit version aliases, and the
+Claude prompt hook are available. The Rust-only analysis/decompiler/GPU surfaces
+remain additive rather than parity requirements.

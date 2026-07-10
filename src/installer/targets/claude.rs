@@ -29,6 +29,7 @@ use super::shared::{
     json_deep_equal,
     read_json_file,
     remove_marked_section,
+    upsert_instructions_entry,
     write_json_file,
 };
 use super::types::{
@@ -149,17 +150,24 @@ impl AgentTarget for ClaudeCodeTarget {
             files.push(hook_cleanup);
         }
 
-        // 3. CLAUDE.md instructions — no longer written. The codegraph
-        // usage guidance now ships solely in the MCP server's `initialize`
-        // response (see `mcp/server_instructions.rs`), which Claude Code
-        // surfaces in the system prompt automatically. Writing it into
-        // CLAUDE.md as well meant the agent read the same playbook twice
-        // every turn (issue #529). Strip any block a previous install left
-        // behind so an upgrade self-heals — same idiom as the hook cleanup.
-        let instr_cleanup = remove_instructions_entry(loc);
-        if instr_cleanup.action == FileAction::Removed {
-            files.push(instr_cleanup);
+        // 2c. Front-load structural prompts through Claude's
+        // UserPromptSubmit hook. `None` deliberately leaves an existing
+        // choice alone for callers that do not manage this option.
+        match opts.prompt_hook {
+            Some(true) => files.push(write_prompt_hook_entry(loc)),
+            Some(false) => {
+                let removed = remove_prompt_hook_entry(loc);
+                if removed.action == FileAction::Removed {
+                    files.push(removed);
+                }
+            }
+            None => {}
         }
+
+        // 3. Short CLAUDE.md guidance for Task-tool subagents and non-MCP
+        // harnesses, which never receive the MCP initialize instructions.
+        // Marker replacement self-heals the old long block and is idempotent.
+        files.push(upsert_instructions_entry(&instructions_path(loc)));
 
         WriteResult {
             files,
@@ -268,7 +276,13 @@ impl AgentTarget for ClaudeCodeTarget {
             files.push(hook_cleanup);
         }
 
-        // 3. Instructions — strip the legacy CodeGraph block if present.
+        // 2c. Remove the UserPromptSubmit hook this installer may have added.
+        let prompt_hook_cleanup = remove_prompt_hook_entry(loc);
+        if prompt_hook_cleanup.action == FileAction::Removed {
+            files.push(prompt_hook_cleanup);
+        }
+
+        // 3. Instructions — strip only the marker-fenced CodeGraph block.
         files.push(remove_instructions_entry(loc));
 
         WriteResult {
@@ -401,20 +415,26 @@ fn is_legacy_codegraph_hook_command(command: Option<&Value>) -> bool {
     }
 }
 
-/// Remove stale codegraph auto-sync hooks from Claude `settings.json`.
+/// The front-load hook command installed under `UserPromptSubmit`.
+/// Substring matching also recognizes the old npm wrapper form.
+const PROMPT_HOOK_COMMAND: &str = "codegraph prompt-hook";
+
+fn is_prompt_hook_command(command: Option<&Value>) -> bool {
+    command
+        .and_then(Value::as_str)
+        .map(|cmd| cmd.contains(PROMPT_HOOK_COMMAND))
+        .unwrap_or(false)
+}
+
+/// Remove selected hook commands from Claude `settings.json`.
 ///
 /// Surgical at the individual-command level: only entries matching
-/// `is_legacy_codegraph_hook_command` are dropped, so a sibling hook sharing
-/// a matcher group (or the Stop event) with ours survives. We prune a
-/// matcher group only once its `hooks` array is empty, an event only
-/// once it has no groups left, and `hooks` itself only once every event
-/// is gone — and none of that runs unless we actually removed a
-/// codegraph command, so a settings.json with no legacy hooks is left
-/// byte-for-byte untouched and reported `unchanged`.
-///
-/// Exported so it can be unit-tested directly and reused by both
-/// `install` (an upgrade self-heals) and `uninstall`.
-pub fn cleanup_legacy_hooks(loc: Location) -> FileWrite {
+/// `matches_command` are dropped, so sibling hooks in the same matcher group
+/// survive. Empty groups/events are pruned only after a match is removed.
+fn remove_hook_commands_matching<F>(loc: Location, matches_command: F) -> FileWrite
+where
+    F: Fn(Option<&Value>) -> bool,
+{
     let file = settings_json_path(loc);
     if !file.exists() {
         return FileWrite {
@@ -446,7 +466,7 @@ pub fn cleanup_legacy_hooks(loc: Location) -> FileWrite {
                     _ => continue,
                 };
                 let before = group_hooks.len();
-                group_hooks.retain(|h| !is_legacy_codegraph_hook_command(h.get("command")));
+                group_hooks.retain(|h| !matches_command(h.get("command")));
                 if group_hooks.len() != before {
                     removed_any = true;
                 }
@@ -487,6 +507,18 @@ pub fn cleanup_legacy_hooks(loc: Location) -> FileWrite {
         path: file,
         action: FileAction::Removed,
     }
+}
+
+/// Remove stale auto-sync hooks (`mark-dirty` / `sync-if-dirty`) written by
+/// pre-0.8 installers. Used by both install self-healing and uninstall.
+pub fn cleanup_legacy_hooks(loc: Location) -> FileWrite {
+    remove_hook_commands_matching(loc, is_legacy_codegraph_hook_command)
+}
+
+/// Remove the front-load `UserPromptSubmit` hook written by this installer.
+/// Used by uninstall and by an explicit installer opt-out.
+pub fn remove_prompt_hook_entry(loc: Location) -> FileWrite {
+    remove_hook_commands_matching(loc, is_prompt_hook_command)
 }
 
 pub fn write_permissions_entry(loc: Location) -> FileWrite {
@@ -531,13 +563,62 @@ pub fn write_permissions_entry(loc: Location) -> FileWrite {
     }
 }
 
-/// Strip the marker-delimited CodeGraph block from CLAUDE.md if a prior
-/// install wrote one. Codegraph no longer maintains an instructions file
-/// (issue #529) — the MCP server's `initialize` instructions are the
-/// single source of truth — so both install (self-heal on upgrade) and
-/// uninstall call this. `remove_marked_section` returns `NotFound`/`Kept`
-/// when there's nothing to strip; the install caller drops those from
-/// the report so a fresh install stays quiet.
+/// Install the front-load `UserPromptSubmit` hook in Claude settings.
+/// Existing settings and sibling hooks are preserved, and an existing
+/// codegraph prompt hook makes this a byte-for-byte no-op.
+pub fn write_prompt_hook_entry(loc: Location) -> FileWrite {
+    let file = settings_json_path(loc);
+    let created = !file.exists();
+    let mut settings = read_json_file(&file);
+
+    if !matches!(settings.get("hooks"), Some(Value::Object(_))) {
+        settings.insert("hooks".to_string(), Value::Object(Map::new()));
+    }
+    if let Some(Value::Object(hooks)) = settings.get_mut("hooks") {
+        if !matches!(hooks.get("UserPromptSubmit"), Some(Value::Array(_))) {
+            hooks.insert("UserPromptSubmit".to_string(), Value::Array(Vec::new()));
+        }
+
+        if let Some(Value::Array(groups)) = hooks.get("UserPromptSubmit") {
+            let already_present = groups.iter().any(|group| {
+                group
+                    .get("hooks")
+                    .and_then(Value::as_array)
+                    .map(|entries| {
+                        entries
+                            .iter()
+                            .any(|entry| is_prompt_hook_command(entry.get("command")))
+                    })
+                    .unwrap_or(false)
+            });
+            if already_present {
+                return FileWrite {
+                    path: file,
+                    action: FileAction::Unchanged,
+                };
+            }
+        }
+
+        if let Some(Value::Array(groups)) = hooks.get_mut("UserPromptSubmit") {
+            groups.push(serde_json::json!({
+                "hooks": [{ "type": "command", "command": PROMPT_HOOK_COMMAND }],
+            }));
+        }
+    }
+
+    write_json_file(&file, &settings);
+    FileWrite {
+        path: file,
+        action: if created {
+            FileAction::Created
+        } else {
+            FileAction::Updated
+        },
+    }
+}
+
+/// Strip only the marker-delimited CodeGraph block from CLAUDE.md, preserving
+/// all user-owned content around it. Used by uninstall.
 pub fn remove_instructions_entry(loc: Location) -> FileWrite {
     let file = instructions_path(loc);
     let action = remove_marked_section(&file, CODEGRAPH_SECTION_START, CODEGRAPH_SECTION_END);

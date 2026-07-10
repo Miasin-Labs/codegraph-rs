@@ -65,6 +65,7 @@ pub(super) fn node_from_row(row: &Row<'_>) -> rusqlite::Result<Node> {
         size: row.get("size")?,
         docstring: row.get("docstring")?,
         signature: row.get("signature")?,
+        return_type: row.get("return_type")?,
         visibility: parse_visibility(visibility),
         is_exported: Some(row.get::<_, i64>("is_exported")? == 1),
         is_async: Some(row.get::<_, i64>("is_async")? == 1),

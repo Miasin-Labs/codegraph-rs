@@ -49,8 +49,15 @@ use notify::event::{AccessKind, AccessMode, EventKind, MetadataKind, ModifyKind}
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use serde::Serialize;
 
+use crate::directory::is_codegraph_data_dir;
 use crate::error::{log_debug, log_warn};
-use crate::extraction::{build_default_ignore, is_source_file};
+use crate::extraction::{build_default_ignore, is_source_file_with_overrides};
+use crate::project_config::{
+    PROJECT_CONFIG_FILENAME,
+    ProjectConfig,
+    load_project_config,
+    matcher_matches,
+};
 use crate::sync::watch_policy::{WatchProbe, watch_disabled_reason};
 use crate::utils::normalize_path;
 
@@ -266,10 +273,8 @@ fn now_ms() -> i64 {
 
 /// Our own dirs are always ignored, regardless of .gitignore.
 fn is_always_ignored(rel: &str) -> bool {
-    rel == ".codegraph"
-        || rel.starts_with(".codegraph/")
-        || rel == ".git"
-        || rel.starts_with(".git/")
+    let first = rel.split('/').next().unwrap_or(rel);
+    is_codegraph_data_dir(first) || first == ".git"
 }
 
 /// npm `ignore`-pkg `.ignores()` parity (same as the orchestrator's private
@@ -320,15 +325,30 @@ fn handle_change(shared: &WatcherShared, rel: &str) {
     if is_always_ignored(rel) {
         return;
     }
+    let config = load_project_config(&shared.project_root);
+    if matcher_matches(
+        config.exclude_matcher(&shared.project_root).as_ref(),
+        rel,
+        false,
+    ) {
+        return;
+    }
+    let explicitly_included = matcher_matches(
+        config.include_matcher(&shared.project_root).as_ref(),
+        rel,
+        false,
+    );
     {
         let st = shared.state.lock().unwrap();
         if let Some(ig) = st.ignore.as_ref() {
-            if gitignore_ignores(ig, rel, false) {
+            if gitignore_ignores(ig, rel, false) && !explicitly_included {
                 return;
             }
         }
     }
-    if !is_source_file(rel) {
+    if rel != PROJECT_CONFIG_FILENAME
+        && !is_source_file_with_overrides(rel, config.extension_overrides())
+    {
         return;
     }
 
@@ -362,11 +382,43 @@ fn should_ignore_dir(shared: &WatcherShared, dir_path: &Path) -> bool {
     if is_always_ignored(&rel) {
         return true;
     }
+    let config = load_project_config(&shared.project_root);
+    if matcher_matches(
+        config.exclude_matcher(&shared.project_root).as_ref(),
+        &rel,
+        true,
+    ) {
+        return true;
+    }
+    if matcher_matches(
+        config.include_matcher(&shared.project_root).as_ref(),
+        &rel,
+        true,
+    ) || include_may_match_below(&config, &rel)
+    {
+        return false;
+    }
     let st = shared.state.lock().unwrap();
     match st.ignore.as_ref() {
         Some(ig) => gitignore_ignores(ig, &rel, true),
         None => false,
     }
+}
+
+fn include_may_match_below(config: &ProjectConfig, rel: &str) -> bool {
+    let rel = rel.trim_matches('/');
+    config.include.iter().any(|pattern| {
+        let pattern = pattern.trim_start_matches('/');
+        let prefix = pattern
+            .split(['*', '?', '[', ']', '{', '}', '!'])
+            .next()
+            .unwrap_or("")
+            .trim_matches('/');
+        !prefix.is_empty()
+            && (prefix == rel
+                || prefix.starts_with(&format!("{rel}/"))
+                || rel.starts_with(&format!("{prefix}/")))
+    })
 }
 
 // =============================================================================

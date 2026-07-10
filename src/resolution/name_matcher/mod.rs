@@ -7,11 +7,14 @@
 //! tiebreaks in child strategies are ported EXACTLY from the TS source — do
 //! not tweak without re-validating retrieval.
 
+mod arkui;
+mod chains;
 mod exact;
 mod file;
 mod fuzzy;
 mod method;
 mod qualified;
+mod razor;
 mod receiver;
 mod support;
 
@@ -73,6 +76,19 @@ pub fn match_reference_full_hints(
 ) -> Option<ResolvedRef> {
     // Try strategies in order of confidence
 
+    // ArkUI attributes never fall through to ordinary name matching: common
+    // framework names such as `.width` would otherwise manufacture edges to
+    // arbitrary same-named symbols.
+    if reference.language == crate::types::Language::Arkts
+        && reference.reference_name.starts_with('.')
+    {
+        return arkui::match_attribute_helper(reference, context);
+    }
+
+    if let Some(result) = razor::match_via_using(reference, context) {
+        return Some(result);
+    }
+
     // 0. File path match (e.g., "snippets/drawer-menu.liquid" → file node)
     if let Some(result) = file_path(reference, context) {
         return Some(result);
@@ -80,6 +96,12 @@ pub fn match_reference_full_hints(
 
     // 1. Qualified name match (highest confidence)
     if let Some(result) = qualified_name(reference, context) {
+        return Some(result);
+    }
+
+    // 1b. Receiver is itself a call (`Factory.create().run`). Resolve the
+    // inner call's recorded return type, then validate the outer method on it.
+    if let Some(result) = chains::match_call_chain(reference, context) {
         return Some(result);
     }
 

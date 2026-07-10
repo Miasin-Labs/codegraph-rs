@@ -1,7 +1,7 @@
 use crate::fixture::*;
 
-#[test]
-fn type_alias_object_shape_members_resolve_method_calls_359() {
+#[tokio::test(flavor = "current_thread")]
+async fn type_alias_object_shape_members_resolve_method_calls_359() {
     // `recorder.stop()` (recorder: RecorderHandle) must attach to
     // `RecorderHandle::stop`, not the look-alike class method in a sibling
     // directory.
@@ -107,6 +107,7 @@ fn type_alias_object_shape_members_resolve_method_calls_359() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     assert_eq!(handle_stop.kind, NodeKind::Method);

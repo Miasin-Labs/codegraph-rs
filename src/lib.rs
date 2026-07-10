@@ -20,11 +20,15 @@ pub mod graph;
 pub mod history;
 pub mod installer;
 pub mod mcp;
+pub mod project_config;
+pub mod prompt_hook;
 pub mod resolution;
 pub mod search;
 pub mod sync;
+pub mod telemetry;
 pub mod types;
 pub mod ui;
+pub mod upgrade;
 pub mod utils;
 
 mod codegraph;
@@ -46,4 +50,10 @@ pub use codegraph::*;
 /// workspace.
 pub use codegraph_analysis::ensure_sufficient_stack;
 pub use error::{CodeGraphError, Logger, Result, SilentLogger};
+pub use project_config::{
+    PROJECT_CONFIG_FILENAME,
+    ProjectConfig,
+    clear_project_config_cache,
+    load_project_config,
+};
 pub use types::*;

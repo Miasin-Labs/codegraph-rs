@@ -171,3 +171,134 @@ fn claude_uninstall_strips_stale_hooks_written_in_npx_form_local() {
     // Both events emptied → the whole `hooks` object is removed.
     assert!(after.get("hooks").is_none());
 }
+
+// ---- UserPromptSubmit front-load hook ----
+
+#[test]
+fn claude_install_adds_prompt_hook_and_preserves_sibling_settings() {
+    let env = TestEnv::new();
+    let claude = get_target("claude").unwrap();
+    let file = seed_settings(
+        &env,
+        Location::Local,
+        &json!({
+            "theme": "dark",
+            "hooks": {
+                "UserPromptSubmit": [
+                    { "hooks": [{ "type": "command", "command": "my prompt hook" }] },
+                ],
+                "Stop": [
+                    { "hooks": [{ "type": "command", "command": "my stop hook" }] },
+                ],
+            },
+        }),
+    );
+
+    claude.install(Location::Local, &prompt_hook(true));
+
+    let after = read_json(&file);
+    assert_eq!(after["theme"], "dark");
+    assert_eq!(
+        after["hooks"]["UserPromptSubmit"].as_array().unwrap().len(),
+        2
+    );
+    let commands: Vec<&str> = after["hooks"]["UserPromptSubmit"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|group| group["hooks"].as_array().into_iter().flatten())
+        .filter_map(|hook| hook["command"].as_str())
+        .collect();
+    assert!(commands.contains(&"my prompt hook"));
+    assert!(commands.contains(&"codegraph prompt-hook"));
+    assert_eq!(
+        after["hooks"]["Stop"][0]["hooks"][0]["command"],
+        "my stop hook"
+    );
+}
+
+#[test]
+fn claude_prompt_hook_install_is_byte_for_byte_idempotent() {
+    let env = TestEnv::new();
+    let claude = get_target("claude").unwrap();
+    let settings = env.cwd().join(".claude").join("settings.json");
+
+    claude.install(Location::Local, &prompt_hook(true));
+    let first = read(&settings);
+    let second = claude.install(Location::Local, &prompt_hook(true));
+
+    assert_eq!(read(&settings), first);
+    assert_eq!(
+        second
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("settings.json"))
+            .map(|file| file.action),
+        Some(FileAction::Unchanged)
+    );
+}
+
+#[test]
+fn claude_prompt_hook_opt_out_removes_only_codegraph_command() {
+    let env = TestEnv::new();
+    let claude = get_target("claude").unwrap();
+    let file = seed_settings(
+        &env,
+        Location::Global,
+        &json!({
+            "theme": "dark",
+            "hooks": {
+                "UserPromptSubmit": [
+                    {
+                        "hooks": [
+                            { "type": "command", "command": "npx @colbymchenry/codegraph prompt-hook" },
+                            { "type": "command", "command": "my prompt hook" },
+                        ],
+                    },
+                ],
+            },
+        }),
+    );
+
+    claude.install(Location::Global, &prompt_hook(false));
+
+    let after = read_json(&file);
+    assert_eq!(after["theme"], "dark");
+    let commands: Vec<&str> = after["hooks"]["UserPromptSubmit"][0]["hooks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|hook| hook["command"].as_str())
+        .collect();
+    assert_eq!(commands, vec!["my prompt hook"]);
+}
+
+#[test]
+fn claude_uninstall_removes_prompt_hook_but_keeps_user_hooks() {
+    let env = TestEnv::new();
+    let claude = get_target("claude").unwrap();
+    let file = seed_settings(
+        &env,
+        Location::Local,
+        &json!({
+            "hooks": {
+                "UserPromptSubmit": [
+                    { "hooks": [{ "type": "command", "command": "codegraph prompt-hook" }] },
+                    { "hooks": [{ "type": "command", "command": "my prompt hook" }] },
+                ],
+            },
+        }),
+    );
+
+    claude.uninstall(Location::Local);
+
+    let after = read_json(&file);
+    assert_eq!(
+        after["hooks"]["UserPromptSubmit"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        after["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"],
+        "my prompt hook"
+    );
+}

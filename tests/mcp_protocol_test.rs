@@ -20,17 +20,18 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use codegraph::{CodeGraph, InitOptions};
 use serde_json::{Value, json};
 use tempfile::TempDir;
+use tokio::sync::{RwLock, RwLockReadGuard};
 
-static ENV_LOCK: RwLock<()> = RwLock::new(());
+static ENV_LOCK: RwLock<()> = RwLock::const_new(());
 
-fn env_read() -> RwLockReadGuard<'static, ()> {
-    ENV_LOCK.read().unwrap_or_else(|e| e.into_inner())
+async fn env_read() -> RwLockReadGuard<'static, ()> {
+    ENV_LOCK.read().await
 }
 
 // =============================================================================
@@ -191,8 +192,10 @@ fn initialize_msg(
     json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": Value::Object(params) })
 }
 
-fn init_project(dir: &Path) {
-    let cg = CodeGraph::init(dir, &InitOptions::default()).expect("CodeGraph.init");
+async fn init_project(dir: &Path) {
+    let cg = CodeGraph::init(dir, &InitOptions::default())
+        .await
+        .expect("CodeGraph.init");
     cg.close();
 }
 
@@ -210,9 +213,9 @@ fn expected_annotations() -> Value {
 // MUST-FIX 2 — notifications/initialized (spec spelling) is a real no-op arm
 // =============================================================================
 
-#[test]
-fn tolerates_notifications_initialized_in_both_spellings() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn tolerates_notifications_initialized_in_both_spellings() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
     server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
@@ -233,9 +236,9 @@ fn tolerates_notifications_initialized_in_both_spellings() {
     );
 }
 
-#[test]
-fn unknown_request_method_gets_method_not_found() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn unknown_request_method_gets_method_not_found() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
     server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
@@ -251,9 +254,9 @@ fn unknown_request_method_gets_method_not_found() {
 // SHOULD-ADD 1+2 — capabilities + tool annotations + listChanged notification
 // =============================================================================
 
-#[test]
-fn initialize_advertises_list_changed_and_logging() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn initialize_advertises_list_changed_and_logging() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
     server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
@@ -264,9 +267,9 @@ fn initialize_advertises_list_changed_and_logging() {
     );
 }
 
-#[test]
-fn every_tool_carries_read_only_annotations() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn every_tool_carries_read_only_annotations() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
     server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
@@ -286,9 +289,9 @@ fn every_tool_carries_read_only_annotations() {
     }
 }
 
-#[test]
-fn primary_lookup_tools_advertise_output_schemas() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn primary_lookup_tools_advertise_output_schemas() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
     server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
@@ -312,20 +315,20 @@ fn primary_lookup_tools_advertise_output_schemas() {
     }
 }
 
-#[test]
-fn static_tools_fn_carries_annotations_too() {
+#[tokio::test(flavor = "current_thread")]
+async fn static_tools_fn_carries_annotations_too() {
     // The proxy's static tools/list answer serializes get_static_tools() —
     // annotations must ride along for free.
-    let _guard = env_read();
+    let _guard = env_read().await;
     let tools = serde_json::to_value(codegraph::mcp::tools::get_static_tools()).unwrap();
     for tool in tools.as_array().unwrap() {
         assert_eq!(tool["annotations"], expected_annotations());
     }
 }
 
-#[test]
-fn emits_tools_list_changed_when_a_late_project_open_changes_the_list() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn emits_tools_list_changed_when_a_late_project_open_changes_the_list() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     // NO project yet: tools/list serves the full static surface (13 tools).
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
@@ -339,7 +342,7 @@ fn emits_tools_list_changed_when_a_late_project_open_changes_the_list() {
     // The project appears AFTER the server started (and after the client
     // listed). The next tool call resolves it (retry_initialize_sync), the
     // tiny-repo gating shrinks the list, and the session must announce it.
-    init_project(tmp.path());
+    init_project(tmp.path()).await;
     server.send(&json!({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": { "name": "codegraph_status", "arguments": {} }
@@ -369,9 +372,9 @@ fn emits_tools_list_changed_when_a_late_project_open_changes_the_list() {
 // SHOULD-ADD 3 — _meta.progressToken → notifications/progress
 // =============================================================================
 
-#[test]
-fn emits_progress_for_a_token_bearing_first_call_and_never_unsolicited() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn emits_progress_for_a_token_bearing_first_call_and_never_unsolicited() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     std::fs::create_dir_all(tmp.path().join("src")).unwrap();
     std::fs::write(
@@ -379,7 +382,7 @@ fn emits_progress_for_a_token_bearing_first_call_and_never_unsolicited() {
         "export function alpha() { return 1; }\n",
     )
     .unwrap();
-    init_project(tmp.path());
+    init_project(tmp.path()).await;
 
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
     server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
@@ -433,9 +436,9 @@ fn emits_progress_for_a_token_bearing_first_call_and_never_unsolicited() {
 // SHOULD-ADD 4 — notifications/cancelled suppresses the in-flight response
 // =============================================================================
 
-#[test]
-fn cancelled_tools_call_gets_no_response() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_tools_call_gets_no_response() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let src = tmp.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -448,7 +451,7 @@ fn cancelled_tools_call_gets_no_response() {
         }
         std::fs::write(src.join(format!("mod_{i}.ts")), content).unwrap();
     }
-    init_project(tmp.path());
+    init_project(tmp.path()).await;
 
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
     server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
@@ -487,9 +490,9 @@ fn cancelled_tools_call_gets_no_response() {
     );
 }
 
-#[test]
-fn late_or_unknown_cancellations_are_tolerated() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn late_or_unknown_cancellations_are_tolerated() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
     server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
@@ -510,9 +513,9 @@ fn late_or_unknown_cancellations_are_tolerated() {
 // SHOULD-ADD 5 — logging capability
 // =============================================================================
 
-#[test]
-fn logging_set_level_acks_with_empty_result_and_rejects_garbage() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn logging_set_level_acks_with_empty_result_and_rejects_garbage() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
     server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
@@ -539,11 +542,11 @@ fn logging_set_level_acks_with_empty_result_and_rejects_garbage() {
     );
 }
 
-#[test]
-fn mirrors_watcher_diagnostics_as_notifications_message() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn mirrors_watcher_diagnostics_as_notifications_message() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
-    init_project(tmp.path());
+    init_project(tmp.path()).await;
 
     // Watch stays ENABLED: "File watcher active" (info) is the deterministic
     // engine diagnostic we expect to see mirrored.
@@ -568,11 +571,11 @@ fn mirrors_watcher_diagnostics_as_notifications_message() {
     assert_eq!(log["params"]["logger"], "codegraph");
 }
 
-#[test]
-fn set_level_filters_below_threshold_messages() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn set_level_filters_below_threshold_messages() {
+    let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
-    init_project(tmp.path());
+    init_project(tmp.path()).await;
 
     let mut server = spawn_server(tmp.path(), &[], true);
     server.send(&initialize_msg(None, "2025-06-18", json!({})));
@@ -620,9 +623,9 @@ fn set_level_filters_below_threshold_messages() {
 // SHOULD-ADD 6 — notifications/roots/list_changed re-arms the roots latch
 // =============================================================================
 
-#[test]
-fn roots_list_changed_re_arms_the_one_shot_roots_query() {
-    let _guard = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn roots_list_changed_re_arms_the_one_shot_roots_query() {
+    let _guard = env_read().await;
     let cwd_dir = TempDir::new().unwrap(); // no project here
     let project_dir = TempDir::new().unwrap();
 
@@ -653,7 +656,7 @@ fn roots_list_changed_re_arms_the_one_shot_roots_query() {
     );
 
     // The workspace gains a project; the host announces its roots changed.
-    init_project(project_dir.path());
+    init_project(project_dir.path()).await;
     server.send(&json!({ "jsonrpc": "2.0", "method": "notifications/roots/list_changed" }));
 
     // Next call must RE-ASK for roots (a second roots/list with a new id)…
@@ -713,11 +716,11 @@ mod degraded_proxy {
         })
     }
 
-    #[test]
-    fn degraded_proxy_answers_every_request_and_recovers_from_parse_errors() {
-        let _guard = env_read();
+    #[tokio::test(flavor = "current_thread")]
+    async fn degraded_proxy_answers_every_request_and_recovers_from_parse_errors() {
+        let _guard = env_read().await;
         let tmp = TempDir::new().unwrap();
-        init_project(tmp.path());
+        init_project(tmp.path()).await;
         let _fake_daemon = plant_mismatched_daemon(tmp.path());
 
         // no_daemon = false → the local-handshake proxy path; the planted
@@ -791,13 +794,13 @@ mod degraded_proxy {
 // CallContext (cancel/progress plumbing) — in-process coverage
 // =============================================================================
 
-#[test]
-fn pre_cancelled_context_short_circuits_tool_execution() {
+#[tokio::test(flavor = "current_thread")]
+async fn pre_cancelled_context_short_circuits_tool_execution() {
     use std::sync::atomic::AtomicBool;
 
     use codegraph::mcp::tools::ToolHandler;
 
-    let _guard = env_read();
+    let _guard = env_read().await;
     let handler = ToolHandler::new(None);
     let ctx = handler.call_context();
     let flag = Arc::new(AtomicBool::new(true));

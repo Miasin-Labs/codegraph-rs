@@ -1,8 +1,8 @@
 mod foundation_facade {
     use super::*;
 
-    #[test]
-    fn open_sync_errors_on_uninitialized_project() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn open_sync_errors_on_uninitialized_project() {
         let dir = TempDir::new().unwrap();
         let err = CodeGraph::open_sync(dir.path()).unwrap_err().to_string();
         assert!(
@@ -11,8 +11,8 @@ mod foundation_facade {
         );
     }
 
-    #[test]
-    fn init_sync_errors_when_already_initialized() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_sync_errors_when_already_initialized() {
         let dir = TempDir::new().unwrap();
         let cg = CodeGraph::init_sync(dir.path()).unwrap();
         cg.close();
@@ -23,10 +23,10 @@ mod foundation_facade {
         );
     }
 
-    #[test]
-    fn open_sync_returns_a_working_instance_with_project_root() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn open_sync_returns_a_working_instance_with_project_root() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_indexed(dir.path());
+        let cg = setup_indexed(dir.path()).await;
         cg.close();
 
         assert!(CodeGraph::is_initialized(dir.path()));
@@ -36,10 +36,10 @@ mod foundation_facade {
         assert!(search_count(&reopened, "hello") > 0);
     }
 
-    #[test]
-    fn get_stats_optimize_and_clear() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn get_stats_optimize_and_clear() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_indexed(dir.path());
+        let cg = setup_indexed(dir.path()).await;
 
         let stats = cg.get_stats().unwrap();
         assert!(stats.node_count > 0);
@@ -56,37 +56,88 @@ mod foundation_facade {
         assert_eq!(cleared.file_count, 0);
     }
 
-    #[test]
-    fn backend_and_journal_mode_surface_through_the_facade() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn backend_and_journal_mode_surface_through_the_facade() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_indexed(dir.path());
+        let cg = setup_indexed(dir.path()).await;
         assert_eq!(cg.get_backend().as_str(), "native");
         assert_eq!(cg.get_journal_mode().unwrap(), "wal");
         assert!(cg.get_last_indexed_at().unwrap().is_some());
     }
 
-    #[test]
-    #[allow(deprecated)]
-    fn destroy_alias_closes_but_keeps_codegraph_dir() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn full_index_records_completeness_and_extraction_versions() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_indexed(dir.path());
+        let cg = CodeGraph::init_sync(dir.path()).unwrap();
+        assert_eq!(cg.get_index_state().unwrap(), None);
+        assert_eq!(cg.get_index_build_info().unwrap().version, None);
+        assert!(!cg.is_index_stale().unwrap());
+
+        write(
+            &dir.path().join("src/index.ts"),
+            "export function hello() { return 'world'; }",
+        );
+        let result = cg.index_all(&IndexOptions::default()).await.unwrap();
+        assert!(result.success);
+        assert_eq!(
+            cg.get_index_state().unwrap(),
+            Some(codegraph::IndexState::Complete)
+        );
+        let build = cg.get_index_build_info().unwrap();
+        assert_eq!(build.version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+        assert_eq!(
+            build.extraction_version,
+            Some(codegraph::EXTRACTION_VERSION)
+        );
+        assert!(!cg.is_index_stale().unwrap());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn aborted_full_index_leaves_failed_state() {
+        use std::sync::atomic::AtomicBool;
+
+        let dir = TempDir::new().unwrap();
+        write(
+            &dir.path().join("src/index.ts"),
+            "export function hello() { return 'world'; }",
+        );
+        let cg = CodeGraph::init_sync(dir.path()).unwrap();
+        let aborted = AtomicBool::new(true);
+        let result = cg
+            .index_all(&IndexOptions {
+                signal: Some(&aborted),
+                ..Default::default()
+            }).await
+            .unwrap();
+        assert!(!result.success);
+        assert_eq!(
+            cg.get_index_state().unwrap(),
+            Some(codegraph::IndexState::Failed)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(deprecated)]
+    async fn destroy_alias_closes_but_keeps_codegraph_dir() {
+        let dir = TempDir::new().unwrap();
+        let cg = setup_indexed(dir.path()).await;
         cg.destroy();
         assert!(dir.path().join(".codegraph").is_dir());
     }
 
-    #[test]
-    fn uninitialize_removes_the_codegraph_dir() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn uninitialize_removes_the_codegraph_dir() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_indexed(dir.path());
+        let cg = setup_indexed(dir.path()).await;
         cg.uninitialize().unwrap();
         assert!(!dir.path().join(".codegraph").exists());
         assert!(!CodeGraph::is_initialized(dir.path()));
     }
 
-    #[test]
-    fn graph_query_methods_handle_unknown_nodes() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn graph_query_methods_handle_unknown_nodes() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_indexed(dir.path());
+        let cg = setup_indexed(dir.path()).await;
 
         // getContext on a missing node → Err "Node not found: <id>"
         let err = cg.get_context("nonexistent").unwrap_err().to_string();
@@ -109,8 +160,8 @@ mod foundation_facade {
         assert!(cg.find_usages("nonexistent").unwrap().is_empty());
     }
 
-    #[test]
-    fn is_indexing_is_false_outside_and_true_inside_a_progress_callback() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn is_indexing_is_false_outside_and_true_inside_a_progress_callback() {
         let dir = TempDir::new().unwrap();
         write(
             &dir.path().join("src/index.ts"),
@@ -129,7 +180,7 @@ mod foundation_facade {
         cg.index_all(&IndexOptions {
             on_progress: Some(&on_progress),
             ..Default::default()
-        })
+        }).await
         .unwrap();
 
         assert!(

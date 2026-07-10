@@ -3,7 +3,7 @@
 // (__tests__/mcp-files-path-normalization.test.ts)
 // =============================================================================
 
-fn files_fixture(root: &Path) -> CodeGraph {
+async fn files_fixture(root: &Path) -> CodeGraph {
     write(&root.join("src/index.ts"), "export const x = 1;\n");
     write(
         &root.join("src/components/Button.ts"),
@@ -11,7 +11,7 @@ fn files_fixture(root: &Path) -> CodeGraph {
     );
     write(&root.join("tests/a.test.ts"), "export const t = 1;\n");
     let cg = CodeGraph::init_sync(root).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     cg
 }
 
@@ -50,11 +50,11 @@ fn listed_with_pattern(handler: &ToolHandler, pattern: &str) -> String {
     result.text().to_string()
 }
 
-#[test]
-fn treats_rootish_path_filters_as_project_root() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn treats_rootish_path_filters_as_project_root() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = files_fixture(dir.path());
+    let cg = files_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     // Root-ish filters: every shape an agent might guess for "whole project"
@@ -73,11 +73,11 @@ fn treats_rootish_path_filters_as_project_root() {
     }
 }
 
-#[test]
-fn matches_a_real_subdirectory_prefix() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn matches_a_real_subdirectory_prefix() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = files_fixture(dir.path());
+    let cg = files_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let output = listed(&handler, Some("src"));
     assert!(output.contains("src/index.ts"));
@@ -85,55 +85,55 @@ fn matches_a_real_subdirectory_prefix() {
     assert!(!output.contains("tests/a.test.ts"));
 }
 
-#[test]
-fn tolerates_a_leading_slash_on_a_real_subdirectory() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn tolerates_a_leading_slash_on_a_real_subdirectory() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = files_fixture(dir.path());
+    let cg = files_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let output = listed(&handler, Some("/src"));
     assert!(output.contains("src/index.ts"));
     assert!(!output.contains("tests/a.test.ts"));
 }
 
-#[test]
-fn tolerates_a_leading_dot_slash_on_a_real_subdirectory() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn tolerates_a_leading_dot_slash_on_a_real_subdirectory() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = files_fixture(dir.path());
+    let cg = files_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let output = listed(&handler, Some("./src"));
     assert!(output.contains("src/index.ts"));
     assert!(!output.contains("tests/a.test.ts"));
 }
 
-#[test]
-fn tolerates_a_trailing_slash_on_a_real_subdirectory() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn tolerates_a_trailing_slash_on_a_real_subdirectory() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = files_fixture(dir.path());
+    let cg = files_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let output = listed(&handler, Some("src/"));
     assert!(output.contains("src/index.ts"));
     assert!(!output.contains("tests/a.test.ts"));
 }
 
-#[test]
-fn normalizes_windows_backslashes() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn normalizes_windows_backslashes() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = files_fixture(dir.path());
+    let cg = files_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let output = listed(&handler, Some("src\\components"));
     assert!(output.contains("src/components/Button.ts"));
     assert!(!output.contains("src/index.ts"));
 }
 
-#[test]
-fn does_not_match_sibling_directories_that_share_a_prefix() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn does_not_match_sibling_directories_that_share_a_prefix() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = Rc::new(files_fixture(dir.path()));
+    let cg = Rc::new(files_fixture(dir.path()).await);
     let handler = ToolHandler::new(Some(Rc::clone(&cg)));
 
     // Old code matched on raw `startsWith`, so a filter "src" would also
@@ -142,23 +142,23 @@ fn does_not_match_sibling_directories_that_share_a_prefix() {
         &dir.path().join("src-utils/helper.ts"),
         "export const h = 1;\n",
     );
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
 
     let output = listed(&handler, Some("src"));
     assert!(output.contains("src/index.ts"));
     assert!(!output.contains("src-utils/helper.ts"));
 }
 
-#[test]
-fn supports_common_brace_extension_globs() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn supports_common_brace_extension_globs() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     write(&dir.path().join("src/index.ts"), "export const x = 1;\n");
     write(&dir.path().join("src/view.tsx"), "export const View = () => 1;\n");
     write(&dir.path().join("src/lib.rs"), "pub fn run() {}\n");
     write(&dir.path().join("README.md"), "# docs\n");
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let output = listed_with_pattern(&handler, "**/*.{ts,tsx,rs}");
@@ -168,11 +168,11 @@ fn supports_common_brace_extension_globs() {
     assert!(!output.contains("README.md"), "{output}");
 }
 
-#[test]
-fn files_returns_structured_payload() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn files_returns_structured_payload() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = files_fixture(dir.path());
+    let cg = files_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let result = handler.execute(

@@ -1,17 +1,17 @@
 mod git_based_sync {
     use super::*;
 
-    #[test]
-    fn detects_modified_files_via_git() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn detects_modified_files_via_git() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_git_indexed(dir.path());
+        let cg = setup_git_indexed(dir.path()).await;
 
         write(
             &dir.path().join("src/index.ts"),
             "export function hello() { return 'modified'; }",
         );
 
-        let result = cg.sync(&IndexOptions::default()).unwrap();
+        let result = cg.sync(&IndexOptions::default()).await.unwrap();
         assert_eq!(result.files_modified, 1);
         assert!(
             result
@@ -22,17 +22,17 @@ mod git_based_sync {
         );
     }
 
-    #[test]
-    fn detects_new_untracked_files_via_git() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn detects_new_untracked_files_via_git() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_git_indexed(dir.path());
+        let cg = setup_git_indexed(dir.path()).await;
 
         write(
             &dir.path().join("src/new.ts"),
             "export function newFunc() { return 42; }",
         );
 
-        let result = cg.sync(&IndexOptions::default()).unwrap();
+        let result = cg.sync(&IndexOptions::default()).await.unwrap();
         assert_eq!(result.files_added, 1);
         assert!(
             result
@@ -46,10 +46,10 @@ mod git_based_sync {
         assert!(search_count(&cg, "newFunc") > 0);
     }
 
-    #[test]
-    fn stops_reporting_untracked_files_once_indexed_issue_206() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn stops_reporting_untracked_files_once_indexed_issue_206() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_git_indexed(dir.path());
+        let cg = setup_git_indexed(dir.path()).await;
 
         // Untracked files stay `??` in git status even after codegraph indexes
         // them. Change detection must compare them against the DB by hash, not
@@ -60,7 +60,7 @@ mod git_based_sync {
         );
 
         // First sync indexes the untracked file.
-        let first = cg.sync(&IndexOptions::default()).unwrap();
+        let first = cg.sync(&IndexOptions::default()).await.unwrap();
         assert_eq!(first.files_added, 1);
 
         // The file is still untracked in git, but now lives in the DB.
@@ -72,19 +72,19 @@ mod git_based_sync {
         assert!(!changes.modified.contains(&"src/new.ts".to_string()));
 
         // ...and a second sync must be a no-op for it.
-        let second = cg.sync(&IndexOptions::default()).unwrap();
+        let second = cg.sync(&IndexOptions::default()).await.unwrap();
         assert_eq!(second.files_added, 0);
         assert_eq!(second.files_modified, 0);
     }
 
-    #[test]
-    fn reindexes_an_untracked_file_when_its_contents_change() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn reindexes_an_untracked_file_when_its_contents_change() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_git_indexed(dir.path());
+        let cg = setup_git_indexed(dir.path()).await;
 
         let file_path = dir.path().join("src/new.ts");
         write(&file_path, "export function newFunc() { return 42; }");
-        cg.sync(&IndexOptions::default()).unwrap();
+        cg.sync(&IndexOptions::default()).await.unwrap();
 
         // Modify the still-untracked file.
         write(&file_path, "export function renamedFunc() { return 7; }");
@@ -92,30 +92,30 @@ mod git_based_sync {
         let changes = cg.get_changed_files().unwrap();
         assert!(changes.modified.contains(&"src/new.ts".to_string()));
 
-        let result = cg.sync(&IndexOptions::default()).unwrap();
+        let result = cg.sync(&IndexOptions::default()).await.unwrap();
         assert_eq!(result.files_modified, 1);
         assert!(search_count(&cg, "renamedFunc") > 0);
         assert_eq!(search_count(&cg, "newFunc"), 0);
     }
 
-    #[test]
-    fn detects_deleted_files_via_git() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn detects_deleted_files_via_git() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_git_indexed(dir.path());
+        let cg = setup_git_indexed(dir.path()).await;
 
         fs::remove_file(dir.path().join("src/index.ts")).unwrap();
 
-        let result = cg.sync(&IndexOptions::default()).unwrap();
+        let result = cg.sync(&IndexOptions::default()).await.unwrap();
         assert_eq!(result.files_removed, 1);
 
         // Verify function is gone
         assert_eq!(search_count(&cg, "hello"), 0);
     }
 
-    #[test]
-    fn indexes_a_tracked_file_that_grows_large_instead_of_dropping_it() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn indexes_a_tracked_file_that_grows_large_instead_of_dropping_it() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_git_indexed(dir.path());
+        let cg = setup_git_indexed(dir.path()).await;
 
         assert!(search_count(&cg, "hello") > 0);
 
@@ -125,29 +125,29 @@ mod git_based_sync {
         oversized.push_str(&"x".repeat(2 * 1024 * 1024));
         write(&dir.path().join("src/index.ts"), &oversized);
 
-        let result = cg.sync(&IndexOptions::default()).unwrap();
+        let result = cg.sync(&IndexOptions::default()).await.unwrap();
         assert_eq!(result.files_modified, 1);
         assert_eq!(search_count(&cg, "hello"), 0);
         assert!(search_count(&cg, "replacement") > 0);
     }
 
-    #[test]
-    fn resolves_existing_unresolved_refs_when_a_later_sync_adds_the_target_symbol() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolves_existing_unresolved_refs_when_a_later_sync_adds_the_target_symbol() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_git_indexed(dir.path());
+        let cg = setup_git_indexed(dir.path()).await;
 
         write(
             &dir.path().join("src/index.ts"),
             "export function caller() { return missingTarget(); }",
         );
-        cg.sync(&IndexOptions::default()).unwrap();
+        cg.sync(&IndexOptions::default()).await.unwrap();
 
         write(
             &dir.path().join("src/target.ts"),
             "export function missingTarget() { return 42; }",
         );
 
-        let result = cg.sync(&IndexOptions::default()).unwrap();
+        let result = cg.sync(&IndexOptions::default()).await.unwrap();
         assert_eq!(result.files_added, 1);
 
         let target = cg
@@ -161,25 +161,25 @@ mod git_based_sync {
         assert!(callers.iter().any(|r| r.node.name == "caller"));
     }
 
-    #[test]
-    fn skips_files_with_unsupported_extensions() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn skips_files_with_unsupported_extensions() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_git_indexed(dir.path());
+        let cg = setup_git_indexed(dir.path()).await;
 
         // A .txt file has no supported grammar, so sync must not index it.
         write(&dir.path().join("src/notes.txt"), "just some notes");
 
-        let result = cg.sync(&IndexOptions::default()).unwrap();
+        let result = cg.sync(&IndexOptions::default()).await.unwrap();
         assert_eq!(result.files_added, 0);
         assert_eq!(result.files_modified, 0);
     }
 
-    #[test]
-    fn reports_no_changes_on_clean_working_tree() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn reports_no_changes_on_clean_working_tree() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_git_indexed(dir.path());
+        let cg = setup_git_indexed(dir.path()).await;
 
-        let result = cg.sync(&IndexOptions::default()).unwrap();
+        let result = cg.sync(&IndexOptions::default()).await.unwrap();
         assert_eq!(result.files_added, 0);
         assert_eq!(result.files_modified, 0);
         assert_eq!(result.files_removed, 0);
@@ -187,10 +187,10 @@ mod git_based_sync {
         assert!(result.changed_file_paths.is_none());
     }
 
-    #[test]
-    fn reports_files_changed_on_disk_even_when_git_status_is_clean() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn reports_files_changed_on_disk_even_when_git_status_is_clean() {
         let dir = TempDir::new().unwrap();
-        let cg = setup_git_indexed(dir.path());
+        let cg = setup_git_indexed(dir.path()).await;
 
         write(
             &dir.path().join("src/index.ts"),
@@ -198,7 +198,7 @@ mod git_based_sync {
         );
         git(dir.path(), &["add", "-A"]);
         git(dir.path(), &["commit", "-q", "-m", "second"]);
-        cg.sync(&IndexOptions::default()).unwrap();
+        cg.sync(&IndexOptions::default()).await.unwrap();
 
         // Move the working tree to a different committed version. `git status`
         // is clean afterward, but CodeGraph's DB still reflects the first commit.

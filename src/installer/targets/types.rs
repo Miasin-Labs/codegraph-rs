@@ -158,6 +158,11 @@ pub struct InstallOptions {
     /// (Claude `settings.json`, others where applicable). When the
     /// target has no permissions concept this option is a no-op.
     pub auto_allow: bool,
+    /// Front-load prompt hook (Claude `UserPromptSubmit`) that injects
+    /// CodeGraph context for structural prompts. `Some(true)` installs it,
+    /// `Some(false)` removes a prior install, and `None` leaves it untouched.
+    /// Targets without a prompt-hook concept ignore this option.
+    pub prompt_hook: Option<bool>,
 }
 
 /// Contract every agent target implements (TS `AgentTarget` interface).

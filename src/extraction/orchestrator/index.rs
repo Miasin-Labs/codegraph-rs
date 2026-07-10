@@ -1,5 +1,7 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::atomic::AtomicBool;
+
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use super::parse::{
     BatchItem,
@@ -18,10 +20,10 @@ use super::progress::{
     is_aborted,
     now_ms,
 };
-use super::scan::scan_directory;
-use crate::error::Result;
+use super::scan::scan_directory_with_config;
+use crate::error::{CodeGraphError, Result};
 use crate::extraction::grammars::{
-    detect_language,
+    detect_language_with_overrides,
     init_grammars,
     is_file_level_only_language,
     load_grammars_for_languages,
@@ -34,7 +36,7 @@ impl<'a> ExtractionOrchestrator<'a> {
     /// `signal`: cooperative abort flag (TS `AbortSignal`) — set to `true` to
     /// abort. `verbose` is kept for signature parity; the TS verbose logs were
     /// all worker-lifecycle messages that have no native equivalent.
-    pub fn index_all(
+    pub async fn index_all(
         &self,
         on_progress: Option<&dyn Fn(&IndexProgress)>,
         signal: Option<&AtomicBool>,
@@ -70,10 +72,11 @@ impl<'a> ExtractionOrchestrator<'a> {
                         current_file: Some(file.to_string()),
                     });
                 };
-                scan_directory(&self.root_dir, Some(&mut scan_cb))
+                scan_directory_with_config(&self.root_dir, Some(&mut scan_cb), &self.project_config)
             }
-            None => scan_directory(&self.root_dir, None),
+            None => scan_directory_with_config(&self.root_dir, None, &self.project_config),
         };
+        let files_discovered = files.len();
 
         // Detect frameworks once per index_all run using the scanned file list.
         // Names are passed to each parse call so framework-specific extractors
@@ -89,6 +92,7 @@ impl<'a> ExtractionOrchestrator<'a> {
                 files_indexed: 0,
                 files_skipped: 0,
                 files_errored: 0,
+                files_discovered: Some(files_discovered),
                 nodes_created: 0,
                 edges_created: 0,
                 errors: vec![aborted_error()],
@@ -96,8 +100,8 @@ impl<'a> ExtractionOrchestrator<'a> {
             });
         }
 
-        // Phase 2: Parse files (work-stealing over read batches; storage stays
-        // on this thread — SQLite access is single-threaded).
+        // Phase 2: Parse files on Tokio's blocking pool; storage stays on this
+        // thread because SQLite access is single-threaded.
         let total = files.len();
         let mut processed = 0usize;
 
@@ -115,7 +119,8 @@ impl<'a> ExtractionOrchestrator<'a> {
         // kept for call parity with the TS pipeline).
         let mut needed_languages: Vec<Language> = Vec::new();
         for f in &files {
-            let lang = detect_language(f, None);
+            let lang =
+                detect_language_with_overrides(f, None, self.project_config.extension_overrides());
             if !needed_languages.contains(&lang) {
                 needed_languages.push(lang);
             }
@@ -126,37 +131,48 @@ impl<'a> ExtractionOrchestrator<'a> {
         }
         load_grammars_for_languages(&needed_languages);
 
-        // Parse/store pipeline: a producer thread parses batches ahead while
+        // Parse/store pipeline: a producer task parses batches ahead while
         // this thread stores the previous batch's results into SQLite — parsing
         // never idles behind the single-threaded store.
         // The bounded channel caps how far the producer runs ahead; dropping
         // the receiver (error/abort return paths) stops the producer after
         // its in-flight batch.
-        let parse_aborted = Arc::new(AtomicBool::new(false));
-        let (batch_tx, batch_rx) = mpsc::sync_channel::<Vec<BatchItem>>(PARSE_PIPELINE_DEPTH);
-        {
+        let parse_cancel = CancellationToken::new();
+        let (batch_tx, mut batch_rx) = mpsc::channel::<Vec<BatchItem>>(PARSE_PIPELINE_DEPTH);
+        let producer = {
             let files = files.clone();
             let root_dir = self.root_dir.clone();
             let framework_names = framework_names.clone();
-            let parse_aborted = Arc::clone(&parse_aborted);
-            std::thread::spawn(move || {
+            let project_config = self.project_config.clone();
+            let parse_cancel = parse_cancel.clone();
+            tokio::spawn(async move {
                 for batch in files.chunks(FILE_IO_BATCH_SIZE) {
-                    if parse_aborted.load(Ordering::Relaxed) {
-                        return;
+                    if parse_cancel.is_cancelled() {
+                        return Ok(());
                     }
                     // Read + parse the batch in parallel (with path validation
                     // before any I/O); order is preserved.
-                    let items = parse_batch(&root_dir, batch, &framework_names);
-                    if batch_tx.send(items).is_err() {
-                        return; // consumer dropped the receiver
+                    let items = parse_batch(
+                        &root_dir,
+                        batch,
+                        &framework_names,
+                        &project_config,
+                        &parse_cancel,
+                    )
+                    .await?;
+                    if batch_tx.send(items).await.is_err() {
+                        return Ok(()); // consumer dropped the receiver
                     }
                 }
-            });
-        }
+                Ok::<(), CodeGraphError>(())
+            })
+        };
 
-        for batch_items in batch_rx {
+        while let Some(batch_items) = batch_rx.recv().await {
             if is_aborted(signal) {
-                parse_aborted.store(true, Ordering::Relaxed);
+                parse_cancel.cancel();
+                drop(batch_rx);
+                let _ = producer.await;
                 let mut all_errors = vec![aborted_error()];
                 all_errors.extend(errors);
                 return Ok(IndexResult {
@@ -164,6 +180,7 @@ impl<'a> ExtractionOrchestrator<'a> {
                     files_indexed,
                     files_skipped,
                     files_errored,
+                    files_discovered: Some(files_discovered),
                     nodes_created: total_nodes,
                     edges_created: total_edges,
                     errors: all_errors,
@@ -174,7 +191,9 @@ impl<'a> ExtractionOrchestrator<'a> {
             // Store results on this thread (SQLite is not thread-safe).
             for item in batch_items {
                 if is_aborted(signal) {
-                    parse_aborted.store(true, Ordering::Relaxed);
+                    parse_cancel.cancel();
+                    drop(batch_rx);
+                    let _ = producer.await;
                     let mut all_errors = vec![aborted_error()];
                     all_errors.extend(errors);
                     return Ok(IndexResult {
@@ -182,6 +201,7 @@ impl<'a> ExtractionOrchestrator<'a> {
                         files_indexed,
                         files_skipped,
                         files_errored,
+                        files_discovered: Some(files_discovered),
                         nodes_created: total_nodes,
                         edges_created: total_edges,
                         errors: all_errors,
@@ -223,14 +243,23 @@ impl<'a> ExtractionOrchestrator<'a> {
                         // Store in database (errors stored on the file record are
                         // pre-filePath-fill, matching the TS serialization order).
                         if !result.nodes.is_empty() || result.errors.is_empty() {
-                            let language = detect_language(&item.file_path, Some(&content));
-                            self.store_extraction_result(
+                            let language = detect_language_with_overrides(
+                                &item.file_path,
+                                Some(&content),
+                                self.project_config.extension_overrides(),
+                            );
+                            if let Err(error) = self.store_extraction_result(
                                 &item.file_path,
                                 &content,
                                 language,
                                 &stats,
                                 &result,
-                            )?;
+                            ) {
+                                parse_cancel.cancel();
+                                drop(batch_rx);
+                                let _ = producer.await;
+                                return Err(error);
+                            }
                         }
 
                         if !result.errors.is_empty() {
@@ -252,7 +281,11 @@ impl<'a> ExtractionOrchestrator<'a> {
                             // Files with no symbols but no errors (yaml, twig, properties) are
                             // tracked at the file level — count them as indexed so the CLI
                             // doesn't misleadingly report "No files found to index".
-                            let lang = detect_language(&item.file_path, Some(&content));
+                            let lang = detect_language_with_overrides(
+                                &item.file_path,
+                                Some(&content),
+                                self.project_config.extension_overrides(),
+                            );
                             if is_file_level_only_language(lang) {
                                 files_indexed += 1;
                             } else {
@@ -261,6 +294,15 @@ impl<'a> ExtractionOrchestrator<'a> {
                         }
                     }
                 }
+            }
+        }
+
+        match producer.await {
+            Ok(result) => result?,
+            Err(error) => {
+                return Err(CodeGraphError::other(format!(
+                    "Tokio parse producer failed: {error}"
+                )));
             }
         }
 
@@ -282,6 +324,7 @@ impl<'a> ExtractionOrchestrator<'a> {
             files_indexed,
             files_skipped,
             files_errored,
+            files_discovered: Some(files_discovered),
             nodes_created: total_nodes,
             edges_created: total_edges,
             errors,

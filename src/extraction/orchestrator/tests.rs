@@ -80,7 +80,7 @@ fn framework_registry_matches_ts_order_and_names() {
         .iter()
         .map(|r| r.name().to_string())
         .collect();
-    assert_eq!(names.len(), 24);
+    assert_eq!(names.len(), 28);
     assert_eq!(names[0], "laravel");
     assert!(names.contains(&"express".to_string()));
     assert!(names.contains(&"django".to_string()));

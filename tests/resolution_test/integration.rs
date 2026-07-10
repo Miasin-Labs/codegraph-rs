@@ -1,7 +1,7 @@
 use crate::fixture::*;
 
-#[test]
-fn creates_resolver_that_detects_react_from_project() {
+#[tokio::test(flavor = "current_thread")]
+async fn creates_resolver_that_detects_react_from_project() {
     let fx = Fx::new();
     fx.write(
         "package.json",
@@ -18,8 +18,8 @@ fn creates_resolver_that_detects_react_from_project() {
     assert!(frameworks.contains(&"react".to_string()));
 }
 
-#[test]
-fn resolves_references_after_indexing() {
+#[tokio::test(flavor = "current_thread")]
+async fn resolves_references_after_indexing() {
     let fx = Fx::new();
     let q = fx.q();
     fx.write(
@@ -65,7 +65,10 @@ fn resolves_references_after_indexing() {
     .unwrap();
 
     let resolver = fx.resolver();
-    let result = resolver.resolve_and_persist_batched(None, None).unwrap();
+    let result = resolver
+        .resolve_and_persist_batched(None, None)
+        .await
+        .unwrap();
 
     // TS assertion: should have attempted resolution.
     assert!(result.stats.total >= 1);
@@ -75,8 +78,8 @@ fn resolves_references_after_indexing() {
     assert_eq!(callers[0].source, main.id);
 }
 
-#[test]
-fn promotes_calls_to_instantiates_when_target_is_a_class_python() {
+#[tokio::test(flavor = "current_thread")]
+async fn promotes_calls_to_instantiates_when_target_is_a_class_python() {
     // Python has no `new` keyword — `Foo()` is the standard instantiation
     // syntax. Extraction emits a `calls` ref; resolution promotes it to
     // `instantiates` once the target is known to be a class.
@@ -132,6 +135,7 @@ fn promotes_calls_to_instantiates_when_target_is_a_class_python() {
 
     fx.resolver()
         .resolve_and_persist_batched(None, None)
+        .await
         .unwrap();
 
     let out = q.get_outgoing_edges(&bootstrap.id, None, None).unwrap();

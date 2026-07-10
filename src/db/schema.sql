@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     size INTEGER,
     docstring TEXT,
     signature TEXT,
+    -- Normalized result type used for typed/chained receiver inference.
+    return_type TEXT,
     visibility TEXT,
     is_exported INTEGER DEFAULT 0,
     is_async INTEGER DEFAULT 0,
@@ -134,6 +136,14 @@ CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
     VALUES (NEW.rowid, NEW.id, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
 END;
 
+-- Prose-word to symbol-name lookup used by the prompt hook. Populated on the
+-- node write path; migrated databases may start empty and rebuild lazily.
+CREATE TABLE IF NOT EXISTS name_segment_vocab (
+    segment TEXT NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (segment, name)
+) WITHOUT ROWID;
+
 -- Edge indexes.
 -- idx_edges_source / idx_edges_target are intentionally omitted —
 -- the (source, kind) and (target, kind) composites below cover the
@@ -143,6 +153,8 @@ END;
 CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
 CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target, kind);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_identity
+  ON edges(source, target, kind, IFNULL(line, -1), IFNULL(col, -1));
 
 -- File indexes
 CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);

@@ -20,13 +20,13 @@ pub(crate) fn write(path: &Path, content: &str) {
     fs::write(path, content).unwrap();
 }
 
-pub(crate) fn setup_indexed(root: &Path) -> CodeGraph {
+pub(crate) async fn setup_indexed(root: &Path) -> CodeGraph {
     write(
         &root.join("src/index.ts"),
         "export function hello() { return 'world'; }",
     );
     let cg = CodeGraph::init_sync(root).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     cg
 }
 
@@ -60,7 +60,7 @@ pub(crate) fn git_stdout(cwd: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
-pub(crate) fn setup_git_indexed(root: &Path) -> CodeGraph {
+pub(crate) async fn setup_git_indexed(root: &Path) -> CodeGraph {
     git(root, &["init", "-q"]);
     git(root, &["config", "user.email", "test@test.com"]);
     git(root, &["config", "user.name", "Test"]);
@@ -72,7 +72,7 @@ pub(crate) fn setup_git_indexed(root: &Path) -> CodeGraph {
     git(root, &["add", "-A"]);
     git(root, &["commit", "-q", "-m", "initial"]);
     let cg = CodeGraph::init_sync(root).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     cg
 }
 

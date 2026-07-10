@@ -44,13 +44,20 @@ impl CfgRules {
     pub fn for_language(lang: &str) -> Option<&'static CfgRules> {
         match lang {
             "rust" => Some(&RUST_CFG_RULES),
-            "typescript" | "javascript" => Some(&TYPESCRIPT_CFG_RULES),
+            "typescript" | "javascript" | "arkts" => Some(&TYPESCRIPT_CFG_RULES),
             "python" => Some(&PYTHON_CFG_RULES),
             "go" => Some(&GO_CFG_RULES),
             "java" => Some(&JAVA_CFG_RULES),
             "c" => Some(&C_CFG_RULES),
             "cpp" => Some(&CPP_CFG_RULES),
             "php" => Some(&PHP_CFG_RULES),
+            "r" => Some(&R_CFG_RULES),
+            "solidity" => Some(&SOLIDITY_CFG_RULES),
+            "nix" => Some(&NIX_CFG_RULES),
+            "cfml" | "cfscript" | "cfquery" => Some(&CFSCRIPT_CFG_RULES),
+            "erlang" => Some(&ERLANG_CFG_RULES),
+            // VB.NET and COBOL bodies are unfielded/synthetic, while Terraform
+            // has no function construct. `build_cfg` requires a body field.
             _ => None,
         }
     }
@@ -234,4 +241,124 @@ static PHP_CFG_RULES: CfgRules = CfgRules {
         "method_declaration",
         "arrow_function",
     ],
+};
+
+// ─── R ───────────────────────────────────────────────────────────────────────
+
+static R_CFG_RULES: CfgRules = CfgRules {
+    if_nodes: &["if_statement"],
+    else_node: None,
+    for_nodes: &["for_statement"],
+    while_nodes: &["while_statement"],
+    loop_node: Some("repeat_statement"),
+    switch_nodes: &[],
+    case_nodes: &[],
+    try_nodes: &[],
+    catch_node: None,
+    finally_node: None,
+    // `return(...)` is an ordinary call in tree-sitter-r.
+    return_node: None,
+    break_node: Some("break"),
+    continue_node: Some("next"),
+    throw_node: None,
+    body_field: "body",
+    function_nodes: &["function_definition"],
+};
+
+// ─── Solidity ────────────────────────────────────────────────────────────────
+
+static SOLIDITY_CFG_RULES: CfgRules = CfgRules {
+    // Yul control-flow nodes have no named body fields, so the generic CFG
+    // walker cannot model them without a Yul-specific adapter.
+    if_nodes: &["if_statement"],
+    else_node: None,
+    for_nodes: &["for_statement"],
+    while_nodes: &["while_statement", "do_while_statement"],
+    loop_node: None,
+    switch_nodes: &[],
+    case_nodes: &[],
+    try_nodes: &["try_statement"],
+    catch_node: Some("catch_clause"),
+    finally_node: None,
+    return_node: Some("return_statement"),
+    break_node: Some("break_statement"),
+    continue_node: Some("continue_statement"),
+    throw_node: Some("revert_statement"),
+    body_field: "body",
+    function_nodes: &[
+        "function_definition",
+        "modifier_definition",
+        "constructor_definition",
+        "fallback_receive_definition",
+    ],
+};
+
+// ─── Nix ─────────────────────────────────────────────────────────────────────
+
+static NIX_CFG_RULES: CfgRules = CfgRules {
+    if_nodes: &["if_expression"],
+    else_node: None,
+    for_nodes: &[],
+    while_nodes: &[],
+    loop_node: None,
+    switch_nodes: &[],
+    case_nodes: &[],
+    try_nodes: &[],
+    catch_node: None,
+    finally_node: None,
+    return_node: None,
+    break_node: None,
+    continue_node: None,
+    throw_node: None,
+    body_field: "body",
+    function_nodes: &["function_expression"],
+};
+
+// ─── CFML / CFScript / CFQuery ───────────────────────────────────────────────
+
+static CFSCRIPT_CFG_RULES: CfgRules = CfgRules {
+    if_nodes: &["if_statement"],
+    else_node: Some("else_clause"),
+    for_nodes: &["for_statement", "for_in_statement"],
+    while_nodes: &["while_statement", "do_statement"],
+    loop_node: None,
+    switch_nodes: &["switch_statement"],
+    case_nodes: &["switch_case", "switch_default"],
+    try_nodes: &["try_statement"],
+    catch_node: Some("catch_clause"),
+    finally_node: Some("finally_clause"),
+    return_node: Some("return_statement"),
+    break_node: Some("break_statement"),
+    continue_node: Some("continue_statement"),
+    throw_node: Some("throw_statement"),
+    body_field: "body",
+    function_nodes: &[
+        "function_declaration",
+        "function_expression",
+        "method_definition",
+        "arrow_function",
+    ],
+};
+
+// ─── Erlang ──────────────────────────────────────────────────────────────────
+
+static ERLANG_CFG_RULES: CfgRules = CfgRules {
+    if_nodes: &[],
+    else_node: None,
+    for_nodes: &[],
+    while_nodes: &[],
+    loop_node: None,
+    // Erlang `if` is a multi-clause selection, not a binary if/else node.
+    switch_nodes: &["if_expr", "case_expr", "receive_expr", "maybe_expr"],
+    case_nodes: &["if_clause", "cr_clause", "receive_after"],
+    try_nodes: &["try_expr"],
+    catch_node: Some("catch_clause"),
+    finally_node: Some("try_after"),
+    return_node: None,
+    break_node: None,
+    continue_node: None,
+    throw_node: None,
+    body_field: "body",
+    // `fun_decl` is a wrapper without a body field; its clauses carry bodies.
+    function_nodes: &["function_clause", "fun_clause"],
 };

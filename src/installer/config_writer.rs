@@ -20,9 +20,9 @@ pub type InstallLocation = Location;
 /// full multi-file install lives in `ClaudeCodeTarget::install()` which the
 /// new orchestrator uses.
 ///
-/// There is no `write_claude_md` shim anymore: codegraph stopped writing a
-/// CLAUDE.md instructions block (issue #529) now that the MCP server's
-/// `initialize` instructions are the single source of truth.
+/// There is no `write_claude_md` shim: instruction guidance is managed by
+/// the full Claude target install so the legacy single-file helpers retain
+/// their original, side-effect-free contracts.
 pub fn write_mcp_config(location: InstallLocation) {
     write_mcp_entry(location);
 }

@@ -3,9 +3,17 @@
 use super::receiver::{
     infer_cpp_receiver_type,
     infer_java_field_receiver_type,
+    infer_local_receiver_type,
     resolve_method_on_type,
 };
-use super::support::{capitalize_first, colon_call_re, dot_call_re, split_camel_case};
+use super::support::{
+    capitalize_first,
+    colon_call_re,
+    dot_call_re,
+    lua_colon_call_re,
+    r_dollar_call_re,
+    split_camel_case,
+};
 use crate::resolution::jvm_scope;
 use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
 use crate::types::{Language, Node, NodeKind};
@@ -18,9 +26,8 @@ pub fn match_method_call(
     match_method_call_hinted(reference, context, None)
 }
 
-/// The exact `obj.method` / `Class::method` split `match_method_call` uses
-/// (single-segment receivers only). Shared with the GPU marshal so both
-/// sides gate on identical references.
+/// The exact `obj.method` / `Class::method` split `match_method_call` uses.
+/// Shared with the GPU marshal so both sides gate on identical references.
 #[cfg(feature = "gpu")]
 pub(crate) fn split_method_call(name: &str) -> Option<(&str, &str)> {
     let caps = dot_call_re()
@@ -50,8 +57,18 @@ pub fn match_method_call_hinted(
     let dot_match = dot_call_re().captures(&reference.reference_name);
     let is_dot_match = dot_match.is_some();
     let colon_match = colon_call_re().captures(&reference.reference_name);
+    let lua_colon_match = matches!(reference.language, Language::Lua | Language::Luau)
+        .then(|| lua_colon_call_re().captures(&reference.reference_name))
+        .flatten();
+    let r_dollar_match = (reference.language.as_str() == "r")
+        .then(|| r_dollar_call_re().captures(&reference.reference_name))
+        .flatten();
+    let inferable_receiver = is_dot_match || lua_colon_match.is_some() || r_dollar_match.is_some();
 
-    let caps = dot_match.or(colon_match)?;
+    let caps = dot_match
+        .or(colon_match)
+        .or(lua_colon_match)
+        .or(r_dollar_match)?;
 
     let object_or_class = caps.get(1).map(|m| m.as_str()).unwrap_or("");
     let method_name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
@@ -68,8 +85,22 @@ pub fn match_method_call_hinted(
         }
     };
 
-    if reference.language == Language::Cpp && is_dot_match {
-        if let Some(inferred_type) = infer_cpp_receiver_type(object_or_class, reference, context) {
+    if inferable_receiver {
+        let inferred_type = if reference.language == Language::Cpp && is_dot_match {
+            infer_cpp_receiver_type(object_or_class, reference, context)
+        } else {
+            infer_local_receiver_type(object_or_class, reference, context)
+        };
+        if let Some(inferred_type) = inferred_type {
+            let imports = context.get_import_mappings(&reference.file_path, reference.language);
+            let imported_fqn = matches!(reference.language, Language::Java | Language::Kotlin)
+                .then(|| {
+                    imports
+                        .iter()
+                        .find(|mapping| mapping.local_name == inferred_type)
+                        .map(|mapping| mapping.source.as_str())
+                })
+                .flatten();
             let typed_match = resolve_method_on_type(
                 &inferred_type,
                 method_name,
@@ -77,7 +108,7 @@ pub fn match_method_call_hinted(
                 context,
                 0.9,
                 ResolvedBy::InstanceMethod,
-                None,
+                imported_fqn,
             );
             if typed_match.is_some() {
                 return typed_match;
@@ -143,6 +174,7 @@ pub fn match_method_call_hinted(
     } else {
         Vec::new()
     };
+    class_candidates.sort_by_key(|node| node.file_path != reference.file_path);
 
     // Apex: case-folded receiver lookup when the exact one finds nothing
     // (`accountservice.create` → class `AccountService`). Restricted to Apex
@@ -201,7 +233,8 @@ pub fn match_method_call_hinted(
     // e.g., "permissionEngine" → look for classes containing "PermissionEngine"
     let capitalized_receiver = capitalize_first(object_or_class);
     if run_s12_on_cpu && capitalized_receiver != object_or_class {
-        let fuzzy_class_candidates = context.get_nodes_by_name(&capitalized_receiver);
+        let mut fuzzy_class_candidates = context.get_nodes_by_name(&capitalized_receiver);
+        fuzzy_class_candidates.sort_by_key(|node| node.file_path != reference.file_path);
         for class_node in &fuzzy_class_candidates {
             if class_node.kind == NodeKind::Class
                 || class_node.kind == NodeKind::Struct

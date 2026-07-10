@@ -10,8 +10,6 @@ use crate::error::log_warn;
 /// `CODEGRAPH_RESOLVER_CACHE_SIZE` (single integer applied to all
 /// caches) when tuning for very large or very small projects.
 const DEFAULT_CACHE_LIMIT: usize = 5_000;
-#[cfg(not(feature = "gpu"))]
-const DEFAULT_PARALLEL_RESOLVE_MIN_REFS: usize = 250_000;
 
 /// Mirrors JS `Number.parseInt(raw, 10)`: skip leading whitespace, allow an
 /// optional sign, parse the leading run of decimal digits, NaN otherwise.
@@ -41,26 +39,6 @@ pub(super) fn resolve_cache_limit() -> usize {
         Some(parsed) if parsed > 0 => parsed as usize,
         _ => DEFAULT_CACHE_LIMIT,
     }
-}
-
-#[cfg(not(feature = "gpu"))]
-pub(super) fn parallel_resolve_min_refs() -> usize {
-    let raw = match std::env::var("CODEGRAPH_PARALLEL_RESOLVE_MIN_REFS") {
-        Ok(v) => v,
-        Err(_) => return DEFAULT_PARALLEL_RESOLVE_MIN_REFS,
-    };
-    if raw.is_empty() {
-        return DEFAULT_PARALLEL_RESOLVE_MIN_REFS;
-    }
-    match parse_int_prefix(&raw) {
-        Some(parsed) if parsed >= 0 => parsed as usize,
-        _ => DEFAULT_PARALLEL_RESOLVE_MIN_REFS,
-    }
-}
-
-#[cfg(not(feature = "gpu"))]
-pub(super) fn should_use_snapshot_resolution(ref_count: usize) -> bool {
-    ref_count >= parallel_resolve_min_refs()
 }
 
 impl ReferenceResolver {

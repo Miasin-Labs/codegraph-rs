@@ -1,4 +1,4 @@
-fn blast_fixture(root: &Path) -> CodeGraph {
+async fn blast_fixture(root: &Path) -> CodeGraph {
     let src = root.join("src");
     // `target` is depended on by a sibling (caller) and a test file.
     write(
@@ -16,15 +16,15 @@ fn blast_fixture(root: &Path) -> CodeGraph {
     );
 
     let cg = CodeGraph::init_sync(root).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     cg
 }
 
-#[test]
-fn lists_dependents_and_covering_tests_for_an_entry_symbol() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn lists_dependents_and_covering_tests_for_an_entry_symbol() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = blast_fixture(dir.path());
+    let cg = blast_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore(&handler, "target");
 
@@ -44,11 +44,11 @@ fn lists_dependents_and_covering_tests_for_an_entry_symbol() {
     );
 }
 
-#[test]
-fn omits_symbols_that_have_no_dependents_from_the_blast_radius() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn omits_symbols_that_have_no_dependents_from_the_blast_radius() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
-    let cg = blast_fixture(dir.path());
+    let cg = blast_fixture(dir.path()).await;
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore(&handler, "lonelyLeaf");
     // lonelyLeaf has zero callers — it must never appear under a blast-radius
@@ -61,16 +61,16 @@ fn omits_symbols_that_have_no_dependents_from_the_blast_radius() {
     }
 }
 
-#[test]
-fn callees_do_not_fall_back_to_a_wrong_symbol_for_qualified_misses() {
-    let _env = env_read();
+#[tokio::test(flavor = "current_thread")]
+async fn callees_do_not_fall_back_to_a_wrong_symbol_for_qualified_misses() {
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     write(
         &dir.path().join("src").join("lib.ts"),
         "export function helper() { return 1; }\nexport function run_index_all() { return helper(); }\n",
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
     let res = handler.execute(

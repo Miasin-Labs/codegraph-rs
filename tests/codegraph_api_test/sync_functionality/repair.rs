@@ -1,20 +1,20 @@
-#[test]
-fn index_all_keeps_unresolved_refs_repairable_by_a_later_full_index() {
+#[tokio::test(flavor = "current_thread")]
+async fn index_all_keeps_unresolved_refs_repairable_by_a_later_full_index() {
     let dir = TempDir::new().unwrap();
-    let cg = setup_indexed(dir.path());
+    let cg = setup_indexed(dir.path()).await;
 
     write(
         &dir.path().join("src/index.ts"),
         "export function caller() { return missingLater(); }",
     );
-    cg.index_all(&IndexOptions::default()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
 
     write(
         &dir.path().join("src/target.ts"),
         "export function missingLater() { return 42; }",
     );
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
 
     let target = cg
         .search_nodes("missingLater", None)
@@ -30,8 +30,8 @@ fn index_all_keeps_unresolved_refs_repairable_by_a_later_full_index() {
     );
 }
 
-#[test]
-fn index_files_resolves_refs_and_repairs_late_targets() {
+#[tokio::test(flavor = "current_thread")]
+async fn index_files_resolves_refs_and_repairs_late_targets() {
     let dir = TempDir::new().unwrap();
     write(
         &dir.path().join("src/caller.ts"),
@@ -39,7 +39,7 @@ fn index_files_resolves_refs_and_repairs_late_targets() {
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
 
-    let first = cg.index_files(&["src/caller.ts".to_string()]).unwrap();
+    let first = cg.index_files(&["src/caller.ts".to_string()]).await.unwrap();
     assert!(first.success);
     assert_eq!(first.files_indexed, 1);
 
@@ -47,7 +47,7 @@ fn index_files_resolves_refs_and_repairs_late_targets() {
         &dir.path().join("src/target.ts"),
         "export function missingLater() { return 42; }",
     );
-    let second = cg.index_files(&["src/target.ts".to_string()]).unwrap();
+    let second = cg.index_files(&["src/target.ts".to_string()]).await.unwrap();
     assert!(second.success);
     assert_eq!(second.files_indexed, 1);
 
@@ -65,8 +65,8 @@ fn index_files_resolves_refs_and_repairs_late_targets() {
     );
 }
 
-#[test]
-fn sync_repairs_callers_when_removed_target_reappears() {
+#[tokio::test(flavor = "current_thread")]
+async fn sync_repairs_callers_when_removed_target_reappears() {
     let dir = TempDir::new().unwrap();
     write(
         &dir.path().join("src/caller.ts"),
@@ -77,7 +77,7 @@ fn sync_repairs_callers_when_removed_target_reappears() {
         "export function missingLater() { return 42; }",
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
 
     let target = cg
         .search_nodes("missingLater", None)
@@ -95,7 +95,7 @@ fn sync_repairs_callers_when_removed_target_reappears() {
     );
 
     fs::remove_file(dir.path().join("src/target.ts")).unwrap();
-    let removed = cg.sync(&IndexOptions::default()).unwrap();
+    let removed = cg.sync(&IndexOptions::default()).await.unwrap();
     assert_eq!(removed.files_removed, 1);
     assert!(
         !cg.search_nodes("missingLater", None)
@@ -109,7 +109,7 @@ fn sync_repairs_callers_when_removed_target_reappears() {
         &dir.path().join("src/target.ts"),
         "export function missingLater() { return 42; }",
     );
-    let added = cg.sync(&IndexOptions::default()).unwrap();
+    let added = cg.sync(&IndexOptions::default()).await.unwrap();
     assert_eq!(added.files_added, 1);
 
     let restored_target = cg

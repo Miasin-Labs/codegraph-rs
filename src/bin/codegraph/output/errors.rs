@@ -1,7 +1,7 @@
 use super::{ExtractionError, Path, Severity, iso_from_epoch_ms, now_ms};
 
 pub(crate) fn write_error_log(project_path: &Path, errors: &[ExtractionError]) {
-    let cg_dir = project_path.join(".codegraph");
+    let cg_dir = codegraph::directory::get_codegraph_dir(project_path);
     if !cg_dir.exists() {
         return;
     }

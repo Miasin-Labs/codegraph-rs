@@ -1,6 +1,7 @@
 #[path = "codegraph/main.rs"]
 mod codegraph_cli;
 
-fn main() {
-    codegraph_cli::main();
+#[tokio::main(flavor = "multi_thread")]
+async fn main() {
+    codegraph_cli::main().await;
 }
