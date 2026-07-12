@@ -15,11 +15,24 @@ pub(super) fn is_type_annotation_language(language: Language) -> bool {
             | Language::Kotlin
             | Language::Swift
             | Language::Rust
+            | Language::Vyper
+            | Language::Move
+            | Language::Cairo
+            | Language::Sway
+            | Language::Fe
             | Language::Go
             | Language::Java
             | Language::Csharp
     )
 }
+
+fn is_web3_type_annotation_language(language: Language) -> bool {
+    matches!(
+        language,
+        Language::Vyper | Language::Move | Language::Cairo | Language::Sway | Language::Fe
+    )
+}
+
 /// Built-in/primitive type names that shouldn't create references
 const BUILTIN_TYPES: &[&str] = &[
     "string",
@@ -94,6 +107,11 @@ impl<'a> TreeSitterExtractor<'a> {
             return;
         }
 
+        if is_web3_type_annotation_language(self.language) {
+            self.extract_web3_type_annotations(node, node_id);
+            return;
+        }
+
         // C# tree-sitter doesn't produce `type_identifier` leaves — it uses
         // `identifier`, `predefined_type`, `qualified_name`, `generic_name`,
         // etc. — so the generic walker below emits zero references for it.
@@ -128,6 +146,196 @@ impl<'a> TreeSitterExtractor<'a> {
         // Extract direct type annotation (for class fields like `model: ITextModel`)
         if let Some(type_annotation) = find_named_child(node, "type_annotation") {
             self.extract_type_refs_from_subtree(type_annotation, node_id);
+        }
+    }
+
+    /// Web3 grammars disagree on both the parameter container and the type
+    /// leaf kind. Select type-position subtrees here so identifier-shaped
+    /// parameter names never reach the language-specific walker.
+    fn extract_web3_type_annotations(&mut self, node: SyntaxNode<'_>, node_id: &str) {
+        let owner = if self.language == Language::Cairo && node.kind() != "function" {
+            find_named_child(node, "function").unwrap_or(node)
+        } else {
+            node
+        };
+
+        if let Some(direct_type) = get_child_by_field(owner, "type") {
+            self.walk_web3_type_position(direct_type, node_id);
+        }
+
+        let parameters = get_child_by_field(owner, "parameters").or_else(|| {
+            (self.language == Language::Fe)
+                .then(|| find_named_child(owner, "parameter_list"))
+                .flatten()
+        });
+        if let Some(parameters) = parameters {
+            for parameter in named_children(parameters) {
+                self.extract_web3_parameter_type(parameter, node_id);
+            }
+        }
+
+        if let Some(return_type) = get_child_by_field(owner, "return_type") {
+            self.walk_web3_type_position(return_type, node_id);
+        }
+
+        if let Some(type_annotation) = find_named_child(owner, "type_annotation") {
+            self.walk_web3_type_position(type_annotation, node_id);
+        }
+    }
+
+    fn extract_web3_parameter_type(&mut self, parameter: SyntaxNode<'_>, node_id: &str) {
+        if let Some(parameter_type) = get_child_by_field(parameter, "type") {
+            self.walk_web3_type_position(parameter_type, node_id);
+            return;
+        }
+
+        // Move wraps mutable parameters in `mut_function_parameter`.
+        if parameter.kind() == "mut_function_parameter" {
+            for child in named_children(parameter) {
+                self.extract_web3_parameter_type(child, node_id);
+            }
+            return;
+        }
+
+        // Cairo/Sway permit bare implicit type entries in their parameter
+        // container. Their type names are `type_identifier`, so walking these
+        // direct children cannot pick up an ordinary parameter identifier.
+        if matches!(self.language, Language::Cairo | Language::Sway)
+            && matches!(
+                parameter.kind(),
+                "type_identifier"
+                    | "scoped_type_identifier"
+                    | "generic_type"
+                    | "tuple_type"
+                    | "snapshot_type"
+                    | "array_type"
+                    | "reference_type"
+            )
+        {
+            self.walk_web3_type_position(parameter, node_id);
+        }
+    }
+
+    fn walk_web3_type_position(&mut self, node: SyntaxNode<'_>, node_id: &str) {
+        ensure_sufficient_stack(|| self.walk_web3_type_position_inner(node, node_id));
+    }
+
+    fn walk_web3_type_position_inner(&mut self, node: SyntaxNode<'_>, node_id: &str) {
+        if node.kind() == "type_identifier" {
+            self.push_web3_type_ref(node_id, get_node_text(node, self.source), node);
+            return;
+        }
+
+        match self.language {
+            Language::Vyper => match node.kind() {
+                "identifier" => {
+                    self.push_web3_type_ref(node_id, get_node_text(node, self.source), node);
+                    return;
+                }
+                // The grammar can collapse a bare annotation into a leaf `type`.
+                "type" if node.named_child_count() == 0 => {
+                    self.push_web3_type_ref(node_id, get_node_text(node, self.source), node);
+                    return;
+                }
+                // `pkg.Token`: the package is a qualifier, not a second type.
+                "member_type" => {
+                    self.push_web3_type_ref(node_id, get_node_text(node, self.source), node);
+                    return;
+                }
+                // A subscript's index is a size expression, not a type.
+                "subscript" => {
+                    if let Some(value) = get_child_by_field(node, "value") {
+                        self.walk_web3_type_position(value, node_id);
+                    }
+                    return;
+                }
+                _ => {}
+            },
+            Language::Move => match node.kind() {
+                "module_access" => {
+                    self.push_web3_type_ref(node_id, get_node_text(node, self.source), node);
+                    for child in named_children(node) {
+                        if child.kind() == "type_arguments" {
+                            self.walk_web3_type_position(child, node_id);
+                        }
+                    }
+                    return;
+                }
+                "primitive_type" => return,
+                _ => {}
+            },
+            Language::Fe => match node.kind() {
+                "path" => {
+                    self.push_web3_type_ref(node_id, get_node_text(node, self.source), node);
+                    return;
+                }
+                // Only the element is type-positioned; the length is an expression.
+                "array_type" => {
+                    if let Some(element) = get_child_by_field(node, "element") {
+                        self.walk_web3_type_position(element, node_id);
+                    }
+                    return;
+                }
+                // `Item = Type`: Item names an associated slot, not a type use.
+                "assoc_type_generic_arg" => {
+                    if let Some(value) = get_child_by_field(node, "type") {
+                        self.walk_web3_type_position(value, node_id);
+                    }
+                    return;
+                }
+                "self_type" | "never_type" => return,
+                _ => {}
+            },
+            Language::Cairo | Language::Sway => {}
+            _ => return,
+        }
+
+        for child in named_children(node) {
+            self.walk_web3_type_position(child, node_id);
+        }
+    }
+
+    fn push_web3_type_ref(&mut self, from_node_id: &str, raw: &str, node: SyntaxNode<'_>) {
+        let raw = raw.split('<').next().unwrap_or(raw).trim();
+        let name = raw
+            .rsplit("::")
+            .next()
+            .unwrap_or(raw)
+            .rsplit('.')
+            .next()
+            .unwrap_or(raw)
+            .trim_start_matches(['$', '@', '&', '*'])
+            .trim();
+        let language_builtin = match self.language {
+            Language::Vyper => {
+                matches!(
+                    name,
+                    "String"
+                        | "Bytes"
+                        | "DynArray"
+                        | "HashMap"
+                        | "constant"
+                        | "decimal"
+                        | "immutable"
+                        | "indexed"
+                        | "address"
+                        | "public"
+                        | "transient"
+                ) || ["bytes", "int", "uint"].iter().any(|prefix| {
+                    name.strip_prefix(prefix).is_some_and(|width| {
+                        !width.is_empty() && width.bytes().all(|b| b.is_ascii_digit())
+                    })
+                })
+            }
+            Language::Move => name == "vector",
+            Language::Cairo => matches!(name, "bytes31" | "felt252" | "i256" | "u256"),
+            Language::Sway => matches!(name, "b256" | "u256"),
+            Language::Fe => matches!(name, "address" | "b256" | "bytes31" | "i256" | "u256"),
+            _ => false,
+        };
+        if !name.is_empty() && name != "Self" && !language_builtin && !BUILTIN_TYPES.contains(&name)
+        {
+            self.push_ref(from_node_id, name.to_string(), EdgeKind::References, node);
         }
     }
 
@@ -237,6 +445,11 @@ impl<'a> TreeSitterExtractor<'a> {
             return;
         }
 
+        if is_web3_type_annotation_language(self.language) {
+            self.extract_web3_type_annotations(node, node_id);
+            return;
+        }
+
         // Find type_annotation child (covers TS `: Type`, Rust `: Type`, etc.)
         if let Some(type_annotation) = find_named_child(node, "type_annotation") {
             self.extract_type_refs_from_subtree(type_annotation, node_id);
@@ -250,6 +463,11 @@ impl<'a> TreeSitterExtractor<'a> {
         node: SyntaxNode<'_>,
         from_node_id: &str,
     ) {
+        if is_web3_type_annotation_language(self.language) {
+            self.walk_web3_type_position(node, from_node_id);
+            return;
+        }
+
         // Recursion guard — generated type expressions nest arbitrarily deep.
         ensure_sufficient_stack(|| {
             if node.kind() == "type_identifier" {
@@ -265,5 +483,99 @@ impl<'a> TreeSitterExtractor<'a> {
                 self.extract_type_refs_from_subtree(child, from_node_id);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::extraction::languages::extractor_for;
+    use crate::extraction::tree_sitter_wrapper::TreeSitterExtractor;
+    use crate::types::{EdgeKind, Language};
+
+    #[test]
+    fn web3_parameter_and_return_types_do_not_emit_parameter_names() {
+        let cases = [
+            (
+                Language::Vyper,
+                "contract.vy",
+                "def ping(request: Request) -> Response:\n    pass\n",
+            ),
+            (
+                Language::Move,
+                "module.move",
+                "module 0x1::m { public fun ping(request: Request): Response { abort 0 } }",
+            ),
+            (
+                Language::Cairo,
+                "module.cairo",
+                "fn ping(request: Request) -> Response { request }",
+            ),
+            (
+                Language::Sway,
+                "module.sw",
+                "script; fn ping(request: Request) -> Response { revert(0) }",
+            ),
+            (
+                Language::Fe,
+                "module.fe",
+                "pub fn ping(request: Request) -> Response {}",
+            ),
+        ];
+
+        for (language, path, source) in cases {
+            let result =
+                TreeSitterExtractor::new(path, source, Some(language), extractor_for(language))
+                    .extract();
+            assert!(result.errors.is_empty(), "{language}: {:?}", result.errors);
+
+            let mut references: Vec<_> = result
+                .unresolved_references
+                .iter()
+                .filter(|reference| reference.reference_kind == EdgeKind::References)
+                .map(|reference| reference.reference_name.as_str())
+                .collect();
+            references.sort_unstable();
+            assert_eq!(
+                references,
+                ["Request", "Response"],
+                "{language}: nodes={:#?}, unresolved={:#?}",
+                result.nodes,
+                result.unresolved_references
+            );
+        }
+    }
+
+    #[test]
+    fn web3_primitive_names_remain_references_in_rust() {
+        let source = r#"
+struct u256;
+struct i256;
+struct address;
+struct b256;
+struct bytes31;
+struct felt252;
+
+fn use_all(a: u256, b: i256, c: address, d: b256, e: bytes31) -> felt252 {}
+"#;
+        let result = TreeSitterExtractor::new(
+            "types.rs",
+            source,
+            Some(Language::Rust),
+            extractor_for(Language::Rust),
+        )
+        .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let mut references: Vec<_> = result
+            .unresolved_references
+            .iter()
+            .filter(|reference| reference.reference_kind == EdgeKind::References)
+            .map(|reference| reference.reference_name.as_str())
+            .collect();
+        references.sort_unstable();
+        assert_eq!(
+            references,
+            ["address", "b256", "bytes31", "felt252", "i256", "u256"]
+        );
     }
 }

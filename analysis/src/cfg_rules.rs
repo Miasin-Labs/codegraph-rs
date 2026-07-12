@@ -53,6 +53,10 @@ impl CfgRules {
             "php" => Some(&PHP_CFG_RULES),
             "r" => Some(&R_CFG_RULES),
             "solidity" => Some(&SOLIDITY_CFG_RULES),
+            "vyper" => Some(&PYTHON_CFG_RULES),
+            "move" => Some(&MOVE_CFG_RULES),
+            "cairo" | "sway" => Some(&RUST_CFG_RULES),
+            "fe" => Some(&FE_CFG_RULES),
             "nix" => Some(&NIX_CFG_RULES),
             "cfml" | "cfscript" | "cfquery" => Some(&CFSCRIPT_CFG_RULES),
             "erlang" => Some(&ERLANG_CFG_RULES),
@@ -293,6 +297,52 @@ static SOLIDITY_CFG_RULES: CfgRules = CfgRules {
     ],
 };
 
+// ─── Move ───────────────────────────────────────────────────────────────────
+
+static MOVE_CFG_RULES: CfgRules = CfgRules {
+    if_nodes: &["if_expression"],
+    else_node: None,
+    for_nodes: &[],
+    while_nodes: &["while_expression"],
+    loop_node: Some("loop_expression"),
+    switch_nodes: &["match_expression"],
+    case_nodes: &["match_arm"],
+    try_nodes: &[],
+    catch_node: None,
+    finally_node: None,
+    return_node: Some("return_expression"),
+    break_node: Some("break_expression"),
+    continue_node: Some("continue_expression"),
+    throw_node: Some("abort_expression"),
+    body_field: "body",
+    function_nodes: &[
+        "function_definition",
+        "macro_function_definition",
+        "usual_spec_function",
+    ],
+};
+
+// ─── Fe ─────────────────────────────────────────────────────────────────────
+
+static FE_CFG_RULES: CfgRules = CfgRules {
+    if_nodes: &["if_expression"],
+    else_node: None,
+    for_nodes: &["for_statement"],
+    while_nodes: &["while_statement"],
+    loop_node: None,
+    switch_nodes: &["match_expression"],
+    case_nodes: &["match_arm"],
+    try_nodes: &[],
+    catch_node: None,
+    finally_node: None,
+    return_node: Some("return_statement"),
+    break_node: Some("break_statement"),
+    continue_node: Some("continue_statement"),
+    throw_node: None,
+    body_field: "body",
+    function_nodes: &["function_definition", "contract_init", "recv_arm"],
+};
+
 // ─── Nix ─────────────────────────────────────────────────────────────────────
 
 static NIX_CFG_RULES: CfgRules = CfgRules {
@@ -362,3 +412,18 @@ static ERLANG_CFG_RULES: CfgRules = CfgRules {
     // `fun_decl` is a wrapper without a body field; its clauses carry bodies.
     function_nodes: &["function_clause", "fun_clause"],
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web3_languages_have_cfg_rules() {
+        for language in ["vyper", "move", "cairo", "sway", "fe"] {
+            assert!(
+                CfgRules::for_language(language).is_some(),
+                "missing CFG rules for {language}"
+            );
+        }
+    }
+}

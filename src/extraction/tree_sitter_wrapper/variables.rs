@@ -265,7 +265,7 @@ impl<'a> TreeSitterExtractor<'a> {
                     };
 
                     if !name.is_empty() && name != "<anonymous>" {
-                        self.create_node(
+                        let variable = self.create_node(
                             kind,
                             &name,
                             child,
@@ -275,6 +275,9 @@ impl<'a> TreeSitterExtractor<'a> {
                                 ..Default::default()
                             },
                         );
+                        if let Some(variable) = variable {
+                            self.extract_variable_type_annotation(node, &variable.id);
+                        }
                     }
                 }
             }

@@ -54,12 +54,14 @@ impl DataflowRules {
     /// Look up rules for a language by its identifier.
     pub fn for_language(lang: &str) -> Option<&'static DataflowRules> {
         match lang {
-            "rust" => Some(&RUST_DATAFLOW_RULES),
+            "rust" | "cairo" | "sway" => Some(&RUST_DATAFLOW_RULES),
             "typescript" | "javascript" | "arkts" => Some(&TYPESCRIPT_DATAFLOW_RULES),
-            "python" => Some(&PYTHON_DATAFLOW_RULES),
+            "python" | "vyper" => Some(&PYTHON_DATAFLOW_RULES),
             "go" => Some(&GO_DATAFLOW_RULES),
             "r" => Some(&R_DATAFLOW_RULES),
             "solidity" => Some(&SOLIDITY_DATAFLOW_RULES),
+            "move" => Some(&MOVE_DATAFLOW_RULES),
+            "fe" => Some(&FE_DATAFLOW_RULES),
             "nix" => Some(&NIX_DATAFLOW_RULES),
             "cfml" | "cfscript" | "cfquery" => Some(&CFSCRIPT_DATAFLOW_RULES),
             "erlang" => Some(&ERLANG_DATAFLOW_RULES),
@@ -397,3 +399,95 @@ static ERLANG_DATAFLOW_RULES: DataflowRules = DataflowRules {
     method_call_name_field: "",
     method_call_args_field: "args",
 };
+
+// ─── Move ────────────────────────────────────────────────────────────────────
+
+static MOVE_DATAFLOW_RULES: DataflowRules = DataflowRules {
+    function_nodes: &["function_definition"],
+    param_list_field: "parameters",
+    param_identifier: "variable_identifier",
+    body_field: "body",
+    return_node: "return_expression",
+    assignment_nodes: &["let_statement", "assign_expression"],
+    assign_left_field: "binds",
+    assign_right_field: "expr",
+    call_nodes: &["call_expression"],
+    call_function_field: "",
+    call_args_field: "args",
+    member_node: "dot_expression",
+    member_object_field: "expr",
+    member_property_field: "access",
+    mutating_methods: &[],
+    identifier_node: "name_expression",
+    literal_nodes: &[
+        "address_literal",
+        "bool_literal",
+        "byte_string_literal",
+        "hex_string_literal",
+        "num_literal",
+    ],
+    method_call_node: "call_expression",
+    method_call_object_field: "",
+    method_call_name_field: "",
+    method_call_args_field: "args",
+};
+
+// ─── Fe ──────────────────────────────────────────────────────────────────────
+
+static FE_DATAFLOW_RULES: DataflowRules = DataflowRules {
+    function_nodes: &["function_definition", "contract_init", "recv_arm"],
+    param_list_field: "",
+    param_identifier: "identifier",
+    body_field: "body",
+    return_node: "return_statement",
+    assignment_nodes: &["let_statement"],
+    assign_left_field: "name",
+    assign_right_field: "value",
+    call_nodes: &["call_expression"],
+    call_function_field: "function",
+    call_args_field: "arguments",
+    member_node: "field_expression",
+    member_object_field: "value",
+    member_property_field: "field",
+    mutating_methods: &["push", "pop", "insert", "remove"],
+    identifier_node: "identifier",
+    literal_nodes: &[
+        "boolean_literal",
+        "integer_literal",
+        "literal",
+        "string_literal",
+    ],
+    method_call_node: "method_call_expression",
+    method_call_object_field: "value",
+    method_call_name_field: "method",
+    method_call_args_field: "arguments",
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routes_web3_languages() {
+        assert!(std::ptr::eq(
+            DataflowRules::for_language("vyper").unwrap(),
+            &PYTHON_DATAFLOW_RULES
+        ));
+        assert!(std::ptr::eq(
+            DataflowRules::for_language("cairo").unwrap(),
+            &RUST_DATAFLOW_RULES
+        ));
+        assert!(std::ptr::eq(
+            DataflowRules::for_language("sway").unwrap(),
+            &RUST_DATAFLOW_RULES
+        ));
+        assert!(std::ptr::eq(
+            DataflowRules::for_language("move").unwrap(),
+            &MOVE_DATAFLOW_RULES
+        ));
+        assert!(std::ptr::eq(
+            DataflowRules::for_language("fe").unwrap(),
+            &FE_DATAFLOW_RULES
+        ));
+    }
+}

@@ -41,6 +41,11 @@ fn hello_world_snippet(language: Language) -> &'static str {
         Language::Lua => "local function f() return 1 end\n",
         Language::Luau => "local function f(): number return 1 end\n",
         Language::Objc => "@interface Foo : NSObject\n@end\n@implementation Foo\n@end\n",
+        Language::Vyper => "@external\ndef ping():\n    pass\n",
+        Language::Move => "module 0x1::hello { public fun ping(): u64 { 1 } }\n",
+        Language::Cairo => "fn ping() -> felt252 { 1 }\n",
+        Language::Sway => "contract;\nfn ping() -> u64 { 1 }\n",
+        Language::Fe => "pub fn ping() -> u256 { return 1 }\n",
         _ => panic!("no snippet for non-grammar language {language}"),
     }
 }
@@ -67,6 +72,11 @@ const GRAMMAR_LANGUAGES: &[Language] = &[
     Language::Lua,
     Language::Luau,
     Language::Objc,
+    Language::Vyper,
+    Language::Move,
+    Language::Cairo,
+    Language::Sway,
+    Language::Fe,
 ];
 
 #[test]

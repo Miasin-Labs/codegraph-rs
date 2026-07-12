@@ -47,7 +47,7 @@ impl LangRules {
         match language_id {
             "rust" => Some(&RUST_RULES),
             "typescript" | "arkts" => Some(&TYPESCRIPT_RULES),
-            "python" => Some(&PYTHON_RULES),
+            "python" | "vyper" => Some(&PYTHON_RULES),
             "go" => Some(&GO_RULES),
             "java" => Some(&JAVA_RULES),
             "c" => Some(&C_RULES),
@@ -59,6 +59,9 @@ impl LangRules {
             "ruby" => Some(&RUBY_RULES),
             "r" => Some(&R_RULES),
             "solidity" => Some(&SOLIDITY_RULES),
+            "move" => Some(&MOVE_RULES),
+            "cairo" | "sway" => Some(&RUST_RULES),
+            "fe" => Some(&FE_RULES),
             "nix" => Some(&NIX_RULES),
             "cfml" | "cfscript" | "cfquery" => Some(&CFSCRIPT_RULES),
             "erlang" => Some(&ERLANG_RULES),
@@ -740,6 +743,98 @@ static SOLIDITY_RULES: LangRules = LangRules {
     ],
 };
 
+// ─── Move ─────────────────────────────────────────────────────────────────────────
+
+static MOVE_RULES: LangRules = LangRules {
+    branch_nodes: &[
+        "if_expression",
+        "while_expression",
+        "loop_expression",
+        "match_expression",
+    ],
+    case_nodes: &["match_arm"],
+    logical_op_nodes: &["binary_expression"],
+    logical_operators: &["&&", "||"],
+    nesting_nodes: &[
+        "if_expression",
+        "while_expression",
+        "loop_expression",
+        "match_expression",
+    ],
+    function_nodes: &[
+        "function_definition",
+        "macro_function_definition",
+        "usual_spec_function",
+    ],
+    body_field_names: &["body"],
+    operator_nodes: &[
+        "return_expression",
+        "abort_expression",
+        "if_expression",
+        "while_expression",
+        "loop_expression",
+        "match_expression",
+        "let_statement",
+        "assign_expression",
+    ],
+    operand_nodes: &[
+        "identifier",
+        "variable_identifier",
+        "num_literal",
+        "bool_literal",
+        "address_literal",
+        "byte_string_literal",
+        "hex_string_literal",
+    ],
+    operator_container_nodes: &["binary_expression", "unary_expression"],
+};
+
+// ─── Fe ─────────────────────────────────────────────────────────────────────────
+
+static FE_RULES: LangRules = LangRules {
+    branch_nodes: &[
+        "if_expression",
+        "for_statement",
+        "while_statement",
+        "match_expression",
+    ],
+    case_nodes: &["match_arm"],
+    logical_op_nodes: &[
+        "condition_binary_expression_no_or",
+        "condition_binary_expression_no_or_no_let",
+        "condition_or_expression_no_let",
+    ],
+    logical_operators: &["&&", "||"],
+    nesting_nodes: &[
+        "if_expression",
+        "for_statement",
+        "while_statement",
+        "match_expression",
+    ],
+    function_nodes: &["function_definition", "contract_init", "recv_arm"],
+    body_field_names: &["body"],
+    operator_nodes: &[
+        "return_statement",
+        "if_expression",
+        "for_statement",
+        "while_statement",
+        "match_expression",
+        "let_statement",
+    ],
+    operand_nodes: &[
+        "identifier",
+        "integer_literal",
+        "string_literal",
+        "boolean_literal",
+    ],
+    operator_container_nodes: &[
+        "binary_expression",
+        "unary_expression",
+        "assignment_expression",
+        "augmented_assignment_expression",
+    ],
+};
+
 // ─── Nix ─────────────────────────────────────────────────────────────────────
 
 static NIX_RULES: LangRules = LangRules {
@@ -1001,3 +1096,37 @@ pub static SWIFT_RULES: LangRules = LangRules {
         "ternary_expression",
     ],
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web3_languages_route_to_complexity_rules() {
+        assert!(std::ptr::eq(
+            LangRules::for_language("vyper").unwrap(),
+            &PYTHON_RULES
+        ));
+        assert!(std::ptr::eq(
+            LangRules::for_language("cairo").unwrap(),
+            &RUST_RULES
+        ));
+        assert!(std::ptr::eq(
+            LangRules::for_language("sway").unwrap(),
+            &RUST_RULES
+        ));
+        assert!(std::ptr::eq(
+            LangRules::for_language("move").unwrap(),
+            &MOVE_RULES
+        ));
+        assert!(std::ptr::eq(
+            LangRules::for_language("fe").unwrap(),
+            &FE_RULES
+        ));
+        assert!(
+            FE_RULES
+                .logical_op_nodes
+                .contains(&"condition_or_expression_no_let")
+        );
+    }
+}

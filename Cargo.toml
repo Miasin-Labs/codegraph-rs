@@ -54,6 +54,11 @@ tree-sitter-typescript = "0.23"
 tree-sitter-arkts = "0.2.0"
 tree-sitter-r = "1.3.0"
 tree-sitter-solidity = "1.2.13"
+tree-sitter-vyper = { git = "https://github.com/Olyno/tree-sitter-vyper", rev = "97d51f8b689b6a2dc62ab31b4d0d34797aec19a6" }
+tree-sitter-move = { git = "https://github.com/tzakian/tree-sitter-move", rev = "640ee15e4a7b0d09a4bc95dcc71336c28d97999b" }
+tree-sitter-cairo = { git = "https://github.com/starkware-libs/tree-sitter-cairo.git", rev = "b04ffb8c10a1a9faaea71a6757753fed4e1fcbfb" }
+tree-sitter-sway = { git = "https://github.com/FuelLabs/tree-sitter-sway.git", rev = "9b7845ce06ecb38b040c3940970b4fd0adc331d1" }
+tree-sitter-fe = { git = "https://github.com/fe-lang/tree-sitter-fe", rev = "4f8f4fcb6559d98c8e564c8da2542e0bc4736144" }
 tree-sitter-nix = "0.3.0"
 tree-sitter-cfml = "0.26.30"
 tree-sitter-vb-dotnet = "0.1.0"
@@ -93,9 +98,9 @@ gpu = ["dep:cudarc", "dep:libloading", "codegraph-analysis/gpu"]
 [dev-dependencies]
 tempfile = "3"
 
-# The patched COBOL grammar still declares tree-sitter ~0.20 even though its
-# binding only exposes `Language`. Re-export the workspace's 0.26 API for that
-# legacy semver slot so Cargo keeps a single native tree-sitter runtime.
+# Some pinned legacy grammars still declare tree-sitter ~0.20 even though their
+# bindings only expose `Language`. Re-export the workspace's 0.26 API for that
+# semver slot so Cargo keeps a single native tree-sitter runtime.
 [patch.crates-io]
 tree-sitter = { path = "vendor/tree-sitter-compat-0-20" }
 

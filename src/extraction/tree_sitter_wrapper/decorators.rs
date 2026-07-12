@@ -2,7 +2,7 @@ use super::context::{named_children, strip_qualifier};
 use super::extractor::TreeSitterExtractor;
 use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
 use crate::extraction::tree_sitter_types::SyntaxNode;
-use crate::types::{EdgeKind, UnresolvedReference};
+use crate::types::{EdgeKind, Language, UnresolvedReference};
 
 impl<'a> TreeSitterExtractor<'a> {
     /// Consider one node as a decorator/annotation attached to `decorated_id`
@@ -38,6 +38,21 @@ impl<'a> TreeSitterExtractor<'a> {
         let Some(target) = target else { return };
         let name = strip_qualifier(get_node_text(target, self.source));
         if name.is_empty() {
+            return;
+        }
+        if self.language == Language::Vyper
+            && matches!(
+                name.as_str(),
+                "deploy"
+                    | "external"
+                    | "internal"
+                    | "nonpayable"
+                    | "nonreentrant"
+                    | "payable"
+                    | "pure"
+                    | "view"
+            )
+        {
             return;
         }
         self.unresolved_references.push(UnresolvedReference {

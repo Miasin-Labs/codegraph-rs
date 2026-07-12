@@ -11,18 +11,21 @@ pub mod apex;
 pub mod arkts;
 pub mod bash;
 pub mod c_cpp;
+pub mod cairo;
 pub mod cfquery;
 pub mod cfscript;
 pub mod cobol;
 pub mod csharp;
 pub mod dart;
 pub mod erlang;
+pub mod fe;
 pub mod go;
 pub mod java;
 pub mod javascript;
 pub mod kotlin;
 pub mod lua;
 pub mod luau;
+pub mod move_lang;
 pub mod nix;
 pub mod objc;
 pub mod pascal;
@@ -33,27 +36,32 @@ pub mod ruby;
 pub mod rust;
 pub mod scala;
 pub mod solidity;
+pub mod sway;
 pub mod swift;
 pub mod terraform;
 pub mod typescript;
 pub mod vbnet;
+pub mod vyper;
 
 pub use apex::ApexExtractor;
 pub use arkts::ArktsExtractor;
 pub use bash::BashExtractor;
 pub use c_cpp::{CExtractor, CppExtractor};
+pub use cairo::CairoExtractor;
 pub use cfquery::CfqueryExtractor;
 pub use cfscript::CfscriptExtractor;
 pub use cobol::CobolExtractor;
 pub use csharp::CsharpExtractor;
 pub use dart::DartExtractor;
 pub use erlang::ErlangExtractor;
+pub use fe::FeExtractor;
 pub use go::GoExtractor;
 pub use java::JavaExtractor;
 pub use javascript::JavascriptExtractor;
 pub use kotlin::KotlinExtractor;
 pub use lua::LuaExtractor;
 pub use luau::LuauExtractor;
+pub use move_lang::MoveExtractor;
 pub use nix::NixExtractor;
 pub use objc::ObjcExtractor;
 pub use pascal::PascalExtractor;
@@ -64,10 +72,12 @@ pub use ruby::RubyExtractor;
 pub use rust::RustExtractor;
 pub use scala::ScalaExtractor;
 pub use solidity::SolidityExtractor;
+pub use sway::SwayExtractor;
 pub use swift::SwiftExtractor;
 pub use terraform::TerraformExtractor;
 pub use typescript::TypescriptExtractor;
 pub use vbnet::VbnetExtractor;
+pub use vyper::VyperExtractor;
 
 use crate::extraction::tree_sitter_types::{LanguageExtractor, SyntaxNode};
 use crate::types::Language;
@@ -110,6 +120,11 @@ pub fn extractor_for(language: Language) -> Option<&'static dyn LanguageExtracto
         Language::Objc => Some(&ObjcExtractor),
         Language::R => Some(&RExtractor),
         Language::Solidity => Some(&SolidityExtractor),
+        Language::Vyper => Some(&VyperExtractor),
+        Language::Move => Some(&MoveExtractor),
+        Language::Cairo => Some(&CairoExtractor),
+        Language::Sway => Some(&SwayExtractor),
+        Language::Fe => Some(&FeExtractor),
         Language::Nix => Some(&NixExtractor),
         Language::Cfscript => Some(&CfscriptExtractor),
         Language::Cfquery => Some(&CfqueryExtractor),
@@ -163,6 +178,11 @@ mod tests {
                 Language::Objc,
                 Language::R,
                 Language::Solidity,
+                Language::Vyper,
+                Language::Move,
+                Language::Cairo,
+                Language::Sway,
+                Language::Fe,
                 Language::Nix,
                 Language::Apex,
                 Language::Bash,

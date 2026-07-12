@@ -67,9 +67,9 @@ entry point.
 The indexer recognizes TypeScript, JavaScript, TSX, JSX, ArkTS, Python, Go,
 Rust, Java, C, C++, C#, Razor/Blazor, PHP, Ruby, Swift, Kotlin, Dart, Svelte,
 Vue, Astro, Liquid, Pascal/Delphi, Scala, Lua, Luau, Objective-C, R, Solidity,
-Nix, Salesforce Apex, Bash, HTML, Visualforce, Aura, YAML, Twig, XML,
-properties files, CFML, CFScript, embedded CFQuery, COBOL/copybooks, VB.NET,
-Erlang/OTP resources, and Terraform/OpenTofu.
+Vyper, Move, Cairo, Sway, Fe, Nix, Salesforce Apex, Bash, HTML, Visualforce,
+Aura, YAML, Twig, XML, properties files, CFML, CFScript, embedded CFQuery,
+COBOL/copybooks, VB.NET, Erlang/OTP resources, and Terraform/OpenTofu.
 
 Metal (`.metal`) and CUDA (`.cu`, `.cuh`) use the C++ extractor after
 line-preserving syntax preprocessing. Razor, Astro, Svelte, Vue, Liquid, and
@@ -262,8 +262,9 @@ than over-claiming):
 - **Rule-backed source analysis** — `complexity` (and `diff`'s complexity
   deltas) re-parses on-disk sources with the compiled tree-sitter grammars.
   Rules cover Rust, TypeScript/JavaScript, ArkTS, Python, Go, Java, C, C++,
-  C#, PHP, Kotlin, Swift, Ruby, R, Solidity, Nix, CFML/CFScript/CFQuery, and
-  Erlang. Other languages are counted in the report's `skipped` breakdown.
+  C#, PHP, Kotlin, Swift, Ruby, R, Solidity, Vyper, Move, Cairo, Sway, Fe, Nix,
+  CFML/CFScript/CFQuery, and Erlang. Other languages are counted in the
+  report's `skipped` breakdown.
 - **Value level needs IR** — `slice`/`taint --value-level` lower the
   engine's per-function dataflow IR by re-parsing on-disk sources anchored
   at the indexed byte offsets (schema-v5+ indexes; re-index pre-v5 projects

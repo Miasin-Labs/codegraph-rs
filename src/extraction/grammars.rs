@@ -97,6 +97,11 @@ pub const EXTENSION_MAP: &[(&str, Language)] = &[
     (".m", Language::Objc),
     (".mm", Language::Objc),
     (".sol", Language::Solidity),
+    (".vy", Language::Vyper),
+    (".move", Language::Move),
+    (".cairo", Language::Cairo),
+    (".sw", Language::Sway),
+    (".fe", Language::Fe),
     // ColdFusion markup/components and standalone CFScript.
     (".cfc", Language::Cfml),
     (".cfm", Language::Cfml),
@@ -255,6 +260,11 @@ const GRAMMAR_LANGUAGES: &[Language] = &[
     Language::Objc,
     Language::R,
     Language::Solidity,
+    Language::Vyper,
+    Language::Move,
+    Language::Cairo,
+    Language::Sway,
+    Language::Fe,
     Language::Nix,
     Language::Cfml,
     Language::Cfscript,
@@ -270,8 +280,12 @@ const GRAMMAR_LANGUAGES: &[Language] = &[
 /// The native tree-sitter grammar for a language, or `None` when the
 /// language has no grammar (custom extractors / file-level-only formats).
 pub fn grammar_language(language: Language) -> Option<tree_sitter::Language> {
-    if language == Language::Cobol {
-        return Some(tree_sitter_cobol::language());
+    match language {
+        Language::Cobol => return Some(tree_sitter_cobol::language()),
+        Language::Move => return Some(tree_sitter_move::language()),
+        Language::Cairo => return Some(tree_sitter_cairo::language()),
+        Language::Sway => return Some(tree_sitter_sway::language()),
+        _ => {}
     }
     let lang_fn = match language {
         Language::Typescript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
@@ -299,11 +313,15 @@ pub fn grammar_language(language: Language) -> Option<tree_sitter::Language> {
         Language::Objc => tree_sitter_objc::LANGUAGE,
         Language::R => tree_sitter_r::LANGUAGE,
         Language::Solidity => tree_sitter_solidity::LANGUAGE,
+        Language::Vyper => tree_sitter_vyper::LANGUAGE,
+        Language::Fe => tree_sitter_fe::LANGUAGE,
         Language::Nix => tree_sitter_nix::LANGUAGE,
         Language::Cfml => tree_sitter_cfml::LANGUAGE_CFML,
         Language::Cfscript => tree_sitter_cfml::LANGUAGE_CFSCRIPT,
         Language::Cfquery => tree_sitter_cfml::LANGUAGE_CFQUERY,
-        Language::Cobol => unreachable!("handled before LanguageFn dispatch"),
+        Language::Move | Language::Cairo | Language::Sway | Language::Cobol => {
+            unreachable!("handled before LanguageFn dispatch")
+        }
         Language::Vbnet => tree_sitter_vb_dotnet::LANGUAGE,
         Language::Erlang => tree_sitter_erlang::LANGUAGE,
         Language::Terraform => tree_sitter_hcl::LANGUAGE,
@@ -551,6 +569,11 @@ pub fn get_language_display_name(language: Language) -> &'static str {
         Language::Objc => "Objective-C",
         Language::R => "R",
         Language::Solidity => "Solidity",
+        Language::Vyper => "Vyper",
+        Language::Move => "Move",
+        Language::Cairo => "Cairo",
+        Language::Sway => "Sway",
+        Language::Fe => "Fe",
         Language::Nix => "Nix",
         Language::Apex => "Apex",
         Language::Bash => "Shell (Bash)",
@@ -638,6 +661,6 @@ mod tests {
         assert!(is_language_supported(Language::Html));
         assert!(is_language_supported(Language::Visualforce));
         assert!(is_language_supported(Language::Aura));
-        assert_eq!(get_supported_languages().len(), 42);
+        assert_eq!(get_supported_languages().len(), 47);
     }
 }

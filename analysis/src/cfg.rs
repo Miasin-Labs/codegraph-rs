@@ -220,40 +220,53 @@ fn walk_block_inner(
             builder.add_edge(current, branch_id, CfgEdgeKind::Normal);
 
             // True branch: find the body/consequence.
-            let true_body = effective
-                .child_by_field_name("consequence")
-                .or_else(|| effective.child_by_field_name("body"));
+            let true_body = child_by_field_names(effective, &["consequence", "body", "et"]);
 
             let after_id = builder.new_block("after_if", CfgBlockKind::Normal, end, end);
 
+            let true_edge_start = builder.edges.len();
             let true_end = if let Some(tbody) = true_body {
                 walk_block(builder, tbody, source, rules, branch_id, exit_id)
             } else {
                 Some(branch_id)
             };
 
-            // Connect true branch with BranchTrue edge from branch to first stmt.
-            // The walk_block already created its own flow from branch_id, but we
-            // need to re-label the edge. Instead, we trust that walk_block's first
-            // edge from branch_id is the true path. We'll add the edge type at
-            // the branch→true_body level.
-            // Actually: let's just mark the edge we added (current→branch) as Normal
-            // and add true/false from branch.
+            if let Some(edge) = builder.edges[true_edge_start..]
+                .iter_mut()
+                .find(|edge| edge.from == branch_id)
+            {
+                edge.kind = CfgEdgeKind::BranchTrue;
+            }
+
             if let Some(te) = true_end {
                 if !builder
                     .edges
                     .iter()
                     .any(|e| e.from == te && e.to == exit_id)
                 {
-                    builder.add_edge(te, after_id, CfgEdgeKind::Normal);
+                    builder.add_edge(
+                        te,
+                        after_id,
+                        if te == branch_id {
+                            CfgEdgeKind::BranchTrue
+                        } else {
+                            CfgEdgeKind::Normal
+                        },
+                    );
                 }
             }
 
-            // False branch: else clause.
-            let else_child = rules.else_node.and_then(|en| {
-                let mut c2 = effective.walk();
-                effective.named_children(&mut c2).find(|n| n.kind() == en)
-            });
+            // False branch: a fielded alternative (including Move's `ef`) or
+            // a language-specific else-clause child.
+            let else_child =
+                child_by_field_names(effective, &["alternative", "ef"]).or_else(|| {
+                    rules.else_node.and_then(|en| {
+                        let mut cursor = effective.walk();
+                        effective
+                            .named_children(&mut cursor)
+                            .find(|node| node.kind() == en)
+                    })
+                });
 
             if let Some(else_node) = else_child {
                 // Create an else block and add BranchFalse edge to it.
@@ -443,6 +456,12 @@ fn walk_block_inner(
     if terminated { None } else { Some(current) }
 }
 
+fn child_by_field_names<'a>(node: TsNode<'a>, fields: &[&str]) -> Option<TsNode<'a>> {
+    fields
+        .iter()
+        .find_map(|field| node.child_by_field_name(field))
+}
+
 // ─── Display ─────────────────────────────────────────────────────────────────
 
 impl FunctionCfg {
@@ -568,6 +587,7 @@ fn foo(x: i32) {
             !false_edges.is_empty(),
             "expected at least one BranchFalse edge"
         );
+        assert!(cfg.edges.iter().any(|e| e.kind == CfgEdgeKind::BranchTrue));
     }
 
     #[test]

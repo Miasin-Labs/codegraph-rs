@@ -179,7 +179,7 @@ fn extract_params(
 ) -> Vec<DataflowParam> {
     let mut params = Vec::new();
 
-    let param_list = match function_node.child_by_field_name(rules.param_list_field) {
+    let param_list = match find_parameter_list(function_node, rules.param_list_field) {
         Some(pl) => pl,
         None => return params,
     };
@@ -193,10 +193,11 @@ fn extract_params(
             continue;
         }
 
-        // For Rust `parameter` nodes: field `pattern` has the name, field `type` has the type.
+        // Rust/Cairo use `pattern`; Fe uses `name` on the same node kind.
         if child.kind() == "parameter" {
             let name = child
                 .child_by_field_name("pattern")
+                .or_else(|| child.child_by_field_name("name"))
                 .map(|n| node_text(n, source))
                 .unwrap_or_default();
             let type_annotation = child
@@ -336,12 +337,10 @@ fn collect_assignments_inner(
     out: &mut Vec<DataflowAssignment>,
 ) {
     if rules.assignment_nodes.contains(&node.kind()) {
-        let target = node
-            .child_by_field_name(rules.assign_left_field)
+        let target = child_by_field_or(node, rules.assign_left_field, "lhs")
             .map(|n| node_text(n, source))
             .unwrap_or_default();
-        let source_kind = node
-            .child_by_field_name(rules.assign_right_field)
+        let source_kind = child_by_field_or(node, rules.assign_right_field, "rhs")
             .map(|rhs| classify_rhs(rhs, source, rules, param_names))
             .unwrap_or(AssignSourceKind::Other);
 
@@ -435,7 +434,7 @@ fn extract_calls_and_mutations_inner(
     // Pattern 2: `call_expression` with `function` field = field_expression → method call
 
     if rules.call_nodes.contains(&kind) {
-        if let Some(func_node) = node.child_by_field_name(rules.call_function_field) {
+        if let Some(func_node) = call_function_node(node, rules.call_function_field) {
             let callee_name: String;
             let is_method_call: bool;
             let receiver: Option<String>;
@@ -475,8 +474,9 @@ fn extract_calls_and_mutations_inner(
             if let Some(args_node) = node.child_by_field_name(rules.call_args_field) {
                 let mut cursor = args_node.walk();
                 for (arg_pos, arg) in (0_u32..).zip(args_node.named_children(&mut cursor)) {
-                    let arg_text = node_text(arg, source);
-                    let source_param = if arg.kind() == rules.identifier_node
+                    let value = arg.child_by_field_name("value").unwrap_or(arg);
+                    let arg_text = node_text(value, source);
+                    let source_param = if value.kind() == rules.identifier_node
                         && param_names.contains(&arg_text.as_str())
                     {
                         Some(arg_text)
@@ -523,6 +523,41 @@ fn extract_calls_and_mutations_inner(
 
 fn node_text(node: TsNode<'_>, source: &[u8]) -> String {
     node.utf8_text(source).unwrap_or("").to_string()
+}
+
+fn find_parameter_list<'a>(function: TsNode<'a>, field: &str) -> Option<TsNode<'a>> {
+    if !field.is_empty() {
+        if let Some(params) = function.child_by_field_name(field) {
+            return Some(params);
+        }
+
+        let mut cursor = function.walk();
+        if let Some(params) = function
+            .named_children(&mut cursor)
+            .find_map(|child| child.child_by_field_name(field))
+        {
+            return Some(params);
+        }
+    }
+
+    let mut cursor = function.walk();
+    function
+        .named_children(&mut cursor)
+        .find(|child| matches!(child.kind(), "parameter_list" | "parameters"))
+}
+
+fn child_by_field_or<'a>(node: TsNode<'a>, field: &str, fallback: &str) -> Option<TsNode<'a>> {
+    (!field.is_empty())
+        .then(|| node.child_by_field_name(field))
+        .flatten()
+        .or_else(|| node.child_by_field_name(fallback))
+}
+
+fn call_function_node<'a>(call: TsNode<'a>, field: &str) -> Option<TsNode<'a>> {
+    (!field.is_empty())
+        .then(|| call.child_by_field_name(field))
+        .flatten()
+        .or_else(|| call.named_child(0))
 }
 
 fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
@@ -780,5 +815,40 @@ fn caller(a: i32, b: String) {
         assert_eq!(df.arg_flows[1].callee, "foo");
         assert_eq!(df.arg_flows[1].arg_position, 1);
         assert_eq!(df.arg_flows[1].source_param.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn ast_field_fallbacks_cover_nested_params_and_unfielded_callees() {
+        let src = "fn caller(x: i32) { let y = foo(x); }";
+        let tree = parse_rust(src);
+        let root = tree.root_node();
+        let function = find_first_function(&tree);
+
+        assert_eq!(
+            node_text(
+                find_parameter_list(root, "parameters").unwrap(),
+                src.as_bytes()
+            ),
+            "(x: i32)"
+        );
+        assert_eq!(
+            node_text(find_parameter_list(function, "").unwrap(), src.as_bytes()),
+            "(x: i32)"
+        );
+
+        let body = function.child_by_field_name("body").unwrap();
+        let declaration = body.named_child(0).unwrap();
+        assert_eq!(
+            node_text(
+                child_by_field_or(declaration, "", "pattern").unwrap(),
+                src.as_bytes()
+            ),
+            "y"
+        );
+        let call = declaration.child_by_field_name("value").unwrap();
+        assert_eq!(
+            node_text(call_function_node(call, "").unwrap(), src.as_bytes()),
+            "foo"
+        );
     }
 }

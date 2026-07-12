@@ -355,6 +355,11 @@ impl<'a> TreeSitterExtractor<'a> {
             let func = get_child_by_field(node, "function").or_else(|| node.named_child(0));
 
             if let Some(func) = func {
+                let func = if func.kind() == "generic_function" {
+                    get_child_by_field(func, "function").unwrap_or(func)
+                } else {
+                    func
+                };
                 if matches!(
                     func.kind(),
                     "member_expression"
@@ -421,6 +426,41 @@ impl<'a> TreeSitterExtractor<'a> {
 
         if !callee_name.is_empty() {
             self.push_call_reference(&caller_id, callee_name, node);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::extraction::languages::extractor_for;
+    use crate::extraction::tree_sitter_wrapper::TreeSitterExtractor;
+    use crate::types::{EdgeKind, Language};
+
+    #[test]
+    fn cairo_and_sway_generic_calls_drop_type_arguments() {
+        for (language, path, source) in [
+            (
+                Language::Cairo,
+                "generic.cairo",
+                "fn caller() { helper::<felt252>(1); }",
+            ),
+            (
+                Language::Sway,
+                "generic.sw",
+                "script; fn caller() { helper::<u64>(1); }",
+            ),
+        ] {
+            let result =
+                TreeSitterExtractor::new(path, source, Some(language), extractor_for(language))
+                    .extract();
+            assert!(result.errors.is_empty(), "{language}: {:?}", result.errors);
+            let calls: Vec<_> = result
+                .unresolved_references
+                .iter()
+                .filter(|reference| reference.reference_kind == EdgeKind::Calls)
+                .map(|reference| reference.reference_name.as_str())
+                .collect();
+            assert_eq!(calls, ["helper"], "{language}: {result:#?}");
         }
     }
 }

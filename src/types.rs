@@ -256,6 +256,11 @@ pub enum Language {
     Objc,
     R,
     Solidity,
+    Vyper,
+    Move,
+    Cairo,
+    Sway,
+    Fe,
     Nix,
     Apex,
     Bash,
@@ -277,7 +282,7 @@ pub enum Language {
 }
 
 /// Runtime-iterable list of all languages (mirrors `LANGUAGES` in TS).
-pub const LANGUAGES: [Language; 47] = [
+pub const LANGUAGES: [Language; 52] = [
     Language::Typescript,
     Language::Javascript,
     Language::Tsx,
@@ -307,6 +312,11 @@ pub const LANGUAGES: [Language; 47] = [
     Language::Objc,
     Language::R,
     Language::Solidity,
+    Language::Vyper,
+    Language::Move,
+    Language::Cairo,
+    Language::Sway,
+    Language::Fe,
     Language::Nix,
     Language::Apex,
     Language::Bash,
@@ -359,6 +369,11 @@ impl Language {
             Language::Objc => "objc",
             Language::R => "r",
             Language::Solidity => "solidity",
+            Language::Vyper => "vyper",
+            Language::Move => "move",
+            Language::Cairo => "cairo",
+            Language::Sway => "sway",
+            Language::Fe => "fe",
             Language::Nix => "nix",
             Language::Apex => "apex",
             Language::Bash => "bash",

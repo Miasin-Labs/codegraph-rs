@@ -333,10 +333,12 @@ dependencies = [
  "tree-sitter-bash",
  "tree-sitter-c",
  "tree-sitter-c-sharp",
+ "tree-sitter-cairo",
  "tree-sitter-cfml",
  "tree-sitter-cpp",
  "tree-sitter-dart",
  "tree-sitter-erlang",
+ "tree-sitter-fe",
  "tree-sitter-go",
  "tree-sitter-hcl",
  "tree-sitter-java",
@@ -344,6 +346,7 @@ dependencies = [
  "tree-sitter-kotlin-ng",
  "tree-sitter-lua",
  "tree-sitter-luau",
+ "tree-sitter-move",
  "tree-sitter-nix",
  "tree-sitter-objc",
  "tree-sitter-pascal",
@@ -355,9 +358,11 @@ dependencies = [
  "tree-sitter-scala",
  "tree-sitter-sfapex",
  "tree-sitter-solidity",
+ "tree-sitter-sway",
  "tree-sitter-swift",
  "tree-sitter-typescript",
  "tree-sitter-vb-dotnet",
+ "tree-sitter-vyper",
  "walkdir",
 ]
 
@@ -1772,6 +1777,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-cairo"
+version = "0.0.1"
+source = "git+https://github.com/starkware-libs/tree-sitter-cairo.git?rev=b04ffb8c10a1a9faaea71a6757753fed4e1fcbfb#b04ffb8c10a1a9faaea71a6757753fed4e1fcbfb"
+dependencies = [
+ "cc",
+ "tree-sitter 0.26.9",
+]
+
+[[package]]
 name = "tree-sitter-cfml"
 version = "0.26.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1806,6 +1820,15 @@ name = "tree-sitter-erlang"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a5c42fa011acaeb36d0be0f3ebc87d7a4009cd92a6969cbc63320bcfd989df69"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-fe"
+version = "0.1.0"
+source = "git+https://github.com/fe-lang/tree-sitter-fe?rev=4f8f4fcb6559d98c8e564c8da2542e0bc4736144#4f8f4fcb6559d98c8e564c8da2542e0bc4736144"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -1894,6 +1917,15 @@ checksum = "871abeb427d719788bb38094facd7ff082908ef2b93c1d3d6a5f6025330120f4"
 dependencies = [
  "cc",
  "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-move"
+version = "0.0.1"
+source = "git+https://github.com/tzakian/tree-sitter-move?rev=640ee15e4a7b0d09a4bc95dcc71336c28d97999b#640ee15e4a7b0d09a4bc95dcc71336c28d97999b"
+dependencies = [
+ "cc",
+ "tree-sitter 0.20.10",
 ]
 
 [[package]]
@@ -2007,6 +2039,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-sway"
+version = "0.0.1"
+source = "git+https://github.com/FuelLabs/tree-sitter-sway.git?rev=9b7845ce06ecb38b040c3940970b4fd0adc331d1#9b7845ce06ecb38b040c3940970b4fd0adc331d1"
+dependencies = [
+ "cc",
+ "tree-sitter 0.20.10",
+]
+
+[[package]]
 name = "tree-sitter-swift"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2031,6 +2072,15 @@ name = "tree-sitter-vb-dotnet"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "180e4a199378505f9305c3d01d6ece8a8d34035f310de1c727693f8a2296025e"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-vyper"
+version = "0.1.0"
+source = "git+https://github.com/Olyno/tree-sitter-vyper?rev=97d51f8b689b6a2dc62ab31b4d0d34797aec19a6#97d51f8b689b6a2dc62ab31b4d0d34797aec19a6"
 dependencies = [
  "cc",
  "tree-sitter-language",

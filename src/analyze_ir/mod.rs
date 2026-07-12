@@ -9,12 +9,14 @@
 //!   node's recorded line/column — the same proven anchor pattern
 //!   `analyze complexity` uses. CFG rules cover Rust, TypeScript/TSX,
 //!   JavaScript/JSX, ArkTS, Python, Go, Java, C, C++, PHP, R, Solidity,
+//!   Vyper, Move, Cairo, Sway, Fe,
 //!   Nix, CFML/CFScript/CFQuery, and Erlang; other languages get an honest
 //!   capability note, never a silent empty graph.
 //! - **`analyze dataflow <symbol>`** ([`dataflow_report`]) — per-function
 //!   dataflow facts (`dataflow::extract_dataflow`: params, returns,
 //!   assignments, argument flows, mutations), same anchoring. Rules cover
 //!   Rust, TypeScript/TSX, JavaScript/JSX, ArkTS, Python, Go, R, Solidity,
+//!   Vyper, Move, Cairo, Sway, Fe,
 //!   Nix, CFML/CFScript/CFQuery, and Erlang.
 //! - **`analyze slice|taint --value-level`** ([`value_slice_report`],
 //!   [`value_taint_report`]) — upgrades the call-graph oracle to the
@@ -71,10 +73,10 @@ use crate::extraction::{create_parser, detect_language};
 use crate::types::Language;
 
 /// Human list of CFG-rule-covered languages, for capability notes.
-const CFG_COVERED_LANGUAGES: &str = "Rust, TypeScript/TSX, JavaScript/JSX, ArkTS, Python, Go, Java, C, C++, PHP, R, Solidity, Nix, CFML/CFScript/CFQuery, and Erlang";
+const CFG_COVERED_LANGUAGES: &str = "Rust, TypeScript/TSX, JavaScript/JSX, ArkTS, Python, Go, Java, C, C++, PHP, R, Solidity, Vyper, Move, Cairo, Sway, Fe, Nix, CFML/CFScript/CFQuery, and Erlang";
 
 /// Human list of dataflow-rule-covered languages, for capability notes.
-const DATAFLOW_COVERED_LANGUAGES: &str = "Rust, TypeScript/TSX, JavaScript/JSX, ArkTS, Python, Go, R, Solidity, Nix, CFML/CFScript/CFQuery, and Erlang";
+const DATAFLOW_COVERED_LANGUAGES: &str = "Rust, TypeScript/TSX, JavaScript/JSX, ArkTS, Python, Go, R, Solidity, Vyper, Move, Cairo, Sway, Fe, Nix, CFML/CFScript/CFQuery, and Erlang";
 
 /// Human list of IR-lowering-covered languages, for capability notes.
 const IR_COVERED_LANGUAGES: &str = "Rust, Python, TypeScript/TSX, JavaScript/JSX, and Go";
@@ -99,6 +101,11 @@ fn cfg_lang_id(language: Language) -> Option<&'static str> {
         Language::Php => "php",
         Language::R => "r",
         Language::Solidity => "solidity",
+        Language::Vyper => "vyper",
+        Language::Move => "move",
+        Language::Cairo => "cairo",
+        Language::Sway => "sway",
+        Language::Fe => "fe",
         Language::Nix => "nix",
         Language::Cfml => "cfml",
         Language::Cfscript => "cfscript",
@@ -120,6 +127,11 @@ fn dataflow_lang_id(language: Language) -> Option<&'static str> {
         Language::Go => "go",
         Language::R => "r",
         Language::Solidity => "solidity",
+        Language::Vyper => "vyper",
+        Language::Move => "move",
+        Language::Cairo => "cairo",
+        Language::Sway => "sway",
+        Language::Fe => "fe",
         Language::Nix => "nix",
         Language::Cfml => "cfml",
         Language::Cfscript => "cfscript",
@@ -1100,6 +1112,22 @@ mod tests {
         assert!(report.edges.iter().any(|e| e.kind == "branchFalse"));
     }
 
+    #[test]
+    fn cfg_report_models_move_if_branches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = "module 0x1::flow {\n    public fun choose(value: u64): u64 {\n        if (value > 0) {\n            helper(value)\n        } else {\n            fallback(value)\n        }\n    }\n}\n";
+        write_temp(tmp.path(), "flow.move", source);
+
+        let mut graph = AnalysisGraph::new();
+        let id = graph.add_node(fn_node("flow.move", "choose", source, "public fun choose"));
+        let report = cfg_report(&graph, tmp.path(), &id).expect("node in graph");
+
+        assert!(report.analyzed, "report: {report:?}");
+        assert!(report.blocks.iter().any(|block| block.kind == "branch"));
+        assert!(report.blocks.iter().any(|block| block.label == "else"));
+        assert!(report.edges.iter().any(|edge| edge.kind == "branchFalse"));
+    }
+
     // Honesty: a language without CFG rules is an explicit capability note,
     // not an empty graph.
     #[test]
@@ -1168,6 +1196,56 @@ mod tests {
             "arg flows: {:?}",
             report.arg_flows
         );
+    }
+
+    #[test]
+    fn dataflow_report_handles_web3_grammar_shapes() {
+        let cases = [
+            (
+                "flow.vy",
+                "def relay(value: uint256) -> uint256:\n    return helper(value)\n",
+                "def relay",
+            ),
+            (
+                "flow.move",
+                "module 0x1::flow {\n    public fun relay(value: u64): u64 {\n        helper(value)\n    }\n}\n",
+                "public fun relay",
+            ),
+            (
+                "flow.cairo",
+                "fn relay(value: felt252) -> felt252 {\n    helper(value)\n}\n",
+                "fn relay",
+            ),
+            (
+                "flow.sw",
+                "script;\nfn relay(value: u64) -> u64 {\n    helper(value)\n}\n",
+                "fn relay",
+            ),
+            (
+                "flow.fe",
+                "pub fn relay(value: u256) -> u256 {\n    return helper(value)\n}\n",
+                "pub fn relay",
+            ),
+        ];
+
+        for (file, source, declaration) in cases {
+            let tmp = tempfile::tempdir().unwrap();
+            write_temp(tmp.path(), file, source);
+
+            let mut graph = AnalysisGraph::new();
+            let id = graph.add_node(fn_node(file, "relay", source, declaration));
+            let report = dataflow_report(&graph, tmp.path(), &id).expect("node in graph");
+
+            assert!(report.analyzed, "{file}: {report:?}");
+            assert_eq!(report.params.len(), 1, "{file}: {report:?}");
+            assert_eq!(report.params[0].name, "value", "{file}: {report:?}");
+            assert!(
+                report.arg_flows.iter().any(|flow| {
+                    flow.callee == "helper" && flow.source_param.as_deref() == Some("value")
+                }),
+                "{file}: {report:?}"
+            );
+        }
     }
 
     // Honesty: dataflow rules cover fewer languages than CFG rules — Java is
@@ -1331,6 +1409,11 @@ mod tests {
             Language::Php,
             Language::R,
             Language::Solidity,
+            Language::Vyper,
+            Language::Move,
+            Language::Cairo,
+            Language::Sway,
+            Language::Fe,
             Language::Nix,
             Language::Cfml,
             Language::Cfscript,
@@ -1350,6 +1433,11 @@ mod tests {
             Language::Go,
             Language::R,
             Language::Solidity,
+            Language::Vyper,
+            Language::Move,
+            Language::Cairo,
+            Language::Sway,
+            Language::Fe,
             Language::Nix,
             Language::Cfml,
             Language::Cfscript,
