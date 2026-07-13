@@ -1,4 +1,4 @@
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
 use super::super::format::{
@@ -9,6 +9,12 @@ use super::super::format::{
 };
 use super::super::schema::ToolResult;
 use super::literal::{append_literal_content_section, collect_literal_content_matches};
+use super::payload::{
+    ExplorePayloadInput,
+    additional_file_payloads,
+    explore_payload,
+    relationship_payloads,
+};
 use super::relationships::{
     append_explore_footer,
     append_graph_sections,
@@ -77,7 +83,8 @@ impl ToolHandler {
                     additional_files: Vec::new(),
                     literal_matches: &literal_matches,
                     trimmed: false,
-                });
+                    omissions: Vec::new(),
+                })?;
                 return finish_explore_result(self, "", lines, Some(payload));
             }
             let payload = explore_payload(ExplorePayloadInput {
@@ -90,7 +97,8 @@ impl ToolHandler {
                 additional_files: Vec::new(),
                 literal_matches: &[],
                 trimmed: false,
-            });
+                omissions: Vec::new(),
+            })?;
             return finish_explore_result(
                 self,
                 "",
@@ -174,114 +182,13 @@ impl ToolHandler {
             total_symbols: nodes.len(),
             total_files: ranked.file_order.len(),
             files_included: source_result.files_included,
-            source_files: source_result
-                .rendered_files
-                .iter()
-                .map(|file| {
-                    json!({
-                        "path": file.path,
-                        "language": file.language,
-                        "header": file.header,
-                        "body": file.body,
-                    })
-                })
-                .collect(),
+            source_files: source_result.rendered_files,
             relationships: relationship_payloads(&edges, &nodes),
             additional_files: additional_file_payloads(&ranked, source_result.files_included),
             literal_matches: &literal_matches,
             trimmed: source_result.any_file_trimmed,
-        });
+            omissions: source_result.omissions,
+        })?;
         finish_explore_result(self, &flow.text, lines, Some(payload))
     }
-}
-
-struct ExplorePayloadInput<'a> {
-    query: &'a str,
-    total_symbols: usize,
-    total_files: usize,
-    files_included: usize,
-    source_files: Vec<Value>,
-    relationships: Vec<Value>,
-    additional_files: Vec<Value>,
-    literal_matches: &'a [super::literal::LiteralFileMatch],
-    trimmed: bool,
-}
-
-fn explore_payload(input: ExplorePayloadInput<'_>) -> Value {
-    let literal_matches = input
-        .literal_matches
-        .iter()
-        .map(|file| {
-            json!({
-                "filePath": file.file_path,
-                "language": file.language,
-                "lines": file.lines.iter().map(|line| json!({
-                    "lineNumber": line.line_number,
-                    "text": line.text,
-                    "terms": line.terms,
-                })).collect::<Vec<_>>()
-            })
-        })
-        .collect::<Vec<_>>();
-    json!({
-        "schemaVersion": 1,
-        "kind": "explore",
-        "query": input.query,
-        "totalSymbols": input.total_symbols,
-        "totalFiles": input.total_files,
-        "filesIncluded": input.files_included,
-        "sourceFiles": input.source_files,
-        "relationships": input.relationships,
-        "additionalFiles": input.additional_files,
-        "literalMatches": literal_matches,
-        "trimmed": input.trimmed,
-    })
-}
-
-fn relationship_payloads(
-    edges: &[crate::types::Edge],
-    nodes: &super::super::format::OrderedNodeMap,
-) -> Vec<Value> {
-    edges
-        .iter()
-        .filter(|edge| edge.kind != crate::types::EdgeKind::Contains)
-        .filter_map(|edge| {
-            let source = nodes.get(&edge.source)?;
-            let target = nodes.get(&edge.target)?;
-            Some(json!({
-                "kind": edge.kind.as_str(),
-                "source": source.qualified_name.clone(),
-                "target": target.qualified_name.clone(),
-            }))
-        })
-        .collect()
-}
-
-fn additional_file_payloads(
-    ranked: &super::types::RankedExploreFiles,
-    files_included: usize,
-) -> Vec<Value> {
-    ranked
-        .file_order
-        .iter()
-        .filter(|file_path| {
-            !ranked
-                .sorted_files
-                .iter()
-                .take(files_included)
-                .any(|p| p == *file_path)
-        })
-        .take(20)
-        .map(|file_path| {
-            let symbols = ranked.file_groups[file_path]
-                .nodes
-                .iter()
-                .map(|node| node.name.clone())
-                .collect::<Vec<_>>();
-            json!({
-                "path": file_path,
-                "symbols": symbols,
-            })
-        })
-        .collect()
 }

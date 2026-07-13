@@ -44,7 +44,6 @@ pub(in crate::mcp::tools) use regexes::{
     TOKEN_SPLIT_RE,
     TYPE_TOKEN_RE,
 };
-pub(in crate::mcp::tools) use results::cap_structured_content;
 pub use stale::{format_stale_banner, format_stale_footer};
 pub(in crate::mcp::tools) use symbols::{
     display_symbol,

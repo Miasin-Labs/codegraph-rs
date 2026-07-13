@@ -131,6 +131,23 @@ async fn explore_and_node_symbol_use_the_mcp_handler_output() {
     let explore_text = stdout(&explore);
     assert!(explore_text.contains("parse_token"), "{explore_text}");
     assert!(explore_text.contains("src/lib.rs"), "{explore_text}");
+    // The CLI serves the human-readable projection: markdown headings and a
+    // fenced source block, not the MCP structured JSON.
+    assert!(explore_text.contains("### Source Code"), "{explore_text}");
+    assert!(explore_text.contains("#### src/lib.rs"), "{explore_text}");
+    assert!(explore_text.contains("```"), "{explore_text}");
+    assert!(
+        !explore_text.contains("\"schemaVersion\""),
+        "CLI leaked the MCP JSON projection: {explore_text}"
+    );
+    assert!(
+        !explore_text.contains("\"sourceFiles\""),
+        "CLI leaked the MCP JSON projection: {explore_text}"
+    );
+    assert!(
+        !explore_text.trim_start().starts_with('{'),
+        "CLI output must not be a JSON document: {explore_text}"
+    );
 
     let node = run_cli(&root, &registry, &["node", "parse_token"]);
     assert!(

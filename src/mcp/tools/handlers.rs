@@ -1,6 +1,9 @@
 //! Private regression tests for MCP tool support modules.
 
 #[cfg(test)]
+mod mcp_projection;
+
+#[cfg(test)]
 mod tests {
     use crate::mcp::tools::admin::glob_to_regex;
     use crate::mcp::tools::format::{

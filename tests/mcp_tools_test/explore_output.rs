@@ -93,6 +93,8 @@ async fn prefixes_source_lines_with_line_numbers_by_default() {
     let handler = ToolHandler::new(Some(Rc::new(cg)));
     let text = explore(&handler, "Session method helper");
     let re = regex::Regex::new(r"\n\d+\t").unwrap();
+    assert!(text.contains("### Source Code"), "{text}");
+    assert!(text.contains("```typescript\n"), "{text}");
     assert!(re.is_match(&text));
 }
 
@@ -142,10 +144,17 @@ async fn explore_surfaces_literal_content_matches_without_symbol_hits() {
     cg.index_all(&IndexOptions::default()).await.unwrap();
     let handler = ToolHandler::new(Some(Rc::new(cg)));
 
-    let text = explore(&handler, "TODO not implemented");
+    let result = handler.execute(
+        "codegraph_explore",
+        &json!({ "query": "TODO not implemented" }),
+    );
+    let text = result.text();
     assert!(text.contains("### Literal content matches"), "{text}");
     assert!(text.contains("src/state.ts:2"), "{text}");
     assert!(text.contains("persist project cache gaps"), "{text}");
+    let structured = result.structured_content.expect("structured literal explore");
+    assert_eq!(structured["schemaVersion"], 2);
+    assert_eq!(structured["sourceFiles"], json!([]));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -166,32 +175,6 @@ async fn explore_surfaces_short_raw_literal_queries() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn explore_returns_structured_payload() {
-    let _env = env_read().await;
-    let dir = TempDir::new().unwrap();
-    write(
-        &dir.path().join("src/state.ts"),
-        "export function target(): number { return 1; }\n// persist project cache gaps after restart\n",
-    );
-    let cg = CodeGraph::init_sync(dir.path()).unwrap();
-    cg.index_all(&IndexOptions::default()).await.unwrap();
-    let handler = ToolHandler::new(Some(Rc::new(cg)));
-
-    let result = handler.execute("codegraph_explore", &json!({ "query": "target persist" }));
-    assert_ne!(result.is_error, Some(true), "explore errored: {}", result.text());
-    let structured = result.structured_content.as_ref().expect("structured explore");
-    assert_eq!(structured["kind"], "explore");
-    assert_eq!(structured["query"], "target persist");
-    assert!(structured["totalSymbols"].as_u64().unwrap() > 0);
-    assert!(structured["sourceFiles"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|p| p["path"] == "src/state.ts"));
-    assert!(structured["sourceFiles"][0]["body"].as_str().unwrap().contains("target"));
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn explore_structured_source_respects_output_cap() {
     let _env = env_write().await;
     let _guard = EnvVarGuard::set("CODEGRAPH_MAX_OUTPUT_CHARS", "600");
@@ -207,9 +190,11 @@ async fn explore_structured_source_respects_output_cap() {
 
     let result = handler.execute("codegraph_explore", &json!({ "query": "target" }));
     let structured = result.structured_content.as_ref().expect("structured explore");
-    let body = structured["sourceFiles"][0]["body"].as_str().unwrap();
-    assert!(body.contains("[truncated]"), "{body}");
-    assert!(body.len() < repeated.len(), "structured body was not capped");
+    let source = structured["sourceFiles"][0]["chunks"][0]["source"]
+        .as_str()
+        .unwrap();
+    assert!(source.contains("[truncated]"), "{source}");
+    assert!(source.len() < repeated.len(), "structured source was not capped");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -257,3 +242,8 @@ async fn explore_literal_scan_rejects_symlink_replacement_escape() {
     assert!(!text.contains("outside-only-token"), "{text}");
     assert!(!text.contains("### Literal content matches"), "{text}");
 }
+
+include!("explore_output/v2.rs");
+include!("explore_output/omissions.rs");
+include!("explore_output/unicode.rs");
+include!("explore_output/schema.rs");

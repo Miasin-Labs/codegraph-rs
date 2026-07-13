@@ -4,6 +4,7 @@ mod adaptive;
 mod cluster;
 mod handler;
 mod literal;
+mod payload;
 mod ranking;
 mod relationships;
 mod seed;

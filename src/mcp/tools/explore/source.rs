@@ -1,10 +1,16 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use super::super::format::{ExploreOutputBudget, FlowInfo, OrderedNodeMap};
 use super::adaptive::{AdaptiveRequest, render_adaptive_section};
 use super::cluster::{ClusterRequest, render_clustered_file};
-use super::types::{RankedExploreFiles, RenderedFile};
+use super::types::{
+    OmissionReason,
+    OmittedFile,
+    RankedExploreFiles,
+    RenderedFile,
+    StructuredSourceFile,
+};
 use super::whole_file::{WholeFileRequest, render_whole_file};
 use crate::codegraph::CodeGraph;
 use crate::error::Result;
@@ -27,13 +33,7 @@ pub(in crate::mcp::tools::explore) struct SourceFilesResult {
     pub files_included: usize,
     pub any_file_trimmed: bool,
     pub rendered_files: Vec<StructuredSourceFile>,
-}
-
-pub(in crate::mcp::tools::explore) struct StructuredSourceFile {
-    pub path: String,
-    pub language: String,
-    pub header: String,
-    pub body: String,
+    pub omissions: Vec<OmittedFile>,
 }
 
 pub(in crate::mcp::tools::explore) fn render_source_files(
@@ -46,9 +46,15 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
     let mut files_included = 0usize;
     let mut any_file_trimmed = false;
     let mut rendered_files = Vec::new();
+    let mut omissions = Vec::new();
 
-    for file_path in &req.ranked.sorted_files {
+    for (idx, file_path) in req.ranked.sorted_files.iter().enumerate() {
         if files_included >= req.max_files {
+            omissions.extend(
+                req.ranked.sorted_files[idx..]
+                    .iter()
+                    .map(|path| omitted_file(req.ranked, path, OmissionReason::MaxFiles)),
+            );
             break;
         }
         let group = &req.ranked.file_groups[file_path];
@@ -58,16 +64,32 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
                 || req.flow.unique_named_node_ids.contains(&n.id)
         });
         if !file_necessary && total_chars as f64 > req.budget.max_output_chars as f64 * 0.9 {
+            omissions.push(omitted_file(req.ranked, file_path, OmissionReason::Budget));
             continue;
         }
 
         let Some(abs_path) = validate_path_within_root(req.project_root, file_path) else {
+            omissions.push(omitted_file(
+                req.ranked,
+                file_path,
+                OmissionReason::Unavailable,
+            ));
             continue;
         };
         if !abs_path.exists() {
+            omissions.push(omitted_file(
+                req.ranked,
+                file_path,
+                OmissionReason::Unavailable,
+            ));
             continue;
         }
         let Ok(file_content) = std::fs::read_to_string(&abs_path) else {
+            omissions.push(omitted_file(
+                req.ranked,
+                file_path,
+                OmissionReason::Unavailable,
+            ));
             continue;
         };
         let file_lines: Vec<&str> = file_content.split('\n').collect();
@@ -89,9 +111,9 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
             sibling_super: &mut sibling_super,
             super_many: &mut super_many,
         })? {
-            append_rendered(lines, &rendered);
-            rendered_files.push(structured_source_file(file_path, &rendered));
-            total_chars += rendered.cost;
+            let (source_file, cost) = append_rendered(lines, file_path, rendered);
+            rendered_files.push(source_file);
+            total_chars += cost;
             files_included += 1;
             continue;
         }
@@ -109,11 +131,12 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
         }) {
             if !file_necessary && total_chars + rendered.cost > req.budget.max_output_chars {
                 any_file_trimmed = true;
+                omissions.push(omitted_file(req.ranked, file_path, OmissionReason::Budget));
                 continue;
             }
-            append_rendered(lines, &rendered);
-            rendered_files.push(structured_source_file(file_path, &rendered));
-            total_chars += rendered.cost;
+            let (source_file, cost) = append_rendered(lines, file_path, rendered);
+            rendered_files.push(source_file);
+            total_chars += cost;
             files_included += 1;
             continue;
         }
@@ -135,36 +158,68 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
         })? {
             if !file_necessary && total_chars + rendered.cost > req.budget.max_output_chars {
                 any_file_trimmed = true;
+                omissions.push(omitted_file(req.ranked, file_path, OmissionReason::Budget));
                 continue;
             }
-            append_rendered(lines, &rendered);
-            rendered_files.push(structured_source_file(file_path, &rendered));
-            total_chars += rendered.cost;
+            let (source_file, cost) = append_rendered(lines, file_path, rendered);
+            rendered_files.push(source_file);
+            total_chars += cost;
             files_included += 1;
+            continue;
         }
+
+        omissions.push(omitted_file(
+            req.ranked,
+            file_path,
+            OmissionReason::NoSource,
+        ));
     }
 
     Ok(SourceFilesResult {
         files_included,
         any_file_trimmed,
         rendered_files,
+        omissions,
     })
 }
 
-fn structured_source_file(file_path: &str, rendered: &RenderedFile) -> StructuredSourceFile {
-    StructuredSourceFile {
-        path: file_path.to_string(),
-        language: rendered.language.clone(),
-        header: rendered.header.clone(),
-        body: rendered.body.clone(),
-    }
-}
-
-fn append_rendered(lines: &mut Vec<String>, rendered: &RenderedFile) {
+fn append_rendered(
+    lines: &mut Vec<String>,
+    file_path: &str,
+    rendered: RenderedFile,
+) -> (StructuredSourceFile, usize) {
+    let cost = rendered.cost;
     lines.push(rendered.header.clone());
     lines.push(String::new());
     lines.push(format!("```{}", rendered.language));
     lines.push(rendered.body.clone());
     lines.push("```".to_string());
     lines.push(String::new());
+    (rendered.into_structured(file_path), cost)
+}
+
+fn omitted_file(
+    ranked: &RankedExploreFiles,
+    file_path: &str,
+    reason: OmissionReason,
+) -> OmittedFile {
+    let mut seen = HashSet::new();
+    let symbols = ranked
+        .file_groups
+        .get(file_path)
+        .map(|group| {
+            group
+                .nodes
+                .iter()
+                .map(|node| node.name.clone())
+                .filter(|name| !name.is_empty() && seen.insert(name.clone()))
+                .take(12)
+                .collect()
+        })
+        .unwrap_or_default();
+    OmittedFile {
+        path: file_path.to_string(),
+        reason,
+        symbols,
+    }
 }

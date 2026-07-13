@@ -28,7 +28,7 @@ pub(in crate::mcp::tools::registry) fn push_explore_tool(out: &mut Vec<ToolDefin
         props.insert("projectPath".into(), project_path_property());
         out.push(ToolDefinition {
             name: "codegraph_explore".into(),
-            description: "Primary context tool for codebase questions. Returns structured file/symbol context plus a compact text projection with source snippets and literal line matches from indexed files.".into(),
+            description: "Primary context tool for codebase questions. Structured output (schema v2) returns exact source chunks with line ranges, mode, symbols, and verbatim source, plus explicit omissions with reasons, stateless continuation hints, and suspicious-Unicode findings; the CLI/text projection stays human-readable.".into(),
             input_schema: InputSchema {
                 schema_type: "object".into(),
                 properties: props,

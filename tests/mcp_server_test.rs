@@ -283,6 +283,18 @@ fn first_text(result: &ToolResult) -> &str {
     &result.content[0].text
 }
 
+fn assert_compact_mcp_projection(response: &Value) {
+    let result = response.get("result").expect("tools/call result");
+    let content = result["content"].as_array().expect("content array");
+    assert_eq!(content.len(), 1);
+    assert_eq!(content[0]["type"], "text");
+    let text = content[0]["text"].as_str().expect("text content");
+    let structured = result.get("structuredContent").expect("structuredContent");
+    let parsed: Value = serde_json::from_str(text).expect("content text is JSON");
+    assert_eq!(&parsed, structured);
+    assert_eq!(text, serde_json::to_string(structured).unwrap());
+}
+
 // =============================================================================
 // SERVER_INSTRUCTIONS — byte parity with the TS single source of truth (#529)
 // =============================================================================
@@ -408,6 +420,108 @@ async fn answers_resources_list_and_prompts_list_with_empty_lists_not_32601() {
     assert_eq!(prompts["result"]["prompts"], json!([]));
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn direct_tool_results_use_compact_json_projection() {
+    // Given
+    let _guard = env_read().await;
+    let project = TempDir::new().unwrap();
+    init_project(project.path()).await;
+    let mut server = spawn_server(project.path(), &["--no-watch"], true);
+    server.send(&initialize_msg(
+        Some(project.path()),
+        "2025-11-25",
+        json!({}),
+    ));
+    wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["id"] == 0 && message.get("result").is_some()
+    });
+
+    // When: call a tool whose handler already supplies structured content.
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": "codegraph_status", "arguments": {} }
+    }));
+    let structured_response = wait_for_message(&server, Duration::from_secs(8), |message| {
+        message["id"] == 1
+    });
+
+    // Then: the compatibility text is exactly compact structured JSON.
+    assert_compact_mcp_projection(&structured_response);
+    assert_eq!(
+        structured_response["result"]["structuredContent"]["kind"],
+        "status"
+    );
+    assert!(structured_response["result"].get("_meta").is_none());
+    assert!(structured_response["result"].get("isError").is_none());
+
+    // When: call a handler that supplies human text only.
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {
+            "name": "codegraph_callers",
+            "arguments": { "symbol": "projectionMissingSymbol" }
+        }
+    }));
+    let text_response = wait_for_message(&server, Duration::from_secs(8), |message| {
+        message["id"] == 2
+    });
+
+    // Then: text-only output receives the versioned fallback projection.
+    assert_compact_mcp_projection(&text_response);
+    assert_eq!(
+        text_response["result"]["structuredContent"]["schemaVersion"],
+        1
+    );
+    assert_eq!(text_response["result"]["structuredContent"]["kind"], "text");
+    assert!(text_response["result"].get("_meta").is_none());
+    assert!(text_response["result"].get("isError").is_none());
+
+    // When: a known tool returns a structured execution error.
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": { "name": "codegraph_search", "arguments": { "query": null } }
+    }));
+    let tool_error = wait_for_message(&server, Duration::from_secs(8), |message| {
+        message["id"] == 3
+    });
+
+    // Then: projection preserves ToolResult error semantics.
+    assert_compact_mcp_projection(&tool_error);
+    assert_eq!(tool_error["result"]["isError"], true);
+    assert!(tool_error["result"].get("_meta").is_none());
+
+    // When: malformed calls fail before tool execution.
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": { "name": "codegraph_does_not_exist", "arguments": {} }
+    }));
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {}
+    }));
+    let unknown_tool = wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["id"] == 4
+    });
+    let missing_tool = wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["id"] == 5
+    });
+
+    // Then: JSON-RPC INVALID_PARAMS remains outside ToolResult projection.
+    for (response, message) in [
+        (&unknown_tool, "Unknown tool: codegraph_does_not_exist"),
+        (&missing_tool, "Missing tool name"),
+    ] {
+        assert_eq!(response["error"]["code"], -32602);
+        assert_eq!(response["error"]["message"], message);
+        assert!(response.get("result").is_none());
+        assert!(response.get("structuredContent").is_none());
+        assert!(response.get("content").is_none());
+        assert!(response.get("_meta").is_none());
+        assert!(response.get("isError").is_none());
+    }
+
+    println!("direct structured tools/call result: {structured_response}");
+}
+
 // =============================================================================
 // MCP project resolution via roots/list (issue #196) — __tests__/mcp-roots.test.ts
 // =============================================================================
@@ -446,10 +560,8 @@ async fn resolves_the_project_from_the_client_roots_list_when_no_root_uri_is_sen
 
     // The status call now succeeds against the resolved project.
     let resp = wait_for_message(&server, Duration::from_secs(8), |m| m["id"] == 1);
-    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("CodeGraph status"));
+    assert_compact_mcp_projection(&resp);
     assert_eq!(resp["result"]["structuredContent"]["kind"], "status");
-    assert!(!text.contains("No CodeGraph project is loaded"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -516,9 +628,8 @@ async fn honors_an_explicit_root_uri_without_asking_the_client_for_roots() {
         "params": { "name": "codegraph_status", "arguments": {} }
     }));
     let resp = wait_for_message(&server, Duration::from_secs(8), |m| m["id"] == 1);
-    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
 
-    assert!(text.contains("CodeGraph status"));
+    assert_compact_mcp_projection(&resp);
     assert_eq!(resp["result"]["structuredContent"]["kind"], "status");
     // rootUri is a stronger signal than roots — we never needed to ask.
     assert!(

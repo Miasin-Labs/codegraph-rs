@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::super::super::format::{ExploreOutputBudget, number_source_lines};
+use super::super::types::{SourceChunk, SourceChunkMode};
 use super::ranges::LineRange;
 
 const GAP_MARKER: &str = "\n\n... (gap) ...\n\n";
@@ -19,39 +20,52 @@ struct RankedCluster {
     span: i64,
 }
 
+pub(super) struct SelectedClusters {
+    pub(super) body: String,
+    pub(super) chunks: Vec<SourceChunk>,
+    pub(super) symbols: Vec<String>,
+}
+
 pub(super) fn render_selected_clusters(
     ranges: &[LineRange],
     file_lines: &[&str],
     budget: ExploreOutputBudget,
     total_chars: usize,
     with_line_numbers: bool,
-) -> Option<(String, Vec<String>)> {
+) -> Option<SelectedClusters> {
     let clusters = merge_clusters(ranges, budget.gap_threshold);
-    let chosen_indices = choose_clusters(
-        &clusters,
-        file_lines,
-        budget,
-        total_chars,
-        with_line_numbers,
-    );
+    let chosen_indices = choose_clusters(&clusters, file_lines, budget, total_chars);
     if chosen_indices.is_empty() {
         return None;
     }
 
     let mut file_section = String::new();
+    let mut chunks = Vec::new();
     let mut all_symbols = Vec::new();
     for (i, cluster) in clusters.iter().enumerate() {
         if !chosen_indices.contains(&i) {
             continue;
         }
-        let section = build_section(cluster, file_lines, with_line_numbers);
+        let Some(chunk) = source_chunk(cluster, file_lines) else {
+            continue;
+        };
+        let section = if with_line_numbers {
+            number_source_lines(&chunk.source, chunk.start_line)
+        } else {
+            chunk.source.clone()
+        };
         if !file_section.is_empty() {
             file_section.push_str(GAP_MARKER);
         }
         file_section.push_str(&section);
         all_symbols.extend(cluster.symbols.iter().cloned());
+        chunks.push(chunk);
     }
-    Some((file_section, all_symbols))
+    (!chunks.is_empty()).then_some(SelectedClusters {
+        body: file_section,
+        chunks,
+        symbols: all_symbols,
+    })
 }
 
 fn merge_clusters(ranges: &[LineRange], gap_threshold: i64) -> Vec<Cluster> {
@@ -89,7 +103,6 @@ fn choose_clusters(
     file_lines: &[&str],
     budget: ExploreOutputBudget,
     total_chars: usize,
-    with_line_numbers: bool,
 ) -> HashSet<usize> {
     let mut ranked: Vec<RankedCluster> = clusters
         .iter()
@@ -112,8 +125,9 @@ fn choose_clusters(
         } else {
             GAP_MARKER.len()
         };
-        let section_len =
-            build_section(&clusters[rc.idx], file_lines, with_line_numbers).len() + gap_len;
+        let section_len = source_chunk(&clusters[rc.idx], file_lines)
+            .map_or(0, |chunk| chunk.source.len())
+            + gap_len;
         if chosen.is_empty() {
             chosen.insert(rc.idx);
             projected_chars += section_len;
@@ -147,20 +161,17 @@ fn rank_clusters(a: &RankedCluster, b: &RankedCluster, clusters: &[Cluster]) -> 
     a.span.cmp(&b.span)
 }
 
-fn build_section(cluster: &Cluster, file_lines: &[&str], with_line_numbers: bool) -> String {
+fn source_chunk(cluster: &Cluster, file_lines: &[&str]) -> Option<SourceChunk> {
     let context_padding = 3i64;
-    let start_idx = (cluster.start - 1 - context_padding).max(0) as usize;
-    let end_idx = ((cluster.end + context_padding).max(0) as usize).min(file_lines.len());
-    let slice = if start_idx >= end_idx {
-        String::new()
-    } else {
-        file_lines[start_idx..end_idx].join("\n")
-    };
-    if with_line_numbers {
-        number_source_lines(&slice, start_idx + 1)
-    } else {
-        slice
-    }
+    let start_line = (cluster.start - context_padding).max(1);
+    let end_line = cluster.end + context_padding;
+    SourceChunk::from_lines(
+        file_lines,
+        start_line,
+        end_line,
+        SourceChunkMode::Excerpt,
+        cluster.symbols.clone(),
+    )
 }
 
 pub(super) fn cluster_header(all_symbols: &[String], budget: ExploreOutputBudget) -> String {

@@ -559,7 +559,10 @@ impl SessionInner {
             return;
         }
 
-        let result_value = serde_json::to_value(&result).unwrap_or(Value::Null);
+        let result_value = result
+            .into_mcp_projection()
+            .and_then(serde_json::to_value)
+            .unwrap_or(Value::Null);
         self.transport.send_result(id, result_value);
 
         // A project may have opened (or caught up) during this call — if that

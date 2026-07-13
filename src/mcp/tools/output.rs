@@ -296,9 +296,12 @@ pub(in crate::mcp::tools) fn explore_output_schema() -> Value {
             "relationships": { "type": "array", "items": relationship_schema() },
             "additionalFiles": { "type": "array", "items": additional_file_schema() },
             "literalMatches": { "type": "array", "items": literal_file_match_schema() },
-            "trimmed": { "type": "boolean" }
+            "trimmed": { "type": "boolean" },
+            "filesOmitted": { "type": "integer" },
+            "omissions": { "type": "array", "items": omission_schema() },
+            "continuation": continuation_schema()
         },
-        "required": ["schemaVersion", "kind", "query", "totalSymbols", "totalFiles", "filesIncluded", "sourceFiles", "relationships", "additionalFiles", "literalMatches", "trimmed"]
+        "required": ["schemaVersion", "kind", "query", "totalSymbols", "totalFiles", "filesIncluded", "sourceFiles", "relationships", "additionalFiles", "literalMatches", "trimmed", "filesOmitted", "omissions", "continuation"]
     }))
 }
 
@@ -425,10 +428,10 @@ fn source_file_schema() -> Value {
         "properties": {
             "path": { "type": "string" },
             "language": { "type": "string" },
-            "header": { "type": "string" },
-            "body": { "type": "string" }
+            "chunks": { "type": "array", "items": source_chunk_schema() },
+            "sourceTruncated": { "type": "boolean" }
         },
-        "required": ["path", "language", "header", "body"]
+        "required": ["path", "language", "chunks", "sourceTruncated"]
     })
 }
 
@@ -479,5 +482,59 @@ fn literal_file_match_schema() -> Value {
             }
         },
         "required": ["filePath", "language", "lines"]
+    })
+}
+
+fn source_chunk_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "startLine": { "type": "integer" },
+            "endLine": { "type": "integer" },
+            "mode": { "enum": ["whole", "excerpt", "body", "signature"] },
+            "symbols": { "type": "array", "items": { "type": "string" } },
+            "source": { "type": "string" },
+            "unicodeHazards": { "type": "array", "items": unicode_hazard_schema() }
+        },
+        "required": ["startLine", "endLine", "mode", "symbols", "source", "unicodeHazards"]
+    })
+}
+
+fn unicode_hazard_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "codepoint": { "type": "integer" },
+            "line": { "type": "integer" },
+            "column": { "type": "integer" },
+            "category": { "enum": ["bidi_control", "zero_width", "private_use", "noncharacter", "control_char"] }
+        },
+        "required": ["codepoint", "line", "column", "category"]
+    })
+}
+
+fn omission_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "path": { "type": "string" },
+            "reason": { "enum": ["max_files", "budget", "unavailable", "no_source"] },
+            "symbols": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["path", "reason", "symbols"]
+    })
+}
+
+fn continuation_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "suggestedQueries": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["suggestedQueries"]
     })
 }

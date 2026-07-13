@@ -34,7 +34,7 @@ pub(in crate::mcp::tools::explore) fn render_clustered_file(
         return Ok(None);
     }
 
-    let Some((file_section, all_symbols)) = render_selected_clusters(
+    let Some(selection) = render_selected_clusters(
         &ranges,
         req.file_lines,
         req.budget,
@@ -46,13 +46,14 @@ pub(in crate::mcp::tools::explore) fn render_clustered_file(
     let header = format!(
         "#### {} — {}",
         req.file_path,
-        cluster_header(&all_symbols, req.budget)
+        cluster_header(&selection.symbols, req.budget)
     );
-    let cost = file_section.len() + 200;
+    let cost = selection.body.len() + 200;
     Ok(Some(RenderedFile {
         header,
         language: req.language.to_string(),
-        body: file_section,
+        body: selection.body,
+        chunks: selection.chunks,
         cost,
     }))
 }

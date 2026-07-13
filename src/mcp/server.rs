@@ -559,7 +559,17 @@ fn run_proxy_with_local_handshake(root: &std::path::Path) -> ! {
             name: &str,
             arguments: &serde_json::Value,
         ) -> std::result::Result<serde_json::Value, String> {
-            let result = self.engine.execute(name, arguments.clone());
+            if !crate::mcp::tools::tools()
+                .iter()
+                .any(|tool| tool.name == name)
+            {
+                return Err(format!("Unknown tool: {name}"));
+            }
+            let result = self
+                .engine
+                .execute(name, arguments.clone())
+                .into_mcp_projection()
+                .map_err(|e| e.to_string())?;
             serde_json::to_value(&result).map_err(|e| e.to_string())
         }
 

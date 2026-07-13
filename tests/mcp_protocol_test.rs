@@ -648,12 +648,13 @@ async fn roots_list_changed_re_arms_the_one_shot_roots_query() {
         "jsonrpc": "2.0", "id": roots_req1["id"], "result": { "roots": [] }
     }));
     let resp1 = wait_for_message(&server, Duration::from_secs(8), |m| m["id"] == 1);
-    assert!(
-        resp1["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("No CodeGraph project is loaded")
-    );
+    let text1 = resp1["result"]["content"][0]["text"]
+        .as_str()
+        .expect("JSON text content");
+    let parsed1: Value = serde_json::from_str(text1).expect("content text is compact JSON");
+    assert_eq!(parsed1, resp1["result"]["structuredContent"]);
+    assert_eq!(parsed1["kind"], "error");
+    assert_eq!(parsed1["error"]["code"], "tool_error");
 
     // The workspace gains a project; the host announces its roots changed.
     init_project(project_dir.path()).await;
@@ -674,9 +675,12 @@ async fn roots_list_changed_re_arms_the_one_shot_roots_query() {
 
     // …and the project resolves this time.
     let resp2 = wait_for_message(&server, Duration::from_secs(15), |m| m["id"] == 2);
-    let text = resp2["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("CodeGraph status"), "got: {text}");
-    assert_eq!(resp2["result"]["structuredContent"]["kind"], "status");
+    let text2 = resp2["result"]["content"][0]["text"]
+        .as_str()
+        .expect("JSON text content");
+    let parsed2: Value = serde_json::from_str(text2).expect("content text is compact JSON");
+    assert_eq!(parsed2, resp2["result"]["structuredContent"]);
+    assert_eq!(parsed2["kind"], "status");
 }
 
 // =============================================================================
@@ -703,16 +707,12 @@ mod degraded_proxy {
         }
         let listener = UnixListener::bind(&socket_path).expect("bind fake daemon socket");
         std::thread::spawn(move || {
-            // Serve a few hellos in case of retries; exit with the test.
-            for _ in 0..4 {
-                let Ok((mut conn, _)) = listener.accept() else {
-                    return;
-                };
-                let _ = conn.write_all(
-                    b"{\"codegraph\":\"0.0.0-mismatch\",\"pid\":1,\"socketPath\":\"x\",\"protocol\":1}\n",
-                );
-                std::thread::sleep(Duration::from_millis(100));
-            }
+            let Ok((mut conn, _)) = listener.accept() else {
+                return;
+            };
+            let _ = conn.write_all(
+                b"{\"codegraph\":\"0.0.0-mismatch\",\"pid\":1,\"socketPath\":\"x\",\"protocol\":1}\n",
+            );
         })
     }
 
@@ -721,13 +721,14 @@ mod degraded_proxy {
         let _guard = env_read().await;
         let tmp = TempDir::new().unwrap();
         init_project(tmp.path()).await;
-        let _fake_daemon = plant_mismatched_daemon(tmp.path());
+        let fake_daemon = plant_mismatched_daemon(tmp.path());
 
         // no_daemon = false → the local-handshake proxy path; the planted
         // wrong-version daemon forces Failed (degraded, in-process).
         let mut server = spawn_server(tmp.path(), &[], false);
         server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
         let init = wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 0);
+        fake_daemon.join().expect("fake daemon exits after hello");
         // Locally-answered handshake advertises the same capabilities as the
         // daemon session would.
         assert_eq!(
@@ -780,13 +781,60 @@ mod degraded_proxy {
             "params": { "name": "codegraph_status", "arguments": {} }
         }));
         let result = wait_for_message(&server, Duration::from_secs(30), |m| m["id"] == 6);
-        assert!(
-            result["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("CodeGraph status")
-        );
+        let text = result["result"]["content"][0]["text"]
+            .as_str()
+            .expect("JSON text content");
+        let parsed: Value = serde_json::from_str(text).expect("content text is compact JSON");
+        assert_eq!(parsed, result["result"]["structuredContent"]);
         assert_eq!(result["result"]["structuredContent"]["kind"], "status");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn degraded_tool_results_use_compact_json_projection() {
+        // Given: a real proxy process forced into degraded in-process execution.
+        let _guard = env_read().await;
+        let tmp = TempDir::new().unwrap();
+        init_project(tmp.path()).await;
+        let fake_daemon = plant_mismatched_daemon(tmp.path());
+        let mut server = spawn_server(tmp.path(), &[], false);
+        server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
+        wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 0);
+        fake_daemon.join().expect("fake daemon exits after hello");
+
+        // When: an unknown tool name and a valid structured tool are called.
+        server.send(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "codegraph_not_a_tool", "arguments": {} }
+        }));
+        let unknown = wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 1);
+        server.send(&json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "codegraph_status", "arguments": {} }
+        }));
+        let response = wait_for_message(&server, Duration::from_secs(30), |m| m["id"] == 2);
+
+        // Then: the unknown tool stays a JSON-RPC error, while the valid tool
+        // has exactly one non-nested JSON text item matching structuredContent.
+        assert_eq!(unknown["error"]["code"], -32603);
+        assert_eq!(
+            unknown["error"]["message"],
+            "Unknown tool: codegraph_not_a_tool"
+        );
+        assert!(unknown.get("result").is_none());
+        assert!(unknown.get("content").is_none());
+        assert!(unknown.get("structuredContent").is_none());
+        let result = &response["result"];
+        let content = result["content"].as_array().expect("tool result content");
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+        let text = content[0]["text"].as_str().expect("JSON text content");
+        let parsed: Value = serde_json::from_str(text).expect("content text is compact JSON");
+        assert!(
+            parsed.is_object(),
+            "JSON must not be nested or double-encoded"
+        );
+        assert_eq!(parsed, result["structuredContent"]);
+        println!("degraded_result_json={result}");
     }
 }
 

@@ -1,7 +1,7 @@
 //! MCP tool and result wire schema.
 
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 /// MCP Tool definition. Serializes to the same JSON shape as the TS
 /// `ToolDefinition` (camelCase `inputSchema`, ordered properties).
@@ -111,6 +111,37 @@ impl ToolResult {
     /// First text content (convenience for the server/tests).
     pub fn text(&self) -> &str {
         self.content.first().map(|c| c.text.as_str()).unwrap_or("")
+    }
+
+    /// Converts this result into the MCP structured-content compatibility shape.
+    ///
+    /// # Errors
+    /// Returns an error if the canonical structured value cannot be serialized.
+    pub fn into_mcp_projection(self) -> serde_json::Result<Self> {
+        let Self {
+            content,
+            structured_content,
+            meta,
+            is_error,
+        } = self;
+        let structured_content = structured_content.unwrap_or_else(|| {
+            json!({
+                "schemaVersion": 1,
+                "kind": "text",
+                "text": content.first().map_or("", |item| item.text.as_str()),
+            })
+        });
+        let text = serde_json::to_string(&structured_content)?;
+
+        Ok(Self {
+            content: vec![ToolContent {
+                content_type: "text".into(),
+                text,
+            }],
+            structured_content: Some(structured_content),
+            meta,
+            is_error,
+        })
     }
 
     pub fn with_notice(mut self, notice: ToolNotice) -> Self {

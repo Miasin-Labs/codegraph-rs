@@ -4,7 +4,6 @@ use super::super::context::ToolHandler;
 use super::super::format::{
     ExploreOutputBudget,
     OrderedNodeMap,
-    cap_structured_content,
     display_symbol,
     floor_char_boundary,
     get_explore_budget,
@@ -199,7 +198,7 @@ pub(in crate::mcp::tools::explore) fn finish_explore_result(
                     content_type: "text".into(),
                     text,
                 }],
-                structured_content: structured_content.map(cap_structured_content),
+                structured_content,
                 meta: None,
                 is_error: None,
             });
@@ -210,7 +209,7 @@ pub(in crate::mcp::tools::explore) fn finish_explore_result(
             content_type: "text".into(),
             text: output,
         }],
-        structured_content: structured_content.map(cap_structured_content),
+        structured_content,
         meta: None,
         is_error: None,
     })

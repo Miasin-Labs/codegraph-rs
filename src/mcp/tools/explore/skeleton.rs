@@ -1,14 +1,13 @@
 use std::collections::HashSet;
 
-use super::super::format::{
-    ExploreOutputBudget,
-    FlowInfo,
-    display_symbol,
-    number_source_lines,
-    slice_lines,
-};
-use super::types::FileGroup;
+use super::super::format::{ExploreOutputBudget, FlowInfo, display_symbol, number_source_lines};
+use super::types::{FileGroup, SourceChunk, SourceChunkMode};
 use crate::types::{Node, NodeKind};
+
+pub(in crate::mcp::tools::explore) struct SkeletonSelection {
+    pub lines: Vec<String>,
+    pub chunks: Vec<SourceChunk>,
+}
 
 pub(in crate::mcp::tools::explore) fn render_skeleton(
     syms: &[&Node],
@@ -17,8 +16,9 @@ pub(in crate::mcp::tools::explore) fn render_skeleton(
     budget: ExploreOutputBudget,
     with_line_numbers: bool,
     body_ids: &HashSet<String>,
-) -> Vec<String> {
+) -> SkeletonSelection {
     let mut skel = Vec::new();
+    let mut chunks = Vec::new();
     let mut covered_until = 0i64;
     let mut sig_count = 0usize;
     let mut sig_dropped = 0usize;
@@ -29,12 +29,21 @@ pub(in crate::mcp::tools::explore) fn render_skeleton(
         }
         if body_ids.contains(&n.id) {
             let end = n.end_line as i64;
-            let body = slice_lines(file_lines, n.start_line as i64, end);
+            let Some(chunk) = SourceChunk::from_lines(
+                file_lines,
+                n.start_line as i64,
+                end,
+                SourceChunkMode::Body,
+                vec![format!("{}({})", display_symbol(n), n.kind.as_str())],
+            ) else {
+                continue;
+            };
             skel.push(if with_line_numbers {
-                number_source_lines(&body, n.start_line as usize)
+                number_source_lines(&chunk.source, chunk.start_line)
             } else {
-                body
+                chunk.source.clone()
             });
+            chunks.push(chunk);
             covered_until = end;
             continue;
         }
@@ -65,11 +74,21 @@ pub(in crate::mcp::tools::explore) fn render_skeleton(
             ""
         };
         if !sig.is_empty() {
+            let Some(chunk) = SourceChunk::from_lines(
+                file_lines,
+                line_no,
+                line_no,
+                SourceChunkMode::Signature,
+                vec![format!("{}({})", display_symbol(n), n.kind.as_str())],
+            ) else {
+                continue;
+            };
             skel.push(if with_line_numbers {
                 format!("{line_no}\t{sig}")
             } else {
                 sig.to_string()
             });
+            chunks.push(chunk);
             sig_count += 1;
         }
     }
@@ -77,7 +96,10 @@ pub(in crate::mcp::tools::explore) fn render_skeleton(
         skel.push(format!("… +{sig_dropped} more (signatures elided)"));
     }
     let _ = flow;
-    skel
+    SkeletonSelection {
+        lines: skel,
+        chunks,
+    }
 }
 
 pub(in crate::mcp::tools::explore) fn adaptive_header_names(

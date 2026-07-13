@@ -73,7 +73,7 @@ pub(in crate::mcp::tools::explore) fn render_adaptive_section(
         req.with_line_numbers,
         &body_ids,
     );
-    if skeleton.is_empty() {
+    if skeleton.lines.is_empty() {
         return Ok(None);
     }
     let names = adaptive_header_names(req.group, req.budget);
@@ -82,12 +82,13 @@ pub(in crate::mcp::tools::explore) fn render_adaptive_section(
     } else {
         "skeleton (signatures only)"
     };
-    let body = skeleton.join("\n");
+    let body = skeleton.lines.join("\n");
     Ok(Some(RenderedFile {
         header: format!("#### {} — {} · {}", req.file_path, names, tag),
         language: req.language.to_string(),
         cost: body.len() + 120,
         body,
+        chunks: skeleton.chunks,
     }))
 }
 

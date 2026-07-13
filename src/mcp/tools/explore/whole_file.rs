@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use super::super::format::{ExploreOutputBudget, display_symbol, number_source_lines};
-use super::types::{FileGroup, RenderedFile};
+use super::types::{FileGroup, RenderedFile, SourceChunk, SourceChunkMode};
 use crate::types::NodeKind;
 
 pub(in crate::mcp::tools::explore) struct WholeFileRequest<'a> {
@@ -73,11 +73,28 @@ pub(in crate::mcp::tools::explore) fn render_whole_file(
     } else {
         format!("#### {} — {}", req.file_path, header_names.join(", "))
     };
+    let selected_end = req.file_lines.len().saturating_sub(
+        req.file_lines
+            .iter()
+            .rev()
+            .take_while(|line| line.is_empty())
+            .count(),
+    );
+    let chunks = SourceChunk::from_lines(
+        req.file_lines,
+        1,
+        selected_end as i64,
+        SourceChunkMode::Whole,
+        uniq_symbols,
+    )
+    .into_iter()
+    .collect();
     let cost = whole_section.len() + 200;
     Some(RenderedFile {
         header,
         language: req.language.to_string(),
         body: whole_section,
+        chunks,
         cost,
     })
 }
