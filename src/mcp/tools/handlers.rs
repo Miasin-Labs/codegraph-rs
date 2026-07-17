@@ -149,26 +149,23 @@ mod tests {
         // literal order, per-property keys in (type, description, enum?,
         // default?) order, required present.
         let defs = tools();
-        assert_eq!(defs.len(), 13);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "codegraph_search",
-                "codegraph_callers",
-                "codegraph_callees",
-                "codegraph_impact",
-                "codegraph_node",
-                "codegraph_explore",
-                "codegraph_status",
-                "codegraph_files",
-                "codegraph_vuln",
-                "codegraph_verify_roles",
-                "codegraph_arch",
-                "codegraph_xref",
-                "codegraph_paths"
-            ]
-        );
+        // vuln + verify_roles are behind the off-by-default `vuln` feature.
+        let mut expected = vec![
+            "codegraph_search",
+            "codegraph_callers",
+            "codegraph_callees",
+            "codegraph_impact",
+            "codegraph_node",
+            "codegraph_explore",
+            "codegraph_status",
+            "codegraph_files",
+        ];
+        #[cfg(feature = "vuln")]
+        expected.extend(["codegraph_vuln", "codegraph_verify_roles"]);
+        expected.extend(["codegraph_arch", "codegraph_xref", "codegraph_paths"]);
+        assert_eq!(defs.len(), expected.len());
+        assert_eq!(names, expected);
         let json = serde_json::to_string(&defs[0]).unwrap();
         // Top-level key order + camelCase inputSchema.
         let name_i = json.find("\"name\"").unwrap();

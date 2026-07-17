@@ -1,4 +1,5 @@
 mod admin;
+#[cfg(feature = "vuln")]
 mod analysis;
 mod context;
 mod explore;

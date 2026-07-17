@@ -61,6 +61,9 @@ cudarc = { version = "0.16", features = ["std", "driver", "nvrtc", "dynamic-load
 
 [features]
 default = []
+# The inference-based vulnerability engine (`analysis/src/vuln/`: deviant-frequency
+# mining, taint seeds, concurrency lints). Opt-in — off by default.
+vuln = []
 # GPU-accelerated graph analytics (PageRank, ...). Runtime-probed; falls back
 # to the CPU path when no CUDA device is present.
 gpu = ["dep:cudarc", "dep:libloading"]

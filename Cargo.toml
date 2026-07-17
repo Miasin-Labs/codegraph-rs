@@ -90,6 +90,10 @@ cpp_demangle = "0.5.1"
 
 [features]
 default = []
+# The inference-based vulnerability engine plus its MCP tools (`codegraph_vuln`,
+# `codegraph_verify_roles`) and the `analyze vuln` CLI subcommand. Opt-in — off
+# by default; enable with `--features vuln`.
+vuln = ["codegraph-analysis/vuln"]
 # GPU-accelerated batch reference resolution (NVIDIA, CUDA >= 12). Safe to
 # enable everywhere: probes for a usable device at runtime and falls back to
 # the CPU path when none is found.

@@ -337,7 +337,10 @@ async fn emits_tools_list_changed_when_a_late_project_open_changes_the_list() {
 
     server.send(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }));
     let first = wait_for_message(&server, Duration::from_secs(8), |m| m["id"] == 1);
-    assert_eq!(first["result"]["tools"].as_array().unwrap().len(), 13);
+    assert_eq!(
+        first["result"]["tools"].as_array().unwrap().len(),
+        if cfg!(feature = "vuln") { 13 } else { 11 }
+    );
 
     // The project appears AFTER the server started (and after the client
     // listed). The next tool call resolves it (retry_initialize_sync), the
@@ -770,7 +773,7 @@ mod degraded_proxy {
         server.send(&json!({ "jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": {} }));
         let listed = wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 5);
         let tools = listed["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), if cfg!(feature = "vuln") { 13 } else { 11 });
         for tool in tools {
             assert_eq!(tool["annotations"], expected_annotations());
         }

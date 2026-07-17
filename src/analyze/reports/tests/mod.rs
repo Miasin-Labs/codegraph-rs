@@ -14,8 +14,6 @@ use super::{
     ReportEnvelope,
     SliceDirection,
     StoredComplexity,
-    VulnFindingOut,
-    VulnReport,
     boundaries_report,
     capabilities_report,
     centrality_report,
@@ -31,7 +29,6 @@ use super::{
     impact_report,
     query_report,
     schema_text,
-    severity_for,
     signature_type_params,
     slice_report,
     stats_report,
@@ -137,6 +134,10 @@ fn base_snapshot(graph: AnalysisGraph) -> crate::analysis_bridge::BaseSnapshot {
     }
 }
 
+#[cfg(feature = "vuln")]
+use super::{VulnFindingOut, VulnReport, severity_for};
+
+#[cfg(feature = "vuln")]
 fn sample_vuln_report() -> VulnReport {
     VulnReport {
         findings: vec![
@@ -176,4 +177,5 @@ mod diff;
 mod graph;
 mod graph_algorithms;
 mod query;
+#[cfg(feature = "vuln")]
 mod vuln;

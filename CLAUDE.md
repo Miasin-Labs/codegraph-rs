@@ -51,11 +51,14 @@ cargo test --workspace
 
 - **MCP tools are extensible.** The old "frozen at 8 for TS wire parity" rule is
   **RETIRED (2026-06)** — the Rust server is the source of truth now, not a TS
-  mirror. Currently **13 tools**: the original 8 (`search, callers, callees,
-  impact, node, explore, status, files`) plus `vuln, verify_roles, arch, xref,
-  paths`. (`verify_roles` is the "model proposes, graph proves" boundary: it runs
-  agent-supplied predicate-role proposals through `vuln::classify::GraphVerifier`
-  and emits only graph-corroborated findings tagged `InferenceOrigin::Llm`.)
+  mirror. **11 tools by default** (`search, callers, callees, impact, node,
+  explore, status, files, arch, xref, paths`); the inference vulnerability engine
+  and its two tools (`vuln`, `verify_roles`) plus the `analyze vuln` CLI sit
+  behind the off-by-default `vuln` cargo feature — build `--features vuln` to
+  expose all 13. (`verify_roles` is the "model proposes, graph proves" boundary:
+  it runs agent-supplied predicate-role proposals through
+  `vuln::classify::GraphVerifier` and emits only graph-corroborated findings
+  tagged `InferenceOrigin::Llm`.)
   To add one, update the domain-shaped `src/mcp/tools/` tree: (1) route the
   tool in `handlers.rs`/`ToolHandler::execute()`; (2) add the handler in the
   owning domain module (`graph/`, `explore/`, `analysis.rs`, `admin/`, etc.),

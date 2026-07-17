@@ -86,6 +86,7 @@ pub mod taint_v2;
 pub mod traits_hierarchy;
 pub mod traversal;
 pub mod validation;
+#[cfg(feature = "vuln")]
 pub mod vuln;
 pub mod worktree;
 

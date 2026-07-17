@@ -477,6 +477,7 @@ per-function complexity so the NEXT diff reports full before/after deltas."
         #[arg(short = 'j', long)]
         json: bool,
     },
+    #[cfg(feature = "vuln")]
     /// Inference-based vulnerability scan: missing-auth (BAC/IDOR), unsanitized
     /// flows, and the concurrency/control-plane lint — rules inferred from the
     /// graph, not hardcoded

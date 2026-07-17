@@ -132,6 +132,7 @@ async fn paths_finds_call_chain_from_source_to_sink() {
     assert!(text.contains("mid"), "path should traverse mid: {text}");
 }
 
+#[cfg(feature = "vuln")]
 #[tokio::test(flavor = "current_thread")]
 async fn verify_roles_proposes_then_proves_emitting_the_deviant_caller() {
     let _env = env_read().await;
@@ -188,6 +189,7 @@ async fn verify_roles_proposes_then_proves_emitting_the_deviant_caller() {
     );
 }
 
+#[cfg(feature = "vuln")]
 #[tokio::test(flavor = "current_thread")]
 async fn verify_roles_drops_hallucinated_sink_without_enough_callers() {
     let _env = env_read().await;

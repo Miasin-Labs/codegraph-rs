@@ -2,6 +2,7 @@
 
 use super::super::schema::ToolDefinition;
 use super::admin::{push_files_tool, push_status_tool};
+#[cfg(feature = "vuln")]
 use super::analysis::{push_verify_roles_tool, push_vuln_tool};
 use super::explore::push_explore_tool;
 use super::lookup::{push_callee_tools, push_impact_tool, push_node_tool, push_search_tool};
@@ -17,7 +18,9 @@ pub fn tools() -> Vec<ToolDefinition> {
     push_explore_tool(&mut out);
     push_status_tool(&mut out);
     push_files_tool(&mut out);
+    #[cfg(feature = "vuln")]
     push_vuln_tool(&mut out);
+    #[cfg(feature = "vuln")]
     push_verify_roles_tool(&mut out);
     push_arch_tool(&mut out);
     push_xref_tool(&mut out);

@@ -1,3 +1,5 @@
+#[cfg(feature = "vuln")]
+use super::cmd_analyze_vuln;
 use super::{
     AnalyzeCommands,
     cmd_analyze_boundaries,
@@ -24,7 +26,6 @@ use super::{
     cmd_analyze_traits,
     cmd_analyze_types,
     cmd_analyze_validate,
-    cmd_analyze_vuln,
 };
 
 /// codegraph analyze <subcommand>
@@ -247,6 +248,7 @@ pub(crate) fn cmd_analyze(command: AnalyzeCommands) {
             no_cache,
             json,
         } => cmd_analyze_diff(&base, &depth, &top, path.as_deref(), no_cache, json),
+        #[cfg(feature = "vuln")]
         AnalyzeCommands::Vuln {
             min_confidence,
             path,
