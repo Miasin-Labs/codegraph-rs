@@ -15,3 +15,8 @@
 .omo/
 .claude/
 .cortexkit/
+
+# testsprite-rs: local run state (SQLite DB + generated artifacts) is machine-local;
+# the re-importable suite (testsprite_tests/mcp-suite.json) is tracked.
+testsprite_tests/*
+!testsprite_tests/mcp-suite.json

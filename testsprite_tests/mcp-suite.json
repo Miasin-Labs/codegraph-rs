@@ -1,0 +1,259 @@
+[
+  {
+    "description": "query is required; omitting it must yield a structured error, not an internal error or a dead server.",
+    "group": "fuzz-contract",
+    "id": "CG001",
+    "kind": "mcp",
+    "payload": {},
+    "requirement": "Tool argument contract: malformed/missing/wrong-typed arguments are rejected structurally, never with a panic",
+    "title": "codegraph_search rejects a missing required query without crashing",
+    "tool": "codegraph_search"
+  },
+  {
+    "description": "An empty query is a boundary: it must not scan-everything or panic.",
+    "group": "fuzz-boundary",
+    "id": "CG002",
+    "kind": "mcp",
+    "payload": {
+      "query": ""
+    },
+    "requirement": "Numeric and pattern boundaries are clamped or rejected without hanging, overflowing, or over-returning",
+    "title": "codegraph_search handles an empty query string",
+    "tool": "codegraph_search"
+  },
+  {
+    "description": "codegraph is SQLite-backed and search takes free text. A quote/DROP payload must be parameterized, not concatenated: expect a normal (possibly empty) result, never a SQL error.",
+    "group": "fuzz-security",
+    "id": "CG003",
+    "kind": "mcp",
+    "payload": {
+      "query": "'; DROP TABLE nodes;--"
+    },
+    "requirement": "Untrusted input is neutralized: SQL text is parameterized and paths cannot escape the indexed project",
+    "title": "codegraph_search survives a SQL-injection-shaped query",
+    "tool": "codegraph_search"
+  },
+  {
+    "description": "Bare % and _ are LIKE wildcards; a backslash-heavy payload probes escaping in the search path.",
+    "group": "fuzz-security",
+    "id": "CG004",
+    "kind": "mcp",
+    "payload": {
+      "query": "%_\\%' OR 1=1 --"
+    },
+    "requirement": "Untrusted input is neutralized: SQL text is parameterized and paths cannot escape the indexed project",
+    "title": "codegraph_search survives a LIKE-wildcard / escape payload",
+    "tool": "codegraph_search"
+  },
+  {
+    "description": "A negative limit must be rejected or clamped, not passed through to SQL LIMIT.",
+    "group": "fuzz-boundary",
+    "id": "CG005",
+    "kind": "mcp",
+    "payload": {
+      "limit": -1,
+      "query": "fn"
+    },
+    "requirement": "Numeric and pattern boundaries are clamped or rejected without hanging, overflowing, or over-returning",
+    "title": "codegraph_search rejects a negative limit",
+    "tool": "codegraph_search"
+  },
+  {
+    "description": "A huge limit must not attempt to materialize the whole graph into one response.",
+    "group": "fuzz-boundary",
+    "id": "CG006",
+    "kind": "mcp",
+    "payload": {
+      "limit": 2147483647,
+      "query": "fn"
+    },
+    "requirement": "Numeric and pattern boundaries are clamped or rejected without hanging, overflowing, or over-returning",
+    "title": "codegraph_search clamps an absurdly large limit",
+    "tool": "codegraph_search"
+  },
+  {
+    "description": "Type confusion: query is declared string, given a number. Expect a clean validation error.",
+    "group": "fuzz-contract",
+    "id": "CG007",
+    "kind": "mcp",
+    "payload": {
+      "query": 12345
+    },
+    "requirement": "Tool argument contract: malformed/missing/wrong-typed arguments are rejected structurally, never with a panic",
+    "title": "codegraph_search handles a wrong-typed query (number, not string)",
+    "tool": "codegraph_search"
+  },
+  {
+    "description": "Bidi override, zero-width space and an embedded NUL must not corrupt response framing.",
+    "group": "fuzz-boundary",
+    "id": "CG008",
+    "kind": "mcp",
+    "payload": {
+      "query": "fn‮evil​name\u0000tail"
+    },
+    "requirement": "Numeric and pattern boundaries are clamped or rejected without hanging, overflowing, or over-returning",
+    "title": "codegraph_search handles unicode hazards in the query",
+    "tool": "codegraph_search"
+  },
+  {
+    "description": "path must stay inside the indexed project; ../../ escapes must not read or list outside it.",
+    "group": "fuzz-security",
+    "id": "CG009",
+    "kind": "mcp",
+    "payload": {
+      "path": "../../../../../../etc"
+    },
+    "requirement": "Untrusted input is neutralized: SQL text is parameterized and paths cannot escape the indexed project",
+    "title": "codegraph_files rejects a path-traversal path",
+    "tool": "codegraph_files"
+  },
+  {
+    "description": "An unclosed character class must surface as a validation error, not an internal regex panic.",
+    "group": "fuzz-contract",
+    "id": "CG010",
+    "kind": "mcp",
+    "payload": {
+      "pattern": "[unclosed"
+    },
+    "requirement": "Tool argument contract: malformed/missing/wrong-typed arguments are rejected structurally, never with a panic",
+    "title": "codegraph_files handles an invalid regex pattern",
+    "tool": "codegraph_files"
+  },
+  {
+    "description": "A nested-quantifier pattern must not hang the server (ReDoS).",
+    "group": "fuzz-boundary",
+    "id": "CG011",
+    "kind": "mcp",
+    "payload": {
+      "pattern": "(a+)+$"
+    },
+    "requirement": "Numeric and pattern boundaries are clamped or rejected without hanging, overflowing, or over-returning",
+    "title": "codegraph_files handles a catastrophic-backtracking pattern",
+    "tool": "codegraph_files"
+  },
+  {
+    "description": "Both from and to are required; half a pair must be a clean error.",
+    "group": "fuzz-contract",
+    "id": "CG012",
+    "kind": "mcp",
+    "payload": {
+      "from": "main"
+    },
+    "requirement": "Tool argument contract: malformed/missing/wrong-typed arguments are rejected structurally, never with a panic",
+    "title": "codegraph_paths rejects a missing 'to' endpoint",
+    "tool": "codegraph_paths"
+  },
+  {
+    "description": "Negative traversal depth must be rejected or clamped, not underflow.",
+    "group": "fuzz-boundary",
+    "id": "CG013",
+    "kind": "mcp",
+    "payload": {
+      "depth": -5,
+      "symbol": "main"
+    },
+    "requirement": "Numeric and pattern boundaries are clamped or rejected without hanging, overflowing, or over-returning",
+    "title": "codegraph_impact handles a negative depth",
+    "tool": "codegraph_impact"
+  },
+  {
+    "description": "A huge depth must not blow the stack or walk the graph forever.",
+    "group": "fuzz-boundary",
+    "id": "CG014",
+    "kind": "mcp",
+    "payload": {
+      "depth": 1000000,
+      "symbol": "main"
+    },
+    "requirement": "Numeric and pattern boundaries are clamped or rejected without hanging, overflowing, or over-returning",
+    "title": "codegraph_impact handles an enormous depth",
+    "tool": "codegraph_impact"
+  },
+  {
+    "description": "roles is required and array-shaped; a bare string must be a clean validation error.",
+    "group": "fuzz-contract",
+    "id": "CG015",
+    "kind": "mcp",
+    "payload": {
+      "roles": "admin"
+    },
+    "requirement": "Tool argument contract: malformed/missing/wrong-typed arguments are rejected structurally, never with a panic",
+    "title": "codegraph_verify_roles handles a wrong-typed roles argument",
+    "tool": "codegraph_verify_roles"
+  },
+  {
+    "description": "symbol is required; omitting it must be a structured error.",
+    "group": "fuzz-contract",
+    "id": "CG016",
+    "kind": "mcp",
+    "payload": {},
+    "requirement": "Tool argument contract: malformed/missing/wrong-typed arguments are rejected structurally, never with a panic",
+    "title": "codegraph_xref rejects a missing required symbol",
+    "tool": "codegraph_xref"
+  },
+  {
+    "description": "Zero is the lower boundary of a cap; it must not divide-by-zero or return everything.",
+    "group": "fuzz-boundary",
+    "id": "CG017",
+    "kind": "mcp",
+    "payload": {
+      "maxFiles": 0,
+      "query": "main"
+    },
+    "requirement": "Numeric and pattern boundaries are clamped or rejected without hanging, overflowing, or over-returning",
+    "title": "codegraph_explore handles maxFiles = 0",
+    "tool": "codegraph_explore"
+  },
+  {
+    "description": "A nonexistent projectPath must produce a clean error, not an unwrap panic.",
+    "group": "fuzz-contract",
+    "id": "CG018",
+    "kind": "mcp",
+    "payload": {
+      "projectPath": "/nonexistent/path/does/not/exist"
+    },
+    "requirement": "Tool argument contract: malformed/missing/wrong-typed arguments are rejected structurally, never with a panic",
+    "title": "codegraph_status tolerates an unknown projectPath",
+    "tool": "codegraph_status"
+  },
+  {
+    "description": "Paging past the end must return an empty page, not an out-of-range panic.",
+    "group": "fuzz-boundary",
+    "id": "CG019",
+    "kind": "mcp",
+    "payload": {
+      "offset": 99999999,
+      "symbol": "main"
+    },
+    "requirement": "Numeric and pattern boundaries are clamped or rejected without hanging, overflowing, or over-returning",
+    "title": "codegraph_node tolerates an oversized offset",
+    "tool": "codegraph_node"
+  },
+  {
+    "code": "python3 /tmp/claude-1000/-home-cole-RustProjects-active-testsprite-rs/c31bcce1-0705-4fc3-aae8-8f847c1ed59d/scratchpad/guard_schema.py",
+    "description": "REGRESSION GUARD for the outputSchema bug: a bare {oneOf:[...]} root made strict clients (Claude Code) reject the whole tools/list with 'expected object at tools.0.outputSchema.type', hiding every codegraph tool. Asserts each declared outputSchema root has type=object.",
+    "group": "mcp-spec",
+    "id": "CG020",
+    "kind": "command",
+    "requirement": "The MCP surface stays spec-compliant: valid tool schemas and a correct initialize handshake",
+    "title": "every MCP tool declares a spec-valid outputSchema root (type: object)"
+  },
+  {
+    "code": "python3 /tmp/claude-1000/-home-cole-RustProjects-active-testsprite-rs/c31bcce1-0705-4fc3-aae8-8f847c1ed59d/scratchpad/guard_handshake.py",
+    "description": "Guards the handshake: a known client version must be echoed exactly, serverInfo must be populated, and the tools capability advertised.",
+    "group": "mcp-spec",
+    "id": "CG021",
+    "kind": "command",
+    "requirement": "The MCP surface stays spec-compliant: valid tool schemas and a correct initialize handshake",
+    "title": "MCP initialize echoes a supported protocol version and advertises tools"
+  },
+  {
+    "code": "cd /home/cole/RustProjects/active/codegraph-rs && cargo test --lib 2>&1 | tail -3",
+    "description": "The repo-native regression net: exit-0 = pass, no LLM. Catches regressions the MCP fuzz surface cannot see.",
+    "group": "repo-suite",
+    "id": "CG022",
+    "kind": "command",
+    "requirement": "The repo's own cargo test suite stays green",
+    "title": "codegraph's own cargo test suite stays green"
+  }
+]
