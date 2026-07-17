@@ -306,7 +306,12 @@ pub(in crate::mcp::tools) fn explore_output_schema() -> Value {
 }
 
 fn success_or_error(success: Value) -> Value {
-    json!({ "oneOf": [success, error_output_schema()] })
+    // The MCP spec requires a tool's `outputSchema` root to be an object schema
+    // (`"type": "object"`); Claude Code rejects the whole tools/list otherwise
+    // ("expected object at outputSchema.type"). Both branches are objects, so
+    // declaring the root `type: object` alongside the discriminated `oneOf`
+    // keeps the success/error union while satisfying the validator.
+    json!({ "type": "object", "oneOf": [success, error_output_schema()] })
 }
 
 fn error_output_schema() -> Value {
