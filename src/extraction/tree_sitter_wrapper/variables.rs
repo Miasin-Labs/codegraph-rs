@@ -4,6 +4,7 @@ use crate::extraction::tree_sitter_helpers::{
     get_child_by_field,
     get_node_text,
     get_preceding_docstring,
+    get_preceding_docstring_from_source,
 };
 use crate::extraction::tree_sitter_types::{NodeExtra, SyntaxNode};
 use crate::types::{Language, NodeKind};
@@ -27,14 +28,19 @@ impl<'a> TreeSitterExtractor<'a> {
         } else {
             NodeKind::Variable
         };
-        let docstring = get_preceding_docstring(node, self.source);
+        let is_js_like = matches!(
+            self.language,
+            Language::Typescript | Language::Javascript | Language::Tsx | Language::Jsx
+        );
+        let docstring = if is_js_like {
+            get_preceding_docstring_from_source(self.source, node.start_byte())
+        } else {
+            get_preceding_docstring(node, self.source)
+        };
         let is_exported = ext.is_exported(node, self.source).unwrap_or(false);
 
         // Extract variable declarators based on language
-        if matches!(
-            self.language,
-            Language::Typescript | Language::Javascript | Language::Tsx | Language::Jsx
-        ) {
+        if is_js_like {
             // Handle lexical_declaration and variable_declaration
             // These contain one or more variable_declarator children
             for child in named_children(node) {

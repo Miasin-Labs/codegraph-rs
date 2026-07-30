@@ -94,15 +94,29 @@ impl LanguageExtractor for JavascriptExtractor {
         Some(get_node_text(params, source).to_string())
     }
 
-    fn is_exported(&self, node: SyntaxNode<'_>, _source: &str) -> Option<bool> {
-        let mut current = node.parent();
-        while let Some(p) = current {
-            if p.kind() == "export_statement" {
-                return Some(true);
-            }
-            current = p.parent();
-        }
-        Some(false)
+    fn is_exported(&self, node: SyntaxNode<'_>, source: &str) -> Option<bool> {
+        // Avoid `node.parent()` here. In tree-sitter, finding a parent walks down
+        // from the tree root to the descendant. Bun's `lots-of-for-loop.js`
+        // fixture has hundreds of thousands of nested `for` statements, so doing
+        // that parent lookup for every nested `let` declaration becomes
+        // quadratic and can make indexing look hung. JavaScript export modifiers
+        // appear immediately before the declaration they export, so a bounded
+        // lexical prefix check is enough for declaration extraction.
+        let start = node.start_byte().min(source.len());
+        let prefix_source = &source[..start];
+        let prefix_start = prefix_source
+            .char_indices()
+            .rev()
+            .nth(64)
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        let prefix = prefix_source[prefix_start..].trim_end();
+
+        Some(
+            prefix.ends_with("export")
+                || prefix.ends_with("export default")
+                || prefix.ends_with("export async"),
+        )
     }
 
     fn is_async(&self, node: SyntaxNode<'_>, _source: &str) -> Option<bool> {
@@ -183,5 +197,27 @@ mod tests {
             .find(|n| n.kind == NodeKind::Import)
             .expect("import node");
         assert_eq!(import.name, "./util.js");
+    }
+
+    #[test]
+    fn deeply_nested_loop_declarations_do_not_walk_every_ancestor_for_export_status() {
+        let mut source = String::from("let top = 0;\n");
+        for _ in 0..2_000 {
+            source.push_str("for (let i = 0; i < 1; i++) ");
+        }
+        source.push_str("let inner = 1;\n");
+
+        let result = TreeSitterExtractor::new(
+            "src/deep.js",
+            &source,
+            Some(Language::Javascript),
+            Some(&JavascriptExtractor),
+        )
+        .extract();
+
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let inner = result.nodes.iter().find(|n| n.name == "inner").unwrap();
+        assert_eq!(inner.kind, NodeKind::Variable);
+        assert_eq!(inner.is_exported, Some(false));
     }
 }

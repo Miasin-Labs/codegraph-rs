@@ -83,6 +83,42 @@ pub fn get_preceding_docstring(node: SyntaxNode<'_>, source: &str) -> Option<Str
     Some(cleaned.trim().to_string())
 }
 
+/// Get a docstring/comment immediately preceding a byte offset without using
+/// tree-sitter parent/sibling navigation.
+pub fn get_preceding_docstring_from_source(source: &str, start_byte: usize) -> Option<String> {
+    let prefix = source.get(..start_byte.min(source.len()))?;
+    let trimmed = prefix.trim_end();
+
+    if trimmed.ends_with("*/") {
+        let start = trimmed.rfind("/*")?;
+        return Some(clean_comment(&trimmed[start..]));
+    }
+
+    let mut comments = Vec::new();
+    for line in trimmed.lines().rev() {
+        let line = line.trim_start();
+        if line.starts_with("//") {
+            comments.push(line);
+            continue;
+        }
+        break;
+    }
+
+    if comments.is_empty() {
+        None
+    } else {
+        comments.reverse();
+        Some(clean_comment(&comments.join("\n")))
+    }
+}
+
+fn clean_comment(comment: &str) -> String {
+    let c = BLOCK_MARKERS.replace_all(comment, "");
+    let c = LINE_MARKERS.replace_all(&c, "");
+    let c = STAR_MARKERS.replace_all(&c, "");
+    c.trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
