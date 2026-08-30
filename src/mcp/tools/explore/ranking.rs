@@ -3,18 +3,20 @@ use std::collections::{HashMap, HashSet};
 use super::super::context::ToolHandler;
 use super::super::format::{OrderedNodeMap, QUERY_MENTIONS_TESTS_RE, is_low_value};
 use super::types::{FileGroup, RankedExploreFiles};
-use crate::extraction::is_generated_file;
+use crate::codegraph::CodeGraph;
+use crate::error::Result;
 use crate::types::{Edge, NodeKind};
 
 impl ToolHandler {
     pub(in crate::mcp::tools::explore) fn rank_explore_files(
         &self,
+        cg: &CodeGraph,
         query: &str,
         roots: &[String],
         edges: &[Edge],
         nodes: &OrderedNodeMap,
         named_seed_ids: &HashSet<String>,
-    ) -> RankedExploreFiles {
+    ) -> Result<RankedExploreFiles> {
         let mut file_order: Vec<String> = Vec::new();
         let mut file_groups: HashMap<String, FileGroup> = HashMap::new();
         let entry_node_ids: HashSet<String> = roots
@@ -120,6 +122,12 @@ impl ToolHandler {
             .iter()
             .filter_map(|id| nodes.get(id).map(|n| n.file_path.clone()))
             .collect();
+        let generated = cg.generated_file_predicate(&file_order)?;
+        let generated_files = file_order
+            .iter()
+            .filter(|path| generated.is_generated(path))
+            .cloned()
+            .collect::<HashSet<_>>();
         let mut sorted_files = relevant_files;
         sorted_files.sort_by(|a, b| {
             use std::cmp::Ordering;
@@ -147,8 +155,8 @@ impl ToolHandler {
                     Ordering::Less
                 };
             }
-            let a_gen = is_generated_file(a);
-            let b_gen = is_generated_file(b);
+            let a_gen = generated_files.contains(a);
+            let b_gen = generated_files.contains(b);
             if a_gen != b_gen {
                 return if a_gen {
                     Ordering::Greater
@@ -164,14 +172,15 @@ impl ToolHandler {
             file_groups[b].nodes.len().cmp(&file_groups[a].nodes.len())
         });
 
-        RankedExploreFiles {
+        Ok(RankedExploreFiles {
             file_order,
             file_groups,
             entry_node_ids,
             connected_to_entry,
             central_files,
+            generated_files,
             sorted_files,
-        }
+        })
     }
 }
 

@@ -532,11 +532,10 @@ impl<'a> CfmlExtractor<'a> {
             if child.kind() == "cf_attribute" {
                 attributes.push(child);
             } else if child.kind() == "cf_tag_attributes" {
-                for inner_index in 0..child.named_child_count() as u32 {
-                    if let Some(inner) = child.named_child(inner_index) {
-                        if inner.kind() == "cf_attribute" {
-                            attributes.push(inner);
-                        }
+                let mut cursor = child.walk();
+                for inner in child.named_children(&mut cursor) {
+                    if inner.kind() == "cf_attribute" {
+                        attributes.push(inner);
                     }
                 }
             }
@@ -587,14 +586,14 @@ impl<'a> CfmlExtractor<'a> {
 }
 
 fn named_child_of_kind<'tree>(node: SyntaxNode<'tree>, kind: &str) -> Option<SyntaxNode<'tree>> {
-    for index in 0..node.named_child_count() as u32 {
-        if let Some(child) = node.named_child(index) {
-            if child.kind() == kind {
-                return Some(child);
-            }
-        }
-    }
-    None
+    // Bind the result so `cursor` is dropped at the end of the block; the found
+    // child is `Copy` and bound to `'tree` (not the cursor), so it is returned
+    // by value.
+    let mut cursor = node.walk();
+    let found = node
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == kind);
+    found
 }
 
 /// Detect modern bare-script CFML by finding the first real token.

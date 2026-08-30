@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
+use crate::mcp::explore_session::LineRange;
 use crate::types::Node;
 
 /// Seed sets selected directly by the query and by nearby glue symbols.
@@ -23,6 +24,7 @@ pub(in crate::mcp::tools::explore) struct RankedExploreFiles {
     pub entry_node_ids: HashSet<String>,
     pub connected_to_entry: HashSet<String>,
     pub central_files: HashSet<String>,
+    pub generated_files: HashSet<String>,
     pub sorted_files: Vec<String>,
 }
 
@@ -171,6 +173,7 @@ pub(in crate::mcp::tools::explore) struct StructuredSourceFile {
 }
 
 /// Rendered source section ready to insert into a codegraph_explore response.
+#[derive(Clone)]
 pub(in crate::mcp::tools::explore) struct RenderedFile {
     pub header: String,
     pub language: String,
@@ -207,6 +210,14 @@ pub(in crate::mcp::tools::explore) struct ExploreAdditionalFile {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(in crate::mcp::tools::explore) struct ExploreBackReference {
+    pub path: String,
+    pub ranges: Vec<LineRange>,
+    pub symbols: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::mcp::tools::explore) struct ExploreLiteralLine {
     pub line_number: usize,
     pub text: String,
@@ -233,6 +244,8 @@ pub(in crate::mcp::tools::explore) enum OmissionReason {
     Unavailable,
     /// No renderer produced any source for this file.
     NoSource,
+    /// Current bytes differ from the indexed content, so indexed ranges are unsafe.
+    StaleIndex,
 }
 
 /// A ranked file that was withheld, with the reason and its top symbols so the
@@ -262,6 +275,8 @@ pub(in crate::mcp::tools::explore) struct ExplorePayload<'a> {
     pub total_files: usize,
     pub files_included: usize,
     pub source_files: Vec<StructuredSourceFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub back_references: Vec<ExploreBackReference>,
     pub relationships: Vec<ExploreRelationship>,
     pub additional_files: Vec<ExploreAdditionalFile>,
     pub literal_matches: Vec<ExploreLiteralFile>,

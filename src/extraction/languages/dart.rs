@@ -5,12 +5,14 @@
 use super::{find_named_child, named_children};
 use crate::extraction::tree_sitter_helpers::get_node_text;
 use crate::extraction::tree_sitter_types::{
+    ExtractorContext,
     ImportInfo,
     ImportOutcome,
     LanguageExtractor,
+    NodeExtra,
     SyntaxNode,
 };
-use crate::types::Visibility;
+use crate::types::{NodeKind, Visibility};
 
 pub struct DartExtractor;
 
@@ -58,6 +60,19 @@ impl LanguageExtractor for DartExtractor {
     }
     fn extra_class_node_types(&self) -> &[&str] {
         &["mixin_declaration", "extension_declaration"]
+    }
+    fn visit_node(&self, node: SyntaxNode<'_>, ctx: &mut dyn ExtractorContext) -> bool {
+        if node.kind() != "static_final_declaration" {
+            return false;
+        }
+        if let Some(name_node) = named_children(node)
+            .into_iter()
+            .find(|child| child.kind() == "identifier")
+        {
+            let name = get_node_text(name_node, ctx.source()).to_string();
+            ctx.create_node(NodeKind::Constant, &name, node, NodeExtra::default());
+        }
+        true
     }
     fn name_field(&self) -> &str {
         "name"
@@ -159,11 +174,10 @@ impl LanguageExtractor for DartExtractor {
         // In Dart, 'async' is on the function_body (next sibling), not the signature
         if let Some(next_sibling) = node.next_named_sibling() {
             if next_sibling.kind() == "function_body" {
-                for i in 0..next_sibling.child_count() as u32 {
-                    if let Some(child) = next_sibling.child(i) {
-                        if child.kind() == "async" {
-                            return Some(true);
-                        }
+                let mut cursor = next_sibling.walk();
+                for child in next_sibling.children(&mut cursor) {
+                    if child.kind() == "async" {
+                        return Some(true);
                     }
                 }
             }
@@ -174,11 +188,10 @@ impl LanguageExtractor for DartExtractor {
     fn is_static(&self, node: SyntaxNode<'_>, _source: &str) -> Option<bool> {
         // For method_signature, check for 'static' child
         if node.kind() == "method_signature" {
-            for i in 0..node.child_count() as u32 {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "static" {
-                        return Some(true);
-                    }
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "static" {
+                    return Some(true);
                 }
             }
         }

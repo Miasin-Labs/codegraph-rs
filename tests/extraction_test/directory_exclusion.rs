@@ -146,6 +146,51 @@ async fn directory_exclusion_returns_forward_slash_paths_on_all_platforms() {
     assert!(!files[0].contains('\\'));
 }
 
+#[test]
+fn directory_scan_indexes_file_level_context_and_shebang_scripts() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+
+    fs::create_dir_all(root.join("scripts")).unwrap();
+    fs::create_dir_all(root.join("ci")).unwrap();
+    fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+    fs::write(root.join("Cargo.lock"), "# generated\n").unwrap();
+    fs::write(root.join("README.md"), "# Demo\n").unwrap();
+    fs::write(root.join("README.SETUP"), "setup\n").unwrap();
+    fs::write(root.join(".gitignore"), "target/\n").unwrap();
+    fs::write(root.join("complete.zsh"), "compdef _demo demo\n").unwrap();
+    fs::write(root.join("complete.fish"), "complete -c demo\n").unwrap();
+    fs::write(root.join("scripts/build"), "#!/bin/bash\necho build\n").unwrap();
+    fs::write(
+        root.join("scripts/task.runner"),
+        "#!/usr/bin/env python3\nprint('task')\n",
+    )
+    .unwrap();
+    fs::write(root.join("ci/test"), "#!/usr/bin/env zsh\necho test\n").unwrap();
+    fs::write(root.join("Makefile"), "all:\n\ttrue\n").unwrap();
+
+    let files = scan_directory(root, None);
+
+    for expected in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "README.md",
+        "README.SETUP",
+        ".gitignore",
+        "complete.zsh",
+        "complete.fish",
+        "scripts/build",
+        "scripts/task.runner",
+        "ci/test",
+    ] {
+        assert!(
+            files.contains(&expected.to_string()),
+            "missing {expected}: {files:?}"
+        );
+    }
+    assert!(!files.contains(&"Makefile".to_string()));
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn directory_scan_skips_symlinked_source_files_outside_root() {

@@ -21,6 +21,7 @@ mod tests;
 mod traversal;
 mod type_annotations;
 mod type_declarations;
+mod value_references;
 mod variables;
 
 pub use extractor::TreeSitterExtractor;

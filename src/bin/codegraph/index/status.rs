@@ -1,3 +1,5 @@
+use codegraph::ChangedFiles;
+
 use super::{
     CodeGraph,
     OpenOptions,
@@ -21,6 +23,30 @@ use super::{
     worktree_mismatch_warning,
     yellow,
 };
+
+const PENDING_HUMAN_SAMPLE_LIMIT: usize = 10;
+
+fn pending_changes_json(changes: &ChangedFiles) -> serde_json::Value {
+    serde_json::json!({
+        "added": changes.added.len(),
+        "modified": changes.modified.len(),
+        "removed": changes.removed.len(),
+    })
+}
+
+fn print_pending_paths(label: &str, paths: &[String]) {
+    if paths.is_empty() {
+        return;
+    }
+    println!("  {label}:     {} files", paths.len());
+    for path in paths.iter().take(PENDING_HUMAN_SAMPLE_LIMIT) {
+        println!("    - {path}");
+    }
+    let omitted = paths.len().saturating_sub(PENDING_HUMAN_SAMPLE_LIMIT);
+    if omitted > 0 {
+        println!("    ... {omitted} more");
+    }
+}
 
 /// codegraph status [path]
 pub(crate) fn cmd_status(path_arg: Option<&str>, json: bool) {
@@ -59,6 +85,9 @@ pub(crate) fn cmd_status(path_arg: Option<&str>, json: bool) {
         let changes = cg.get_changed_files().map_err(|e| e.to_string())?;
         let backend = cg.get_backend();
         let journal_mode = cg.get_journal_mode().map_err(|e| e.to_string())?;
+        let generated_file_count = cg
+            .get_generated_file_count()
+            .map_err(|error| error.to_string())?;
 
         // JSON output mode
         if json {
@@ -91,6 +120,7 @@ pub(crate) fn cmd_status(path_arg: Option<&str>, json: bool) {
                     "indexPath": get_codegraph_dir(&project_path).to_string_lossy(),
                     "lastIndexed": last_indexed_ms.map(iso_from_epoch_ms),
                     "fileCount": stats.file_count,
+                    "generatedFileCount": generated_file_count,
                     "nodeCount": stats.node_count,
                     "edgeCount": stats.edge_count,
                     "dbSizeBytes": stats.db_size_bytes,
@@ -98,11 +128,7 @@ pub(crate) fn cmd_status(path_arg: Option<&str>, json: bool) {
                     "journalMode": journal_mode,
                     "nodesByKind": nodes_by_kind,
                     "languages": languages,
-                    "pendingChanges": {
-                        "added": changes.added.len(),
-                        "modified": changes.modified.len(),
-                        "removed": changes.removed.len(),
-                    },
+                    "pendingChanges": pending_changes_json(&changes),
                     "worktreeMismatch": worktree_mismatch.as_ref().map(|m| serde_json::json!({
                         "worktreeRoot": m.worktree_root.to_string_lossy(),
                         "indexRoot": m.index_root.to_string_lossy(),
@@ -125,6 +151,10 @@ pub(crate) fn cmd_status(path_arg: Option<&str>, json: bool) {
         // Index stats
         println!("{}", bold("Index Statistics:"));
         println!("  Files:     {}", format_number(stats.file_count));
+        println!(
+            "  Generated: {}",
+            format_number(generated_file_count as u64)
+        );
         println!("  Nodes:     {}", format_number(stats.node_count));
         println!("  Edges:     {}", format_number(stats.edge_count));
         println!(
@@ -189,15 +219,9 @@ pub(crate) fn cmd_status(path_arg: Option<&str>, json: bool) {
         let total_changes = changes.added.len() + changes.modified.len() + changes.removed.len();
         if total_changes > 0 {
             println!("{}", bold("Pending Changes:"));
-            if !changes.added.is_empty() {
-                println!("  Added:     {} files", changes.added.len());
-            }
-            if !changes.modified.is_empty() {
-                println!("  Modified:  {} files", changes.modified.len());
-            }
-            if !changes.removed.is_empty() {
-                println!("  Removed:   {} files", changes.removed.len());
-            }
+            print_pending_paths("Added", &changes.added);
+            print_pending_paths("Modified", &changes.modified);
+            print_pending_paths("Removed", &changes.removed);
             info("Run \"codegraph sync\" to update the index");
         } else {
             success("Index is up to date");

@@ -551,7 +551,7 @@ pub fn kind_bonus(kind: NodeKind) -> i32 {
         NodeKind::Class => 8,
         NodeKind::Interface => 9,
         NodeKind::TypeAlias => 6,
-        NodeKind::Struct => 6,
+        NodeKind::Struct | NodeKind::Union => 6,
         NodeKind::Trait => 9,
         NodeKind::Enum => 5,
         NodeKind::Component => 8,
@@ -923,6 +923,7 @@ mod tests {
         assert_eq!(kind_bonus(NodeKind::Method), 10);
         assert_eq!(kind_bonus(NodeKind::Interface), 9);
         assert_eq!(kind_bonus(NodeKind::Protocol), 9);
+        assert_eq!(kind_bonus(NodeKind::Union), 6);
         assert_eq!(kind_bonus(NodeKind::Parameter), 0);
         assert_eq!(kind_bonus(NodeKind::File), 0);
         assert_eq!(kind_bonus(NodeKind::EnumMember), 3);

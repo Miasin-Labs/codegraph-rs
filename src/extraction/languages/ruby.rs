@@ -96,10 +96,9 @@ impl LanguageExtractor for RubyExtractor {
         // Push module onto scope stack so children get proper qualified names
         ctx.push_scope(module_node.id);
         if let Some(body) = node.child_by_field_name("body") {
-            for i in 0..body.named_child_count() as u32 {
-                if let Some(child) = body.named_child(i) {
-                    ctx.visit_node(child);
-                }
+            let mut cursor = body.walk();
+            for child in body.named_children(&mut cursor) {
+                ctx.visit_node(child);
             }
         }
         ctx.pop_scope();

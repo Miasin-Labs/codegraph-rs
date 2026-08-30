@@ -12,6 +12,145 @@ use crate::extraction::tree_sitter_types::{
 
 pub struct JavascriptExtractor;
 
+#[derive(Clone, Copy)]
+enum LexState {
+    Code,
+    SingleQuoted,
+    DoubleQuoted,
+    Template,
+    LineComment,
+    BlockComment,
+}
+
+impl JavascriptExtractor {
+    /// Return a bounded lexical prefix with comments and string literals
+    /// replaced by spaces. Newlines are retained so a line-comment `export`
+    /// cannot leak into the declaration on the following line.
+    fn sanitized_prefix(node: SyntaxNode<'_>, source: &str) -> String {
+        let start = node.start_byte().min(source.len());
+        let prefix_source = &source[..start];
+        let prefix_start = prefix_source
+            .char_indices()
+            .rev()
+            .nth(4_096)
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        let mut chars = prefix_source[prefix_start..].chars().peekable();
+        let mut output = String::new();
+        let mut state = LexState::Code;
+        while let Some(ch) = chars.next() {
+            match state {
+                LexState::Code => match (ch, chars.peek().copied()) {
+                    ('/', Some('/')) => {
+                        output.push(' ');
+                        output.push(' ');
+                        chars.next();
+                        state = LexState::LineComment;
+                    }
+                    ('/', Some('*')) => {
+                        output.push(' ');
+                        output.push(' ');
+                        chars.next();
+                        state = LexState::BlockComment;
+                    }
+                    ('\'', _) => {
+                        output.push(' ');
+                        state = LexState::SingleQuoted;
+                    }
+                    ('"', _) => {
+                        output.push(' ');
+                        state = LexState::DoubleQuoted;
+                    }
+                    ('`', _) => {
+                        output.push(' ');
+                        state = LexState::Template;
+                    }
+                    _ => output.push(ch),
+                },
+                LexState::LineComment => {
+                    if ch == '\n' {
+                        output.push('\n');
+                        state = LexState::Code;
+                    } else {
+                        output.push(' ');
+                    }
+                }
+                LexState::BlockComment => {
+                    if ch == '*' && chars.peek() == Some(&'/') {
+                        output.push(' ');
+                        output.push(' ');
+                        chars.next();
+                        state = LexState::Code;
+                    } else if ch == '\n' {
+                        output.push('\n');
+                    } else {
+                        output.push(' ');
+                    }
+                }
+                LexState::SingleQuoted | LexState::DoubleQuoted | LexState::Template => {
+                    let closing = match state {
+                        LexState::SingleQuoted => '\'',
+                        LexState::DoubleQuoted => '"',
+                        LexState::Template => '`',
+                        _ => unreachable!(),
+                    };
+                    if ch == '\\' {
+                        output.push(' ');
+                        if chars.next().is_some() {
+                            output.push(' ');
+                        }
+                    } else if ch == closing {
+                        output.push(' ');
+                        state = LexState::Code;
+                    } else if ch == '\n' {
+                        output.push('\n');
+                        if !matches!(state, LexState::Template) {
+                            state = LexState::Code;
+                        }
+                    } else {
+                        output.push(' ');
+                    }
+                }
+            }
+        }
+        output
+    }
+
+    fn has_export_modifier(prefix: &str) -> bool {
+        let prefix = prefix.trim_end();
+        ["export", "export default", "export async"]
+            .into_iter()
+            .any(|modifier| {
+                let Some(before_modifier) = prefix.strip_suffix(modifier) else {
+                    return false;
+                };
+                before_modifier.chars().next_back().is_none_or(|before| {
+                    !before.is_ascii_alphanumeric()
+                        && before != '_'
+                        && before != '$'
+                        && before != '.'
+                })
+            })
+    }
+
+    /// Arrow/function-expression nodes begin after the declaration keyword, so
+    /// recover the nearest bounded `const`/`let`/`var` binding without parent
+    /// walks and inspect the sanitized tokens immediately before it.
+    fn exported_variable_initializer(node: SyntaxNode<'_>, prefix: &str) -> bool {
+        if !matches!(node.kind(), "arrow_function" | "function_expression") {
+            return false;
+        }
+        let binding_start = ["const ", "let ", "var "]
+            .into_iter()
+            .filter_map(|keyword| prefix.rfind(keyword))
+            .max();
+        let Some(binding_start) = binding_start else {
+            return false;
+        };
+        Self::has_export_modifier(&prefix[..binding_start])
+    }
+}
+
 impl LanguageExtractor for JavascriptExtractor {
     fn function_types(&self) -> &[&str] {
         &[
@@ -73,13 +212,11 @@ impl LanguageExtractor for JavascriptExtractor {
                 }
                 if child.kind() == "call_expression" {
                     if let Some(args) = get_child_by_field(child, "arguments") {
-                        for j in 0..args.named_child_count() as u32 {
-                            if let Some(arg) = args.named_child(j) {
-                                if arg.kind() == "arrow_function"
-                                    || arg.kind() == "function_expression"
-                                {
-                                    return get_child_by_field(arg, body_field);
-                                }
+                        let mut cursor = args.walk();
+                        for arg in args.named_children(&mut cursor) {
+                            if arg.kind() == "arrow_function" || arg.kind() == "function_expression"
+                            {
+                                return get_child_by_field(arg, body_field);
                             }
                         }
                     }
@@ -102,29 +239,18 @@ impl LanguageExtractor for JavascriptExtractor {
         // quadratic and can make indexing look hung. JavaScript export modifiers
         // appear immediately before the declaration they export, so a bounded
         // lexical prefix check is enough for declaration extraction.
-        let start = node.start_byte().min(source.len());
-        let prefix_source = &source[..start];
-        let prefix_start = prefix_source
-            .char_indices()
-            .rev()
-            .nth(64)
-            .map(|(idx, _)| idx)
-            .unwrap_or(0);
-        let prefix = prefix_source[prefix_start..].trim_end();
-
+        let prefix = Self::sanitized_prefix(node, source);
         Some(
-            prefix.ends_with("export")
-                || prefix.ends_with("export default")
-                || prefix.ends_with("export async"),
+            Self::has_export_modifier(&prefix)
+                || Self::exported_variable_initializer(node, &prefix),
         )
     }
 
     fn is_async(&self, node: SyntaxNode<'_>, _source: &str) -> Option<bool> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "async" {
-                    return Some(true);
-                }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "async" {
+                return Some(true);
             }
         }
         Some(false)
@@ -132,11 +258,10 @@ impl LanguageExtractor for JavascriptExtractor {
 
     fn is_const(&self, node: SyntaxNode<'_>, _source: &str) -> Option<bool> {
         if node.kind() == "lexical_declaration" {
-            for i in 0..node.child_count() as u32 {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "const" {
-                        return Some(true);
-                    }
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "const" {
+                    return Some(true);
                 }
             }
         }
@@ -197,6 +322,36 @@ mod tests {
             .find(|n| n.kind == NodeKind::Import)
             .expect("import node");
         assert_eq!(import.name, "./util.js");
+    }
+
+    #[test]
+    fn exported_arrow_binding_is_marked_exported_without_parent_walks() {
+        assert!(JavascriptExtractor::has_export_modifier(";export"));
+        assert!(!JavascriptExtractor::has_export_modifier("obj.export"));
+        assert!(!JavascriptExtractor::has_export_modifier("notexport"));
+        assert!(!JavascriptExtractor::has_export_modifier("éxport"));
+
+        let source = "export /* public */ const fetchData = async () => 1;\n// export\nconst local = () => 2;\n";
+        let result = TreeSitterExtractor::new(
+            "src/app.js",
+            source,
+            Some(Language::Javascript),
+            Some(&JavascriptExtractor),
+        )
+        .extract();
+
+        let exported = result
+            .nodes
+            .iter()
+            .find(|node| node.name == "fetchData")
+            .unwrap();
+        let local = result
+            .nodes
+            .iter()
+            .find(|node| node.name == "local")
+            .unwrap();
+        assert_eq!(exported.is_exported, Some(true));
+        assert_eq!(local.is_exported, Some(false));
     }
 
     #[test]

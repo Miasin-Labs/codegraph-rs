@@ -1,21 +1,6 @@
-//! MCP protocol-conformance tests for the rmcp gap fixes (see
-//! `notes/rmcp-gaps.md`, "Implemented divergences").
-//!
-//! Real spawned server processes over stdio (same harness pattern as
-//! `tests/mcp_server_test.rs` — no mocks, tempfile projects, real SQLite):
-//!
-//! - MUST-FIX 1: proxy degraded mode answers EVERY request (`-32601` default
-//!   arm, `-32700` parse-error recovery) — exercised by planting a
-//!   wrong-version daemon socket so the local-handshake proxy goes degraded.
-//! - MUST-FIX 2: `notifications/initialized` (spec spelling) is tolerated.
-//! - SHOULD-ADDs: tool annotations, `tools.listChanged` +
-//!   `notifications/tools/list_changed`, `_meta.progressToken` →
-//!   `notifications/progress`, `notifications/cancelled` response
-//!   suppression, `logging` capability (`logging/setLevel` +
-//!   `notifications/message`), `notifications/roots/list_changed` latch
-//!   re-arm. (The request-timeout `notifications/cancelled` lives in
-//!   `src/mcp/transport.rs` unit tests.)
+//! Spawned-process protocol coverage for the rmcp-backed CodeGraph server.
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -199,6 +184,29 @@ async fn init_project(dir: &Path) {
     cg.close();
 }
 
+fn explore_evidence(response: &Value) -> HashSet<(String, u64, u64, String)> {
+    response["result"]["structuredContent"]["sourceFiles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|file| {
+            let path = file["path"].as_str().unwrap().to_string();
+            file["chunks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(move |chunk| {
+                    (
+                        path.clone(),
+                        chunk["startLine"].as_u64().unwrap(),
+                        chunk["endLine"].as_u64().unwrap(),
+                        chunk["source"].as_str().unwrap().to_string(),
+                    )
+                })
+        })
+        .collect()
+}
+
 /// The annotation set every tool must carry (rmcp ToolAnnotations camelCase).
 fn expected_annotations() -> Value {
     json!({
@@ -212,6 +220,18 @@ fn expected_annotations() -> Value {
 // =============================================================================
 // MUST-FIX 2 — notifications/initialized (spec spelling) is a real no-op arm
 // =============================================================================
+
+#[tokio::test(flavor = "current_thread")]
+async fn negotiates_rmcp_current_protocol_version() {
+    let _guard = env_read().await;
+    let tmp = TempDir::new().unwrap();
+    let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
+    server.send(&initialize_msg(Some(tmp.path()), "2025-11-25", json!({})));
+
+    let init = wait_for_message(&server, Duration::from_secs(5), |m| m["id"] == 0);
+
+    assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn tolerates_notifications_initialized_in_both_spellings() {
@@ -290,6 +310,107 @@ async fn every_tool_carries_read_only_annotations() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn tools_list_defaults_to_explore_only() {
+    let _guard = env_read().await;
+    let tmp = TempDir::new().unwrap();
+    let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
+    server.send(&initialize_msg(Some(tmp.path()), "2025-11-25", json!({})));
+    wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["id"] == 0
+    });
+
+    server.send(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }));
+    let listed = wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["id"] == 1
+    });
+    let names = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(names, ["codegraph_explore"]);
+    let query_description =
+        listed["result"]["tools"][0]["inputSchema"]["properties"]["query"]["description"]
+            .as_str()
+            .unwrap();
+    assert!(query_description.contains("no prior codegraph_search needed"));
+    assert!(!query_description.contains("Use codegraph_search first"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sequential_explore_calls_reallocate_to_fresh_evidence() {
+    let _guard = env_read().await;
+    let project = TempDir::new().unwrap();
+    let src = project.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    for file in 0..8 {
+        let mut source = format!("export class SessionWorkflow{file} {{\n");
+        for method in 0..12 {
+            source.push_str(&format!(
+                "  sessionWorkflow{file}Step{method}(value: string): string {{ return value + '{file}-{method}'; }}\n"
+            ));
+        }
+        source.push_str("}\n");
+        std::fs::write(src.join(format!("session{file}.ts")), source).unwrap();
+    }
+    init_project(project.path()).await;
+    let mut server = spawn_server(project.path(), &["--no-watch"], true);
+    server.send(&initialize_msg(
+        Some(project.path()),
+        "2025-11-25",
+        json!({}),
+    ));
+    wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["id"] == 0
+    });
+
+    for id in 1..=5 {
+        server.send(&json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {
+                "name": "codegraph_explore",
+                "arguments": { "query": "session workflow", "maxFiles": 2 }
+            }
+        }));
+        wait_for_message(&server, Duration::from_secs(20), |message| {
+            message["id"] == id
+        });
+    }
+    let evidence = (1..=5)
+        .map(|id| {
+            let response = wait_for_message(&server, Duration::from_secs(1), |message| {
+                message["id"] == id
+            });
+            explore_evidence(&response)
+        })
+        .collect::<Vec<_>>();
+    let second = wait_for_message(&server, Duration::from_secs(1), |message| {
+        message["id"] == 2
+    });
+
+    assert!(evidence.iter().all(|call| !call.is_empty()));
+    for calls in evidence[..4].windows(2) {
+        assert!(calls[0].is_disjoint(&calls[1]));
+    }
+    assert!(
+        !second["result"]["structuredContent"]["backReferences"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        evidence.iter().map(HashSet::len).collect::<Vec<_>>(),
+        [2, 2, 2, 2, 1]
+    );
+    println!(
+        "allocation_counts={:?}",
+        evidence.iter().map(HashSet::len).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn primary_lookup_tools_advertise_output_schemas() {
     let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
@@ -300,19 +421,11 @@ async fn primary_lookup_tools_advertise_output_schemas() {
     server.send(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }));
     let listed = wait_for_message(&server, Duration::from_secs(5), |m| m["id"] == 1);
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    for name in [
-        "codegraph_search",
-        "codegraph_node",
-        "codegraph_explore",
-        "codegraph_status",
-        "codegraph_files",
-    ] {
-        let tool = tools.iter().find(|t| t["name"] == name).expect(name);
-        assert!(
-            tool.get("outputSchema").is_some(),
-            "{name} missing outputSchema"
-        );
-    }
+    let explore = tools
+        .iter()
+        .find(|tool| tool["name"] == "codegraph_explore")
+        .expect("codegraph_explore");
+    assert!(explore.get("outputSchema").is_some());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -330,17 +443,13 @@ async fn static_tools_fn_carries_annotations_too() {
 async fn emits_tools_list_changed_when_a_late_project_open_changes_the_list() {
     let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
-    // NO project yet: tools/list serves the full static surface (13 tools).
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
     server.send(&initialize_msg(None, "2025-06-18", json!({})));
     wait_for_message(&server, Duration::from_secs(5), |m| m["id"] == 0);
 
     server.send(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }));
     let first = wait_for_message(&server, Duration::from_secs(8), |m| m["id"] == 1);
-    assert_eq!(
-        first["result"]["tools"].as_array().unwrap().len(),
-        if cfg!(feature = "vuln") { 13 } else { 11 }
-    );
+    assert_eq!(first["result"]["tools"].as_array().unwrap().len(), 1);
 
     // The project appears AFTER the server started (and after the client
     // listed). The next tool call resolves it (retry_initialize_sync), the
@@ -366,8 +475,8 @@ async fn emits_tools_list_changed_when_a_late_project_open_changes_the_list() {
         .collect();
     assert_eq!(
         names,
-        ["codegraph_search", "codegraph_node", "codegraph_explore"],
-        "tiny-repo gating must shrink the list to the core trio"
+        ["codegraph_explore"],
+        "the minimal default remains stable after project discovery"
     );
 }
 
@@ -687,21 +796,17 @@ async fn roots_list_changed_re_arms_the_one_shot_roots_query() {
 }
 
 // =============================================================================
-// MUST-FIX 1 — proxy degraded mode answers every request
-// (unix-gated: the local-handshake proxy is the unix daemon path)
+// Version-mismatch fallback stays on the same rmcp implementation
 // =============================================================================
 
 #[cfg(unix)]
-mod degraded_proxy {
+mod direct_fallback {
     use std::os::unix::net::UnixListener;
 
     use codegraph::mcp::daemon_paths::get_daemon_socket_path;
 
     use super::*;
 
-    /// Plant a wrong-version "daemon" on the project's real socket path so
-    /// the spawned proxy goes degraded immediately (VersionMismatch is
-    /// definitive — no polling, no daemon spawn).
     fn plant_mismatched_daemon(project_root: &Path) -> std::thread::JoinHandle<()> {
         let canonical = std::fs::canonicalize(project_root).unwrap();
         let socket_path = get_daemon_socket_path(&canonical);
@@ -720,42 +825,28 @@ mod degraded_proxy {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn degraded_proxy_answers_every_request_and_recovers_from_parse_errors() {
+    async fn version_mismatch_falls_back_to_rmcp_and_survives_bad_input() {
         let _guard = env_read().await;
         let tmp = TempDir::new().unwrap();
         init_project(tmp.path()).await;
         let fake_daemon = plant_mismatched_daemon(tmp.path());
 
-        // no_daemon = false → the local-handshake proxy path; the planted
-        // wrong-version daemon forces Failed (degraded, in-process).
         let mut server = spawn_server(tmp.path(), &[], false);
-        server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
+        server.send(&initialize_msg(Some(tmp.path()), "2025-11-25", json!({})));
         let init = wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 0);
         fake_daemon.join().expect("fake daemon exits after hello");
-        // Locally-answered handshake advertises the same capabilities as the
-        // daemon session would.
+        assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
         assert_eq!(
             init["result"]["capabilities"],
             json!({ "logging": {}, "tools": { "listChanged": true } })
         );
 
-        // 1. Unknown request → -32601 with the session's exact string
-        //    (previously: silently dropped, host hung).
         server.send(&json!({ "jsonrpc": "2.0", "id": 2, "method": "some/unknown" }));
         let err = wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 2);
         assert_eq!(err["error"]["code"], -32601);
         assert_eq!(err["error"]["message"], "Method not found: some/unknown");
 
-        // 2. Unparseable line → -32700 with id:null; the stream stays alive
-        //    (previously: silently dropped).
         server.send_raw("this is not json {{{");
-        let parse_err = wait_for_message(&server, Duration::from_secs(10), |m| {
-            m["error"]["code"] == -32700
-        });
-        assert_eq!(parse_err["id"], Value::Null);
-        assert_eq!(parse_err["error"]["message"], "Parse error: invalid JSON");
-
-        // 3. logging/setLevel is advertised → acked in degraded mode too.
         server.send(&json!({
             "jsonrpc": "2.0", "id": 3, "method": "logging/setLevel",
             "params": { "level": "warning" }
@@ -763,22 +854,32 @@ mod degraded_proxy {
         let ack = wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 3);
         assert_eq!(ack["result"], json!({}));
 
-        // 4. ping still answers; notifications still get nothing.
         server.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
         server.send(&json!({ "jsonrpc": "2.0", "id": 4, "method": "ping" }));
         let pong = wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 4);
         assert_eq!(pong["result"], json!({}));
+        assert!(
+            server
+                .messages()
+                .iter()
+                .all(|message| message["error"]["code"] != -32700)
+        );
 
-        // 5. tools/list (static answer in Failed state) carries annotations.
         server.send(&json!({ "jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": {} }));
         let listed = wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 5);
         let tools = listed["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), if cfg!(feature = "vuln") { 13 } else { 11 });
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools
+                .iter()
+                .filter_map(|tool| tool["name"].as_str())
+                .collect::<Vec<_>>(),
+            ["codegraph_explore"]
+        );
         for tool in tools {
             assert_eq!(tool["annotations"], expected_annotations());
         }
 
-        // 6. tools/call executes in-process (degraded still serves).
         server.send(&json!({
             "jsonrpc": "2.0", "id": 6, "method": "tools/call",
             "params": { "name": "codegraph_status", "arguments": {} }
@@ -793,18 +894,16 @@ mod degraded_proxy {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn degraded_tool_results_use_compact_json_projection() {
-        // Given: a real proxy process forced into degraded in-process execution.
+    async fn fallback_tool_results_use_compact_json_projection() {
         let _guard = env_read().await;
         let tmp = TempDir::new().unwrap();
         init_project(tmp.path()).await;
         let fake_daemon = plant_mismatched_daemon(tmp.path());
         let mut server = spawn_server(tmp.path(), &[], false);
-        server.send(&initialize_msg(Some(tmp.path()), "2025-06-18", json!({})));
+        server.send(&initialize_msg(Some(tmp.path()), "2025-11-25", json!({})));
         wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 0);
         fake_daemon.join().expect("fake daemon exits after hello");
 
-        // When: an unknown tool name and a valid structured tool are called.
         server.send(&json!({
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": { "name": "codegraph_not_a_tool", "arguments": {} }
@@ -816,9 +915,7 @@ mod degraded_proxy {
         }));
         let response = wait_for_message(&server, Duration::from_secs(30), |m| m["id"] == 2);
 
-        // Then: the unknown tool stays a JSON-RPC error, while the valid tool
-        // has exactly one non-nested JSON text item matching structuredContent.
-        assert_eq!(unknown["error"]["code"], -32603);
+        assert_eq!(unknown["error"]["code"], -32602);
         assert_eq!(
             unknown["error"]["message"],
             "Unknown tool: codegraph_not_a_tool"

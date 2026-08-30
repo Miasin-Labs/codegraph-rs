@@ -77,22 +77,21 @@ impl LanguageExtractor for SwiftExtractor {
 
     fn get_visibility(&self, node: SyntaxNode<'_>, source: &str) -> Option<Visibility> {
         // Check for visibility modifiers in Swift
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "modifiers" {
-                    let text = get_node_text(child, source);
-                    if text.contains("public") {
-                        return Some(Visibility::Public);
-                    }
-                    if text.contains("private") {
-                        return Some(Visibility::Private);
-                    }
-                    if text.contains("internal") {
-                        return Some(Visibility::Internal);
-                    }
-                    if text.contains("fileprivate") {
-                        return Some(Visibility::Private);
-                    }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "modifiers" {
+                let text = get_node_text(child, source);
+                if text.contains("public") {
+                    return Some(Visibility::Public);
+                }
+                if text.contains("private") {
+                    return Some(Visibility::Private);
+                }
+                if text.contains("internal") {
+                    return Some(Visibility::Internal);
+                }
+                if text.contains("fileprivate") {
+                    return Some(Visibility::Private);
                 }
             }
         }
@@ -101,13 +100,12 @@ impl LanguageExtractor for SwiftExtractor {
     }
 
     fn is_static(&self, node: SyntaxNode<'_>, source: &str) -> Option<bool> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "modifiers" {
-                    let text = get_node_text(child, source);
-                    if text.contains("static") || text.contains("class") {
-                        return Some(true);
-                    }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "modifiers" {
+                let text = get_node_text(child, source);
+                if text.contains("static") || text.contains("class") {
+                    return Some(true);
                 }
             }
         }
@@ -116,25 +114,23 @@ impl LanguageExtractor for SwiftExtractor {
 
     fn classify_class_node(&self, node: SyntaxNode<'_>, _source: &str) -> ClassLikeKind {
         // Swift uses class_declaration for classes, structs, and enums
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "struct" {
-                    return ClassLikeKind::Struct;
-                }
-                if child.kind() == "enum" {
-                    return ClassLikeKind::Enum;
-                }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "struct" {
+                return ClassLikeKind::Struct;
+            }
+            if child.kind() == "enum" {
+                return ClassLikeKind::Enum;
             }
         }
         ClassLikeKind::Class
     }
 
     fn is_async(&self, node: SyntaxNode<'_>, source: &str) -> Option<bool> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "modifiers" && get_node_text(child, source).contains("async") {
-                    return Some(true);
-                }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "modifiers" && get_node_text(child, source).contains("async") {
+                return Some(true);
             }
         }
         Some(false)

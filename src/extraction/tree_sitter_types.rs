@@ -162,6 +162,7 @@ pub struct NodeExtra {
     pub is_async: Option<bool>,
     pub is_static: Option<bool>,
     pub is_abstract: Option<bool>,
+    pub decorators: Option<Vec<String>>,
     /// Overrides the qualified name built from the scope stack
     /// (TS `extra.qualifiedName`, used for receiver methods and
     /// type-alias members).
@@ -229,6 +230,10 @@ pub trait LanguageExtractor: Send + Sync {
     fn interface_types(&self) -> &[&str];
     /// Node types that represent structs
     fn struct_types(&self) -> &[&str];
+    /// Node types that represent unions
+    fn union_types(&self) -> &[&str] {
+        &[]
+    }
     /// Node types that represent enums
     fn enum_types(&self) -> &[&str];
     /// Node types that represent enum members/cases (e.g. Swift: `enum_entry`, Rust: `enum_variant`)
@@ -355,6 +360,9 @@ pub trait LanguageExtractor: Send + Sync {
     fn visit_node(&self, _node: SyntaxNode<'_>, _ctx: &mut dyn ExtractorContext) -> bool {
         false
     }
+
+    /// Synthesize compile-time members after explicit class members are extracted.
+    fn synthesize_members(&self, _class_node: SyntaxNode<'_>, _ctx: &mut dyn ExtractorContext) {}
 
     /// Classify a class_declaration node when the grammar reuses one node type
     /// for multiple concepts (e.g. Swift uses class_declaration for classes, structs, and enums).

@@ -262,9 +262,8 @@ mod unix_daemon_lifecycle {
 
     use super::*;
 
-    /// Minimal stand-in for the MCPSession/MCPEngine seam: holds each
-    /// connection open until the client side closes (mirrors a session
-    /// blocking on its transport), echoes nothing.
+    /// Minimal stand-in for the rmcp connection seam: hold each socket open
+    /// until the client side closes and emit nothing.
     struct HoldOpenFactory;
 
     impl DaemonSessionFactory for HoldOpenFactory {

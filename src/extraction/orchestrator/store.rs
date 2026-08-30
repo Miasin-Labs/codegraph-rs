@@ -2,7 +2,9 @@ use std::collections::HashSet;
 
 use super::pipeline::ExtractionOrchestrator;
 use super::progress::{FileStats, now_ms};
+use super::reconcile::restore_unresolved_refs_for_removed_targets;
 use crate::error::Result;
+use crate::extraction::GenerationStatus;
 use crate::types::{ExtractionResult, FileRecord, Language, Node, UnresolvedReference};
 use crate::utils::sha256_hex;
 
@@ -30,9 +32,12 @@ impl<'a> ExtractionOrchestrator<'a> {
                 return Ok(()); // No changes
             }
         }
+        let generation = GenerationStatus::detect(file_path, content);
 
         // Delete existing data for this file
         if existing_file.is_some() {
+            let existing_nodes = self.queries.get_nodes_by_file(file_path)?;
+            restore_unresolved_refs_for_removed_targets(self.queries, file_path, &existing_nodes)?;
             self.queries.delete_file(file_path)?;
         }
 
@@ -107,6 +112,7 @@ impl<'a> ExtractionOrchestrator<'a> {
                 Some(result.errors.clone())
             },
         };
-        self.queries.upsert_file(&file_record)
+        self.queries
+            .upsert_file_with_generation(&file_record, generation)
     }
 }

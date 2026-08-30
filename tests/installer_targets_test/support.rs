@@ -30,12 +30,16 @@ pub(crate) use serde_json::{Value, json};
 
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
-const SAVED_VARS: [&str; 5] = [
+const SAVED_VARS: [&str; 9] = [
     "HOME",
     "USERPROFILE",
     "APPDATA",
     "XDG_CONFIG_HOME",
     "HERMES_HOME",
+    "COPILOT_HOME",
+    "LOCALAPPDATA",
+    "PRIME_AGENT_CODING_AGENT_DIR",
+    "PI_CODING_AGENT_DIR",
 ];
 
 /// RAII guard that redirects HOME + cwd into temp dirs and restores on drop.
@@ -75,6 +79,9 @@ impl TestEnv {
         env::set_var("APPDATA", home.join(".config"));
         env::set_var("XDG_CONFIG_HOME", home.join(".config"));
         env::remove_var("HERMES_HOME");
+        env::remove_var("COPILOT_HOME");
+        env::remove_var("PRIME_AGENT_CODING_AGENT_DIR");
+        env::remove_var("PI_CODING_AGENT_DIR");
         env::set_current_dir(&cwd).unwrap();
 
         TestEnv {

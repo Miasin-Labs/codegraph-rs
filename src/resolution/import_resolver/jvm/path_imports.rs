@@ -2,6 +2,10 @@ use std::collections::HashSet;
 
 use super::super::paths::resolve_import_path;
 use super::re_exports::{WantedSymbol, find_exported_symbol};
+use crate::resolution::name_matcher::{
+    infer_receiver_type_from_declaration,
+    resolve_method_on_type,
+};
 use crate::resolution::types::{
     ImportMapping,
     ResolutionContext,
@@ -9,6 +13,7 @@ use crate::resolution::types::{
     ResolvedRef,
     UnresolvedRef,
 };
+use crate::types::{EdgeKind, Language, NodeKind};
 
 pub(super) fn resolve_path_import_reference(
     reference: &UnresolvedRef,
@@ -63,6 +68,29 @@ pub(super) fn resolve_path_import_reference(
             );
 
             if let Some(target_node) = target_node {
+                if reference.language == Language::Python
+                    && reference.reference_kind == EdgeKind::Calls
+                    && matches!(target_node.kind, NodeKind::Variable | NodeKind::Constant)
+                {
+                    let member = reference.reference_name[imp.local_name.len() + 1..]
+                        .split('.')
+                        .next()?;
+                    if let Some(type_name) =
+                        infer_receiver_type_from_declaration(&target_node, context)
+                    {
+                        if let Some(resolved) = resolve_method_on_type(
+                            &type_name,
+                            member,
+                            reference,
+                            context,
+                            0.85,
+                            ResolvedBy::InstanceMethod,
+                            None,
+                        ) {
+                            return Some(resolved);
+                        }
+                    }
+                }
                 return Some(ResolvedRef {
                     original: reference.clone(),
                     target_node_id: target_node.id,

@@ -690,6 +690,7 @@ impl GraphTraverser {
                 NodeKind::Class
                     | NodeKind::Interface
                     | NodeKind::Struct
+                    | NodeKind::Union
                     | NodeKind::Trait
                     | NodeKind::Protocol
                     | NodeKind::Module

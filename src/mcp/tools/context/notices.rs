@@ -9,6 +9,23 @@ use crate::sync::PendingFile;
 use crate::sync::worktree::worktree_mismatch_notice;
 
 impl ToolHandler {
+    pub(in crate::mcp::tools::context) fn with_auto_sync_notice(
+        &self,
+        mut result: ToolResult,
+    ) -> ToolResult {
+        if result.is_error == Some(true) {
+            return result;
+        }
+        let Some(reason) = self.auto_sync_disabled_reason() else {
+            return result;
+        };
+        let message = auto_sync_disabled_message(&reason);
+        if let Some(content) = result.content.first_mut() {
+            content.text = format!("{message}\n\n{}", content.text);
+        }
+        result.with_notice(auto_sync_disabled_notice(reason))
+    }
+
     pub(in crate::mcp::tools::context) fn with_worktree_notice(
         &self,
         result: ToolResult,
@@ -88,6 +105,41 @@ impl ToolHandler {
             files: notice_files,
             data: None,
         })
+    }
+}
+
+pub(in crate::mcp::tools) fn auto_sync_disabled_message(reason: &str) -> String {
+    format!(
+        "⚠️ CodeGraph auto-sync is DISABLED — live file watching stopped, so the index is frozen and any file edited since then is stale here. Read files directly to confirm current content before relying on it.\n  Reason: {reason}"
+    )
+}
+
+pub(in crate::mcp::tools) fn auto_sync_disabled_notice(reason: String) -> ToolNotice {
+    ToolNotice {
+        kind: "auto_sync_disabled".into(),
+        severity: "warning".into(),
+        message: auto_sync_disabled_message(&reason),
+        files: Vec::new(),
+        data: Some(serde_json::json!({ "reason": reason })),
+    }
+}
+
+pub(in crate::mcp::tools) fn stale_slice_notice(paths: &[String]) -> ToolNotice {
+    ToolNotice {
+        kind: "stale_index".into(),
+        severity: "warning".into(),
+        message:
+            "Indexed line ranges were withheld because current file contents differ from the index"
+                .into(),
+        files: paths
+            .iter()
+            .map(|path| ToolNoticeFile {
+                path: path.clone(),
+                age_ms: 0,
+                status: "changed on disk".into(),
+            })
+            .collect(),
+        data: Some(serde_json::json!({ "indexedSlicesWithheld": true })),
     }
 }
 

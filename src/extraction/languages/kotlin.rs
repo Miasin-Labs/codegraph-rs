@@ -35,13 +35,12 @@ fn is_fun_interface_node(node: SyntaxNode<'_>, source: &str) -> bool {
         }
         // Pattern 2b: user_type("interface") is inside an ERROR child
         if child.kind() == "ERROR" {
-            for j in 0..child.child_count() as u32 {
-                if let Some(gc) = child.child(j) {
-                    if gc.kind() == "user_type" {
-                        if let Some(type_id) = find_named_child(gc, "type_identifier") {
-                            if get_node_text(type_id, source) == "interface" {
-                                has_interface_type = true;
-                            }
+            let mut cursor = child.walk();
+            for gc in child.children(&mut cursor) {
+                if gc.kind() == "user_type" {
+                    if let Some(type_id) = find_named_child(gc, "type_identifier") {
+                        if get_node_text(type_id, source) == "interface" {
+                            has_interface_type = true;
                         }
                     }
                 }
@@ -52,6 +51,13 @@ fn is_fun_interface_node(node: SyntaxNode<'_>, source: &str) -> bool {
 }
 
 pub struct KotlinExtractor;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PropertyScope {
+    Shared,
+    Instance,
+    Local,
+}
 
 impl LanguageExtractor for KotlinExtractor {
     fn function_types(&self) -> &[&str] {
@@ -114,6 +120,59 @@ impl LanguageExtractor for KotlinExtractor {
     }
 
     fn visit_node(&self, node: SyntaxNode<'_>, ctx: &mut dyn ExtractorContext) -> bool {
+        if node.kind() == "property_declaration" {
+            let variable = (0..node.named_child_count() as u32)
+                .filter_map(|index| node.named_child(index))
+                .find(|child| child.kind() == "variable_declaration");
+            let name_node = variable.and_then(|variable| {
+                (0..variable.named_child_count() as u32)
+                    .filter_map(|index| variable.named_child(index))
+                    .find(|child| matches!(child.kind(), "identifier" | "simple_identifier"))
+            });
+            let Some(name_node) = name_node else {
+                return false;
+            };
+
+            let mut scope = PropertyScope::Shared;
+            let mut parent = node.parent();
+            while let Some(ancestor) = parent {
+                match ancestor.kind() {
+                    "function_body"
+                    | "function_declaration"
+                    | "lambda_literal"
+                    | "anonymous_initializer"
+                    | "control_structure_body"
+                    | "getter"
+                    | "setter" => {
+                        scope = PropertyScope::Local;
+                        break;
+                    }
+                    "companion_object" | "object_declaration" => break,
+                    "class_declaration" => {
+                        scope = PropertyScope::Instance;
+                        break;
+                    }
+                    _ => parent = ancestor.parent(),
+                }
+            }
+            let is_val = (0..node.child_count() as u32)
+                .filter_map(|index| node.child(index))
+                .any(|child| {
+                    child.kind() == "val"
+                        || (child.kind() == "binding_pattern_kind"
+                            && get_node_text(child, ctx.source()) == "val")
+                });
+            let kind = match scope {
+                PropertyScope::Instance => NodeKind::Field,
+                PropertyScope::Shared if is_val => NodeKind::Constant,
+                PropertyScope::Shared => NodeKind::Variable,
+                PropertyScope::Local => return true,
+            };
+            let name = get_node_text(name_node, ctx.source()).to_string();
+            ctx.create_node(kind, &name, node, NodeExtra::default());
+            return true;
+        }
+
         // Handle Kotlin `fun interface` declarations.
         // Tree-sitter-kotlin doesn't support `fun interface` syntax (Kotlin 1.4+).
         // It produces two different misparse patterns:
@@ -153,16 +212,14 @@ impl LanguageExtractor for KotlinExtractor {
         // an ERROR child — direct simple_identifier children are the misparsed method name.
         let mut name_text: Option<String> = None;
         if node.kind() == "function_declaration" {
-            'outer: for i in 0..node.child_count() as u32 {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "ERROR" {
-                        for j in 0..child.child_count() as u32 {
-                            if let Some(gc) = child.child(j) {
-                                if gc.kind() == "simple_identifier" {
-                                    name_text = Some(get_node_text(gc, ctx.source()).to_string());
-                                    break 'outer;
-                                }
-                            }
+            let mut cursor = node.walk();
+            'outer: for child in node.children(&mut cursor) {
+                if child.kind() == "ERROR" {
+                    let mut inner = child.walk();
+                    for gc in child.children(&mut inner) {
+                        if gc.kind() == "simple_identifier" {
+                            name_text = Some(get_node_text(gc, ctx.source()).to_string());
+                            break 'outer;
                         }
                     }
                 }
@@ -170,12 +227,11 @@ impl LanguageExtractor for KotlinExtractor {
         }
         // Fallback: direct simple_identifier child (Pattern 1: ERROR node at top level)
         if name_text.is_none() {
-            for i in 0..node.child_count() as u32 {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "simple_identifier" {
-                        name_text = Some(get_node_text(child, ctx.source()).to_string());
-                        break;
-                    }
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "simple_identifier" {
+                    name_text = Some(get_node_text(child, ctx.source()).to_string());
+                    break;
                 }
             }
         }
@@ -196,13 +252,12 @@ impl LanguageExtractor for KotlinExtractor {
             // Pattern 1: body is in the next sibling lambda_literal
             if let Some(next_sibling) = node.next_sibling() {
                 if next_sibling.kind() == "lambda_literal" {
-                    for i in 0..next_sibling.named_child_count() as u32 {
-                        if let Some(child) = next_sibling.named_child(i) {
-                            if child.kind() == "statements" {
-                                for j in 0..child.named_child_count() as u32 {
-                                    if let Some(stmt) = child.named_child(j) {
-                                        ctx.visit_node(stmt);
-                                    }
+                    let mut cursor = next_sibling.walk();
+                    for child in next_sibling.named_children(&mut cursor) {
+                        if child.kind() == "statements" {
+                            for j in 0..child.named_child_count() as u32 {
+                                if let Some(stmt) = child.named_child(j) {
+                                    ctx.visit_node(stmt);
                                 }
                             }
                         }
@@ -268,14 +323,13 @@ impl LanguageExtractor for KotlinExtractor {
                 return ClassLikeKind::Enum;
             }
             if child.kind() == "modifiers" {
-                for j in 0..child.named_child_count() as u32 {
-                    if let Some(modifier) = child.named_child(j) {
-                        if modifier.kind() == "class_modifier" {
-                            match get_node_text(modifier, source) {
-                                "enum" => return ClassLikeKind::Enum,
-                                "interface" => return ClassLikeKind::Interface,
-                                _ => {}
-                            }
+                let mut cursor = child.walk();
+                for modifier in child.named_children(&mut cursor) {
+                    if modifier.kind() == "class_modifier" {
+                        match get_node_text(modifier, source) {
+                            "enum" => return ClassLikeKind::Enum,
+                            "interface" => return ClassLikeKind::Interface,
+                            _ => {}
                         }
                     }
                 }
@@ -327,22 +381,21 @@ impl LanguageExtractor for KotlinExtractor {
 
     fn get_visibility(&self, node: SyntaxNode<'_>, source: &str) -> Option<Visibility> {
         // Check for visibility modifiers in Kotlin
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "modifiers" {
-                    let text = get_node_text(child, source);
-                    if text.contains("public") {
-                        return Some(Visibility::Public);
-                    }
-                    if text.contains("private") {
-                        return Some(Visibility::Private);
-                    }
-                    if text.contains("protected") {
-                        return Some(Visibility::Protected);
-                    }
-                    if text.contains("internal") {
-                        return Some(Visibility::Internal);
-                    }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "modifiers" {
+                let text = get_node_text(child, source);
+                if text.contains("public") {
+                    return Some(Visibility::Public);
+                }
+                if text.contains("private") {
+                    return Some(Visibility::Private);
+                }
+                if text.contains("protected") {
+                    return Some(Visibility::Protected);
+                }
+                if text.contains("internal") {
+                    return Some(Visibility::Internal);
                 }
             }
         }
@@ -357,11 +410,10 @@ impl LanguageExtractor for KotlinExtractor {
 
     fn is_async(&self, node: SyntaxNode<'_>, source: &str) -> Option<bool> {
         // Kotlin uses suspend keyword for coroutines
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "modifiers" && get_node_text(child, source).contains("suspend") {
-                    return Some(true);
-                }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "modifiers" && get_node_text(child, source).contains("suspend") {
+                return Some(true);
             }
         }
         Some(false)

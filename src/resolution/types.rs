@@ -292,6 +292,15 @@ pub trait ResolutionContext {
     fn file_exists(&self, file_path: &str) -> bool;
     /// Read file content
     fn read_file(&self, file_path: &str) -> Option<String>;
+    /// Read file content as a shared, cheaply-cloneable handle.
+    ///
+    /// Hot paths (e.g. C/C++ receiver-type inference) call this once per
+    /// reference over the same files; returning an `Arc<str>` lets the snapshot
+    /// hand out a refcount bump instead of cloning the whole file body on every
+    /// call. The default forwards to `read_file` for impls that do not cache.
+    fn read_file_arc(&self, file_path: &str) -> Option<std::sync::Arc<str>> {
+        self.read_file(file_path).map(std::sync::Arc::from)
+    }
     /// Get project root
     fn get_project_root(&self) -> &str;
     /// Get all files

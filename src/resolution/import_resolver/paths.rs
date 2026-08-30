@@ -139,6 +139,23 @@ fn resolve_relative_import(
     let project_root = normalize_path(context.get_project_root());
     let extensions = extension_resolution(language);
 
+    if language == Language::Python && import_path.starts_with('.') {
+        let dots = import_path.chars().take_while(|ch| *ch == '.').count();
+        let up = "../".repeat(dots.saturating_sub(1));
+        let rest = import_path[dots..].replace('.', "/");
+        let from_dir = posix_dirname(&join_posix(&project_root, &normalize_path(from_file)));
+        let base_path = normalize_segments(&join_posix(&from_dir, &format!("{up}{rest}")));
+        let relative_path = relative_posix(&normalize_segments(&project_root), &base_path);
+        for ext in extensions {
+            let candidate_path = format!("{relative_path}{ext}");
+            if context.file_exists(&candidate_path) {
+                return Some(candidate_path);
+            }
+        }
+        return (!relative_path.is_empty() && context.file_exists(&relative_path))
+            .then_some(relative_path);
+    }
+
     // Try the path as-is first
     // (TS: `path.resolve(path.dirname(path.join(projectRoot, fromFile)), importPath)`
     //  then `path.relative(projectRoot, basePath)` — done lexically here.)

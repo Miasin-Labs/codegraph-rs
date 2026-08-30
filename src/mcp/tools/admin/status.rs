@@ -5,6 +5,7 @@ use std::rc::Rc;
 use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
+use super::super::context::notices::auto_sync_disabled_notice;
 use super::super::format::{now_ms, resolve_path};
 use super::super::output::{PendingSyncOutput, StatusOutput};
 use super::super::schema::{ToolNotice, ToolResult};
@@ -109,7 +110,23 @@ impl ToolHandler {
             }
         }
 
-        let output = StatusOutput::from_stats(&stats, backend, journal_mode, pending_sync);
+        let auto_sync_disabled_reason = self.auto_sync_disabled_reason();
+        if let Some(reason) = auto_sync_disabled_reason.as_deref() {
+            lines.push(String::new());
+            lines.push("Auto-sync disabled:".to_string());
+            lines.push(format!("- {reason}"));
+            lines.push(
+                "- The index is frozen; Read files directly for current content.".to_string(),
+            );
+        }
+
+        let output = StatusOutput::from_stats(
+            &stats,
+            backend,
+            journal_mode,
+            pending_sync,
+            auto_sync_disabled_reason.clone(),
+        );
         let mut result = self.structured_result(&lines.join("\n"), &output)?;
         if let Some(m) = mismatch {
             result = result.with_notice(ToolNotice {
@@ -119,6 +136,9 @@ impl ToolHandler {
                 files: Vec::new(),
                 data: Some(serde_json::to_value(m)?),
             });
+        }
+        if let Some(reason) = auto_sync_disabled_reason {
+            result = result.with_notice(auto_sync_disabled_notice(reason));
         }
         Ok(result)
     }

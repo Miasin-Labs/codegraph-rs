@@ -51,6 +51,7 @@ impl ReferenceResolver {
                 for candidate in self.context.get_nodes_by_name(name) {
                     if !(candidate.kind == NodeKind::Class
                         || candidate.kind == NodeKind::Struct
+                        || candidate.kind == NodeKind::Union
                         || candidate.kind == NodeKind::Interface)
                         || candidate.language != reference.language
                     {

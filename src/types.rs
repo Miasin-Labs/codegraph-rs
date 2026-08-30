@@ -49,10 +49,11 @@ pub enum NodeKind {
     /// Macro *expansion* is out of scope — this is the definition symbol only,
     /// so the analysis bridge maps it to `None` (it is not callable code).
     Macro,
+    Union,
 }
 
 /// Runtime-iterable list of all node kinds (mirrors `NODE_KINDS` in TS).
-pub const NODE_KINDS: [NodeKind; 25] = [
+pub const NODE_KINDS: [NodeKind; 26] = [
     NodeKind::File,
     NodeKind::Module,
     NodeKind::Class,
@@ -78,6 +79,7 @@ pub const NODE_KINDS: [NodeKind; 25] = [
     NodeKind::DataSymbol,
     NodeKind::StringLiteral,
     NodeKind::Macro,
+    NodeKind::Union,
 ];
 
 impl NodeKind {
@@ -105,6 +107,7 @@ impl NodeKind {
             NodeKind::Export => "export",
             NodeKind::Route => "route",
             NodeKind::Component => "component",
+            NodeKind::Union => "union",
             NodeKind::DataSymbol => "data_symbol",
             NodeKind::StringLiteral => "string_literal",
             NodeKind::Macro => "macro",
@@ -264,6 +267,8 @@ pub enum Language {
     Nix,
     Apex,
     Bash,
+    Zsh,
+    Fish,
     Html,
     Visualforce,
     Aura,
@@ -271,6 +276,9 @@ pub enum Language {
     Twig,
     Xml,
     Properties,
+    Toml,
+    Markdown,
+    Gitignore,
     Cfml,
     Cfscript,
     Cfquery,
@@ -282,7 +290,7 @@ pub enum Language {
 }
 
 /// Runtime-iterable list of all languages (mirrors `LANGUAGES` in TS).
-pub const LANGUAGES: [Language; 52] = [
+pub const LANGUAGES: [Language; 57] = [
     Language::Typescript,
     Language::Javascript,
     Language::Tsx,
@@ -320,6 +328,8 @@ pub const LANGUAGES: [Language; 52] = [
     Language::Nix,
     Language::Apex,
     Language::Bash,
+    Language::Zsh,
+    Language::Fish,
     Language::Html,
     Language::Visualforce,
     Language::Aura,
@@ -327,6 +337,9 @@ pub const LANGUAGES: [Language; 52] = [
     Language::Twig,
     Language::Xml,
     Language::Properties,
+    Language::Toml,
+    Language::Markdown,
+    Language::Gitignore,
     Language::Cfml,
     Language::Cfscript,
     Language::Cfquery,
@@ -377,6 +390,8 @@ impl Language {
             Language::Nix => "nix",
             Language::Apex => "apex",
             Language::Bash => "bash",
+            Language::Zsh => "zsh",
+            Language::Fish => "fish",
             Language::Html => "html",
             Language::Visualforce => "visualforce",
             Language::Aura => "aura",
@@ -384,6 +399,9 @@ impl Language {
             Language::Twig => "twig",
             Language::Xml => "xml",
             Language::Properties => "properties",
+            Language::Toml => "toml",
+            Language::Markdown => "markdown",
+            Language::Gitignore => "gitignore",
             Language::Cfml => "cfml",
             Language::Cfscript => "cfscript",
             Language::Cfquery => "cfquery",
@@ -1111,6 +1129,17 @@ mod tests {
         assert_eq!(v["filePath"], "src/a.ts");
         assert_eq!(v["startLine"], 1);
         assert!(v.get("docstring").is_none());
+    }
+
+    #[test]
+    fn node_kind_union_round_trips_without_breaking_persisted_kinds() {
+        assert_eq!("union".parse::<NodeKind>(), Ok(NodeKind::Union));
+        assert_eq!(serde_json::to_value(NodeKind::Union).unwrap(), "union");
+        assert_eq!("struct".parse::<NodeKind>(), Ok(NodeKind::Struct));
+        assert_eq!(
+            serde_json::from_str::<NodeKind>("\"struct\"").unwrap(),
+            NodeKind::Struct
+        );
     }
 
     #[test]

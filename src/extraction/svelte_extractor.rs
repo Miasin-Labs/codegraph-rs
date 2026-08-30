@@ -524,11 +524,10 @@ pub(crate) mod test_support {
         }
         fn is_const(&self, node: SyntaxNode<'_>, _source: &str) -> Option<bool> {
             if node.kind() == "lexical_declaration" {
-                for i in 0..node.child_count() as u32 {
-                    if let Some(c) = node.child(i) {
-                        if c.kind() == "const" {
-                            return Some(true);
-                        }
+                let mut cursor = node.walk();
+                for c in node.children(&mut cursor) {
+                    if c.kind() == "const" {
+                        return Some(true);
                     }
                 }
             }

@@ -21,11 +21,13 @@ impl ToolHandler {
         query: &str,
         roots: &[String],
         nodes: &mut OrderedNodeMap,
+        max_named_seed_tokens: usize,
     ) -> Result<ExploreSeeds> {
         let mut glue_node_ids: HashSet<String> = HashSet::new();
         let subgraph_files: HashSet<String> = nodes.values().map(|n| n.file_path.clone()).collect();
         const GLUE_NODE_CAP: usize = 60;
         for root_id in roots {
+            crate::graph::cancel::check()?;
             if glue_node_ids.len() >= GLUE_NODE_CAP {
                 break;
             }
@@ -65,7 +67,8 @@ impl ToolHandler {
                     || n.qualified_name.to_lowercase().contains(&lc)
             })
         };
-        for t in &tokens {
+        for t in tokens.iter().take(max_named_seed_tokens) {
+            crate::graph::cancel::check()?;
             let raw: Vec<Node> = if is_qualified_token(t) {
                 self.find_all_symbols(cg, t)?.nodes
             } else {

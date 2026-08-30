@@ -93,6 +93,7 @@ impl ToolHandler {
             Err(e) => return self.error_result(&format!("Tool execution failed: {e}")),
         };
         let with_worktree = self.with_worktree_notice(result, project_path.as_deref());
-        self.with_staleness_notice(with_worktree, project_path.as_deref())
+        let with_auto_sync = self.with_auto_sync_notice(with_worktree);
+        self.with_staleness_notice(with_auto_sync, project_path.as_deref())
     }
 }

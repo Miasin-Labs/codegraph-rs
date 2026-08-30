@@ -1,12 +1,8 @@
 //! Explore budget and environment knobs.
 
-/// Maximum output length to prevent context bloat (characters)
-/// Optional server-side destructive output cap, in chars. UNSET (the
-/// default) means the server NEVER truncates tool output — the host owns
-/// inline-size policy (Claude Code rejects results over
-/// `MAX_MCP_OUTPUT_TOKENS` ≈ 25K tokens ≈ 100K chars; jfc head/tail-trims at
-/// 50KB and spills >400KB to disk). Set `CODEGRAPH_MAX_OUTPUT_CHARS=N` to
-/// re-enable a cap for hosts that need one; 0/unset disables.
+/// Optional stricter cap for structured tool output. Explore always applies
+/// its adaptive whole-payload budget; this value can only lower that ceiling.
+/// Other tools use this cap when configured. Zero or unset disables it.
 pub(in crate::mcp::tools) fn output_char_cap() -> Option<usize> {
     let v = std::env::var("CODEGRAPH_MAX_OUTPUT_CHARS").ok()?;
     let n: usize = v.trim().parse().ok()?;
@@ -32,17 +28,6 @@ pub fn get_explore_budget(file_count: u64) -> u32 {
     5
 }
 
-/// Adaptive output budget for `codegraph_explore`, scaled to project size.
-///
-/// Smaller codebases get a tighter total cap, fewer default files, smaller
-/// per-file cap, and tighter clustering — so a focused query on a 100-file
-/// project doesn't dump a whole file's worth of source into the agent's
-/// context. Larger codebases keep the generous defaults because the
-/// agent's native discovery cost (grep + find + many Reads) genuinely
-/// dwarfs a fat explore call at that scale.
-///
-/// Tier breakpoints mirror `get_explore_budget` so a project sits in the
-/// same tier across both knobs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExploreOutputBudget {
     /// Hard cap on total output characters.

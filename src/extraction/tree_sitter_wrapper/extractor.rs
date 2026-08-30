@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 
+use super::value_references::ValueReferenceState;
 use crate::extraction::grammars::detect_language;
 use crate::extraction::tree_sitter_types::{
     ExtractorContext,
@@ -43,6 +44,8 @@ pub struct TreeSitterExtractor<'a> {
     pub(super) node_stack: Vec<String>,
     /// lookup key → node ID for Pascal defProc lookup
     pub(super) method_index: Option<HashMap<String, String>>,
+    pub(super) value_references: ValueReferenceState,
+    pub(super) value_references_enabled: bool,
 }
 
 impl<'a> TreeSitterExtractor<'a> {
@@ -71,6 +74,10 @@ impl<'a> TreeSitterExtractor<'a> {
             extractor,
             node_stack: Vec::new(),
             method_index: None,
+            value_references: ValueReferenceState::default(),
+            value_references_enabled: super::value_references::value_references_enabled(
+                std::env::var_os("CODEGRAPH_VALUE_REFS").as_deref(),
+            ),
         }
     }
 

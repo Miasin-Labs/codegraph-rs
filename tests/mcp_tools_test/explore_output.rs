@@ -155,6 +155,15 @@ async fn explore_surfaces_literal_content_matches_without_symbol_hits() {
     let structured = result.structured_content.expect("structured literal explore");
     assert_eq!(structured["schemaVersion"], 2);
     assert_eq!(structured["sourceFiles"], json!([]));
+    assert_eq!(structured["literalMatches"][0]["filePath"], "src/state.ts");
+    assert_eq!(structured["literalMatches"][0]["lines"][0]["lineNumber"], 2);
+    let terms = structured["literalMatches"][0]["lines"][0]["terms"]
+        .as_array()
+        .unwrap();
+    assert!(terms.contains(&json!("todo")));
+    assert!(terms.contains(&json!("not implemented")));
+    assert!(structured.get("literalTotalFiles").is_none(), "{structured}");
+    assert!(structured["literalMatches"][0].get("chunks").is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -175,6 +184,187 @@ async fn explore_surfaces_short_raw_literal_queries() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn explore_literal_scan_does_not_expose_sensitive_config_values() {
+    let _env = env_read().await;
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("application.yml"),
+        "database:\n  password: production-secret-sentinel\n",
+    );
+    write(
+        &dir.path().join("Cargo.toml"),
+        "[registry]\ntoken = \"cargo-secret-sentinel\"\n",
+    );
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    for (query, forbidden_line) in [
+        (
+            "production-secret-sentinel",
+            "password: production-secret-sentinel",
+        ),
+        ("cargo-secret-sentinel", "token = \"cargo-secret-sentinel\""),
+    ] {
+        let result = handler.execute("codegraph_explore", &json!({ "query": query }));
+        assert!(!result.text().contains(forbidden_line), "{}", result.text());
+        let structured = result.structured_content.expect("structured explore");
+        assert_eq!(structured["literalMatches"], json!([]));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explore_reports_literal_match_omissions() {
+    let _env = env_read().await;
+    let dir = TempDir::new().unwrap();
+    for index in 0..10 {
+        write(
+            &dir.path().join(format!("src/state{index}.ts")),
+            "export const ready = true;\n// TODO: persist project cache gaps\n",
+        );
+    }
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    let result = handler.execute(
+        "codegraph_explore",
+        &json!({ "query": "TODO persist project cache gaps" }),
+    );
+
+    let text = result.text();
+    assert!(text.contains("matching file(s) omitted"), "{text}");
+    let structured = result.structured_content.expect("structured literal explore");
+    assert_eq!(structured["literalMatches"].as_array().unwrap().len(), 8);
+    assert!(structured.get("literalTotalFiles").is_none(), "{structured}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explore_preserves_literal_matches_when_graph_symbols_also_match() {
+    let _env = env_read().await;
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("src/state.ts"),
+        "export function target(): number {\n  return 1;\n}\n// TODO: persist project cache gaps\n",
+    );
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    let result = handler.execute(
+        "codegraph_explore",
+        &json!({ "query": "target TODO persist project cache gaps" }),
+    );
+
+    assert_ne!(result.is_error, Some(true), "explore errored: {}", result.text());
+    assert!(
+        result.text().contains("### Literal content matches"),
+        "mixed graph/literal query lost literal data: {}",
+        result.text()
+    );
+    let structured = result
+        .structured_content
+        .as_ref()
+        .expect("structured literal explore");
+    assert_eq!(structured["literalMatches"][0]["filePath"], "src/state.ts");
+
+    let definition = get_static_tools()
+        .into_iter()
+        .find(|tool| tool.name == "codegraph_explore")
+        .expect("explore definition");
+    assert!(
+        !definition.input_schema.properties.contains_key("literal"),
+        "the approved v2 interface must not grow a literal request parameter"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explore_max_files_only_limits_rendering_not_discovery() {
+    let _env = env_read().await;
+    let dir = TempDir::new().unwrap();
+    for i in 0..8 {
+        write(
+            &dir.path().join(format!("src/widget{i}.ts")),
+            &format!("export function widget{i}(): number {{\n  return {i};\n}}\n"),
+        );
+    }
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+    let query = "widget0 widget1 widget2 widget3 widget4 widget5 widget6 widget7";
+
+    let narrow = handler
+        .execute("codegraph_explore", &json!({ "query": query, "maxFiles": 1 }))
+        .structured_content
+        .expect("narrow structured explore");
+    let wide = handler
+        .execute("codegraph_explore", &json!({ "query": query, "maxFiles": 8 }))
+        .structured_content
+        .expect("wide structured explore");
+
+    assert_eq!(narrow["filesIncluded"], 1);
+    assert_eq!(narrow["totalSymbols"], wide["totalSymbols"]);
+    assert_eq!(narrow["totalFiles"], wide["totalFiles"]);
+    assert_eq!(narrow["relationships"], wide["relationships"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explore_max_files_does_not_limit_literal_discovery() {
+    let _env = env_read().await;
+    let dir = TempDir::new().unwrap();
+    for index in 0..250 {
+        write(
+            &dir.path().join(format!("src/a{index:03}.ts")),
+            &format!("export const value{index} = {index};\n"),
+        );
+    }
+    write(
+        &dir.path().join("src/z999.ts"),
+        "export const tail = true;\n// UNIQUE_LITERAL_SENTINEL\n",
+    );
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    for max_files in [1, 2] {
+        let result = handler.execute(
+            "codegraph_explore",
+            &json!({ "query": "UNIQUE_LITERAL_SENTINEL", "maxFiles": max_files }),
+        );
+        assert!(
+            result.text().contains("### Literal content matches"),
+            "maxFiles={max_files} changed literal discovery: {}",
+            result.text()
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explore_literal_payload_respects_output_cap_and_marks_trimming() {
+    let _env = env_write().await;
+    let _guard = EnvVarGuard::set("CODEGRAPH_MAX_OUTPUT_CHARS", "600");
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("src/state.ts"),
+        &format!("// TODO {}\n", "x".repeat(500_000)),
+    );
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    let structured = handler
+        .execute("codegraph_explore", &json!({ "query": "TODO" }))
+        .structured_content
+        .expect("structured literal explore");
+
+    assert_eq!(structured["trimmed"], true, "{structured}");
+    assert!(
+        serde_json::to_string(&structured).unwrap().len() <= 600,
+        "literal payload exceeded configured cap: {structured}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn explore_structured_source_respects_output_cap() {
     let _env = env_write().await;
     let _guard = EnvVarGuard::set("CODEGRAPH_MAX_OUTPUT_CHARS", "600");
@@ -190,11 +380,16 @@ async fn explore_structured_source_respects_output_cap() {
 
     let result = handler.execute("codegraph_explore", &json!({ "query": "target" }));
     let structured = result.structured_content.as_ref().expect("structured explore");
-    let source = structured["sourceFiles"][0]["chunks"][0]["source"]
-        .as_str()
-        .unwrap();
-    assert!(source.contains("[truncated]"), "{source}");
-    assert!(source.len() < repeated.len(), "structured source was not capped");
+    let file = &structured["sourceFiles"][0];
+    assert_eq!(file["sourceTruncated"], true, "{file}");
+    assert_eq!(structured["trimmed"], true, "{structured}");
+    assert!(file["chunks"].as_array().unwrap().iter().all(|chunk| {
+        !chunk["source"].as_str().unwrap().contains("[truncated]")
+    }));
+    assert!(
+        serde_json::to_string(structured).unwrap().len() <= 600,
+        "structured source exceeded configured cap: {structured}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -218,6 +413,40 @@ async fn oversized_whole_file_skip_emits_linkscope_event() {
         record,
         linkscope::Record::Event { label, .. } if label == "codegraph.explore.whole_file_skipped"
     )));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn explore_graph_source_rejects_symlink_replacement_escape() {
+    let _env = env_read().await;
+    let dir = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let indexed_path = dir.path().join("src/state.ts");
+    write(
+        &indexed_path,
+        "export function target(): number { return 1; }\n",
+    );
+    write(
+        &outside.path().join("secret.ts"),
+        "OUTSIDE_EXPLORE_SECRET_SENTINEL\n",
+    );
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    fs::remove_file(&indexed_path).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret.ts"), &indexed_path).unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    let result = handler.execute("codegraph_explore", &json!({ "query": "target" }));
+
+    assert!(!result.text().contains("OUTSIDE_EXPLORE_SECRET_SENTINEL"));
+    let structured = result.structured_content.expect("structured explore");
+    assert!(structured["sourceFiles"].as_array().unwrap().is_empty());
+    assert!(structured["omissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|omission| omission["path"] == "src/state.ts"
+            && omission["reason"] == "unavailable"));
 }
 
 #[cfg(unix)]

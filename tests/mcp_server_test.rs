@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use codegraph::mcp::engine::{MCPEngine, MCPEngineOptions};
 use codegraph::mcp::tools::{ToolHandler, ToolResult};
 use codegraph::sync::{WatchOptions, emit_watch_event_for_tests};
 use codegraph::{CodeGraph, IndexOptions, InitOptions};
@@ -155,6 +156,8 @@ fn spawn_server(cwd: &Path, args: &[&str], no_daemon: bool) -> ServerProc {
         .env_remove("VITEST");
     if no_daemon {
         cmd.env("CODEGRAPH_NO_DAEMON", "1");
+    } else {
+        cmd.env("CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS", "500");
     }
     let mut child = cmd.spawn().expect("spawn codegraph-mcp-server");
 
@@ -315,7 +318,7 @@ async fn server_instructions_are_byte_identical_to_the_ts_source() {
     };
     let marker = "SERVER_INSTRUCTIONS = `";
     let start = ts.find(marker).expect("TS template start") + marker.len();
-    let end = ts.rfind("`;").expect("TS template end");
+    let end = ts[start..].find("`;").expect("TS template end") + start;
     // Unescape the template-literal escapes used in the file (backticks).
     let expected = ts[start..end]
         .replace("\\`", "`")
@@ -325,6 +328,19 @@ async fn server_instructions_are_byte_identical_to_the_ts_source() {
         codegraph::mcp::server_instructions::SERVER_INSTRUCTIONS,
         expected,
         "server_instructions.rs must stay byte-identical to server-instructions.ts (issue #529)"
+    );
+
+    let marker = "SERVER_INSTRUCTIONS_NO_ROOT_INDEX = `";
+    let start = ts.find(marker).expect("TS no-root template start") + marker.len();
+    let end = ts[start..].find("`;").expect("TS no-root template end") + start;
+    let expected = ts[start..end]
+        .replace("\\`", "`")
+        .replace("\\${", "${")
+        .replace("\\\\", "\\");
+    assert_eq!(
+        codegraph::mcp::server_instructions::SERVER_INSTRUCTIONS_NO_ROOT_INDEX,
+        expected,
+        "no-root instructions must stay byte-identical to the TypeScript source"
     );
 }
 
@@ -345,10 +361,37 @@ async fn responds_to_initialize_quickly_when_no_codegraph_exists_in_cwd() {
     assert_eq!(parsed["id"], 0);
     assert!(!parsed["result"]["protocolVersion"].is_null());
     assert!(parsed["result"]["capabilities"]["tools"].is_object());
+    assert!(
+        parsed["result"]["instructions"].as_str().is_some_and(
+            |instructions| instructions.contains("available (per-project; pass projectPath)")
+        )
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn advertises_the_2025_06_18_mcp_protocol_to_newer_clients() {
+async fn initialize_instructions_match_the_explore_only_surface_for_an_indexed_root() {
+    // Given: the server starts in a project with a current index.
+    let _guard = env_read().await;
+    let tmp = TempDir::new().unwrap();
+    init_project(tmp.path()).await;
+    let mut server = spawn_server(tmp.path(), &[], true);
+
+    // When: an MCP client initializes the connection.
+    server.send(&initialize_msg(Some(tmp.path()), "2025-11-25", json!({})));
+    let response = wait_for_event(&server, Duration::from_secs(5), |event| {
+        event.stream == "stdout"
+    });
+    let parsed: Value = serde_json::from_str(&response.text).unwrap();
+
+    // Then: the guidance names only the default Explore tool.
+    let instructions = parsed["result"]["instructions"].as_str().unwrap();
+    assert!(instructions.contains("One tool: codegraph_explore"));
+    assert!(!instructions.contains("codegraph_search"));
+    assert!(!instructions.contains("codegraph_node"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn negotiates_the_rmcp_current_protocol_version() {
     let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &[], true);
@@ -356,7 +399,7 @@ async fn advertises_the_2025_06_18_mcp_protocol_to_newer_clients() {
 
     let response = wait_for_event(&server, Duration::from_secs(5), |e| e.stream == "stdout");
     let parsed: Value = serde_json::from_str(&response.text).unwrap();
-    assert_eq!(parsed["result"]["protocolVersion"], "2025-06-18");
+    assert_eq!(parsed["result"]["protocolVersion"], "2025-11-25");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -386,6 +429,7 @@ async fn sends_initialize_response_before_try_initialize_default_finishes() {
     server.send(&initialize_msg(Some(tmp.path()), "2025-11-25", json!({})));
 
     let response = wait_for_event(&server, Duration::from_secs(10), |e| e.stream == "stdout");
+    server.send(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }));
     let watcher_log = wait_for_event(&server, Duration::from_secs(10), |e| {
         e.stream == "stderr" && e.text.contains("File watcher active")
     });
@@ -451,7 +495,10 @@ async fn direct_tool_results_use_compact_json_projection() {
         structured_response["result"]["structuredContent"]["kind"],
         "status"
     );
-    assert!(structured_response["result"].get("_meta").is_none());
+    assert_eq!(
+        structured_response["result"]["_meta"]["notices"][0]["kind"],
+        "auto_sync_disabled"
+    );
     assert!(structured_response["result"].get("isError").is_none());
 
     // When: call a handler that supplies human text only.
@@ -473,7 +520,10 @@ async fn direct_tool_results_use_compact_json_projection() {
         1
     );
     assert_eq!(text_response["result"]["structuredContent"]["kind"], "text");
-    assert!(text_response["result"].get("_meta").is_none());
+    assert_eq!(
+        text_response["result"]["_meta"]["notices"][0]["kind"],
+        "auto_sync_disabled"
+    );
     assert!(text_response["result"].get("isError").is_none());
 
     // When: a known tool returns a structured execution error.
@@ -522,6 +572,144 @@ async fn direct_tool_results_use_compact_json_projection() {
     println!("direct structured tools/call result: {structured_response}");
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn daemon_mode_uses_rmcp_for_initialize_list_and_call() {
+    let _guard = env_read().await;
+    let project = TempDir::new().unwrap();
+    init_project(project.path()).await;
+    let mut cold = spawn_server(project.path(), &["--no-watch"], false);
+    cold.send(&initialize_msg(
+        Some(project.path()),
+        "2025-11-25",
+        json!({}),
+    ));
+    wait_for_message(&cold, Duration::from_secs(5), |message| message["id"] == 0);
+    std::thread::sleep(Duration::from_millis(100));
+    let mut server = spawn_server(project.path(), &["--no-watch"], false);
+
+    server.send(&initialize_msg(
+        Some(project.path()),
+        "2025-11-25",
+        json!({}),
+    ));
+    let initialized = wait_for_message(&server, Duration::from_secs(10), |message| {
+        message["id"] == 0
+    });
+    assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
+    wait_for_event(&server, Duration::from_secs(10), |event| {
+        event.stream == "stderr" && event.text.contains("Attached to shared daemon")
+    });
+
+    server.send(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }));
+    let listed = wait_for_message(&server, Duration::from_secs(10), |message| {
+        message["id"] == 1
+    });
+    assert!(
+        listed["result"]["tools"]
+            .as_array()
+            .is_some_and(|tools| !tools.is_empty())
+    );
+
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "codegraph_explore", "arguments": { "query": "target" } }
+    }));
+    let called = wait_for_message(&server, Duration::from_secs(15), |message| {
+        message["id"] == 2
+    });
+    assert_compact_mcp_projection(&called);
+    assert_eq!(called["result"]["structuredContent"]["kind"], "explore");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn daemon_mode_serves_rmcp_with_one_tokio_worker() {
+    let _guard = env_write().await;
+    let _workers = EnvVarGuard::set("TOKIO_WORKER_THREADS", "1");
+    let project = TempDir::new().unwrap();
+    init_project(project.path()).await;
+    let mut server = spawn_server(project.path(), &["--no-watch"], false);
+
+    server.send(&initialize_msg(
+        Some(project.path()),
+        "2025-11-25",
+        json!({}),
+    ));
+    let initialized = wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["id"] == 0
+    });
+    assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn direct_and_daemon_modes_return_the_same_rmcp_results() {
+    let _guard = env_read().await;
+    let project = TempDir::new().unwrap();
+    init_project(project.path()).await;
+
+    let run = |no_daemon| {
+        let mut server = spawn_server(project.path(), &["--no-watch"], no_daemon);
+        server.send(&initialize_msg(
+            Some(project.path()),
+            "2025-11-25",
+            json!({}),
+        ));
+        let initialized = wait_for_message(&server, Duration::from_secs(10), |message| {
+            message["id"] == 0
+        });
+        server.send(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }));
+        let listed = wait_for_message(&server, Duration::from_secs(10), |message| {
+            message["id"] == 1
+        });
+        server.send(&json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "codegraph_status", "arguments": {} }
+        }));
+        let called = wait_for_message(&server, Duration::from_secs(15), |message| {
+            message["id"] == 2
+        });
+        (
+            initialized["result"].clone(),
+            listed["result"].clone(),
+            called["result"].clone(),
+        )
+    };
+
+    let direct = run(true);
+    let daemon = run(false);
+    assert_eq!(direct, daemon);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn daemon_proxy_drains_responses_after_client_stdin_closes() {
+    // Given: a finite MCP transcript is sent through the shared-daemon proxy.
+    let _guard = env_read().await;
+    let tmp = TempDir::new().unwrap();
+    init_project(tmp.path()).await;
+    let mut cold = spawn_server(tmp.path(), &[], false);
+    cold.send(&initialize_msg(Some(tmp.path()), "2025-11-25", json!({})));
+    wait_for_message(&cold, Duration::from_secs(5), |message| message["id"] == 0);
+    std::thread::sleep(Duration::from_millis(100));
+    let mut server = spawn_server(tmp.path(), &[], false);
+    server.send(&initialize_msg(Some(tmp.path()), "2025-11-25", json!({})));
+    server.send(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }));
+
+    // When: the client half-closes stdin after writing every request.
+    drop(server.stdin.take());
+
+    // Then: the proxy drains both daemon responses before it exits.
+    wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["id"] == 0
+    });
+    let listed = wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["id"] == 1
+    });
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["result"]["tools"][0]["name"], "codegraph_explore");
+}
+
 // =============================================================================
 // MCP project resolution via roots/list (issue #196) — __tests__/mcp-roots.test.ts
 // =============================================================================
@@ -552,7 +740,10 @@ async fn resolves_the_project_from_the_client_roots_list_when_no_root_uri_is_sen
     let roots_req = wait_for_message(&server, Duration::from_secs(5), |m| {
         m["method"] == "roots/list"
     });
-    assert!(roots_req["id"].is_string(), "server-initiated id"); // server-initiated id
+    assert!(
+        roots_req["id"].is_string() || roots_req["id"].is_number(),
+        "server-initiated id"
+    );
     server.send(&json!({
         "jsonrpc": "2.0", "id": roots_req["id"],
         "result": { "roots": [{ "uri": format!("file://{}", project_dir.path().display()), "name": "proj" }] }
@@ -562,6 +753,45 @@ async fn resolves_the_project_from_the_client_roots_list_when_no_root_uri_is_sen
     let resp = wait_for_message(&server, Duration::from_secs(8), |m| m["id"] == 1);
     assert_compact_mcp_projection(&resp);
     assert_eq!(resp["result"]["structuredContent"]["kind"], "status");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resolves_percent_encoded_unicode_client_root() {
+    let _guard = env_read().await;
+    let cwd = TempDir::new().unwrap();
+    let project_parent = TempDir::new().unwrap();
+    let project = project_parent.path().join("project with space-λ");
+    std::fs::create_dir_all(&project).unwrap();
+    init_project(&project).await;
+    let mut server = spawn_server(cwd.path(), &[], true);
+
+    server.send(&initialize_msg(
+        None,
+        "2025-11-25",
+        json!({ "roots": { "listChanged": true } }),
+    ));
+    wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["id"] == 0
+    });
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": "codegraph_status", "arguments": {} }
+    }));
+    let roots_request = wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["method"] == "roots/list"
+    });
+    let encoded_uri = format!("file://{}", project.display())
+        .replace(' ', "%20")
+        .replace('λ', "%CE%BB");
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": roots_request["id"],
+        "result": { "roots": [{ "uri": encoded_uri, "name": "encoded" }] }
+    }));
+    let response = wait_for_message(&server, Duration::from_secs(8), |message| {
+        message["id"] == 1
+    });
+
+    assert_eq!(response["result"]["structuredContent"]["kind"], "status");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -605,7 +835,7 @@ async fn returns_an_actionable_error_when_there_is_no_root_uri_and_no_roots_capa
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn honors_an_explicit_root_uri_without_asking_the_client_for_roots() {
+async fn deprecated_root_uri_defers_to_the_rmcp_roots_capability() {
     let _guard = env_read().await;
     let cwd_dir = TempDir::new().unwrap();
     let project_dir = TempDir::new().unwrap();
@@ -627,16 +857,22 @@ async fn honors_an_explicit_root_uri_without_asking_the_client_for_roots() {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": { "name": "codegraph_status", "arguments": {} }
     }));
+    let roots_request = wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["method"] == "roots/list"
+    });
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": roots_request["id"],
+        "result": { "roots": [{ "uri": format!("file://{}", project_dir.path().display()), "name": "proj" }] }
+    }));
     let resp = wait_for_message(&server, Duration::from_secs(8), |m| m["id"] == 1);
 
     assert_compact_mcp_projection(&resp);
     assert_eq!(resp["result"]["structuredContent"]["kind"], "status");
-    // rootUri is a stronger signal than roots — we never needed to ask.
     assert!(
-        !server
+        server
             .messages()
             .iter()
-            .any(|m| m["method"] == "roots/list")
+            .any(|message| message["method"] == "roots/list")
     );
 }
 
@@ -857,6 +1093,73 @@ async fn returns_zero_pending_files_when_no_watcher_is_active() {
     let (_tmp, cg, _handler) = staleness_fixture().await;
     assert!(cg.get_pending_files().is_empty());
     cg.close();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn watcher_policy_disabled_is_visible_on_reads_and_status() {
+    let _lock = env_write().await;
+    let _guard = EnvVarGuard::set("CODEGRAPH_NO_WATCH", "1");
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("alpha.ts"), "export const alpha = 1;\n").unwrap();
+    init_project(tmp.path()).await;
+    let root = tmp.path().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let engine = MCPEngine::new(MCPEngineOptions::default());
+        engine.ensure_initialized(root.to_string_lossy().as_ref());
+
+        let search = engine
+            .get_tool_handler()
+            .execute("codegraph_search", &json!({ "query": "alpha" }));
+        assert!(
+            search
+                .text()
+                .starts_with("⚠️ CodeGraph auto-sync is DISABLED")
+        );
+        let notice = &search.meta.as_ref().unwrap().notices[0];
+        assert_eq!(notice.kind, "auto_sync_disabled");
+        assert_eq!(
+            notice.data.as_ref().unwrap()["reason"],
+            "CODEGRAPH_NO_WATCH=1 is set"
+        );
+
+        let status = engine
+            .get_tool_handler()
+            .execute("codegraph_status", &json!({}));
+        assert!(status.text().contains("Auto-sync disabled:"));
+        let structured = status.structured_content.as_ref().unwrap();
+        assert_eq!(structured["autoSync"]["enabled"], false);
+        assert_eq!(
+            structured["autoSync"]["reason"],
+            "CODEGRAPH_NO_WATCH=1 is set"
+        );
+        engine.stop();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn watcher_setup_failure_state_is_visible_on_every_successful_read() {
+    let _lock = env_read().await;
+    let (_tmp, _cg, handler) = staleness_fixture().await;
+    handler.set_auto_sync_disabled("watcher setup failed: permission denied");
+
+    for (tool, args) in [
+        ("codegraph_search", json!({ "query": "alphaOnly" })),
+        ("codegraph_files", json!({})),
+    ] {
+        let result = handler.execute(tool, &args);
+        assert_ne!(result.is_error, Some(true), "{}", result.text());
+        assert!(
+            result
+                .text()
+                .starts_with("⚠️ CodeGraph auto-sync is DISABLED")
+        );
+        assert_eq!(
+            result.meta.as_ref().unwrap().notices[0].kind,
+            "auto_sync_disabled"
+        );
+    }
 }
 
 // =============================================================================

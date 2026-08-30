@@ -36,6 +36,55 @@ fn language_detection_rust_files() {
 }
 
 #[test]
+fn language_detection_file_level_context_files() {
+    assert_eq!(detect_language("Cargo.toml", None), Language::Toml);
+    assert_eq!(detect_language("Cargo.lock", None), Language::Toml);
+    assert_eq!(detect_language("README.md", None), Language::Markdown);
+    assert_eq!(detect_language("README.SETUP", None), Language::Markdown);
+    assert_eq!(detect_language("LICENSE-MIT", None), Language::Markdown);
+    assert_eq!(detect_language(".gitignore", None), Language::Gitignore);
+    assert_eq!(detect_language(".rgignore", None), Language::Gitignore);
+    assert_eq!(detect_language("complete.zsh", None), Language::Zsh);
+    assert_eq!(detect_language("complete.fish", None), Language::Fish);
+}
+
+#[test]
+fn language_detection_extensionless_shebang_scripts() {
+    assert_eq!(
+        detect_language("scripts/build", Some("#!/bin/bash\necho ok\n")),
+        Language::Bash
+    );
+    assert_eq!(
+        detect_language("ci/test-complete", Some("#!/usr/bin/env zsh\necho ok\n")),
+        Language::Zsh
+    );
+    assert_eq!(
+        detect_language(
+            "scripts/copy-examples",
+            Some("#!/usr/bin/env python3\nprint('ok')\n")
+        ),
+        Language::Python
+    );
+}
+
+#[test]
+fn language_detection_source_extensions_win_over_document_like_basenames() {
+    assert_eq!(
+        detect_language("src/license_service.rs", None),
+        Language::Rust
+    );
+    assert_eq!(
+        detect_language("tools/readme-parser.py", None),
+        Language::Python
+    );
+    assert_eq!(
+        detect_language("app/LicenseController.java", None),
+        Language::Java
+    );
+    assert_eq!(detect_language("README.ts", None), Language::Typescript);
+}
+
+#[test]
 fn language_detection_java_files() {
     assert_eq!(detect_language("Main.java", None), Language::Java);
 }
@@ -102,4 +151,5 @@ fn language_detection_objective_c_files() {
 fn language_detection_unknown_for_unsupported_extensions() {
     assert_eq!(detect_language("styles.css", None), Language::Unknown);
     assert_eq!(detect_language("data.json", None), Language::Unknown);
+    assert_eq!(detect_language("Makefile", None), Language::Unknown);
 }

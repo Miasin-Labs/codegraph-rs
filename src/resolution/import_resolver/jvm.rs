@@ -2,6 +2,7 @@ mod cpp;
 mod go;
 mod imports;
 mod path_imports;
+mod python;
 mod re_exports;
 
 use crate::resolution::types::{ResolutionContext, ResolvedRef, UnresolvedRef};
@@ -64,6 +65,12 @@ pub fn resolve_via_import(
             imports::resolve_java_imported_reference(reference, &imports, context)
         {
             return Some(java_result);
+        }
+    }
+
+    if reference.language == Language::Python {
+        if let Some(python_result) = python::resolve_python_receiver(reference, &imports, context) {
+            return Some(python_result);
         }
     }
 

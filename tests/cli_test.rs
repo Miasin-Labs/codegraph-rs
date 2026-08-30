@@ -40,6 +40,17 @@ fn run_cli(cwd: &Path, args: &[&str]) -> Output {
         .expect("spawn codegraph binary")
 }
 
+fn run_cli_with_home(cwd: &Path, home: &Path, args: &[&str]) -> Output {
+    Command::new(bin())
+        .args(args)
+        .current_dir(cwd)
+        .env("CODEGRAPH_NO_DAEMON", "1")
+        .env("HOME", home)
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn codegraph binary")
+}
+
 fn stdout_str(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
@@ -170,7 +181,7 @@ async fn status_json_on_an_uninitialized_project_reports_version_index_path_last
 async fn status_json_on_an_indexed_project_reports_version_index_path_and_round_trippable_last_indexed()
  {
     let (_dir, root) = temp_project();
-    fs::write(root.join("a.ts"), "export const x = 1;\n").unwrap();
+    fs::write(root.join("a.ts"), "// @generated\nexport const x = 1;\n").unwrap();
 
     let before = now_ms();
     {
@@ -207,11 +218,53 @@ async fn status_json_on_an_indexed_project_reports_version_index_path_and_round_
     assert!(out["pendingChanges"]["added"].is_number());
     assert!(out["pendingChanges"]["modified"].is_number());
     assert!(out["pendingChanges"]["removed"].is_number());
+    assert_eq!(out["generatedFileCount"], serde_json::json!(1));
     assert!(out["nodesByKind"].is_object());
     assert!(out["languages"].is_array());
     assert!(out["worktreeMismatch"].is_null());
     assert!(out["fileCount"].as_u64().unwrap() >= 1);
     assert!(out["dbSizeBytes"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn status_json_preserves_exact_pending_shape_while_human_output_lists_paths() {
+    let (_dir, root) = temp_project();
+    fs::write(root.join("a.ts"), "export const a = 1;\n").unwrap();
+    fs::write(root.join("c.ts"), "export const c = 1;\n").unwrap();
+    {
+        let cg = CodeGraph::init_sync(&root).expect("init_sync");
+        let result = cg
+            .index_all(&IndexOptions::default())
+            .await
+            .expect("index_all");
+        assert!(result.success);
+        cg.close();
+    }
+
+    fs::write(root.join("a.ts"), "export const a = 2;\n").unwrap();
+    fs::write(root.join("b.ts"), "export const b = 1;\n").unwrap();
+    fs::remove_file(root.join("c.ts")).unwrap();
+
+    let out = run_status_json(&root);
+    assert_eq!(
+        out["pendingChanges"],
+        serde_json::json!({
+            "added": 1,
+            "modified": 1,
+            "removed": 1,
+        })
+    );
+
+    let human = run_cli(&root, &["status"]);
+    assert!(
+        human.status.success(),
+        "{}",
+        String::from_utf8_lossy(&human.stderr)
+    );
+    let human = stdout_str(&human);
+    assert!(human.contains("b.ts"), "{human}");
+    assert!(human.contains("a.ts"), "{human}");
+    assert!(human.contains("c.ts"), "{human}");
 }
 
 // =============================================================================
@@ -298,8 +351,22 @@ async fn end_to_end_smoke_init_query_affected_uninit() {
     let affected: serde_json::Value =
         serde_json::from_str(stdout_str(&out).trim()).expect("affected --json is valid JSON");
     assert_eq!(affected["changedFiles"], serde_json::json!(["src/util.ts"]));
-    assert!(affected["affectedTests"].is_array());
+    assert_eq!(
+        affected["affectedTests"],
+        serde_json::json!(["src/__tests__/util.test.ts"])
+    );
     assert!(affected["totalDependentsTraversed"].is_number());
+
+    let absolute_util = root.join("src/util.ts").to_string_lossy().to_string();
+    let out = run_cli(&root, &["affected", &absolute_util, "--json"]);
+    assert!(out.status.success(), "affected absolute path failed");
+    let affected: serde_json::Value =
+        serde_json::from_str(stdout_str(&out).trim()).expect("affected --json is valid JSON");
+    assert_eq!(affected["changedFiles"], serde_json::json!(["src/util.ts"]));
+    assert_eq!(
+        affected["affectedTests"],
+        serde_json::json!(["src/__tests__/util.test.ts"])
+    );
 
     // --- status --json sees both fixture files ---
     let status = run_status_json(&root);
@@ -314,11 +381,52 @@ async fn end_to_end_smoke_init_query_affected_uninit() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(stdout_str(&out).contains("Removed CodeGraph from"));
-    assert!(!root.join(".codegraph").exists());
+    assert!(!root.join(".codegraph").join("codegraph.db").exists());
 
     // --- status --json reports uninitialized again ---
     let status = run_status_json(&root);
     assert_eq!(status["initialized"], serde_json::json!(false));
+}
+
+#[test]
+fn init_refuses_the_effective_home_directory_without_force() {
+    // Given: an existing directory presented to the CLI as HOME.
+    let (_dir, root) = temp_project_without_parent_index();
+    fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+
+    // When: initialization targets that directory without an override.
+    let out = run_cli_with_home(&root, &root, &["init"]);
+
+    // Then: the command refuses before creating an index.
+    assert!(!out.status.success());
+    assert!(!root.join(".codegraph").join("codegraph.db").exists());
+    let output = format!(
+        "{}{}",
+        stdout_str(&out),
+        String::from_utf8_lossy(&out.stderr)
+    )
+    .to_lowercase();
+    assert!(output.contains("home directory"), "{output}");
+    assert!(output.contains("--force"), "{output}");
+}
+
+#[test]
+fn init_force_explicitly_allows_the_effective_home_directory() {
+    // Given: an existing directory presented to the CLI as HOME.
+    let (_dir, root) = temp_project_without_parent_index();
+    fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+
+    // When: the caller explicitly accepts the broad indexing scope.
+    let out = run_cli_with_home(&root, &root, &["init", "--force"]);
+
+    // Then: initialization succeeds and creates the index.
+    assert!(
+        out.status.success(),
+        "stdout={} stderr={}",
+        stdout_str(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(root.join(".codegraph").join("codegraph.db").exists());
 }
 
 // =============================================================================

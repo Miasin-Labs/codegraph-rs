@@ -30,9 +30,9 @@ impl<'a> TreeSitterExtractor<'a> {
         // (e.g. Go: `type Foo struct { ... }` is a type_spec wrapping struct_type)
         let resolved_kind = ext.resolve_type_alias_kind(node, self.source);
 
-        if resolved_kind == Some(NodeKind::Struct) {
-            let Some(struct_node) = self.create_node(
-                NodeKind::Struct,
+        if let Some(kind @ (NodeKind::Struct | NodeKind::Union)) = resolved_kind {
+            let Some(aggregate_node) = self.create_node(
+                kind,
                 &name,
                 node,
                 NodeExtra {
@@ -44,13 +44,20 @@ impl<'a> TreeSitterExtractor<'a> {
                 return true;
             };
             // Visit body children for field extraction
-            self.node_stack.push(struct_node.id.clone());
-            // Try Go-style 'type' field first, then find inner struct child (C typedef struct)
-            let type_child = get_child_by_field(node, "type")
-                .or_else(|| self.find_child_by_types(node, ext.struct_types()));
+            self.node_stack.push(aggregate_node.id.clone());
+            let type_child = get_child_by_field(node, "type").or_else(|| {
+                self.find_child_by_types(
+                    node,
+                    if kind == NodeKind::Union {
+                        ext.union_types()
+                    } else {
+                        ext.struct_types()
+                    },
+                )
+            });
             if let Some(type_child) = type_child {
                 // Extract struct embedding (e.g. Go: `type DB struct { *Head; Queryable }`)
-                self.extract_inheritance(type_child, &struct_node.id);
+                self.extract_inheritance(type_child, &aggregate_node.id);
                 let body = get_child_by_field(type_child, ext.body_field()).unwrap_or(type_child);
                 for child in named_children(body) {
                     self.visit_node(child);

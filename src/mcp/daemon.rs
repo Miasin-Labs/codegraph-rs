@@ -3,7 +3,7 @@
 //! One detached `codegraph serve --mcp` daemon process per project root,
 //! accepting N concurrent MCP clients over a Unix-domain socket (named pipe on
 //! Windows — see the Windows note below). Each incoming connection gets its
-//! own session; all sessions share a single engine, which means a single file
+//! own rmcp service; all services share a single engine, which means a single file
 //! watcher (one inotify set), a single SQLite connection (one WAL writer), and
 //! a single tree-sitter warm-up — paid once, amortized across every agent
 //! talking to the project.
@@ -24,7 +24,7 @@
 //!     what keeps a single-agent session from leaking a daemon forever (#277).
 //!
 //! What this file owns:
-//!   - Listening on the daemon socket and spawning per-connection sessions.
+//!   - Listening on the daemon socket and spawning per-connection services.
 //!   - The handshake "hello" line that lets a proxy verify it found a
 //!     same-version daemon before piping any JSON-RPC through it.
 //!   - The lockfile (`.codegraph/daemon.pid`) competing daemons arbitrate
@@ -36,9 +36,8 @@
 //! What this file does NOT own:
 //!   - The proxy side (`proxy.rs`).
 //!   - The decision of *whether* to run as daemon at all — that's `MCPServer`.
-//!   - The MCP protocol state machine — that's `session.rs`. The per-connection
-//!     session and shared engine are injected via [`DaemonSessionFactory`] so
-//!     this file has no compile-time dependency on them.
+//!   - The MCP protocol state machine — rmcp owns it. The per-connection server
+//!     and shared engine are injected through [`DaemonSessionFactory`].
 //!
 //! Windows port note: the TS daemon listens on a named pipe
 //! (`\\.\pipe\codegraph-<hash>`) via Node's `net` module. Rust's std has no
@@ -323,14 +322,8 @@ mod unix_daemon {
     };
     use crate::mcp::daemon_registry::{deregister_daemon, register_daemon};
 
-    /// Per-connection session + shared engine seam.
-    ///
-    /// The TS daemon constructs `new MCPSession(new SocketTransport(socket),
-    /// this.engine, { explicitProjectPath })` per connection, backgrounds
-    /// `engine.ensureInitialized(projectRoot)` at start, and calls
-    /// `engine.stop()` at shutdown. Those live in `session.rs` / `engine.rs`;
-    /// the daemon stays decoupled by taking this factory, which the MCP server
-    /// wiring implements over the real session/engine.
+    /// Per-connection server + shared engine seam. Production wiring serves
+    /// rmcp over the accepted socket; tests may substitute a socket consumer.
     pub trait DaemonSessionFactory: Send + Sync + 'static {
         /// Backgrounded engine warm-up — called once on a background thread when
         /// the daemon starts (TS: `void this.engine.ensureInitialized(root)`;
@@ -608,20 +601,6 @@ mod unix_daemon {
             // non-blocking mode.
             let _ = stream.set_nonblocking(false);
 
-            // Hello first so the proxy can verify versions before piping any
-            // application bytes. The proxy reads exactly one line, then forwards.
-            let hello = DaemonHello {
-                codegraph: CODEGRAPH_PACKAGE_VERSION.to_string(),
-                pid: std::process::id(),
-                socket_path: self.socket_path.to_string_lossy().to_string(),
-                protocol: 1,
-            };
-            let mut line = serde_json::to_string(&hello).unwrap_or_default();
-            line.push('\n');
-            if stream.write_all(line.as_bytes()).is_err() {
-                return; // peer vanished between accept and hello
-            }
-
             let id = self.next_client_id.fetch_add(1, Ordering::SeqCst);
             let registry_clone = match stream.try_clone() {
                 Ok(c) => c,
@@ -637,6 +616,21 @@ mod unix_daemon {
                 // disarmIdleTimer()
                 st.idle_deadline = None;
                 self.cv.notify_all();
+            }
+
+            // Hello only after registration, so idle/SIGTERM shutdown cannot
+            // commit a proxy to a connection that teardown is about to drain.
+            let hello = DaemonHello {
+                codegraph: CODEGRAPH_PACKAGE_VERSION.to_string(),
+                pid: std::process::id(),
+                socket_path: self.socket_path.to_string_lossy().to_string(),
+                protocol: 1,
+            };
+            let mut line = serde_json::to_string(&hello).unwrap_or_default();
+            line.push('\n');
+            if stream.write_all(line.as_bytes()).is_err() {
+                self.drop_client(id);
+                return;
             }
             linkscope::event_fields(
                 "daemon.client.connected",
@@ -663,17 +657,20 @@ mod unix_daemon {
         }
 
         fn handle_sigterm(&self) {
-            {
-                let st = self.state.lock().unwrap();
-                if !st.clients.is_empty() {
-                    eprintln!(
-                        "[CodeGraph daemon] Ignoring SIGTERM while {} client(s) are attached; will exit via idle timeout.",
-                        st.clients.len()
-                    );
-                    return;
-                }
+            let mut st = self.state.lock().unwrap();
+            if st.stopping {
+                return;
             }
-            self.stop("SIGTERM");
+            if !st.clients.is_empty() {
+                eprintln!(
+                    "[CodeGraph daemon] Ignoring SIGTERM while {} client(s) are attached; will exit via idle timeout.",
+                    st.clients.len()
+                );
+                return;
+            }
+            self.mark_stopping(&mut st, "SIGTERM");
+            drop(st);
+            self.finish_stop();
         }
 
         fn arm_idle_timer(&self) {
@@ -719,8 +716,9 @@ mod unix_daemon {
                                 self.arm_idle_deadline(&mut st);
                                 continue;
                             }
+                            self.mark_stopping(&mut st, "idle timeout");
                             drop(st);
-                            self.stop("idle timeout");
+                            self.finish_stop();
                             return;
                         }
                         let (guard, _timeout) = self.cv.wait_timeout(st, deadline - now).unwrap();
@@ -731,30 +729,41 @@ mod unix_daemon {
         }
 
         fn stop(&self, reason: &str) {
-            {
+            let should_finish = {
                 let mut st = self.state.lock().unwrap();
                 if st.stopping {
-                    return;
+                    false
+                } else {
+                    self.mark_stopping(&mut st, reason);
+                    true
                 }
-                st.stopping = true;
-                // disarm idle timer
-                st.idle_deadline = None;
-                eprintln!(
-                    "[CodeGraph daemon] Shutting down ({reason}; clients={}).",
-                    st.clients.len()
-                );
-                for (_, stream) in st.clients.drain() {
-                    let _ = stream.shutdown(std::net::Shutdown::Both); // best-effort session stop
-                }
-                self.cv.notify_all();
+            };
+            if should_finish {
+                self.finish_stop();
             }
+        }
+
+        fn mark_stopping(&self, st: &mut DaemonState, reason: &str) {
+            st.stopping = true;
+            st.idle_deadline = None;
+            eprintln!(
+                "[CodeGraph daemon] Shutting down ({reason}; clients={}).",
+                st.clients.len()
+            );
+            for (_, stream) in st.clients.drain() {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+            self.cv.notify_all();
+        }
+
+        fn finish_stop(&self) {
             // The accept loop notices `stopping` within its poll interval and
             // drops the listener; no join here — stop() may be called *from*
             // that very thread (signal dispatch).
             self.factory.stop_engine();
-            self.cleanup_lockfile();
             let _ = fs::remove_file(&self.socket_path); // may already be gone
             deregister_daemon(&self.project_root);
+            self.cleanup_lockfile();
             {
                 let mut st = self.state.lock().unwrap();
                 st.stopped = true;
@@ -763,8 +772,7 @@ mod unix_daemon {
         }
 
         fn cleanup_lockfile(&self) {
-            // Only remove if it still belongs to us — another daemon may have
-            // already taken over while we were shutting down (extremely rare).
+            // Only remove a lock record that still belongs to this process.
             if let Ok(raw) = fs::read_to_string(&self.pid_path) {
                 if let Some(info) = decode_lock_info(&raw) {
                     if info.pid == std::process::id() as i64 {

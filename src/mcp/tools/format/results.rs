@@ -110,6 +110,13 @@ pub(in crate::mcp::tools) fn cap_structured_content(mut value: Value) -> Value {
     let Some(cap) = output_char_cap() else {
         return value;
     };
+    if serde_json::to_string(&value)
+        .map(|serialized| serialized.len())
+        .unwrap_or(0)
+        <= cap
+    {
+        return value;
+    }
     cap_value(&mut value, 2048, 100);
     if serde_json::to_string(&value).map(|s| s.len()).unwrap_or(0) > cap {
         cap_value(&mut value, 256, 25);

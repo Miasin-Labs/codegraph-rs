@@ -23,6 +23,9 @@ pub(crate) enum Commands {
     Init {
         #[arg(value_name = "path")]
         path: Option<String>,
+        /// Initialize even when the path is HOME or a filesystem root
+        #[arg(short = 'f', long)]
+        force: bool,
         /// Show detailed worker lifecycle and memory info
         #[arg(short = 'v', long)]
         verbose: bool,
@@ -139,7 +142,7 @@ pub(crate) enum Commands {
     },
     /// Start CodeGraph as an MCP server for AI assistants
     Serve {
-        /// Project path (optional for MCP mode, uses rootUri from client)
+        /// Project path (optional for MCP mode, uses client roots or cwd)
         #[arg(short = 'p', long, value_name = "path")]
         path: Option<String>,
         /// Run as MCP server (stdio transport)
@@ -282,7 +285,7 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: AnalyzeCommands,
     },
-    /// Install codegraph MCP server into one or more agents (Claude Code, Cursor, Codex CLI, opencode, Hermes Agent)
+    /// Install codegraph MCP server into one or more supported agents
     Install {
         /// Target agent(s): comma-separated ids, or "auto"|"all"|"none". Default: prompt
         #[arg(short = 't', long, value_name = "ids")]
@@ -300,7 +303,7 @@ pub(crate) enum Commands {
         #[arg(long = "print-config", value_name = "id")]
         print_config: Option<String>,
     },
-    /// Remove codegraph from your agents (Claude Code, Cursor, Codex CLI, opencode, Hermes Agent)
+    /// Remove codegraph from one or more supported agents
     Uninstall {
         /// Target agent(s): comma-separated ids, or "all". Default: all
         #[arg(short = 't', long, value_name = "ids")]

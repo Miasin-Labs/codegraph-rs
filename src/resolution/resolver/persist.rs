@@ -26,6 +26,8 @@ impl ReferenceResolver {
                     from_node_id: resolved_ref.original.from_node_id.clone(),
                     reference_name: resolved_ref.original.reference_name.clone(),
                     reference_kind: resolved_ref.original.reference_kind.as_str().to_string(),
+                    line: resolved_ref.original.line,
+                    column: resolved_ref.original.column,
                 })
                 .collect();
             self.context
@@ -92,6 +94,8 @@ impl ReferenceResolver {
                         from_node_id: resolved_ref.original.from_node_id.clone(),
                         reference_name: resolved_ref.original.reference_name.clone(),
                         reference_kind: resolved_ref.original.reference_kind.as_str().to_string(),
+                        line: resolved_ref.original.line,
+                        column: resolved_ref.original.column,
                     })
                     .collect();
                 self.context

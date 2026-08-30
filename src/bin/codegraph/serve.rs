@@ -10,7 +10,7 @@ use super::{
     resolve_project_path,
 };
 
-pub(crate) fn cmd_serve(path_arg: Option<&str>, mcp: bool, no_watch: bool) {
+pub(crate) async fn cmd_serve(path_arg: Option<&str>, mcp: bool, no_watch: bool) {
     let project_path = path_arg.map(|p| resolve_project_path(Some(p)));
 
     // Commander sets watch=false when --no-watch is passed. Route it through
@@ -20,14 +20,11 @@ pub(crate) fn cmd_serve(path_arg: Option<&str>, mcp: bool, no_watch: bool) {
     }
 
     if mcp {
-        // Start MCP server - it handles initialization lazily based on rootUri
-        // from client
         let server = MCPServer::new(project_path.map(|p| p.to_string_lossy().to_string()));
-        if let Err(err) = server.start() {
+        if let Err(err) = server.start().await {
             error_msg(&format!("Failed to start server: {err}"));
             process::exit(1);
         }
-        // Server will run until terminated
     } else {
         // Default: show info about MCP mode.
         // Use stderr so stdout stays clean for any piped/stdio usage.

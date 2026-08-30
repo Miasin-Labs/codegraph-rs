@@ -7,11 +7,16 @@
 pub mod antigravity;
 pub mod claude;
 pub mod codex;
+pub mod copilot_cli;
+pub mod copilot_jetbrains;
+pub mod copilot_vscode;
 pub mod cursor;
 pub mod gemini;
 pub mod hermes;
 pub mod kiro;
 pub mod opencode;
+pub mod pi;
+pub mod prime;
 pub mod registry;
 pub mod shared;
 pub mod toml;

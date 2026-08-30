@@ -12,4 +12,4 @@ mod schema_builder;
 
 pub use catalog::tools;
 pub use filters::get_static_tools;
-pub(in crate::mcp::tools) use filters::{short_tool_name, tool_allowlist};
+pub(in crate::mcp::tools) use filters::{default_tool, short_tool_name, tool_allowlist};

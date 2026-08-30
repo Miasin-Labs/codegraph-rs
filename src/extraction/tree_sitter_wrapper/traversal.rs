@@ -2,9 +2,11 @@ use super::calls::INSTANTIATION_KINDS;
 use super::context::{basename, named_children, now_ms};
 use super::extractor::TreeSitterExtractor;
 use super::type_annotations::is_type_annotation_language;
+use super::value_references::swift_property_info;
 use crate::ensure_sufficient_stack;
 use crate::extraction::grammars::{create_parser, is_language_supported};
-use crate::extraction::tree_sitter_types::{ClassLikeKind, ClassMemberKind, SyntaxNode};
+use crate::extraction::tree_sitter_helpers::get_node_text;
+use crate::extraction::tree_sitter_types::{ClassLikeKind, ClassMemberKind, NodeExtra, SyntaxNode};
 use crate::types::{ExtractionError, ExtractionResult, Language, Node, NodeKind, Severity};
 
 impl<'a> TreeSitterExtractor<'a> {
@@ -97,6 +99,7 @@ impl<'a> TreeSitterExtractor<'a> {
                 }
 
                 self.visit_node(tree.root_node());
+                self.flush_value_references(tree.root_node());
 
                 if package_node_id.is_some() {
                     self.node_stack.pop();
@@ -201,6 +204,9 @@ impl<'a> TreeSitterExtractor<'a> {
         else if ext.struct_types().contains(&node_type) {
             self.extract_struct(node);
             skip_children = true;
+        } else if ext.union_types().contains(&node_type) {
+            self.extract_union(node);
+            skip_children = true;
         }
         // Check for enum declarations
         else if ext.enum_types().contains(&node_type) {
@@ -222,6 +228,37 @@ impl<'a> TreeSitterExtractor<'a> {
         else if ext.field_types().contains(&node_type) && self.is_inside_class_like_node() {
             self.extract_field(node);
             skip_children = true;
+        } else if self.language == Language::Swift
+            && matches!(
+                node_type,
+                "property_declaration" | "protocol_property_declaration"
+            )
+            && self.is_inside_class_like_node()
+        {
+            let (name_node, is_let, is_computed) = swift_property_info(node, self.source);
+            if let Some(name_node) = name_node {
+                let is_static = ext.is_static(node, self.source).unwrap_or(false);
+                let kind = if is_computed {
+                    NodeKind::Property
+                } else if is_static && is_let {
+                    NodeKind::Constant
+                } else if is_static {
+                    NodeKind::Variable
+                } else {
+                    NodeKind::Field
+                };
+                self.create_node(
+                    kind,
+                    get_node_text(name_node, self.source),
+                    node,
+                    NodeExtra {
+                        visibility: ext.get_visibility(node, self.source),
+                        is_static: Some(is_static),
+                        ..Default::default()
+                    },
+                );
+            }
+            skip_children = true;
         }
         // Check for variable declarations (const, let, var, etc.)
         // Only extract top-level variables (not inside functions/methods),
@@ -231,7 +268,9 @@ impl<'a> TreeSitterExtractor<'a> {
         // function-local `let`s (those are inside a Function scope, which is not
         // class-like).
         else if ext.variable_types().contains(&node_type)
-            && (!self.is_inside_class_like_node() || ext.extract_member_variables())
+            && (!self.is_inside_class_like_node()
+                || ext.extract_member_variables()
+                || self.is_class_scope_constant_assignment(node))
         {
             self.extract_variable(node);
             skip_children = true; // extract_variable handles children

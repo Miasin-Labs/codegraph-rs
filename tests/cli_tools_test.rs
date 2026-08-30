@@ -214,6 +214,14 @@ async fn daemon_lists_registry_records_and_cleans_an_invalid_project_lock() {
     assert!(listed.status.success());
     let records: serde_json::Value = serde_json::from_str(stdout(&listed).trim()).unwrap();
     assert_eq!(records[0]["pid"], serde_json::json!(std::process::id()));
+    assert!(
+        records[0]["indexPath"]
+            .as_str()
+            .unwrap()
+            .ends_with(".codegraph")
+    );
+    assert!(records[0]["uptimeMs"].is_number());
+    assert!(records[0]["pendingChanges"].is_null());
 
     fs::remove_file(registry.join("live.json")).unwrap();
     let lock_path = root.join(".codegraph/daemon.pid");

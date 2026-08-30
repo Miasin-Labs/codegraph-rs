@@ -15,14 +15,7 @@ use crate::extraction::tree_sitter_types::{
 use crate::types::NodeKind;
 
 fn find_compound_statement<'t>(node: SyntaxNode<'t>) -> Option<SyntaxNode<'t>> {
-    for i in 0..node.named_child_count() as u32 {
-        if let Some(child) = node.named_child(i) {
-            if child.kind() == "compound_statement" {
-                return Some(child);
-            }
-        }
-    }
-    None
+    find_named_child(node, "compound_statement")
 }
 
 /// Build ObjC selector: `greet`, `doThing:`, or `doThing:with:`.
@@ -105,6 +98,9 @@ impl LanguageExtractor for ObjcExtractor {
     fn struct_types(&self) -> &[&str] {
         &["struct_specifier"]
     }
+    fn union_types(&self) -> &[&str] {
+        &["union_specifier"]
+    }
     fn enum_types(&self) -> &[&str] {
         &["enum_specifier"]
     }
@@ -122,6 +118,9 @@ impl LanguageExtractor for ObjcExtractor {
     }
     fn variable_types(&self) -> &[&str] {
         &["declaration"]
+    }
+    fn field_types(&self) -> &[&str] {
+        &["field_declaration"]
     }
     fn property_types(&self) -> &[&str] {
         &["property_declaration"]
@@ -162,6 +161,9 @@ impl LanguageExtractor for ObjcExtractor {
             if child.kind() == "struct_specifier" && get_child_by_field(child, "body").is_some() {
                 return Some(NodeKind::Struct);
             }
+            if child.kind() == "union_specifier" && get_child_by_field(child, "body").is_some() {
+                return Some(NodeKind::Union);
+            }
         }
         None
     }
@@ -199,13 +201,12 @@ impl LanguageExtractor for ObjcExtractor {
         };
 
         ctx.push_scope(class_id);
-        for i in 0..node.named_child_count() as u32 {
-            if let Some(child) = node.named_child(i) {
-                if child.kind() == "implementation_definition" {
-                    for j in 0..child.named_child_count() as u32 {
-                        if let Some(impl_child) = child.named_child(j) {
-                            ctx.visit_node(impl_child);
-                        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "implementation_definition" {
+                for j in 0..child.named_child_count() as u32 {
+                    if let Some(impl_child) = child.named_child(j) {
+                        ctx.visit_node(impl_child);
                     }
                 }
             }
@@ -309,5 +310,44 @@ mod tests {
             .find(|n| n.name == "Runnable")
             .expect("protocol node");
         assert_eq!(proto.kind, NodeKind::Protocol);
+    }
+
+    #[test]
+    fn objc_and_objcpp_keep_source_unpreprocessed_like_upstream() {
+        let source = "SEC_ATTR UINT32 f(void);\nclass ENGINE_API Widget {};\n";
+        let extractor = ObjcExtractor;
+
+        assert_eq!(extractor.pre_parse(source, "source.m"), source);
+        assert_eq!(extractor.pre_parse(source, "source.mm"), source);
+    }
+
+    #[test]
+    fn objc_extracts_typedef_union_and_skips_forward_declaration() {
+        let source = r#"
+typedef union {
+    unsigned int raw;
+    float value;
+} NumberBits;
+union opaque_bits;
+"#;
+        for file in ["src/NumberBits.m", "src/NumberBits.mm"] {
+            let result =
+                TreeSitterExtractor::new(file, source, Some(Language::Objc), Some(&ObjcExtractor))
+                    .extract();
+
+            let number_bits = result
+                .nodes
+                .iter()
+                .find(|node| node.name == "NumberBits")
+                .expect("typedef union");
+            assert_eq!(number_bits.kind, NodeKind::Union);
+            assert_eq!(number_bits.start_line, 2);
+            assert!(result.nodes.iter().any(|node| {
+                node.kind == NodeKind::Field
+                    && node.name == "raw"
+                    && node.qualified_name == "NumberBits::raw"
+            }));
+            assert!(!result.nodes.iter().any(|node| node.name == "opaque_bits"));
+        }
     }
 }

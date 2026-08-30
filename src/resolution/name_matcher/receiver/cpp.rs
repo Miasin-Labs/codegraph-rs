@@ -101,7 +101,7 @@ pub(in crate::resolution::name_matcher) fn infer_cpp_receiver_type(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
 ) -> Option<String> {
-    let source = context.read_file(&reference.file_path)?;
+    let source = context.read_file_arc(&reference.file_path)?;
     if source.is_empty() {
         return None;
     }
@@ -173,7 +173,7 @@ pub(in crate::resolution::name_matcher) fn infer_cpp_receiver_type(
         if !context.file_exists(header_path) {
             continue;
         }
-        let Some(header_source) = context.read_file(header_path) else {
+        let Some(header_source) = context.read_file_arc(header_path) else {
             continue;
         };
         if header_source.is_empty() {

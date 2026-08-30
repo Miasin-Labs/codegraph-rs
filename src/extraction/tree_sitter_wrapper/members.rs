@@ -1,4 +1,4 @@
-use super::context::{find_named_child, named_children};
+use super::context::{extract_name, find_named_child, named_children};
 use super::extractor::TreeSitterExtractor;
 use crate::extraction::tree_sitter_helpers::{
     get_child_by_field,
@@ -6,7 +6,7 @@ use crate::extraction::tree_sitter_helpers::{
     get_preceding_docstring,
 };
 use crate::extraction::tree_sitter_types::{NodeExtra, SyntaxNode};
-use crate::types::NodeKind;
+use crate::types::{Language, NodeKind};
 
 impl<'a> TreeSitterExtractor<'a> {
     /// Extract a class property declaration (e.g. C# `public string Name { get; set; }`).
@@ -17,7 +17,6 @@ impl<'a> TreeSitterExtractor<'a> {
         let docstring = get_preceding_docstring(node, self.source);
         let visibility = ext.get_visibility(node, self.source);
         let is_static = ext.is_static(node, self.source).unwrap_or(false);
-
         let hook_name = ext.extract_property_name(node, self.source);
         let name = match hook_name {
             Some(h) => h,
@@ -82,15 +81,31 @@ impl<'a> TreeSitterExtractor<'a> {
     pub(super) fn extract_field(&mut self, node: SyntaxNode<'_>) {
         let Some(ext) = self.extractor else { return };
 
+        for child in named_children(node) {
+            if (ext.struct_types().contains(&child.kind())
+                || ext.union_types().contains(&child.kind()))
+                && get_child_by_field(child, ext.body_field()).is_some()
+            {
+                self.visit_node(child);
+            }
+        }
+
         let docstring = get_preceding_docstring(node, self.source);
         let visibility = ext.get_visibility(node, self.source);
         let is_static = ext.is_static(node, self.source).unwrap_or(false);
+        let field_kind = if matches!(self.language, Language::Java | Language::Csharp)
+            && ext.is_const(node, self.source).unwrap_or(false)
+        {
+            NodeKind::Constant
+        } else {
+            NodeKind::Field
+        };
 
         // Java field_declaration: "private final String name = value;" → variable_declarator(s) are direct children
         // C# field_declaration: wraps in variable_declaration → variable_declarator(s)
         let mut declarators: Vec<SyntaxNode<'_>> = named_children(node)
             .into_iter()
-            .filter(|c| c.kind() == "variable_declarator")
+            .filter(|c| matches!(c.kind(), "variable_declarator" | "field_declarator"))
             .collect();
         // C#: look inside variable_declaration wrapper
         if declarators.is_empty() {
@@ -132,7 +147,7 @@ impl<'a> TreeSitterExtractor<'a> {
                         None => format!("${}", name),
                     };
                     self.create_node(
-                        NodeKind::Field,
+                        field_kind,
                         &name,
                         elem,
                         NodeExtra {
@@ -160,6 +175,7 @@ impl<'a> TreeSitterExtractor<'a> {
                     "modifiers"
                         | "modifier"
                         | "variable_declarator"
+                        | "field_declarator"
                         | "variable_declaration"
                         | "marker_annotation"
                         | "annotation"
@@ -168,11 +184,13 @@ impl<'a> TreeSitterExtractor<'a> {
             let type_text = type_node.map(|t| get_node_text(t, self.source).to_string());
 
             for decl in declarators {
-                let name_node = get_child_by_field(decl, "name").or_else(|| {
-                    named_children(decl)
-                        .into_iter()
-                        .find(|c| c.kind() == "identifier")
-                });
+                let name_node = get_child_by_field(decl, "name")
+                    .or_else(|| get_child_by_field(decl, "declarator"))
+                    .or_else(|| {
+                        named_children(decl)
+                            .into_iter()
+                            .find(|c| matches!(c.kind(), "identifier" | "field_identifier"))
+                    });
                 let Some(name_node) = name_node else { continue };
                 let name = get_node_text(name_node, self.source).to_string();
                 let signature = match &type_text {
@@ -180,7 +198,7 @@ impl<'a> TreeSitterExtractor<'a> {
                     None => name.clone(),
                 };
                 let field_node = self.create_node(
-                    NodeKind::Field,
+                    field_kind,
                     &name,
                     decl,
                     NodeExtra {
@@ -202,16 +220,10 @@ impl<'a> TreeSitterExtractor<'a> {
                 }
             }
         } else {
-            // Fallback: try to find an identifier child directly
-            let name_node = get_child_by_field(node, "name").or_else(|| {
-                named_children(node)
-                    .into_iter()
-                    .find(|c| c.kind() == "identifier")
-            });
-            if let Some(name_node) = name_node {
-                let name = get_node_text(name_node, self.source).to_string();
+            let name = extract_name(node, self.source, ext);
+            if name != "<anonymous>" {
                 self.create_node(
-                    NodeKind::Field,
+                    field_kind,
                     &name,
                     node,
                     NodeExtra {

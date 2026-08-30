@@ -9,7 +9,6 @@ use super::super::format::{
 };
 use crate::codegraph::CodeGraph;
 use crate::error::Result;
-use crate::extraction::is_generated_file;
 use crate::types::{Node, NodeKind, SearchOptions, SearchResult};
 
 impl ToolHandler {
@@ -83,13 +82,12 @@ impl ToolHandler {
             let exact = cg.get_nodes_by_name(symbol)?;
             if !exact.is_empty() {
                 let mut sorted = exact;
-                sorted.sort_by_key(|n| {
-                    if is_generated_file(&n.file_path) {
-                        1
-                    } else {
-                        0
-                    }
-                });
+                let paths = sorted
+                    .iter()
+                    .map(|node| node.file_path.clone())
+                    .collect::<Vec<_>>();
+                let generated = cg.generated_file_predicate(&paths)?;
+                sorted.sort_by_key(|node| generated.is_generated(&node.file_path));
                 return Ok(sorted);
             }
             // No exact match — use the single top fuzzy result.
@@ -142,13 +140,12 @@ impl ToolHandler {
 
         // Down-rank generated files.
         let mut ranked: Vec<Node> = exact_matches.into_iter().map(|r| r.node.clone()).collect();
-        ranked.sort_by_key(|n| {
-            if is_generated_file(&n.file_path) {
-                1
-            } else {
-                0
-            }
-        });
+        let paths = ranked
+            .iter()
+            .map(|node| node.file_path.clone())
+            .collect::<Vec<_>>();
+        let generated = cg.generated_file_predicate(&paths)?;
+        ranked.sort_by_key(|node| generated.is_generated(&node.file_path));
         Ok(ranked)
     }
 
@@ -164,13 +161,12 @@ impl ToolHandler {
             let exact = cg.get_nodes_by_name(symbol)?;
             if !exact.is_empty() {
                 let mut ranked = exact;
-                ranked.sort_by_key(|n| {
-                    if is_generated_file(&n.file_path) {
-                        1
-                    } else {
-                        0
-                    }
-                });
+                let paths = ranked
+                    .iter()
+                    .map(|node| node.file_path.clone())
+                    .collect::<Vec<_>>();
+                let generated = cg.generated_file_predicate(&paths)?;
+                ranked.sort_by_key(|node| generated.is_generated(&node.file_path));
                 let note = if ranked.len() > 1 {
                     let locations: Vec<String> = ranked
                         .iter()
@@ -245,13 +241,12 @@ impl ToolHandler {
 
         // Same generated-file down-rank as find_symbol_matches.
         let mut ranked: Vec<Node> = exact_matches.into_iter().map(|r| r.node.clone()).collect();
-        ranked.sort_by_key(|n| {
-            if is_generated_file(&n.file_path) {
-                1
-            } else {
-                0
-            }
-        });
+        let paths = ranked
+            .iter()
+            .map(|node| node.file_path.clone())
+            .collect::<Vec<_>>();
+        let generated = cg.generated_file_predicate(&paths)?;
+        ranked.sort_by_key(|node| generated.is_generated(&node.file_path));
 
         let locations: Vec<String> = ranked
             .iter()

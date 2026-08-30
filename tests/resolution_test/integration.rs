@@ -153,3 +153,63 @@ async fn promotes_calls_to_instantiates_when_target_is_a_class_python() {
         .collect();
     assert!(calls_to_user_service.is_empty());
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn promotes_calls_to_instantiates_when_target_is_a_cpp_union() {
+    let fx = Fx::new();
+    let q = fx.q();
+    fx.write(
+        "src/packet.cpp",
+        "union Packet { unsigned int raw; };\nvoid initialize() { Packet(); }\n",
+    );
+    fx.track(&q, "src/packet.cpp", Language::Cpp);
+
+    let packet = node(
+        "union:src/packet.cpp:Packet:1",
+        NodeKind::Union,
+        "Packet",
+        "Packet",
+        "src/packet.cpp",
+        Language::Cpp,
+        1,
+        1,
+    );
+    let initialize = node(
+        "func:src/packet.cpp:initialize:2",
+        NodeKind::Function,
+        "initialize",
+        "initialize",
+        "src/packet.cpp",
+        Language::Cpp,
+        2,
+        2,
+    );
+    q.insert_nodes(&[packet.clone(), initialize.clone()])
+        .unwrap();
+    q.insert_unresolved_refs_batch(&[uref(
+        &initialize.id,
+        "Packet",
+        EdgeKind::Calls,
+        2,
+        "src/packet.cpp",
+        Language::Cpp,
+    )])
+    .unwrap();
+
+    fx.resolver()
+        .resolve_and_persist_batched(None, None)
+        .await
+        .unwrap();
+
+    let edges = q.get_outgoing_edges(&initialize.id, None, None).unwrap();
+    assert!(
+        edges
+            .iter()
+            .any(|edge| { edge.kind == EdgeKind::Instantiates && edge.target == packet.id })
+    );
+    assert!(
+        !edges
+            .iter()
+            .any(|edge| edge.kind == EdgeKind::Calls && edge.target == packet.id)
+    );
+}

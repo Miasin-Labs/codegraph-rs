@@ -71,14 +71,16 @@ impl<'a> TreeSitterExtractor<'a> {
             is_async: extra.is_async,
             is_static: extra.is_static,
             is_abstract: extra.is_abstract,
-            decorators: self
-                .extractor
-                .and_then(|ext| ext.extract_modifiers(node, self.source)),
+            decorators: extra.decorators.or_else(|| {
+                self.extractor
+                    .and_then(|ext| ext.extract_modifiers(node, self.source))
+            }),
             type_parameters: None,
             updated_at: now_ms(),
         };
 
         self.nodes.push(new_node.clone());
+        self.capture_value_reference_scope(kind, name, &id, node);
 
         // Add containment edge from parent
         if let Some(parent_id) = self.node_stack.last() {
@@ -147,7 +149,7 @@ impl<'a> TreeSitterExtractor<'a> {
     }
 
     /// Check if the current node stack indicates we are inside a class-like node
-    /// (class, struct, interface, trait). File nodes do not count as class-like.
+    /// (class, struct, union, interface, trait). File nodes do not count as class-like.
     pub(super) fn is_inside_class_like_node(&self) -> bool {
         let Some(parent_id) = self.node_stack.last() else {
             return false;
@@ -166,6 +168,7 @@ impl<'a> TreeSitterExtractor<'a> {
             parent_node.kind,
             NodeKind::Class
                 | NodeKind::Struct
+                | NodeKind::Union
                 | NodeKind::Interface
                 | NodeKind::Trait
                 | NodeKind::Enum

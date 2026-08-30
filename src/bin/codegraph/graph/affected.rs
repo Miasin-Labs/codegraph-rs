@@ -1,3 +1,5 @@
+use std::path::{Component, Path, PathBuf};
+
 use super::{
     CodeGraph,
     HashSet,
@@ -32,6 +34,32 @@ fn affected_filter_to_regex_str(filter: &str) -> String {
     let escaped = escaped.replace('.', "\\.");
     let escaped = escaped.replace("**", ".+");
     escaped.replace('*', "[^/]*")
+}
+
+fn normalize_index_path(file_path: &str, project_path: &Path) -> Option<String> {
+    let normalized = file_path.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return None;
+    }
+    let path = Path::new(&normalized);
+    let relative = if path.is_absolute() {
+        path.strip_prefix(project_path).ok()?
+    } else {
+        path
+    };
+    let mut clean = PathBuf::new();
+    for component in relative.components() {
+        match component {
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+            Component::ParentDir => {
+                if !clean.pop() {
+                    clean.push("..");
+                }
+            }
+            Component::Normal(segment) => clean.push(segment),
+        }
+    }
+    Some(clean.to_string_lossy().replace('\\', "/"))
 }
 
 /// codegraph affected [files...]
@@ -75,6 +103,11 @@ pub(crate) fn cmd_affected(
                     .filter(|f| !f.is_empty()),
             );
         }
+
+        changed_files = changed_files
+            .into_iter()
+            .filter_map(|file| normalize_index_path(&file, &project_path))
+            .collect();
 
         if changed_files.is_empty() {
             if !quiet {
@@ -198,5 +231,20 @@ pub(crate) fn cmd_affected(
     if let Err(msg) = body() {
         error_msg(&format!("Affected analysis failed: {msg}"));
         process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::normalize_index_path;
+
+    #[test]
+    fn outside_absolute_path_cannot_alias_an_indexed_relative_path() {
+        assert_eq!(
+            normalize_index_path("/tmp/src/value.ts", Path::new("/home/user/project")),
+            None
+        );
     }
 }

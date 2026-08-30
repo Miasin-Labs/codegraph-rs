@@ -159,6 +159,7 @@ impl<'a> TreeSitterExtractor<'a> {
         for child in named_children(body) {
             self.visit_node(child);
         }
+        ext.synthesize_members(node, self);
         self.node_stack.pop();
     }
 }

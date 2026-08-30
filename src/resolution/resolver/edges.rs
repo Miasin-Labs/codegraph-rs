@@ -30,6 +30,7 @@ impl ReferenceResolver {
                     if let Some(target_node) = self.get_node_by_id(&resolved_ref.target_node_id) {
                         if target_node.kind == NodeKind::Class
                             || target_node.kind == NodeKind::Struct
+                            || target_node.kind == NodeKind::Union
                         {
                             kind = EdgeKind::Instantiates;
                         }

@@ -90,6 +90,8 @@ fn contract_install_preserves_sibling_mcp_server() {
             // Seed pre-existing config. opencode uses `mcp` not `mcpServers`.
             let seed = if target.id().as_str() == "opencode" {
                 json!({ "mcp": { "other": { "type": "local", "command": ["x"], "enabled": true } } })
+            } else if matches!(target.id().as_str(), "copilot-vscode" | "copilot-jetbrains") {
+                json!({ "servers": { "other": { "command": "x" } } })
             } else {
                 json!({ "mcpServers": { "other": { "command": "x" } } })
             };
@@ -106,6 +108,17 @@ fn contract_install_preserves_sibling_mcp_server() {
                 );
                 assert!(
                     after["mcp"]["codegraph"].is_object(),
+                    "{}: codegraph missing",
+                    target.id()
+                );
+            } else if matches!(target.id().as_str(), "copilot-vscode" | "copilot-jetbrains") {
+                assert!(
+                    after["servers"]["other"].is_object(),
+                    "{}: sibling lost",
+                    target.id()
+                );
+                assert!(
+                    after["servers"]["codegraph"].is_object(),
                     "{}: codegraph missing",
                     target.id()
                 );

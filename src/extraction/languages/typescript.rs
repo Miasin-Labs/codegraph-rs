@@ -116,13 +116,11 @@ impl LanguageExtractor for TypescriptExtractor {
                 // Check inside call_expression arguments (HOF wrappers like throttle, debounce)
                 if child.kind() == "call_expression" {
                     if let Some(args) = get_child_by_field(child, "arguments") {
-                        for j in 0..args.named_child_count() as u32 {
-                            if let Some(arg) = args.named_child(j) {
-                                if arg.kind() == "arrow_function"
-                                    || arg.kind() == "function_expression"
-                                {
-                                    return get_child_by_field(arg, body_field);
-                                }
+                        let mut cursor = args.walk();
+                        for arg in args.named_children(&mut cursor) {
+                            if arg.kind() == "arrow_function" || arg.kind() == "function_expression"
+                            {
+                                return get_child_by_field(arg, body_field);
                             }
                         }
                     }
@@ -150,15 +148,14 @@ impl LanguageExtractor for TypescriptExtractor {
     }
 
     fn get_visibility(&self, node: SyntaxNode<'_>, source: &str) -> Option<Visibility> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "accessibility_modifier" {
-                    match get_node_text(child, source) {
-                        "public" => return Some(Visibility::Public),
-                        "private" => return Some(Visibility::Private),
-                        "protected" => return Some(Visibility::Protected),
-                        _ => {}
-                    }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "accessibility_modifier" {
+                match get_node_text(child, source) {
+                    "public" => return Some(Visibility::Public),
+                    "private" => return Some(Visibility::Private),
+                    "protected" => return Some(Visibility::Protected),
+                    _ => {}
                 }
             }
         }
@@ -181,22 +178,20 @@ impl LanguageExtractor for TypescriptExtractor {
     }
 
     fn is_async(&self, node: SyntaxNode<'_>, _source: &str) -> Option<bool> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "async" {
-                    return Some(true);
-                }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "async" {
+                return Some(true);
             }
         }
         Some(false)
     }
 
     fn is_static(&self, node: SyntaxNode<'_>, _source: &str) -> Option<bool> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "static" {
-                    return Some(true);
-                }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "static" {
+                return Some(true);
             }
         }
         Some(false)
@@ -206,11 +201,10 @@ impl LanguageExtractor for TypescriptExtractor {
         // For lexical_declaration, check if it's 'const' or 'let'
         // For variable_declaration, it's always 'var'
         if node.kind() == "lexical_declaration" {
-            for i in 0..node.child_count() as u32 {
-                if let Some(child) = node.child(i) {
-                    if child.kind() == "const" {
-                        return Some(true);
-                    }
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "const" {
+                    return Some(true);
                 }
             }
         }

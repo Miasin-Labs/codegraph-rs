@@ -120,25 +120,57 @@ pub fn ensure_sufficient_stack<R>(f: impl FnOnce() -> R) -> R {
 /// path call cudarc when both are present. Cached: the answer is fixed for
 /// the process lifetime.
 #[cfg(feature = "gpu")]
+const CUDA_LIBRARY_NAMES: &[&str] = &[
+    "libcuda.so",
+    "libcuda.so.1",
+    "nvcuda.dll",
+    "cuda.dll",
+    "libcuda.dylib",
+];
+
+#[cfg(feature = "gpu")]
+const NVRTC_LIBRARY_NAMES: &[&str] = &[
+    "libnvrtc.so",
+    "libnvrtc.so.13",
+    "libnvrtc.so.12",
+    "libnvrtc.so.11",
+    "nvrtc.dll",
+    "nvrtc64.dll",
+    "nvrtc64_12.dll",
+    "nvrtc64_129.dll",
+    "nvrtc64_129_0.dll",
+    "nvrtc64_120_9.dll",
+    "nvrtc64_120_0.dll",
+    "libnvrtc.dylib",
+];
+
+#[cfg(feature = "gpu")]
 pub fn cuda_runtime_available() -> bool {
     use std::sync::OnceLock;
     static AVAIL: OnceLock<bool> = OnceLock::new();
     *AVAIL.get_or_init(|| {
-        // Any one name per library is enough (loaders alias them).
-        let cuda = ["libcuda.so", "libcuda.so.1"];
-        let nvrtc = [
-            "libnvrtc.so",
-            "libnvrtc.so.12",
-            "libnvrtc.so.13",
-            "libnvrtc.so.11",
-        ];
         let loadable = |names: &[&str]| {
             names
                 .iter()
                 .any(|n| unsafe { libloading::Library::new(n) }.is_ok())
         };
-        loadable(&cuda) && loadable(&nvrtc)
+        loadable(CUDA_LIBRARY_NAMES) && loadable(NVRTC_LIBRARY_NAMES)
     })
+}
+
+#[cfg(all(test, feature = "gpu"))]
+mod gpu_loader_tests {
+    use super::{CUDA_LIBRARY_NAMES, NVRTC_LIBRARY_NAMES};
+
+    #[test]
+    fn probes_native_cuda_names_on_linux_windows_and_macos() {
+        assert!(CUDA_LIBRARY_NAMES.contains(&"libcuda.so.1"));
+        assert!(CUDA_LIBRARY_NAMES.contains(&"nvcuda.dll"));
+        assert!(CUDA_LIBRARY_NAMES.contains(&"libcuda.dylib"));
+        assert!(NVRTC_LIBRARY_NAMES.contains(&"libnvrtc.so.12"));
+        assert!(NVRTC_LIBRARY_NAMES.contains(&"nvrtc64_129_0.dll"));
+        assert!(NVRTC_LIBRARY_NAMES.contains(&"libnvrtc.dylib"));
+    }
 }
 
 /// Run a GPU probe, returning `None` when the CUDA runtime is unavailable

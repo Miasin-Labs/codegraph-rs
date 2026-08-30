@@ -54,12 +54,40 @@ impl<'a> TreeSitterExtractor<'a> {
             self.method_index = Some(index);
         }
 
-        let index = self.method_index.as_ref().expect("method index built");
-        let parent_id = index
+        let mut parent_id = self
+            .method_index
+            .as_ref()
+            .expect("method index built")
             .get(&full_name_key)
-            .or_else(|| index.get(&short_name_key))
-            .cloned()
-            .or_else(|| self.node_stack.last().cloned());
+            .or_else(|| {
+                self.method_index
+                    .as_ref()
+                    .expect("method index built")
+                    .get(&short_name_key)
+            })
+            .cloned();
+        if parent_id.is_none() && !full_name.contains('.') {
+            if let Some(function) = self.create_node(
+                NodeKind::Function,
+                &full_name,
+                decl_proc,
+                crate::extraction::tree_sitter_types::NodeExtra {
+                    signature: self
+                        .extractor
+                        .and_then(|extractor| extractor.get_signature(decl_proc, self.source)),
+                    visibility: self
+                        .extractor
+                        .and_then(|extractor| extractor.get_visibility(decl_proc, self.source)),
+                    ..Default::default()
+                },
+            ) {
+                parent_id = Some(function.id.clone());
+                let index = self.method_index.as_mut().expect("method index built");
+                index.insert(full_name_key, function.id.clone());
+                index.entry(short_name_key).or_insert(function.id);
+            }
+        }
+        let parent_id = parent_id.or_else(|| self.node_stack.last().cloned());
         let Some(parent_id) = parent_id else { return };
 
         // Visit the block for calls

@@ -8,11 +8,10 @@ use crate::error::Result;
 
 /// Current schema version.
 ///
-/// Version 8 is the first shared superset of the historical Rust and
-/// TypeScript schema-7 lineages. Both implementations independently used
-/// versions 5-7 for different changes, so the v8 migration inspects the
-/// database shape instead of assuming which lineage produced it.
-pub const CURRENT_SCHEMA_VERSION: u32 = 8;
+/// Version 9 is a shared superset that both the Rust and TypeScript v9 readers
+/// can open. Shape repair remains idempotent because a foreign v9 database is
+/// already version-current and would otherwise skip Rust's missing columns.
+pub const CURRENT_SCHEMA_VERSION: u32 = 9;
 
 /// Migration definition.
 pub struct Migration {
@@ -25,7 +24,7 @@ pub struct Migration {
 ///
 /// Note: Version 1 is the initial schema, handled by schema.sql.
 /// Future migrations go here.
-static MIGRATIONS: [Migration; 7] = [
+static MIGRATIONS: [Migration; 8] = [
     Migration {
         version: 2,
         description: "Add project metadata, provenance tracking, and unresolved ref context",
@@ -89,6 +88,11 @@ static MIGRATIONS: [Migration; 7] = [
         description: "Unify Rust and TypeScript schema-7 lineages, deduplicate edges, and add prompt vocabulary",
         up: migrate_unified_schema_v8,
     },
+    Migration {
+        version: 9,
+        description: "Reconcile Rust and TypeScript v9 store columns and indexes",
+        up: repair_shared_schema_v9,
+    },
 ];
 
 fn table_has_column(db: &Db, table: &str, column: &str) -> Result<bool> {
@@ -101,6 +105,15 @@ fn table_has_column(db: &Db, table: &str, column: &str) -> Result<bool> {
         }
     }
     Ok(false)
+}
+
+fn table_exists(db: &Db, table: &str) -> Result<bool> {
+    let count: i64 = db.conn().query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(count == 1)
 }
 
 fn add_column_if_missing(db: &Db, table: &str, column: &str, ddl: &str) -> Result<()> {
@@ -162,6 +175,40 @@ fn migrate_unified_schema_v8(db: &Db) -> Result<()> {
            name TEXT NOT NULL,
            PRIMARY KEY (segment, name)
          ) WITHOUT ROWID;",
+    )
+}
+
+/// Idempotently reconcile the current Rust and TypeScript v9 shapes.
+pub(crate) fn repair_shared_schema_v9(db: &Db) -> Result<()> {
+    migrate_unified_schema_v8(db)?;
+    add_column_if_missing(
+        db,
+        "unresolved_refs",
+        "status",
+        "ALTER TABLE unresolved_refs ADD COLUMN status TEXT NOT NULL DEFAULT 'pending';",
+    )?;
+    add_column_if_missing(
+        db,
+        "unresolved_refs",
+        "name_tail",
+        "ALTER TABLE unresolved_refs ADD COLUMN name_tail TEXT NOT NULL DEFAULT '';",
+    )?;
+    if table_exists(db, "files")? {
+        add_column_if_missing(
+            db,
+            "files",
+            "generated",
+            "ALTER TABLE files ADD COLUMN generated INTEGER NOT NULL DEFAULT 0;",
+        )?;
+        db.exec(
+            "CREATE INDEX IF NOT EXISTS idx_files_generated
+               ON files(path) WHERE generated = 1;",
+        )?;
+    }
+    db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_unresolved_status ON unresolved_refs(status);
+         CREATE INDEX IF NOT EXISTS idx_unresolved_failed_tail
+           ON unresolved_refs(name_tail) WHERE status = 'failed';",
     )
 }
 

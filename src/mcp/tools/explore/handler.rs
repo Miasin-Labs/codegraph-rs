@@ -1,6 +1,7 @@
 use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
+use super::super::context::notices::stale_slice_notice;
 use super::super::format::{
     explore_line_numbers_enabled,
     get_explore_output_budget,
@@ -8,6 +9,7 @@ use super::super::format::{
     ordered_nodes_from_subgraph,
 };
 use super::super::schema::ToolResult;
+use super::execution::ExploreExecutionBudget;
 use super::literal::{append_literal_content_section, collect_literal_content_matches};
 use super::payload::{
     ExplorePayloadInput,
@@ -23,6 +25,7 @@ use super::relationships::{
 };
 use super::source::{SourceFilesRequest, render_source_files};
 use crate::error::Result;
+use crate::mcp::explore_session::{ProjectState, SESSION_ARG};
 use crate::types::FindRelevantContextOptions;
 use crate::utils::clamp;
 
@@ -38,6 +41,9 @@ impl ToolHandler {
 
         let cg = self.get_code_graph(args.get("projectPath").and_then(|v| v.as_str()))?;
         let project_root = cg.get_project_root().to_path_buf();
+        let prior = args
+            .get(SESSION_ARG)
+            .and_then(|value| serde_json::from_value::<ProjectState>(value.clone()).ok());
         let budget = match cg.get_stats() {
             Ok(stats) => get_explore_output_budget(stats.file_count),
             Err(_) => get_explore_output_budget(u64::MAX),
@@ -47,28 +53,35 @@ impl ToolHandler {
             1.0,
             20.0,
         ) as usize;
+        let execution_budget = ExploreExecutionBudget::default();
         let with_line_numbers = explore_line_numbers_enabled();
-        let literal_matches = collect_literal_content_matches(&cg, &project_root, &query)?;
+        let literal_matches = collect_literal_content_matches(
+            &cg,
+            &project_root,
+            &query,
+            execution_budget.literal_scan,
+        )?;
+        crate::graph::cancel::check()?;
 
         let subgraph = cg.find_relevant_context(
             &query,
             Some(&FindRelevantContextOptions {
-                search_limit: Some(8),
-                traversal_depth: Some(3),
-                max_nodes: Some(200),
+                search_limit: Some(execution_budget.search_limit),
+                traversal_depth: Some(execution_budget.traversal_depth),
+                max_nodes: Some(execution_budget.max_nodes),
                 min_score: Some(0.2),
                 ..Default::default()
             }),
         )?;
+        crate::graph::cancel::check()?;
         if subgraph.nodes.is_empty() {
             if !literal_matches.is_empty() {
-                let literal_file_count = literal_matches.len();
-                let literal_line_count: usize = literal_matches.iter().map(|m| m.lines.len()).sum();
                 let mut lines = vec![
                     format!("## Exploration: {query}"),
                     String::new(),
                     format!(
-                        "Found 0 symbols, plus {literal_line_count} literal content hit(s) across {literal_file_count} indexed file(s)."
+                        "Found 0 symbols, plus {} literal content hit(s) across {} indexed file(s).",
+                        literal_matches.total_matches, literal_matches.total_files
                     ),
                     String::new(),
                 ];
@@ -79,11 +92,13 @@ impl ToolHandler {
                     total_files: 0,
                     files_included: 0,
                     source_files: Vec::new(),
+                    back_references: Vec::new(),
                     relationships: Vec::new(),
                     additional_files: Vec::new(),
                     literal_matches: &literal_matches,
                     trimmed: false,
                     omissions: Vec::new(),
+                    max_output_chars: budget.max_output_chars,
                 })?;
                 return finish_explore_result(self, "", lines, Some(payload));
             }
@@ -93,28 +108,39 @@ impl ToolHandler {
                 total_files: 0,
                 files_included: 0,
                 source_files: Vec::new(),
+                back_references: Vec::new(),
                 relationships: Vec::new(),
                 additional_files: Vec::new(),
-                literal_matches: &[],
+                literal_matches: &literal_matches,
                 trimmed: false,
                 omissions: Vec::new(),
+                max_output_chars: budget.max_output_chars,
             })?;
-            return finish_explore_result(
-                self,
-                "",
-                vec![format!("No relevant code found for `{query}`")],
-                Some(payload),
-            );
+            let mut lines = vec![format!("No relevant symbols found for `{query}`")];
+            if let Some(message) = literal_matches.scan_truncation_message() {
+                lines.push(String::new());
+                lines.push(format!("> {message}"));
+            } else {
+                lines[0] = format!("No relevant code found for `{query}`");
+            }
+            return finish_explore_result(self, "", lines, Some(payload));
         }
 
         let roots = subgraph.roots.clone();
         let edges = subgraph.edges.clone();
         let mut nodes = ordered_nodes_from_subgraph(&subgraph);
-        let seeds = self.collect_explore_seeds(&cg, &query, &roots, &mut nodes)?;
-        let ranked = self.rank_explore_files(&query, &roots, &edges, &nodes, &seeds.named_seed_ids);
+        crate::graph::cancel::check()?;
+        let seeds = self.collect_explore_seeds(
+            &cg,
+            &query,
+            &roots,
+            &mut nodes,
+            execution_budget.named_seed_token_limit,
+        )?;
+        crate::graph::cancel::check()?;
+        let ranked =
+            self.rank_explore_files(&cg, &query, &roots, &edges, &nodes, &seeds.named_seed_ids)?;
 
-        let literal_file_count = literal_matches.len();
-        let literal_line_count: usize = literal_matches.iter().map(|m| m.lines.len()).sum();
         let summary = if literal_matches.is_empty() {
             format!(
                 "Found {} symbols across {} files.",
@@ -123,9 +149,11 @@ impl ToolHandler {
             )
         } else {
             format!(
-                "Found {} symbols across {} files, plus {literal_line_count} literal content hit(s) across {literal_file_count} indexed file(s).",
+                "Found {} symbols across {} files, plus {} literal content hit(s) across {} indexed file(s).",
                 nodes.len(),
-                ranked.file_order.len()
+                ranked.file_order.len(),
+                literal_matches.total_matches,
+                literal_matches.total_files
             )
         };
         let mut lines: Vec<String> = vec![
@@ -165,6 +193,7 @@ impl ToolHandler {
                 max_files,
                 with_line_numbers,
                 initial_chars,
+                prior: prior.as_ref(),
             },
             &mut lines,
         )?;
@@ -177,18 +206,38 @@ impl ToolHandler {
             source_result.any_file_trimmed,
             &mut lines,
         );
+        let stale_files = source_result.stale_files.clone();
         let payload = explore_payload(ExplorePayloadInput {
             query: &query,
             total_symbols: nodes.len(),
             total_files: ranked.file_order.len(),
             files_included: source_result.files_included,
             source_files: source_result.rendered_files,
-            relationships: relationship_payloads(&edges, &nodes),
-            additional_files: additional_file_payloads(&ranked, source_result.files_included),
+            back_references: source_result.back_references,
+            relationships: if budget.include_relationships {
+                relationship_payloads(&edges, &nodes, budget.max_edges_per_relationship_kind)
+            } else {
+                Vec::new()
+            },
+            additional_files: if budget.include_additional_files {
+                additional_file_payloads(
+                    &ranked,
+                    source_result.files_included,
+                    20,
+                    budget.max_symbols_in_file_header,
+                )
+            } else {
+                Vec::new()
+            },
             literal_matches: &literal_matches,
             trimmed: source_result.any_file_trimmed,
             omissions: source_result.omissions,
+            max_output_chars: budget.max_output_chars,
         })?;
-        finish_explore_result(self, &flow.text, lines, Some(payload))
+        let mut result = finish_explore_result(self, &flow.text, lines, Some(payload))?;
+        if !stale_files.is_empty() {
+            result = result.with_notice(stale_slice_notice(&stale_files));
+        }
+        Ok(result)
     }
 }

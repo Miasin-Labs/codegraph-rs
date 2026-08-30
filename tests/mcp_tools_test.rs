@@ -5,7 +5,10 @@ pub(crate) use support::*;
 
 include!("mcp_tools_test/budget.rs");
 include!("mcp_tools_test/explore.rs");
+include!("mcp_tools_test/node.rs");
+include!("mcp_tools_test/stale_slice.rs");
 include!("mcp_tools_test/adaptive.rs");
 include!("mcp_tools_test/blast_radius.rs");
 include!("mcp_tools_test/allowlist.rs");
 include!("mcp_tools_test/files_path_filter.rs");
+include!("mcp_tools_test/generated.rs");

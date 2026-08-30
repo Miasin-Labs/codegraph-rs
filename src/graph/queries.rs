@@ -166,47 +166,7 @@ impl GraphQueryManager {
     ///
     /// * `file_path` - Path to the file
     pub fn get_file_dependents(&self, file_path: &str) -> Result<Vec<String>> {
-        let nodes = self.queries.get_nodes_by_file(file_path)?;
-        // Insertion-ordered set (TS `Set` preserves insertion order).
-        let mut dependents: Vec<String> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-
-        // Check file-level incoming import edges (file:X imports file:Y)
-        let file_node = nodes.iter().find(|n| n.kind == NodeKind::File);
-        if let Some(file_node) = file_node {
-            let incoming_file_edges = self
-                .queries
-                .get_incoming_edges(&file_node.id, Some(&[EdgeKind::Imports]))?;
-            for edge in incoming_file_edges {
-                if let Some(source_node) = self.queries.get_node_by_id(&edge.source)? {
-                    if source_node.file_path != file_path
-                        && seen.insert(source_node.file_path.clone())
-                    {
-                        dependents.push(source_node.file_path);
-                    }
-                }
-            }
-        }
-
-        // Also check node-level imports of exported symbols
-        for node in &nodes {
-            if node.is_exported.unwrap_or(false) {
-                let incoming_edges = self
-                    .queries
-                    .get_incoming_edges(&node.id, Some(&[EdgeKind::Imports]))?;
-                for edge in incoming_edges {
-                    if let Some(source_node) = self.queries.get_node_by_id(&edge.source)? {
-                        if source_node.file_path != file_path
-                            && seen.insert(source_node.file_path.clone())
-                        {
-                            dependents.push(source_node.file_path);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(dependents)
+        self.queries.get_dependent_file_paths(file_path)
     }
 
     /// Get all symbols exported by a file.
@@ -397,8 +357,12 @@ impl GraphQueryManager {
     ///
     /// * `kinds` - Node kinds to check (default: functions, methods, classes)
     pub fn find_dead_code(&self, kinds: Option<&[NodeKind]>) -> Result<Vec<Node>> {
-        const DEFAULT_KINDS: [NodeKind; 3] =
-            [NodeKind::Function, NodeKind::Method, NodeKind::Class];
+        const DEFAULT_KINDS: [NodeKind; 4] = [
+            NodeKind::Function,
+            NodeKind::Method,
+            NodeKind::Class,
+            NodeKind::Union,
+        ];
         let target_kinds = kinds.unwrap_or(&DEFAULT_KINDS);
         let mut dead_code: Vec<Node> = Vec::new();
 
@@ -440,11 +404,12 @@ impl GraphQueryManager {
         let mut edges: Vec<Edge> = Vec::new();
 
         // Get all nodes of common kinds
-        let kinds: [NodeKind; 12] = [
+        let kinds: [NodeKind; 13] = [
             NodeKind::File,
             NodeKind::Module,
             NodeKind::Class,
             NodeKind::Struct,
+            NodeKind::Union,
             NodeKind::Interface,
             NodeKind::Trait,
             NodeKind::Function,

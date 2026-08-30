@@ -62,7 +62,6 @@ use codegraph::analyze::SliceDirection;
 use codegraph::context_analysis::{self, AnalysisContextOptions};
 use codegraph::db::{DatabaseConnection, QueryBuilder, get_database_path};
 use codegraph::directory::{get_codegraph_dir, is_initialized};
-use codegraph::extraction::is_generated_file;
 use codegraph::history::{HistoryDb, default_history_path, default_jfc_logs_dir, parse_logs_dir};
 use codegraph::installer::targets::{Location, get_target, list_target_ids};
 use codegraph::installer::{
@@ -251,7 +250,11 @@ pub(crate) async fn main() {
     record_command_telemetry(&cli.command);
 
     match cli.command {
-        Commands::Init { path, verbose } => cmd_init(path.as_deref(), verbose).await,
+        Commands::Init {
+            path,
+            force,
+            verbose,
+        } => cmd_init(path.as_deref(), force, verbose).await,
         Commands::Uninit { path, force } => cmd_uninit(path.as_deref(), force),
         Commands::Index {
             path,
@@ -309,7 +312,7 @@ pub(crate) async fn main() {
             path,
             mcp,
             no_watch,
-        } => cmd_serve(path.as_deref(), mcp, no_watch),
+        } => cmd_serve(path.as_deref(), mcp, no_watch).await,
         Commands::Daemon {
             path,
             stop,

@@ -31,7 +31,6 @@ use super::{
     green,
     info,
     io,
-    is_generated_file,
     is_initialized,
     iso_from_epoch_ms,
     js_to_fixed,
@@ -55,7 +54,19 @@ mod lock;
 mod query;
 mod status;
 
-pub(crate) use lifecycle::{cmd_index, cmd_init, cmd_sync, cmd_uninit};
+pub(crate) use lifecycle::{cmd_sync, cmd_uninit};
 pub(crate) use lock::{cmd_resolve_bench, cmd_unlock};
 pub(crate) use query::cmd_query;
 pub(crate) use status::cmd_status;
+
+pub(crate) async fn cmd_init(path_arg: Option<&str>, force: bool, verbose: bool) {
+    #[cfg(unix)]
+    let _supervision = codegraph::mcp::proxy::start_command_supervision("init");
+    lifecycle::cmd_init(path_arg, force, verbose).await;
+}
+
+pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, verbose: bool) {
+    #[cfg(unix)]
+    let _supervision = codegraph::mcp::proxy::start_command_supervision("index");
+    lifecycle::cmd_index(path_arg, force, quiet, verbose).await;
+}

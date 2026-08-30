@@ -4,6 +4,7 @@ use super::receiver::{
     infer_cpp_receiver_type,
     infer_java_field_receiver_type,
     infer_local_receiver_type,
+    match_go_field_chain_call,
     resolve_method_on_type,
 };
 use super::support::{
@@ -11,6 +12,7 @@ use super::support::{
     colon_call_re,
     dot_call_re,
     lua_colon_call_re,
+    php_property_call_re,
     r_dollar_call_re,
     split_camel_case,
 };
@@ -63,6 +65,22 @@ pub fn match_method_call_hinted(
     let r_dollar_match = (reference.language.as_str() == "r")
         .then(|| r_dollar_call_re().captures(&reference.reference_name))
         .flatten();
+    if reference.language == Language::Php {
+        if let Some(captures) = php_property_call_re().captures(&reference.reference_name) {
+            let receiver = captures.get(1)?.as_str();
+            let method = captures.get(2)?.as_str();
+            let inferred_type = infer_local_receiver_type(receiver, reference, context)?;
+            return resolve_method_on_type(
+                &inferred_type,
+                method,
+                reference,
+                context,
+                0.9,
+                ResolvedBy::InstanceMethod,
+                None,
+            );
+        }
+    }
     let inferable_receiver = is_dot_match || lua_colon_match.is_some() || r_dollar_match.is_some();
 
     let caps = dot_match
@@ -114,6 +132,10 @@ pub fn match_method_call_hinted(
                 return typed_match;
             }
         }
+    }
+
+    if reference.language == Language::Go && is_dot_match && object_or_class.contains('.') {
+        return match_go_field_chain_call(object_or_class, method_name, reference, context);
     }
 
     // Java/Kotlin: receiver may be a field whose name doesn't match the type by
@@ -204,6 +226,7 @@ pub fn match_method_call_hinted(
     for class_node in class_candidate_order {
         if class_node.kind == NodeKind::Class
             || class_node.kind == NodeKind::Struct
+            || class_node.kind == NodeKind::Union
             || class_node.kind == NodeKind::Interface
         {
             // Skip cross-language class matches
@@ -238,6 +261,7 @@ pub fn match_method_call_hinted(
         for class_node in &fuzzy_class_candidates {
             if class_node.kind == NodeKind::Class
                 || class_node.kind == NodeKind::Struct
+                || class_node.kind == NodeKind::Union
                 || class_node.kind == NodeKind::Interface
             {
                 // Skip cross-language class matches

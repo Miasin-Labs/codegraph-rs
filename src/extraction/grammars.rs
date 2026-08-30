@@ -20,7 +20,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use tree_sitter::Parser;
 
-use crate::types::Language;
+use crate::types::{LANGUAGES, Language};
 
 /// File extension to Language mapping.
 ///
@@ -137,6 +137,8 @@ pub const EXTENSION_MAP: &[(&str, Language)] = &[
     // Shell scripts (tree-sitter-bash).
     (".sh", Language::Bash),
     (".bash", Language::Bash),
+    (".zsh", Language::Zsh),
+    (".fish", Language::Fish),
     // XML: file-level tracking; the MyBatis extractor matches `<mapper namespace="...">`
     // shape and emits SQL-statement nodes (other XML returns empty).
     (".xml", Language::Xml),
@@ -144,6 +146,19 @@ pub const EXTENSION_MAP: &[(&str, Language)] = &[
     // shape as the `.yml` variants — the YAML/properties extractor emits one node
     // per leaf key, and the Spring resolver links `@Value("${k}")` references.
     (".properties", Language::Properties),
+    (".toml", Language::Toml),
+    (".md", Language::Markdown),
+    (".markdown", Language::Markdown),
+    (".mdown", Language::Markdown),
+    (".mkd", Language::Markdown),
+    (".gitignore", Language::Gitignore),
+    (".ignore", Language::Gitignore),
+    (".rgignore", Language::Gitignore),
+    (".codegraphignore", Language::Gitignore),
+    (".dockerignore", Language::Gitignore),
+    (".npmignore", Language::Gitignore),
+    (".eslintignore", Language::Gitignore),
+    (".prettierignore", Language::Gitignore),
     // Terraform, OpenTofu, and variable files share the HCL grammar.
     (".tf", Language::Terraform),
     (".tfvars", Language::Terraform),
@@ -187,6 +202,9 @@ pub fn is_source_file_with_overrides(
     if is_erlang_app_file(file_path) {
         return true;
     }
+    if is_known_file_level_file(file_path) {
+        return true;
+    }
     match file_path.rfind('.') {
         Some(dot) => {
             language_for_extension_with_overrides(&file_path[dot..].to_lowercase(), overrides)
@@ -212,70 +230,113 @@ pub fn is_erlang_app_file(file_path: &str) -> bool {
     lower.ends_with(".app") || lower.ends_with(".app.src")
 }
 
-/// Whether `language` has a tree-sitter grammar compiled into this binary.
-/// Mirrors the TS `GrammarLanguage` type (every `Language` except the
-/// custom-extractor and file-level-only ones).
-pub fn has_grammar(language: Language) -> bool {
-    !matches!(
-        language,
-        Language::Svelte
-            | Language::Vue
-            | Language::Astro
-            | Language::Liquid
-            | Language::Razor
-            | Language::Html
-            | Language::Visualforce
-            | Language::Aura
-            | Language::Yaml
-            | Language::Twig
-            | Language::Xml
-            | Language::Properties
-            | Language::Unknown
-    )
+fn base_name(file_path: &str) -> &str {
+    file_path.rsplit('/').next().unwrap_or(file_path)
 }
 
-/// Grammar-language list in the TS `WASM_GRAMMAR_FILES` key order.
-const GRAMMAR_LANGUAGES: &[Language] = &[
-    Language::Typescript,
-    Language::Tsx,
-    Language::Arkts,
-    Language::Javascript,
-    Language::Jsx,
-    Language::Python,
-    Language::Go,
-    Language::Rust,
-    Language::Java,
-    Language::C,
-    Language::Cpp,
-    Language::Csharp,
-    Language::Php,
-    Language::Ruby,
-    Language::Swift,
-    Language::Kotlin,
-    Language::Dart,
-    Language::Pascal,
-    Language::Scala,
-    Language::Lua,
-    Language::Luau,
-    Language::Objc,
-    Language::R,
-    Language::Solidity,
-    Language::Vyper,
-    Language::Move,
-    Language::Cairo,
-    Language::Sway,
-    Language::Fe,
-    Language::Nix,
-    Language::Cfml,
-    Language::Cfscript,
-    Language::Cfquery,
-    Language::Cobol,
-    Language::Vbnet,
-    Language::Erlang,
-    Language::Terraform,
-    Language::Apex,
-    Language::Bash,
-];
+fn is_markdown_doc_file(file_path: &str) -> bool {
+    let lower = base_name(file_path).to_ascii_lowercase();
+    let normalized = lower.replace('_', "-");
+    matches!(
+        normalized.as_str(),
+        "readme"
+            | "changelog"
+            | "changes"
+            | "history"
+            | "news"
+            | "contributing"
+            | "contributors"
+            | "authors"
+            | "notice"
+            | "copying"
+            | "unlicense"
+            | "faq"
+            | "guide"
+            | "release-checklist"
+            | "ai-policy"
+    ) || normalized.starts_with("readme.")
+        || normalized.starts_with("readme-")
+        || normalized.starts_with("license")
+}
+
+fn is_cargo_lock_file(file_path: &str) -> bool {
+    base_name(file_path).eq_ignore_ascii_case("Cargo.lock")
+}
+
+fn is_known_file_level_file(file_path: &str) -> bool {
+    is_cargo_lock_file(file_path) || is_markdown_doc_file(file_path)
+}
+
+fn known_file_level_language(file_path: &str) -> Option<Language> {
+    if is_cargo_lock_file(file_path) {
+        Some(Language::Toml)
+    } else if is_markdown_doc_file(file_path) {
+        Some(Language::Markdown)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn detect_shebang_language(source: &str) -> Option<Language> {
+    let line = source.lines().next()?.trim_start_matches('\u{feff}');
+    let shebang = line.strip_prefix("#!")?.trim();
+    let mut parts = shebang.split_whitespace();
+    let mut command = parts.next()?;
+    if command.rsplit('/').next() == Some("env") {
+        command = parts.find(|part| !part.starts_with('-') && !part.contains('='))?;
+    }
+    let command = command.rsplit('/').next().unwrap_or(command);
+    let command = command.trim_end_matches(|ch: char| ch.is_ascii_digit());
+    match command {
+        "sh" | "bash" => Some(Language::Bash),
+        "zsh" => Some(Language::Zsh),
+        "fish" => Some(Language::Fish),
+        "python" | "pythonw" => Some(Language::Python),
+        "ruby" => Some(Language::Ruby),
+        "node" | "nodejs" => Some(Language::Javascript),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExtractionStrategy {
+    TreeSitter,
+    Custom,
+    FileLevelOnly,
+    Unsupported,
+}
+
+/// Canonical extraction capability for each closed `Language` variant. Other
+/// capability predicates delegate here so adding a language cannot silently
+/// disagree about grammar, custom-extractor, and file-only behavior.
+fn extraction_strategy(language: Language) -> ExtractionStrategy {
+    match language {
+        Language::Svelte
+        | Language::Vue
+        | Language::Astro
+        | Language::Liquid
+        | Language::Razor
+        | Language::Html
+        | Language::Visualforce
+        | Language::Aura
+        | Language::Xml => ExtractionStrategy::Custom,
+        Language::Yaml
+        | Language::Twig
+        | Language::Properties
+        | Language::Toml
+        | Language::Markdown
+        | Language::Gitignore
+        | Language::Zsh
+        | Language::Fish => ExtractionStrategy::FileLevelOnly,
+        Language::Unknown => ExtractionStrategy::Unsupported,
+        _ => ExtractionStrategy::TreeSitter,
+    }
+}
+
+/// Whether `language` has a tree-sitter grammar compiled into this binary.
+pub fn has_grammar(language: Language) -> bool {
+    extraction_strategy(language) == ExtractionStrategy::TreeSitter
+}
 
 /// The native tree-sitter grammar for a language, or `None` when the
 /// language has no grammar (custom extractors / file-level-only formats).
@@ -339,6 +400,11 @@ pub fn grammar_language(language: Language) -> Option<tree_sitter::Language> {
         | Language::Twig
         | Language::Xml
         | Language::Properties
+        | Language::Toml
+        | Language::Markdown
+        | Language::Gitignore
+        | Language::Zsh
+        | Language::Fish
         | Language::Unknown => return None,
     };
     Some(tree_sitter::Language::new(lang_fn))
@@ -421,61 +487,43 @@ pub fn detect_language_with_overrides(
     }
     // TS `filePath.substring(filePath.lastIndexOf('.'))` — when there is no
     // dot, JS clamps -1 to 0, so the "extension" is the whole path (which
-    // never matches the map → unknown).
+    // never matches the map → unknown). Extension overrides and built-ins must
+    // win before conventional README/LICENSE fallbacks: `license_service.rs`
+    // is Rust source, not a Markdown document.
     let ext = match file_path.rfind('.') {
         Some(dot) => file_path[dot..].to_lowercase(),
         None => file_path.to_lowercase(),
     };
-    let lang = language_for_extension_with_overrides(&ext, overrides).unwrap_or(Language::Unknown);
-
-    // .h files could be C, C++, or Objective-C — check source content
-    if lang == Language::C && ext == ".h" {
-        if let Some(source) = source {
-            if looks_like_cpp(source) {
-                return Language::Cpp;
-            }
-            if looks_like_objc(source) {
-                return Language::Objc;
+    if let Some(lang) = language_for_extension_with_overrides(&ext, overrides) {
+        // .h files could be C, C++, or Objective-C — check source content.
+        if lang == Language::C && ext == ".h" {
+            if let Some(source) = source {
+                if looks_like_cpp(source) {
+                    return Language::Cpp;
+                }
+                if looks_like_objc(source) {
+                    return Language::Objc;
+                }
             }
         }
+        return lang;
     }
 
-    lang
+    known_file_level_language(file_path)
+        .or_else(|| source.and_then(detect_shebang_language))
+        .unwrap_or(Language::Unknown)
 }
 
 /// Check if a language is supported (has a grammar defined).
 /// Returns true if the grammar exists, even if not yet loaded.
 pub fn is_language_supported(language: Language) -> bool {
-    match language {
-        Language::Svelte => true,      // custom extractor (script block delegation)
-        Language::Vue => true,         // custom extractor (script block delegation)
-        Language::Astro => true,       // custom extractor (frontmatter/script delegation)
-        Language::Liquid => true,      // custom regex extractor
-        Language::Razor => true,       // custom extractor (C# block delegation)
-        Language::Html => true,        // file node + LWC template bindings
-        Language::Visualforce => true, // custom regex extractor (controller/bindings)
-        Language::Aura => true,        // custom regex extractor (controller/actions)
-        Language::Yaml => true, // file-level tracking only; Drupal routing extraction via framework resolver
-        Language::Twig => true, // file-level tracking only
-        Language::Xml => true,  // MyBatis mapper extractor
-        Language::Properties => true, // Spring config keys
-        Language::Unknown => false,
-        _ => has_grammar(language),
-    }
+    extraction_strategy(language) != ExtractionStrategy::Unsupported
 }
 
-/// Check if a grammar has been loaded and is ready for parsing.
-/// Native: grammars are compiled in, so this is equivalent to having one
-/// (plus the custom-extractor/file-level languages, mirroring TS).
+/// Check if a language's extraction strategy is ready. Native grammars are
+/// compiled in, while custom and file-level strategies need no runtime load.
 pub fn is_grammar_loaded(language: Language) -> bool {
-    match language {
-        Language::Svelte | Language::Vue | Language::Astro | Language::Liquid | Language::Razor => {
-            true
-        }
-        Language::Yaml | Language::Twig => true, // no grammar needed
-        Language::Xml | Language::Properties => true, // no grammar needed
-        _ => has_grammar(language),
-    }
+    extraction_strategy(language) != ExtractionStrategy::Unsupported
 }
 
 /// Languages tracked at the file-record level only: parsing emits zero symbol
@@ -486,26 +534,27 @@ pub fn is_grammar_loaded(language: Language) -> bool {
 /// its MyBatis extractor emits a file node. Callers use this to count such files
 /// as indexed rather than skipped, so it must stay in sync with that branch.
 pub fn is_file_level_only_language(language: Language) -> bool {
+    extraction_strategy(language) == ExtractionStrategy::FileLevelOnly
+}
+
+/// Configuration formats whose values may contain credentials or deployment
+/// secrets. MCP source-oriented tools expose structural keys but must not emit
+/// raw values from these files implicitly.
+pub fn is_value_sensitive_language(language: Language) -> bool {
     matches!(
         language,
-        Language::Yaml | Language::Twig | Language::Properties
+        Language::Yaml | Language::Properties | Language::Toml
     )
 }
 
-/// Get all supported languages (those with grammar definitions).
+/// Get every language with a usable extraction strategy, including custom and
+/// file-level-only formats. The list is derived from the canonical strategy so
+/// it cannot disagree with [`is_language_supported`].
 pub fn get_supported_languages() -> Vec<Language> {
-    let mut out: Vec<Language> = GRAMMAR_LANGUAGES.to_vec();
-    out.extend([
-        Language::Svelte,
-        Language::Vue,
-        Language::Astro,
-        Language::Liquid,
-        Language::Razor,
-        Language::Html,
-        Language::Visualforce,
-        Language::Aura,
-    ]);
-    out
+    LANGUAGES
+        .into_iter()
+        .filter(|language| is_language_supported(*language))
+        .collect()
 }
 
 /// Initialize the tree-sitter runtime (TS `initGrammars`).
@@ -577,6 +626,8 @@ pub fn get_language_display_name(language: Language) -> &'static str {
         Language::Nix => "Nix",
         Language::Apex => "Apex",
         Language::Bash => "Shell (Bash)",
+        Language::Zsh => "Shell (Zsh)",
+        Language::Fish => "Fish shell",
         Language::Html => "HTML",
         Language::Visualforce => "Visualforce",
         Language::Aura => "Aura",
@@ -584,6 +635,9 @@ pub fn get_language_display_name(language: Language) -> &'static str {
         Language::Twig => "Twig",
         Language::Xml => "XML",
         Language::Properties => "Java properties",
+        Language::Toml => "TOML",
+        Language::Markdown => "Markdown",
+        Language::Gitignore => "Gitignore syntax",
         Language::Cfml => "CFML",
         Language::Cfscript => "CFScript",
         Language::Cfquery => "CFQuery (SQL)",
@@ -606,6 +660,16 @@ mod tests {
         assert_eq!(detect_language("lib/util.mjs", None), Language::Javascript);
         assert_eq!(detect_language("main.go", None), Language::Go);
         assert_eq!(detect_language("noextension", None), Language::Unknown);
+        assert_eq!(detect_language("Cargo.toml", None), Language::Toml);
+        assert_eq!(detect_language("Cargo.lock", None), Language::Toml);
+        assert_eq!(detect_language("README.SETUP", None), Language::Markdown);
+        assert_eq!(detect_language(".gitignore", None), Language::Gitignore);
+        assert_eq!(detect_language("complete.zsh", None), Language::Zsh);
+        assert_eq!(detect_language("complete.fish", None), Language::Fish);
+        assert_eq!(
+            detect_language("script", Some("#!/usr/bin/env python3\n")),
+            Language::Python
+        );
         assert_eq!(detect_language("conf/routes", None), Language::Yaml);
         assert_eq!(detect_language("app/conf/routes", None), Language::Yaml);
         assert_eq!(detect_language("conf/dev.routes", None), Language::Yaml);
@@ -642,7 +706,13 @@ mod tests {
         assert!(is_source_file("a/b/c.PAS"));
         assert!(is_source_file("conf/routes"));
         assert!(is_source_file("application.properties"));
-        assert!(!is_source_file("README.md"));
+        assert!(is_source_file("Cargo.toml"));
+        assert!(is_source_file("Cargo.lock"));
+        assert!(is_source_file("README.md"));
+        assert!(is_source_file("README"));
+        assert!(is_source_file(".gitignore"));
+        assert!(is_source_file("complete.zsh"));
+        assert!(is_source_file("complete.fish"));
         assert!(!is_source_file("Makefile"));
     }
 
@@ -655,12 +725,30 @@ mod tests {
         assert!(is_file_level_only_language(Language::Yaml));
         assert!(is_file_level_only_language(Language::Twig));
         assert!(is_file_level_only_language(Language::Properties));
+        assert!(is_file_level_only_language(Language::Toml));
+        assert!(is_file_level_only_language(Language::Markdown));
+        assert!(is_file_level_only_language(Language::Gitignore));
+        assert!(is_file_level_only_language(Language::Zsh));
+        assert!(is_file_level_only_language(Language::Fish));
         assert!(!is_file_level_only_language(Language::Xml));
         assert!(is_language_supported(Language::Apex));
         assert!(is_language_supported(Language::Bash));
         assert!(is_language_supported(Language::Html));
         assert!(is_language_supported(Language::Visualforce));
         assert!(is_language_supported(Language::Aura));
-        assert_eq!(get_supported_languages().len(), 47);
+        assert_eq!(get_supported_languages().len(), LANGUAGES.len() - 1);
+        for language in crate::types::LANGUAGES {
+            assert_eq!(
+                is_grammar_loaded(language),
+                is_language_supported(language),
+                "runtime readiness drifted from extraction support for {language}"
+            );
+            if is_file_level_only_language(language) {
+                assert!(
+                    !has_grammar(language),
+                    "{language} unexpectedly has a grammar"
+                );
+            }
+        }
     }
 }

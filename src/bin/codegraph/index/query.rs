@@ -8,7 +8,6 @@ use super::{
     dim,
     error_msg,
     info,
-    is_generated_file,
     is_initialized,
     js_to_fixed,
     parse_int_js,
@@ -68,13 +67,14 @@ pub(crate) fn cmd_query(
         // hand-written implementation before protobuf/gRPC scaffolding
         // when both share a name. See extraction/generated-detection.
         let mut results = raw_results;
-        results.sort_by_key(|r| {
-            if is_generated_file(&r.node.file_path) {
-                1
-            } else {
-                0
-            }
-        });
+        let paths = results
+            .iter()
+            .map(|result| result.node.file_path.clone())
+            .collect::<Vec<_>>();
+        let generated = cg
+            .generated_file_predicate(&paths)
+            .map_err(|error| error.to_string())?;
+        results.sort_by_key(|result| generated.is_generated(&result.node.file_path));
 
         if json {
             println!(

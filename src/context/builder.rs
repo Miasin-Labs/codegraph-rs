@@ -45,7 +45,7 @@ use crate::types::{
     TaskInput,
     TraversalOptions,
 };
-use crate::utils::validate_path_within_root;
+use crate::utils::resolve_existing_path_within_root_real;
 
 // =============================================================================
 // Symbol extraction from natural-language queries
@@ -333,13 +333,14 @@ fn resolve_build_options(options: &BuildContextOptions) -> ResolvedBuildOptions 
 /// Node kinds that provide high information value in context results.
 /// Imports/exports are excluded because they have near-zero information density -
 /// they tell you something exists, not how it works.
-const HIGH_VALUE_NODE_KINDS: [NodeKind; 14] = [
+const HIGH_VALUE_NODE_KINDS: [NodeKind; 15] = [
     NodeKind::Function,
     NodeKind::Method,
     NodeKind::Class,
     NodeKind::Interface,
     NodeKind::TypeAlias,
     NodeKind::Struct,
+    NodeKind::Union,
     NodeKind::Trait,
     NodeKind::Component,
     NodeKind::Route,
@@ -980,6 +981,7 @@ impl ContextBuilder {
         if query.trim().is_empty() {
             return Ok((Subgraph::default(), Vec::new()));
         }
+        crate::graph::cancel::check()?;
 
         let kinds_filter = || -> Option<Vec<NodeKind>> {
             if opts.node_kinds.is_empty() {
@@ -1070,6 +1072,7 @@ impl ContextBuilder {
             NodeKind::Class,
             NodeKind::Interface,
             NodeKind::Struct,
+            NodeKind::Union,
             NodeKind::Trait,
             NodeKind::Protocol,
             NodeKind::Enum,
@@ -1080,11 +1083,13 @@ impl ContextBuilder {
             let mut expanded_symbols: Vec<String> = Vec::new();
             let mut expanded_seen: HashSet<String> = HashSet::new();
             for sym in &symbols_from_query {
+                crate::graph::cancel::check()?;
                 if expanded_seen.insert(sym.clone()) {
                     expanded_symbols.push(sym.clone());
                 }
             }
             for sym in &symbols_from_query {
+                crate::graph::cancel::check()?;
                 for variant in get_stem_variants(sym) {
                     if expanded_seen.insert(variant.clone()) {
                         expanded_symbols.push(variant);
@@ -1092,6 +1097,7 @@ impl ContextBuilder {
                 }
             }
             for sym in &expanded_symbols {
+                crate::graph::cancel::check()?;
                 // Title-case the symbol: "REST" → "Rest", "bulk" → "Bulk", "allocation" → "Allocation"
                 let title_cased = title_case(sym);
                 if &title_cased == sym {
@@ -1162,6 +1168,7 @@ impl ContextBuilder {
                         NodeKind::Module,
                         NodeKind::Class,
                         NodeKind::Struct,
+                        NodeKind::Union,
                         NodeKind::Interface,
                         NodeKind::Trait,
                         NodeKind::Protocol,
@@ -1181,6 +1188,7 @@ impl ContextBuilder {
                     ]
                 };
                 for term in &search_terms {
+                    crate::graph::cancel::check()?;
                     let term_results = self.queries.search_nodes(
                         term,
                         &crate::types::SearchOptions {
@@ -1240,6 +1248,7 @@ impl ContextBuilder {
 
         // Add exact matches first
         for result in &exact_matches {
+            crate::graph::cancel::check()?;
             match result_index.get(&result.node.id) {
                 Some(&i) => {
                     search_results[i].score = search_results[i].score.max(result.score);
@@ -1253,6 +1262,7 @@ impl ContextBuilder {
 
         // Add text search results, upgrading scores for duplicates
         for result in text_results {
+            crate::graph::cancel::check()?;
             match result_index.get(&result.node.id) {
                 Some(&i) => {
                     search_results[i].score = search_results[i].score.max(result.score);
@@ -1270,6 +1280,7 @@ impl ContextBuilder {
         // Deprioritize test files early so they don't take multi-term boost slots
         if !is_test_query {
             for result in &mut search_results {
+                crate::graph::cancel::check()?;
                 if is_test_file(&result.node.file_path) {
                     result.score *= 0.3;
                 }
@@ -1323,6 +1334,7 @@ impl ContextBuilder {
             sorted.sort_by_key(|t| std::cmp::Reverse(utf16_len(t)));
             let mut assigned: HashSet<String> = HashSet::new();
             for term in &sorted {
+                crate::graph::cancel::check()?;
                 if assigned.contains(term) {
                     continue;
                 }
@@ -1365,6 +1377,7 @@ impl ContextBuilder {
                 .collect();
 
             for result in &mut search_results {
+                crate::graph::cancel::check()?;
                 // Check term matches in name (substring) and path DIRECTORIES (exact).
                 // Directory segments must match exactly — "search" matches directory
                 // "search/" but NOT "elasticsearch/". The class name is checked
@@ -1418,6 +1431,7 @@ impl ContextBuilder {
             let max_camel_per_term = opts.search_limit.div_ceil(2);
 
             for sym in &symbols_from_query {
+                crate::graph::cancel::check()?;
                 let title_cased = title_case(sym);
                 if utf16_len(&title_cased) < 3 {
                     continue;
@@ -1443,6 +1457,7 @@ impl ContextBuilder {
                 // Filter to CamelCase boundaries, score by path relevance, and take top N
                 let mut term_candidates: Vec<SearchResult> = Vec::new();
                 for r in like_results {
+                    crate::graph::cancel::check()?;
                     let name = &r.node.name;
                     let Some(idx) = name.find(&title_cased) else {
                         continue;
@@ -1480,6 +1495,7 @@ impl ContextBuilder {
                 // the per-term cut for EACH term to accumulate its count.
                 let accum_per_term = max_camel_per_term * 4;
                 for r in term_candidates.into_iter().take(accum_per_term) {
+                    crate::graph::cancel::check()?;
                     match camel_node_terms.get_mut(&r.node.id) {
                         Some((_, term_count)) => {
                             *term_count += 1;
@@ -1498,6 +1514,7 @@ impl ContextBuilder {
             // scores up so multi-term CamelCase matches can compete with FTS results.
             let mut camel_results: Vec<SearchResult> = Vec::new();
             for id in &camel_order {
+                crate::graph::cancel::check()?;
                 if let Some((mut result, term_count)) = camel_node_terms.remove(id) {
                     // Multi-term CamelCase matches are extremely relevant — a class matching
                     // 3+ query terms in its name (e.g., ExtensionHostProcess) is almost
@@ -1527,6 +1544,7 @@ impl ContextBuilder {
                 let mut compound_term_map: HashMap<String, (Node, HashSet<String>)> =
                     HashMap::new();
                 for sym in &symbols_from_query {
+                    crate::graph::cancel::check()?;
                     let title_cased = title_case(sym);
                     if utf16_len(&title_cased) < 3 {
                         continue;
@@ -1543,6 +1561,7 @@ impl ContextBuilder {
                     )?;
 
                     for r in like_results {
+                        crate::graph::cancel::check()?;
                         if search_id_set.contains(&r.node.id) {
                             continue;
                         }
@@ -1566,6 +1585,7 @@ impl ContextBuilder {
                 // Keep only nodes matching 2+ distinct terms
                 let mut compound_results: Vec<SearchResult> = Vec::new();
                 for id in &compound_order {
+                    crate::graph::cancel::check()?;
                     if let Some((node, terms)) = compound_term_map.remove(id) {
                         if terms.len() >= 2 {
                             let path_score = score_path_relevance(&node.file_path, query) as f64;
@@ -1658,6 +1678,7 @@ impl ContextBuilder {
 
         // Add entry points to subgraph
         for result in &filtered_results {
+            crate::graph::cancel::check()?;
             nodes.insert(result.node.clone());
             roots.push(result.node.id.clone());
         }
@@ -1671,6 +1692,7 @@ impl ContextBuilder {
             NodeKind::Class,
             NodeKind::Interface,
             NodeKind::Struct,
+            NodeKind::Union,
             NodeKind::Trait,
             NodeKind::Protocol,
         ]
@@ -1679,6 +1701,7 @@ impl ContextBuilder {
         let max_hierarchy_nodes = opts.max_nodes.div_ceil(4);
         let mut hierarchy_nodes_added = 0usize;
         for result in &filtered_results {
+            crate::graph::cancel::check()?;
             if hierarchy_nodes_added >= max_hierarchy_nodes {
                 break;
             }
@@ -1709,6 +1732,7 @@ impl ContextBuilder {
                 .map(|n| n.id.clone())
                 .collect();
             for candidate in pass2_candidates {
+                crate::graph::cancel::check()?;
                 if hierarchy_nodes_added >= max_hierarchy_nodes {
                     break;
                 }
@@ -1734,6 +1758,7 @@ impl ContextBuilder {
 
         // Traverse from each entry point
         for result in &filtered_results {
+            crate::graph::cancel::check()?;
             let traversal_result = self.traverser.traverse_bfs(
                 &result.node.id,
                 &TraversalOptions {
@@ -1791,6 +1816,7 @@ impl ContextBuilder {
             // Keep priority nodes, then fill remaining slots
             final_nodes = OrderedNodes::default();
             for id in &priority_ids {
+                crate::graph::cancel::check()?;
                 if let Some(node) = nodes.get(id) {
                     if final_nodes.len() < opts.max_nodes {
                         final_nodes.insert(node.clone());
@@ -1800,6 +1826,7 @@ impl ContextBuilder {
 
             // Fill remaining from other nodes
             for node in nodes.iter() {
+                crate::graph::cancel::check()?;
                 if final_nodes.len() >= opts.max_nodes {
                     break;
                 }
@@ -1842,6 +1869,7 @@ impl ContextBuilder {
                 NodeKind::Class
                 | NodeKind::Interface
                 | NodeKind::Struct
+                | NodeKind::Union
                 | NodeKind::Trait
                 | NodeKind::Protocol
                 | NodeKind::Enum => 3,
@@ -1850,6 +1878,7 @@ impl ContextBuilder {
             }
         };
         for file in &file_order {
+            crate::graph::cancel::check()?;
             let node_ids = file_counts.get_mut(file).expect("file bucket");
             if node_ids.len() <= max_per_file {
                 continue;
@@ -1945,11 +1974,8 @@ impl ContextBuilder {
 
     /// Extract code from a node's source file
     fn extract_node_code(&self, node: &Node) -> Option<String> {
-        let file_path = validate_path_within_root(&self.project_root, &node.file_path)?;
-
-        if !file_path.exists() {
-            return None;
-        }
+        let file_path =
+            resolve_existing_path_within_root_real(&self.project_root, &node.file_path)?;
 
         match fs::read_to_string(&file_path) {
             Ok(content) => {
@@ -2241,5 +2267,11 @@ mod tests {
         assert_eq!(posix_dirname("src/a/b.ts"), "src/a");
         assert_eq!(posix_dirname("b.ts"), ".");
         assert_eq!(posix_dirname("/b.ts"), "/");
+    }
+
+    #[test]
+    fn default_context_search_includes_unions() {
+        let options = resolve_find_options(&FindRelevantContextOptions::default());
+        assert!(options.node_kinds.contains(&NodeKind::Union));
     }
 }

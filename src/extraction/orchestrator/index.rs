@@ -221,16 +221,16 @@ impl<'a> ExtractionOrchestrator<'a> {
                 );
 
                 match item.outcome {
-                    BatchOutcome::ReadError(message) => {
+                    BatchOutcome::ReadError(failure) => {
                         processed += 1;
                         files_errored += 1;
                         errors.push(ExtractionError {
-                            message: format!("Failed to read file: {message}"),
+                            message: failure.extraction_message(),
                             file_path: Some(item.file_path),
                             line: None,
                             column: None,
                             severity: Severity::Error,
-                            code: Some("read_error".to_string()),
+                            code: Some(failure.code().to_string()),
                         });
                     }
                     BatchOutcome::Parsed {

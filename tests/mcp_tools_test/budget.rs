@@ -19,7 +19,7 @@ fn caps_medium_large_projects_at_the_inline_tool_result_ceiling() {
     // agent Reads back — so large repos get MORE CALLS, not a fatter response.
     let large = get_explore_output_budget(10000);
     assert!(large.max_output_chars <= 25000);
-    assert!(large.max_output_chars >= 20000);
+    assert!(large.max_output_chars >= 24000);
 }
 
 #[test]
@@ -44,8 +44,6 @@ fn uses_tier_breakpoints_matching_get_explore_budget() {
     let tier3b = get_explore_output_budget(14999);
     assert_eq!(tier3a.max_output_chars, tier3b.max_output_chars);
 
-    // Small tiers step up (13k → 18k → 24k); medium and large SHARE the ~24k
-    // inline ceiling — scaling now lives in the CALL budget.
     assert_ne!(tier0a.max_output_chars, tier1a.max_output_chars); // <150 vs <500
     assert_ne!(tier1a.max_output_chars, tier2a.max_output_chars); // <500 vs <5000
     assert_eq!(tier2a.max_output_chars, tier3a.max_output_chars); // <5000 == <15000

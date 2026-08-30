@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::{ImportCacheKey, SnapshotContext};
 use crate::error::log_debug;
@@ -52,18 +53,25 @@ impl ResolutionContext for SnapshotContext {
     }
 
     fn read_file(&self, file_path: &str) -> Option<String> {
+        self.read_file_arc(file_path).map(|arc| arc.to_string())
+    }
+
+    fn read_file_arc(&self, file_path: &str) -> Option<Arc<str>> {
         {
             let cache = self
                 .file_cache
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(cached) = cache.get(file_path) {
+                // Refcount bump only — no file-body copy. Hot receiver-type
+                // inference reads the same files once per reference, so cloning
+                // the whole String here was the resolving-phase blowup.
                 return cached.clone();
             }
         }
         let full_path = Path::new(&self.project_root).join(file_path);
-        let content = match fs::read(&full_path) {
-            Ok(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
+        let content: Option<Arc<str>> = match fs::read(&full_path) {
+            Ok(bytes) => Some(Arc::from(String::from_utf8_lossy(&bytes).as_ref())),
             Err(error) => {
                 log_debug(
                     "Failed to read file for snapshot resolution",

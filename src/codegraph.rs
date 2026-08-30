@@ -248,10 +248,12 @@ fn dedupe_unresolved_refs(
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for r in by_file.into_iter().chain(by_name) {
         let key = format!(
-            "{}\0{}\0{}",
+            "{}\0{}\0{}\0{}\0{}",
             r.from_node_id,
             r.reference_name,
-            r.reference_kind.as_str()
+            r.reference_kind.as_str(),
+            r.line,
+            r.column
         );
         match index.get(&key) {
             Some(&i) => order[i] = r,
@@ -1026,6 +1028,12 @@ impl CodeGraph {
         let Some(runtime) = self.runtime.clone() else {
             return false;
         };
+        let indexed_files: HashSet<String> = self
+            .get_files()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|file| file.path)
+            .collect();
         let root = self.project_root.clone();
         let sync_fn: SyncFn = Arc::new(move || {
             let cg = CodeGraph::open_sync(&root).map_err(|e| Box::new(e) as SyncError)?;
@@ -1047,7 +1055,12 @@ impl CodeGraph {
             })
         });
 
-        let watcher = FileWatcher::new(self.project_root.clone(), sync_fn, options);
+        let watcher = FileWatcher::new_with_indexed_files(
+            self.project_root.clone(),
+            sync_fn,
+            options,
+            indexed_files,
+        );
         let started = watcher.start();
         *self.watcher.borrow_mut() = Some(watcher);
         started
@@ -1365,6 +1378,19 @@ impl CodeGraph {
         self.queries.get_all_files()
     }
 
+    /// Build a generated-file predicate over a bounded candidate path set.
+    pub fn generated_file_predicate(
+        &self,
+        file_paths: &[String],
+    ) -> Result<crate::extraction::GeneratedFilePredicate> {
+        self.queries.generated_file_predicate(file_paths)
+    }
+
+    /// Count indexed files whose persisted source metadata marks them generated.
+    pub fn get_generated_file_count(&self) -> Result<i64> {
+        self.queries.count_generated_files()
+    }
+
     // =========================================================================
     // Graph Query Methods
     // =========================================================================
@@ -1596,7 +1622,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dedupe_keeps_first_position_and_last_value() {
+    fn dedupe_preserves_location_distinct_references() {
         let make = |from: &str, name: &str, line: u32| UnresolvedReference {
             from_node_id: from.to_string(),
             reference_name: name.to_string(),
@@ -1611,12 +1637,12 @@ mod tests {
         let by_file = vec![make("a", "x", 1), make("b", "y", 2)];
         let by_name = vec![make("a", "x", 9), make("c", "z", 3)];
         let merged = dedupe_unresolved_refs(by_file, by_name);
-        assert_eq!(merged.len(), 3);
-        // First position kept (index 0), value replaced by the later duplicate
+        assert_eq!(merged.len(), 4);
         assert_eq!(merged[0].from_node_id, "a");
-        assert_eq!(merged[0].line, 9);
+        assert_eq!(merged[0].line, 1);
         assert_eq!(merged[1].from_node_id, "b");
-        assert_eq!(merged[2].from_node_id, "c");
+        assert_eq!(merged[2].line, 9);
+        assert_eq!(merged[3].from_node_id, "c");
     }
 
     #[test]

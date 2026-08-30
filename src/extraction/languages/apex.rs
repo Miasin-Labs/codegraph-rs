@@ -27,11 +27,10 @@ pub struct ApexExtractor;
 
 /// Lowercased text of the declaration's `modifiers` child, if any.
 fn modifiers_text(node: SyntaxNode<'_>, source: &str) -> Option<String> {
-    for i in 0..node.child_count() as u32 {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "modifiers" {
-                return Some(get_node_text(child, source).to_lowercase());
-            }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "modifiers" {
+            return Some(get_node_text(child, source).to_lowercase());
         }
     }
     None

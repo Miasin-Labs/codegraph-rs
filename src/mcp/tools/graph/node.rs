@@ -6,13 +6,25 @@ use std::fs;
 use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
-use super::super::format::is_container_node_kind;
-use super::super::output::{NodeDetailOutput, NodeOutput, NodeSummary};
+use super::super::context::notices::stale_slice_notice;
+use super::super::format::{is_container_node_kind, number_source_lines};
+use super::super::output::{
+    NodeDetailOutput,
+    NodeFileContent,
+    NodeFileMetadataOutput,
+    NodeFileOutput,
+    NodeFileSourceChunkOutput,
+    NodeFileSymbolOutput,
+    NodeOutput,
+    NodeSuccessOutput,
+    NodeSummary,
+};
 use super::super::schema::ToolResult;
 use crate::codegraph::CodeGraph;
 use crate::error::Result;
-use crate::types::{Language, Node, NodeKind};
-use crate::utils::validate_path_within_root;
+use crate::extraction::is_value_sensitive_language;
+use crate::types::{Node, NodeKind};
+use crate::utils::resolve_existing_path_within_root_real;
 
 impl ToolHandler {
     pub(in crate::mcp::tools) fn handle_node(
@@ -61,7 +73,7 @@ impl ToolHandler {
 
         let mut matches = self.find_symbol_matches(&cg, &symbol)?;
         if matches.is_empty() {
-            let output = NodeOutput {
+            let output = NodeSuccessOutput::Symbol(NodeOutput {
                 schema_version: 1,
                 kind: "node",
                 query: symbol.clone(),
@@ -70,7 +82,7 @@ impl ToolHandler {
                 returned_full_count: 0,
                 truncated: false,
                 matches: Vec::new(),
-            };
+            });
             return self.structured_result(&format!("Symbol not found: `{symbol}`"), &output);
         }
 
@@ -121,8 +133,9 @@ impl ToolHandler {
 
         // Single definition — the common case.
         if matches.len() == 1 {
-            let (section, detail) = self.render_node_detail(&cg, &matches[0], include_code)?;
-            let output = NodeOutput {
+            let (section, detail, stale) =
+                self.render_node_detail(&cg, &matches[0], include_code)?;
+            let output = NodeSuccessOutput::Symbol(NodeOutput {
                 schema_version: 1,
                 kind: "node",
                 query: symbol,
@@ -131,8 +144,12 @@ impl ToolHandler {
                 returned_full_count: 1,
                 truncated: false,
                 matches: vec![detail],
-            };
-            return self.structured_result(&self.truncate_output(&section), &output);
+            });
+            let mut result = self.structured_result(&self.truncate_output(&section), &output)?;
+            if let Some(path) = stale {
+                result = result.with_notice(stale_slice_notice(&[path]));
+            }
+            return Ok(result);
         }
 
         // Multiple definitions share this name — return them ALL.
@@ -157,7 +174,7 @@ impl ToolHandler {
                 String::new(),
             ];
             out.extend(list);
-            let output = NodeOutput {
+            let output = NodeSuccessOutput::Symbol(NodeOutput {
                 schema_version: 1,
                 kind: "node",
                 query: symbol,
@@ -166,7 +183,7 @@ impl ToolHandler {
                 returned_full_count: 0,
                 truncated: false,
                 matches: matches.iter().map(empty_node_detail).collect(),
-            };
+            });
             return self.structured_result(&self.truncate_output(&out.join("\n")), &output);
         }
 
@@ -177,14 +194,18 @@ impl ToolHandler {
         let mut rendered: Vec<String> = Vec::new();
         let mut details: Vec<NodeDetailOutput> = Vec::new();
         let mut listed: Vec<Node> = Vec::new();
+        let mut stale_files: Vec<String> = Vec::new();
         for n in &matches {
             if rendered.len() >= HARD_CAP {
                 listed.push(n.clone());
                 continue;
             }
-            let (section, detail) = self.render_node_detail(&cg, n, true)?;
+            let (section, detail, stale) = self.render_node_detail(&cg, n, true)?;
             rendered.push(section);
             details.push(detail);
+            if let Some(path) = stale {
+                stale_files.push(path);
+            }
         }
 
         let mut out: Vec<String> = vec![
@@ -224,7 +245,7 @@ impl ToolHandler {
                 .unwrap_or(&listed[0].file_path);
             let _ = basename;
         }
-        let output = NodeOutput {
+        let output = NodeSuccessOutput::Symbol(NodeOutput {
             schema_version: 1,
             kind: "node",
             query: symbol,
@@ -233,8 +254,14 @@ impl ToolHandler {
             returned_full_count: details.len(),
             truncated: !listed.is_empty(),
             matches: details,
-        };
-        self.structured_result(&self.truncate_output(&out.join("\n")), &output)
+        });
+        let mut result = self.structured_result(&self.truncate_output(&out.join("\n")), &output)?;
+        if !stale_files.is_empty() {
+            stale_files.sort();
+            stale_files.dedup();
+            result = result.with_notice(stale_slice_notice(&stale_files));
+        }
+        Ok(result)
     }
 
     fn handle_file_view(
@@ -255,7 +282,7 @@ impl ToolHandler {
         let wanted = normalize(file_arg);
         let all_files = cg.get_files()?;
         if all_files.is_empty() {
-            return Ok(self.text_result("No files indexed. Run `codegraph index` first."));
+            return Ok(self.error_result("No files indexed. Run `codegraph index` first."));
         }
 
         let mut resolved = all_files
@@ -295,12 +322,20 @@ impl ToolHandler {
                     .take(25)
                     .map(|candidate| format!("- {}", candidate.path)),
             );
-            return Ok(self.text_result(&out.join("\n")));
+            return Ok(self.validation_error_result(
+                "file",
+                &out.join("\n"),
+                "an unambiguous indexed file path",
+                Some("ambiguous string"),
+            ));
         }
         let Some(resolved) = resolved else {
-            return Ok(self.text_result(&format!(
-                "No indexed file matches \"{file_arg}\". Codegraph indexes source files; configs/docs it doesn't parse won't appear - read those directly."
-            )));
+            return Ok(self.validation_error_result(
+                "file",
+                &format!("No indexed file matches \"{file_arg}\"."),
+                "an indexed file path",
+                Some("unknown string"),
+            ));
         };
 
         let file_path = &resolved.path;
@@ -313,22 +348,38 @@ impl ToolHandler {
         });
         nodes.sort_by_key(|node| node.start_line);
         let dependents = cg.get_file_dependents(file_path)?;
+        let shown_dependents = dependents.iter().take(8).cloned().collect::<Vec<_>>();
+        let dependents_omitted = dependents.len().saturating_sub(shown_dependents.len());
         let dep_summary = if dependents.is_empty() {
             "no other indexed file depends on it".to_string()
         } else {
-            let shown = dependents.iter().take(8).cloned().collect::<Vec<_>>();
-            let overflow = dependents.len().saturating_sub(shown.len());
             format!(
                 "used by {} file{}: {}{}",
                 dependents.len(),
                 if dependents.len() == 1 { "" } else { "s" },
-                shown.join(", "),
-                if overflow == 0 {
+                shown_dependents.join(", "),
+                if dependents_omitted == 0 {
                     String::new()
                 } else {
-                    format!(", +{overflow} more")
+                    format!(", +{dependents_omitted} more")
                 }
             )
+        };
+
+        const SYMBOL_CAP: usize = 80;
+        let symbols: Vec<NodeFileSymbolOutput> = nodes
+            .iter()
+            .take(SYMBOL_CAP)
+            .map(NodeFileSymbolOutput::from)
+            .collect();
+        let file_metadata = NodeFileMetadataOutput {
+            path: file_path.clone(),
+            language: resolved.language.as_str().to_string(),
+            symbol_count: nodes.len(),
+            symbols,
+            symbols_truncated: nodes.len() > SYMBOL_CAP,
+            dependents: shown_dependents,
+            dependents_omitted,
         };
 
         let symbol_map = |heading: &str| {
@@ -357,6 +408,15 @@ impl ToolHandler {
             }
             lines
         };
+        let file_result = |text: &str, content: NodeFileContent| -> Result<ToolResult> {
+            let mut payload = NodeFileOutput::new(file_metadata.clone(), content);
+            if !payload.cap_source_to_output_limit() {
+                return Ok(self.error_result(
+                    "Node file metadata exceeds CODEGRAPH_MAX_OUTPUT_CHARS even after source was withheld.",
+                ));
+            }
+            self.structured_result(text, &NodeSuccessOutput::File(payload))
+        };
 
         if symbols_only {
             let mut out = vec![
@@ -377,10 +437,13 @@ impl ToolHandler {
                 "> Drop `symbolsOnly` (or pass `offset`/`limit`) to read the source, like Read."
                     .to_string(),
             );
-            return Ok(self.text_result(&self.truncate_output(&out.join("\n"))));
+            return file_result(
+                &self.truncate_output(&out.join("\n")),
+                NodeFileContent::SymbolsOnly,
+            );
         }
 
-        if matches!(resolved.language, Language::Yaml | Language::Properties) {
+        if is_value_sensitive_language(resolved.language) {
             let mut out = vec![
                 format!("**{file_path}** - configuration/data file, {dep_summary}"),
                 String::new(),
@@ -393,38 +456,43 @@ impl ToolHandler {
                 "> Values may be secrets, so codegraph indexes keys only. Read the file directly if you need a value."
                     .to_string(),
             );
-            return Ok(self.text_result(&self.truncate_output(&out.join("\n"))));
+            return file_result(
+                &self.truncate_output(&out.join("\n")),
+                NodeFileContent::ValuesWithheld,
+            );
         }
 
-        let content = validate_path_within_root(cg.get_project_root(), file_path)
-            .and_then(|path| fs::read_to_string(path).ok());
-        let Some(content) = content else {
-            let mut out = vec![
-                format!(
-                    "**{file_path}** - could not read from disk (it may have moved since indexing). {dep_summary}"
-                ),
-                String::new(),
-            ];
-            if !nodes.is_empty() {
-                out.extend(symbol_map("**Symbols**"));
+        let Some(real_path) =
+            resolve_existing_path_within_root_real(cg.get_project_root(), file_path)
+        else {
+            return Ok(self.error_result(&format!(
+                "Indexed file `{file_path}` is missing or no longer resolves safely within the project root."
+            )));
+        };
+        let content = match fs::read_to_string(&real_path) {
+            Ok(content) => content,
+            Err(error) => {
+                return Ok(self.error_result(&format!(
+                    "Could not read indexed file `{file_path}`: {error}"
+                )));
             }
-            out.push(String::new());
-            out.push(format!(
-                "> Read `{file_path}` directly for its current content."
-            ));
-            return Ok(self.text_result(&self.truncate_output(&out.join("\n"))));
         };
 
-        const DEFAULT_LIMIT: usize = 2_000;
-        const CHAR_BUDGET: usize = 38_000;
+        const DEFAULT_LIMIT: usize = 240;
+        const CHAR_BUDGET: usize = 14_000;
         let file_lines = content.split('\n').collect::<Vec<_>>();
         let total = file_lines.len();
         let offset = offset.unwrap_or(1).max(1);
         if offset > total {
-            return Ok(self.text_result(&format!(
-                "**{file_path}** has {total} line{} - offset {offset} is past the end. {dep_summary}",
-                if total == 1 { "" } else { "s" }
-            )));
+            return Ok(self.validation_error_result(
+                "offset",
+                &format!(
+                    "{file_path} has {total} line{}; offset {offset} is past the end.",
+                    if total == 1 { "" } else { "s" }
+                ),
+                &format!("an integer between 1 and {total}"),
+                Some("out-of-range number"),
+            ));
         }
         let max_lines = limit.unwrap_or(DEFAULT_LIMIT).max(1);
         let start = offset - 1;
@@ -455,7 +523,22 @@ impl ToolHandler {
                 "(lines {offset}-{shown_end} of {total} - pass `offset`/`limit` for another range, or `codegraph_node <symbol>` for one symbol in full)"
             ));
         }
-        Ok(self.text_result(&out.join("\n")))
+        let source = file_lines[start..shown_end].join("\n");
+        let source_chunks = vec![NodeFileSourceChunkOutput {
+            start_line: offset,
+            end_line: shown_end,
+            source,
+        }];
+        file_result(
+            &out.join("\n"),
+            NodeFileContent::Source {
+                chunks: source_chunks,
+                source_truncated: !complete,
+                total_lines: total,
+                offset,
+                limit: max_lines,
+            },
+        )
     }
 
     fn render_node_detail(
@@ -463,7 +546,11 @@ impl ToolHandler {
         cg: &CodeGraph,
         node: &Node,
         include_code: bool,
-    ) -> Result<(String, NodeDetailOutput)> {
+    ) -> Result<(String, NodeDetailOutput, Option<String>)> {
+        let stale_source = current_source_if_stale(cg, &node.file_path);
+        if let Some(source) = stale_source {
+            return self.render_stale_node_detail(cg, node, include_code, source);
+        }
         let mut code: Option<String> = None;
         let mut outline: Option<String> = None;
         if include_code {
@@ -491,7 +578,69 @@ impl ToolHandler {
             callers: callers.iter().map(|r| NodeSummary::from(&r.node)).collect(),
             callees: callees.iter().map(|r| NodeSummary::from(&r.node)).collect(),
         };
-        Ok((text, detail))
+        Ok((text, detail, None))
+    }
+
+    fn render_stale_node_detail(
+        &self,
+        cg: &CodeGraph,
+        node: &Node,
+        include_code: bool,
+        source: String,
+    ) -> Result<(String, NodeDetailOutput, Option<String>)> {
+        const MAX_LINES: usize = 300;
+        const MAX_CHARS: usize = 12_000;
+        let source = source.trim_end_matches('\n');
+        let embed = include_code
+            && !is_value_sensitive_language(node.language)
+            && source.len() <= MAX_CHARS
+            && source.lines().count() <= MAX_LINES;
+        let code = embed.then(|| source.to_string());
+        let (callers, callees) = self.trail_refs(cg, node)?;
+        let mut lines = vec![
+            format!("## {} ({})", node.name, node.kind.as_str()),
+            String::new(),
+            format!(
+                "**Location:** {}:{} — ⚠ as of the last index sync; the file changed on disk after it was last indexed, so this line may be shifted",
+                node.file_path, node.start_line
+            ),
+        ];
+        if let Some(signature) = node.signature.as_deref() {
+            lines.push(format!("**Signature:** `{signature}`"));
+        }
+        lines.push(String::new());
+        if let Some(current) = code.as_deref() {
+            lines.extend([
+                format!(
+                    "> ⚠ `{}` changed on disk after it was last indexed. Showing the file's full CURRENT source instead:",
+                    node.file_path
+                ),
+                String::new(),
+                format!("```{}", node.language.as_str()),
+                number_source_lines(current, 1),
+                "```".to_string(),
+            ]);
+        } else {
+            lines.push(format!(
+                "> ⚠ `{}` changed on disk after it was last indexed — its body is omitted rather than risk showing a different symbol's code. Call codegraph_node with `file: \"{}\"` for current content.",
+                node.file_path, node.file_path
+            ));
+        }
+        lines.push(self.format_trail_refs(node, &callers, &callees));
+        let detail = NodeDetailOutput {
+            node: NodeSummary::from(node),
+            code,
+            outline: None,
+            callers: callers
+                .iter()
+                .map(|item| NodeSummary::from(&item.node))
+                .collect(),
+            callees: callees
+                .iter()
+                .map(|item| NodeSummary::from(&item.node))
+                .collect(),
+        };
+        Ok((lines.join("\n"), detail, Some(node.file_path.clone())))
     }
 
     fn trail_refs(
@@ -573,6 +722,13 @@ impl ToolHandler {
 
     // =========================================================================
     // codegraph_status
+}
+
+fn current_source_if_stale(cg: &CodeGraph, file_path: &str) -> Option<String> {
+    let indexed = cg.get_file(file_path).ok().flatten()?;
+    let real_path = resolve_existing_path_within_root_real(cg.get_project_root(), file_path)?;
+    let source = fs::read_to_string(real_path).ok()?;
+    (crate::extraction::hash_content(&source) != indexed.content_hash).then_some(source)
 }
 
 fn empty_node_detail(node: &Node) -> NodeDetailOutput {

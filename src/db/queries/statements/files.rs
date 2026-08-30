@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use super::QueryBuilder;
-use super::rows::file_from_row;
+use super::rows::{file_from_row, placeholders};
+use super::{QueryBuilder, SQLITE_PARAM_CHUNK_SIZE};
 use crate::error::Result;
+use crate::extraction::{GeneratedFilePredicate, GenerationStatus};
 use crate::types::FileRecord;
 
 impl QueryBuilder {
@@ -41,6 +42,82 @@ impl QueryBuilder {
         Ok(())
     }
 
+    /// Insert or update a file record and rewrite its generated-source verdict.
+    pub fn upsert_file_with_generation(
+        &self,
+        file: &FileRecord,
+        generation: GenerationStatus,
+    ) -> Result<()> {
+        let mut stmt = self.db.conn().prepare_cached(
+            "INSERT INTO files (path, content_hash, language, size, modified_at, indexed_at, node_count, errors, generated)
+             VALUES (@path, @contentHash, @language, @size, @modifiedAt, @indexedAt, @nodeCount, @errors, @generated)
+             ON CONFLICT(path) DO UPDATE SET
+               content_hash = @contentHash,
+               language = @language,
+               size = @size,
+               modified_at = @modifiedAt,
+               indexed_at = @indexedAt,
+               node_count = @nodeCount,
+               errors = @errors,
+               generated = @generated",
+        )?;
+        let errors = file
+            .errors
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        stmt.execute(rusqlite::named_params! {
+            "@path": file.path,
+            "@contentHash": file.content_hash,
+            "@language": file.language.as_str(),
+            "@size": file.size as i64,
+            "@modifiedAt": file.modified_at,
+            "@indexedAt": file.indexed_at,
+            "@nodeCount": file.node_count,
+            "@errors": errors,
+            "@generated": generation.as_i64(),
+        })?;
+        Ok(())
+    }
+
+    /// Build a generated-file predicate over only the supplied candidate paths.
+    pub fn generated_file_predicate(
+        &self,
+        file_paths: &[String],
+    ) -> Result<GeneratedFilePredicate> {
+        let unique: HashSet<&str> = file_paths.iter().map(String::as_str).collect();
+        let mut found = HashSet::new();
+        for chunk in unique
+            .iter()
+            .copied()
+            .collect::<Vec<_>>()
+            .chunks(SQLITE_PARAM_CHUNK_SIZE)
+        {
+            let sql = format!(
+                "SELECT path FROM files WHERE generated = 1 AND path IN ({})",
+                placeholders(chunk.len())
+            );
+            let mut stmt = self.db.conn().prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                row.get::<_, String>(0)
+            })?;
+            for row in rows {
+                found.insert(row?);
+            }
+        }
+        Ok(GeneratedFilePredicate::new(found))
+    }
+
+    /// Count files whose persisted source metadata marks them generated.
+    pub fn count_generated_files(&self) -> Result<i64> {
+        let count = self.db.conn().query_row(
+            "SELECT COUNT(*) FROM files WHERE generated = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        Ok(count)
+    }
+
     /// Delete a file record and its nodes.
     pub fn delete_file(&self, file_path: &str) -> Result<()> {
         self.db.transaction(|| {
@@ -75,6 +152,22 @@ impl QueryBuilder {
             .prepare_cached("SELECT * FROM files ORDER BY path")?;
         let rows = stmt.query_map([], file_from_row)?;
         rows.map(|r| r.map_err(Into::into)).collect()
+    }
+
+    /// Return files with non-containment edges into any node in `file_path`.
+    pub fn get_dependent_file_paths(&self, file_path: &str) -> Result<Vec<String>> {
+        let mut stmt = self.db.conn().prepare_cached(
+            "SELECT DISTINCT source.file_path
+             FROM edges
+             JOIN nodes AS target ON target.id = edges.target
+             JOIN nodes AS source ON source.id = edges.source
+             WHERE target.file_path = ?
+               AND edges.kind != 'contains'
+               AND source.file_path != ?
+             ORDER BY source.file_path",
+        )?;
+        let rows = stmt.query_map([file_path, file_path], |row| row.get::<_, String>(0))?;
+        rows.map(|row| row.map_err(Into::into)).collect()
     }
 
     /// Languages present in the tracked file table. Synthesis uses this one

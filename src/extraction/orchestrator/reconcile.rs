@@ -52,11 +52,15 @@ pub(super) fn restore_unresolved_refs_for_removed_targets(
         let Some(target) = target_by_id.get(edge.target.as_str()) else {
             continue;
         };
+        let line = edge.line.unwrap_or(source.start_line);
+        let column = edge.column.unwrap_or(source.start_column);
         let key = format!(
-            "{}\0{}\0{}",
+            "{}\0{}\0{}\0{}\0{}",
             source.id,
             target.name,
-            reference_kind.as_str()
+            reference_kind.as_str(),
+            line,
+            column
         );
         if !seen.insert(key) {
             continue;
@@ -65,8 +69,8 @@ pub(super) fn restore_unresolved_refs_for_removed_targets(
             from_node_id: source.id.clone(),
             reference_name: target.name.clone(),
             reference_kind,
-            line: edge.line.unwrap_or(source.start_line),
-            column: edge.column.unwrap_or(source.start_column),
+            line,
+            column,
             file_path: Some(source.file_path.clone()),
             language: Some(source.language),
             candidates: None,

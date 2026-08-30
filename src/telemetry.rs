@@ -146,6 +146,18 @@ impl Telemetry {
     }
 
     pub fn record_usage(&self, kind: &str, name: &str, ok: bool) {
+        self.record_usage_with_client(kind, name, ok, None, None);
+    }
+
+    /// Record one usage delta with optional sanitized MCP client identity.
+    pub fn record_usage_with_client(
+        &self,
+        kind: &str,
+        name: &str,
+        ok: bool,
+        client_name: Option<&str>,
+        client_version: Option<&str>,
+    ) {
         if !self.is_enabled() {
             return;
         }
@@ -155,7 +167,7 @@ impl Telemetry {
         let Some(name) = safe_identifier(name, 64) else {
             return;
         };
-        let line = json!({
+        let mut line = json!({
             "v": SCHEMA_VERSION,
             "d": utc_day(),
             "k": kind,
@@ -163,6 +175,13 @@ impl Telemetry {
             "c": 1,
             "e": if ok { 0 } else { 1 },
         });
+        let object = line.as_object_mut().expect("usage line is an object");
+        if let Some(value) = client_name.and_then(|value| safe_identifier(value, 64)) {
+            object.insert("cn".to_string(), Value::String(value));
+        }
+        if let Some(value) = client_version.and_then(|value| safe_identifier(value, 64)) {
+            object.insert("cv".to_string(), Value::String(value));
+        }
         self.append_line(&line);
     }
 
@@ -543,6 +562,32 @@ mod tests {
         let telemetry = Telemetry::new(dir.path());
         telemetry.record_usage("cli_command", "/home/user/secret.rs", true);
         assert!(!telemetry.queue_path().exists());
+    }
+
+    #[test]
+    fn records_sanitized_mcp_client_metadata_with_tool_usage() {
+        // Given: telemetry enabled in an isolated state directory.
+        let dir = tempfile::tempdir().unwrap();
+        let telemetry = Telemetry::new(dir.path());
+        telemetry.set_enabled(true, "test");
+
+        // When: one MCP tool call is recorded with client identity.
+        telemetry.record_usage_with_client(
+            "mcp_tool",
+            "codegraph_explore",
+            true,
+            Some("opencode"),
+            Some("1.2.3"),
+        );
+
+        // Then: the buffered delta contains only the sanitized identifiers.
+        let line = std::fs::read_to_string(telemetry.queue_path()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(value["k"], "mcp_tool");
+        assert_eq!(value["n"], "codegraph_explore");
+        assert_eq!(value["cn"], "opencode");
+        assert_eq!(value["cv"], "1.2.3");
+        assert_eq!(value["e"], 0);
     }
 
     #[test]

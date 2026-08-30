@@ -45,7 +45,7 @@ async fn main() {
     });
 
     let server = MCPServer::new(resolved);
-    if let Err(err) = server.start() {
+    if let Err(err) = server.start().await {
         eprintln!("Failed to start server: {err}");
         std::process::exit(1);
     }

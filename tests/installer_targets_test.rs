@@ -30,6 +30,12 @@ mod codex;
 mod config_writer;
 #[path = "installer_targets_test/contract.rs"]
 mod contract;
+#[path = "installer_targets_test/copilot_cli.rs"]
+mod copilot_cli;
+#[path = "installer_targets_test/copilot_jetbrains.rs"]
+mod copilot_jetbrains;
+#[path = "installer_targets_test/copilot_vscode.rs"]
+mod copilot_vscode;
 #[path = "installer_targets_test/cursor.rs"]
 mod cursor;
 #[path = "installer_targets_test/gemini.rs"]
@@ -42,6 +48,10 @@ mod kiro;
 mod legacy_hooks;
 #[path = "installer_targets_test/opencode.rs"]
 mod opencode;
+#[path = "installer_targets_test/pi.rs"]
+mod pi;
+#[path = "installer_targets_test/prime.rs"]
+mod prime;
 #[path = "installer_targets_test/registry.rs"]
 mod registry;
 #[path = "installer_targets_test/sweep.rs"]

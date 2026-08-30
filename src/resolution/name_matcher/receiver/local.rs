@@ -127,6 +127,18 @@ fn local_receiver_type_patterns(language: Language, receiver: &str) -> Vec<Regex
     })
 }
 
+fn php_property_type_patterns(property: &str) -> Vec<Regex> {
+    let property = regex::escape(property);
+    vec![
+        compile(format!(
+            r"\b(?:(?:private|protected|public|readonly|static|final)(?:\(set\))?\s+)+\??([A-Za-z_\\][0-9A-Za-z_\\]*)\s+&?\${property}\b"
+        )),
+        compile(format!(
+            r"\$this->{property}\b\s*=\s*new\s+([A-Za-z_\\][0-9A-Za-z_\\]*)"
+        )),
+    ]
+}
+
 fn normalize_inferred_type_name(raw: &str) -> Option<String> {
     let without_generics = Regex::new(r"<[^>]*>")
         .expect("valid generic regex")
@@ -166,6 +178,69 @@ fn normalize_inferred_type_name(raw: &str) -> Option<String> {
     Some(segment.to_string())
 }
 
+pub(crate) fn infer_receiver_type_from_declaration(
+    value: &crate::types::Node,
+    context: &dyn ResolutionContext,
+) -> Option<String> {
+    let source = context.read_file_arc(&value.file_path)?;
+    let lines: Vec<&str> = source.lines().collect();
+    let start = value.start_line.saturating_sub(1) as usize;
+    let end = (value.end_line as usize).min(lines.len());
+    let declaration = lines.get(start..end)?.join("\n");
+    local_receiver_type_patterns(value.language, &value.name)
+        .iter()
+        .find_map(|pattern| {
+            pattern
+                .captures(&declaration)
+                .and_then(|captures| captures.get(1))
+                .and_then(|capture| normalize_inferred_type_name(capture.as_str()))
+        })
+}
+
+fn infer_php_assigned_property_type(
+    property: &str,
+    lines: &[&str],
+    call_index: usize,
+) -> Option<String> {
+    let assignment = compile(format!(
+        r"\$this->{}\b\s*=\s*\$([0-9A-Za-z_]+)\b",
+        regex::escape(property)
+    ));
+    let find_assignment = |index: usize| {
+        let line = lines.get(index).copied()?;
+        (line.len() <= MAX_SOURCE_LINE_BYTES)
+            .then(|| assignment.captures(line))
+            .flatten()
+            .and_then(|captures| captures.get(1).map(|capture| capture.as_str().to_string()))
+    };
+    let (assignment_index, variable) = (0..=call_index)
+        .rev()
+        .find_map(|index| find_assignment(index).map(|name| (index, name)))
+        .or_else(|| {
+            (call_index + 1..lines.len())
+                .find_map(|index| find_assignment(index).map(|name| (index, name)))
+        })?;
+    let patterns = local_receiver_type_patterns(Language::Php, &variable);
+
+    for index in (0..=assignment_index).rev() {
+        let line = lines[index];
+        if line.len() <= MAX_SOURCE_LINE_BYTES {
+            if let Some(inferred) = patterns.iter().find_map(|pattern| {
+                pattern
+                    .captures(line)
+                    .and_then(|captures| captures.get(1))
+                    .and_then(|capture| normalize_inferred_type_name(capture.as_str()))
+            }) {
+                return Some(inferred);
+            }
+        }
+        if line.contains("function") {
+            break;
+        }
+    }
+    None
+}
+
 fn enclosing_scope_start_line(reference: &UnresolvedRef, context: &dyn ResolutionContext) -> u32 {
     context
         .get_nodes_in_file(&reference.file_path)
@@ -188,6 +263,7 @@ pub(in crate::resolution::name_matcher) fn infer_local_receiver_type(
 ) -> Option<String> {
     let mut scan_receiver = receiver_name;
     let mut component_scoped = false;
+    let mut php_property = false;
     if matches!(reference.language.as_str(), "cfml" | "cfscript") {
         if let Some((scope, name)) = receiver_name.split_once('.') {
             if matches!(
@@ -201,12 +277,26 @@ pub(in crate::resolution::name_matcher) fn infer_local_receiver_type(
         }
     }
 
-    let patterns = local_receiver_type_patterns(reference.language, scan_receiver);
+    if reference.language == Language::Php {
+        if let Some(property) = receiver_name.strip_prefix("this->") {
+            if !property.contains("->") {
+                scan_receiver = property;
+                component_scoped = true;
+                php_property = true;
+            }
+        }
+    }
+
+    let patterns = if php_property {
+        php_property_type_patterns(scan_receiver)
+    } else {
+        local_receiver_type_patterns(reference.language, scan_receiver)
+    };
     if patterns.is_empty() {
         return None;
     }
 
-    let source = context.read_file(&reference.file_path)?;
+    let source = context.read_file_arc(&reference.file_path)?;
     let lines: Vec<&str> = source
         .split('\n')
         .map(|line| line.strip_suffix('\r').unwrap_or(line))
@@ -249,7 +339,11 @@ pub(in crate::resolution::name_matcher) fn infer_local_receiver_type(
         }
     }
 
-    None
+    if php_property {
+        infer_php_assigned_property_type(scan_receiver, &lines, call_index)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

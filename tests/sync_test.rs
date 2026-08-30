@@ -42,7 +42,15 @@ use codegraph::sync::{
     git_worktree_root,
     worktree_mismatch_warning,
 };
-use notify::event::{AccessKind, AccessMode, DataChange, EventKind, ModifyKind};
+use notify::event::{
+    AccessKind,
+    AccessMode,
+    CreateKind,
+    DataChange,
+    EventKind,
+    ModifyKind,
+    RemoveKind,
+};
 use tempfile::TempDir;
 
 static ENV_LOCK: RwLock<()> = RwLock::new(());
@@ -225,12 +233,98 @@ fn ignores_files_not_matching_source_extensions() {
 
     // A non-source-file event — FileWatcher's `is_source_file` gate must drop
     // it before scheduling sync.
-    watcher.ingest_event_for_tests("src/readme.md");
+    watcher.ingest_event_for_tests("src/styles.css");
 
     // Wait a bit longer than debounce — sync should NOT trigger.
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(count.load(Ordering::SeqCst), 0);
 
+    watcher.stop();
+}
+
+#[test]
+fn watches_shebang_script_creation_with_unsupported_extension() {
+    let _env = ENV_LOCK.read().unwrap();
+    let dir = test_project();
+    fs::create_dir_all(dir.path().join("scripts")).unwrap();
+    fs::write(
+        dir.path().join("scripts/build.runner"),
+        "#!/usr/bin/env bash\necho build\n",
+    )
+    .unwrap();
+    let (sync_fn, _count) = counting_sync(WatchSyncResult {
+        files_changed: 1,
+        duration_ms: 10,
+    });
+    let watcher = new_watcher(dir.path(), sync_fn, opts_debounce(5_000));
+
+    watcher.start();
+    watcher.wait_until_ready(DEFAULT_READY_TIMEOUT_MS).unwrap();
+    watcher
+        .ingest_notify_event_for_tests(EventKind::Create(CreateKind::File), "scripts/build.runner");
+
+    wait_for(
+        || {
+            watcher
+                .get_pending_files()
+                .iter()
+                .any(|pending| pending.path == "scripts/build.runner")
+        },
+        1_000,
+    );
+    watcher.stop();
+}
+
+#[test]
+fn watches_content_selected_script_after_shebang_disappears() {
+    let _env = ENV_LOCK.read().unwrap();
+    let dir = test_project();
+    fs::create_dir_all(dir.path().join("scripts")).unwrap();
+    let script = dir.path().join("scripts/build.runner");
+    fs::write(&script, "#!/usr/bin/env bash\necho build\n").unwrap();
+
+    let (sync_fn, count) = counting_sync(WatchSyncResult {
+        files_changed: 1,
+        duration_ms: 10,
+    });
+    let watcher = new_watcher(dir.path(), sync_fn, opts_debounce(50));
+    watcher.start();
+    watcher.wait_until_ready(DEFAULT_READY_TIMEOUT_MS).unwrap();
+
+    // First observation remembers that this unsupported extension was selected
+    // by content rather than by its suffix.
+    watcher
+        .ingest_notify_event_for_tests(EventKind::Create(CreateKind::File), "scripts/build.runner");
+    wait_for(|| count.load(Ordering::SeqCst) >= 1, 1_000);
+
+    fs::write(&script, "echo shebang removed\n").unwrap();
+    watcher.ingest_notify_event_for_tests(
+        EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+        "scripts/build.runner",
+    );
+    wait_for(
+        || {
+            watcher
+                .get_pending_files()
+                .iter()
+                .any(|pending| pending.path == "scripts/build.runner")
+        },
+        1_000,
+    );
+    wait_for(|| count.load(Ordering::SeqCst) >= 2, 1_000);
+
+    fs::remove_file(&script).unwrap();
+    watcher
+        .ingest_notify_event_for_tests(EventKind::Remove(RemoveKind::File), "scripts/build.runner");
+    wait_for(
+        || {
+            watcher
+                .get_pending_files()
+                .iter()
+                .any(|pending| pending.path == "scripts/build.runner")
+        },
+        1_000,
+    );
     watcher.stop();
 }
 
@@ -637,6 +731,23 @@ fn does_not_start_when_codegraph_no_watch_is_set() {
 
     let started = watcher.start();
     std::env::remove_var("CODEGRAPH_NO_WATCH");
+
+    assert!(!started);
+    assert!(!watcher.is_active());
+}
+
+#[test]
+fn reports_setup_failure_when_no_watch_can_be_installed() {
+    let _env = ENV_LOCK.read().unwrap();
+    let parent = TempDir::new().unwrap();
+    let missing = parent.path().join("missing-project");
+    let (sync_fn, _count) = counting_sync(WatchSyncResult {
+        files_changed: 0,
+        duration_ms: 0,
+    });
+    let watcher = FileWatcher::new(&missing, sync_fn, WatchOptions::default());
+
+    let started = watcher.start();
 
     assert!(!started);
     assert!(!watcher.is_active());

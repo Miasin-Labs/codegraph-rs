@@ -136,11 +136,10 @@ impl LanguageExtractor for ScalaExtractor {
     }
 
     fn is_static(&self, node: SyntaxNode<'_>, source: &str) -> Option<bool> {
-        for i in 0..node.named_child_count() as u32 {
-            if let Some(child) = node.named_child(i) {
-                if child.kind() == "modifiers" && get_node_text(child, source).contains("static") {
-                    return Some(true);
-                }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "modifiers" && get_node_text(child, source).contains("static") {
+                return Some(true);
             }
         }
         Some(false)
@@ -155,23 +154,33 @@ impl LanguageExtractor for ScalaExtractor {
                 return false;
             };
 
-            let is_in_class = match ctx.node_stack().last() {
-                Some(parent_id) => ctx.nodes().iter().any(|n| {
-                    n.id == *parent_id
-                        && matches!(
-                            n.kind,
-                            NodeKind::Class
-                                | NodeKind::Trait
-                                | NodeKind::Interface
-                                | NodeKind::Struct
-                                | NodeKind::Enum
-                                | NodeKind::Module
-                        )
-                }),
-                None => false,
-            };
+            let mut enclosing_definition = None;
+            let mut parent = node.parent();
+            while let Some(ancestor) = parent {
+                if matches!(
+                    ancestor.kind(),
+                    "class_definition"
+                        | "trait_definition"
+                        | "enum_definition"
+                        | "given_definition"
+                        | "object_definition"
+                ) {
+                    enclosing_definition = Some(ancestor.kind());
+                    break;
+                }
+                parent = ancestor.parent();
+            }
+            let is_instance_field = matches!(
+                enclosing_definition,
+                Some(
+                    "class_definition"
+                        | "trait_definition"
+                        | "enum_definition"
+                        | "given_definition"
+                )
+            );
 
-            let kind = if is_in_class {
+            let kind = if is_instance_field {
                 NodeKind::Field
             } else if t == "val_definition" {
                 NodeKind::Constant
@@ -221,10 +230,9 @@ impl LanguageExtractor for ScalaExtractor {
         // extension_definition: visit body children directly, no container node
         if t == "extension_definition" {
             if let Some(body) = node.child_by_field_name("body") {
-                for i in 0..body.named_child_count() as u32 {
-                    if let Some(child) = body.named_child(i) {
-                        ctx.visit_node(child);
-                    }
+                let mut cursor = body.walk();
+                for child in body.named_children(&mut cursor) {
+                    ctx.visit_node(child);
                 }
             }
             return true;
@@ -241,14 +249,13 @@ impl LanguageExtractor for ScalaExtractor {
                 import_text,
             ));
         }
-        for i in 0..node.named_child_count() as u32 {
-            if let Some(child) = node.named_child(i) {
-                if child.kind() == "identifier" || child.kind() == "stable_identifier" {
-                    return ImportOutcome::Info(ImportInfo::new(
-                        get_node_text(child, source),
-                        import_text,
-                    ));
-                }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "identifier" || child.kind() == "stable_identifier" {
+                return ImportOutcome::Info(ImportInfo::new(
+                    get_node_text(child, source),
+                    import_text,
+                ));
             }
         }
         ImportOutcome::Declined

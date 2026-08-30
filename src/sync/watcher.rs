@@ -45,12 +45,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use ignore::gitignore::Gitignore;
-use notify::event::{AccessKind, AccessMode, EventKind, MetadataKind, ModifyKind};
+use notify::event::{AccessKind, AccessMode, CreateKind, EventKind, MetadataKind, ModifyKind};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use serde::Serialize;
 
 use crate::directory::is_codegraph_data_dir;
 use crate::error::{log_debug, log_warn};
+use crate::extraction::file_selection::is_indexable_existing_file;
 use crate::extraction::{build_default_ignore, is_source_file_with_overrides};
 use crate::project_config::{
     PROJECT_CONFIG_FILENAME,
@@ -227,6 +228,10 @@ struct WatcherState {
     /// The debounce deadline (TS `setTimeout` handle equivalent). `None` means
     /// no sync is scheduled.
     deadline: Option<Instant>,
+    /// Paths known to be indexed even though their extension alone is
+    /// unsupported (normally shebang scripts). A modify/remove remains relevant
+    /// after the shebang or file itself disappears.
+    content_selected_paths: HashSet<String>,
     /// Files seen by the watcher since the last successful sync — populated on
     /// every change event, pruned only after a sync commits successfully (and
     /// only for entries whose `last_seen_ms <= sync_started_ms`). Keyed by the
@@ -310,6 +315,17 @@ fn is_index_relevant_event(kind: &EventKind) -> bool {
     }
 }
 
+fn event_may_invalidate_a_content_selected_source(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Any
+            | EventKind::Remove(_)
+            | EventKind::Modify(_)
+            | EventKind::Access(AccessKind::Open(AccessMode::Write))
+            | EventKind::Access(AccessKind::Close(AccessMode::Write))
+    )
+}
+
 /// Shared change handler for both watch strategies (TS: `handleChange`). `rel`
 /// is a project-relative POSIX path. Applies the ignore + source-file filters
 /// and, for a real source change, records it as pending (#403) and schedules a
@@ -318,7 +334,7 @@ fn is_index_relevant_event(kind: &EventKind) -> bool {
 /// The recursive (macOS/Windows) watcher reports events for ignored trees too
 /// (one stream covers the whole repo), so the ignore check here is load-bearing
 /// — it drops node_modules/dist/.git churn before any sync is scheduled.
-fn handle_change(shared: &WatcherShared, rel: &str) {
+fn handle_change(shared: &WatcherShared, rel: &str, kind: &EventKind) {
     if rel.is_empty() || rel == "." || rel.starts_with("..") {
         return;
     }
@@ -338,25 +354,37 @@ fn handle_change(shared: &WatcherShared, rel: &str) {
         rel,
         false,
     );
-    {
+    let previously_indexed = {
         let st = shared.state.lock().unwrap();
         if let Some(ig) = st.ignore.as_ref() {
             if gitignore_ignores(ig, rel, false) && !explicitly_included {
                 return;
             }
         }
-    }
-    if rel != PROJECT_CONFIG_FILENAME
-        && !is_source_file_with_overrides(rel, config.extension_overrides())
-    {
-        return;
-    }
+        st.content_selected_paths.contains(rel)
+    };
+    let content_selected_now = if rel == PROJECT_CONFIG_FILENAME {
+        false
+    } else {
+        let extension_selected = is_source_file_with_overrides(rel, config.extension_overrides());
+        let existing_selected = !extension_selected
+            && is_indexable_existing_file(&shared.project_root, rel, config.extension_overrides());
+        let content_selected_transition =
+            previously_indexed && event_may_invalidate_a_content_selected_source(kind);
+        if !extension_selected && !existing_selected && !content_selected_transition {
+            return;
+        }
+        existing_selected
+    };
 
     log_debug(
         "File change detected",
         Some(&serde_json::json!({ "file": rel })),
     );
     let mut st = shared.state.lock().unwrap();
+    if content_selected_now {
+        st.content_selected_paths.insert(rel.to_string());
+    }
     if st.ready {
         let now = now_ms();
         let entry = st
@@ -462,7 +490,7 @@ pub fn emit_watch_event_for_tests(project_root: &str, rel_path: &str) -> bool {
     };
     match shared {
         Some(shared) => {
-            handle_change(&shared, &normalize_path(rel_path));
+            handle_change(&shared, &normalize_path(rel_path), &EventKind::Any);
             kick(&shared);
             true
         }
@@ -543,6 +571,11 @@ impl Worker {
             // so setup itself cannot fail here.
             let root = self.shared.project_root.clone();
             self.watch_tree(&root, /* mark_existing */ false);
+            if self.watched_dirs.is_empty() {
+                return Err(notify::Error::generic(
+                    "no filesystem watch could be installed",
+                ));
+            }
             Ok(SetupInfo {
                 mode: "per-directory",
                 watched_dirs: self.watched_dirs.len(),
@@ -595,7 +628,7 @@ impl Worker {
                 self.watch_tree(&child, mark_existing);
             } else if mark_existing && ft.is_file() {
                 if let Some(rel) = rel_to_root(&self.shared.project_root, &child) {
-                    handle_change(&self.shared, &rel);
+                    handle_change(&self.shared, &rel, &EventKind::Create(CreateKind::File));
                 }
             }
         }
@@ -615,7 +648,7 @@ impl Worker {
     /// is routed through the shared change handler. If the path vanished
     /// (rapid create/delete) the stat fails and we fall through to the change
     /// handler, which no-ops on a non-source path.
-    fn handle_dir_event(&mut self, full: &Path) {
+    fn handle_dir_event(&mut self, full: &Path, kind: &EventKind) {
         if let Ok(md) = std::fs::metadata(full) {
             if md.is_dir() {
                 if !should_ignore_dir(&self.shared, full) {
@@ -625,7 +658,7 @@ impl Worker {
             }
         }
         if let Some(rel) = rel_to_root(&self.shared.project_root, full) {
-            handle_change(&self.shared, &rel);
+            handle_change(&self.shared, &rel, kind);
         }
     }
 
@@ -637,12 +670,13 @@ impl Worker {
         if !is_index_relevant_event(&event.kind) {
             return;
         }
+        let kind = event.kind;
         let paths: Vec<PathBuf> = event.paths;
         for p in paths {
             if self.per_directory {
-                self.handle_dir_event(&p);
+                self.handle_dir_event(&p, &kind);
             } else if let Some(rel) = rel_to_root(&self.shared.project_root, &p) {
-                handle_change(&self.shared, &rel);
+                handle_change(&self.shared, &rel, &kind);
             }
         }
     }
@@ -836,6 +870,15 @@ pub struct FileWatcher {
 
 impl FileWatcher {
     pub fn new(project_root: impl Into<PathBuf>, sync_fn: SyncFn, options: WatchOptions) -> Self {
+        Self::new_with_indexed_files(project_root, sync_fn, options, HashSet::new())
+    }
+
+    pub(crate) fn new_with_indexed_files(
+        project_root: impl Into<PathBuf>,
+        sync_fn: SyncFn,
+        options: WatchOptions,
+        indexed_files: HashSet<String>,
+    ) -> Self {
         let project_root: PathBuf = project_root.into();
         let project_root_str = project_root.to_string_lossy().to_string();
         FileWatcher {
@@ -855,6 +898,7 @@ impl FileWatcher {
                     syncing: false,
                     sync_started_ms: 0,
                     deadline: None,
+                    content_selected_paths: indexed_files,
                     pending_files: BTreeMap::new(),
                     ignore: None,
                 }),
@@ -1041,7 +1085,7 @@ impl FileWatcher {
     /// deterministic instead of racing on OS watch-delivery latency. See
     /// [`emit_watch_event_for_tests`].
     pub fn ingest_event_for_tests(&self, rel_path: &str) {
-        handle_change(&self.shared, &normalize_path(rel_path));
+        handle_change(&self.shared, &normalize_path(rel_path), &EventKind::Any);
         kick(&self.shared);
     }
 
@@ -1213,6 +1257,39 @@ mod tests {
         assert!(is_index_relevant_event(&EventKind::Access(
             AccessKind::Close(AccessMode::Write)
         )));
+    }
+
+    #[test]
+    fn initially_indexed_content_selected_path_survives_shebang_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut indexed = HashSet::new();
+        indexed.insert("scripts/build.runner".to_string());
+        let sync_fn: SyncFn = Arc::new(|| {
+            Ok(WatchSyncResult {
+                files_changed: 0,
+                duration_ms: 0,
+            })
+        });
+        let watcher = FileWatcher::new_with_indexed_files(
+            dir.path(),
+            sync_fn,
+            WatchOptions::default(),
+            indexed,
+        );
+        watcher.shared.state.lock().unwrap().ready = true;
+
+        handle_change(
+            &watcher.shared,
+            "scripts/build.runner",
+            &EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+        );
+
+        assert!(
+            watcher
+                .get_pending_files()
+                .iter()
+                .any(|pending| pending.path == "scripts/build.runner")
+        );
     }
 
     #[test]

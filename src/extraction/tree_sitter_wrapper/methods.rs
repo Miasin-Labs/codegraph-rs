@@ -94,6 +94,7 @@ impl<'a> TreeSitterExtractor<'a> {
                             && matches!(
                                 n.kind,
                                 NodeKind::Struct
+                                    | NodeKind::Union
                                     | NodeKind::Class
                                     | NodeKind::Enum
                                     | NodeKind::Trait

@@ -14,7 +14,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::db::migrations::{CURRENT_SCHEMA_VERSION, get_current_version, run_migrations};
+use crate::db::migrations::{
+    CURRENT_SCHEMA_VERSION,
+    get_current_version,
+    repair_shared_schema_v9,
+    run_migrations,
+};
 use crate::error::{CodeGraphError, Result};
 use crate::types::SchemaVersion;
 
@@ -198,6 +203,7 @@ impl DatabaseConnection {
                 ],
             )?;
         }
+        repair_shared_schema_v9(&db)?;
 
         Ok(DatabaseConnection {
             db: Some(db),
@@ -226,6 +232,7 @@ impl DatabaseConnection {
         if current_version < CURRENT_SCHEMA_VERSION {
             run_migrations(&db, current_version)?;
         }
+        repair_shared_schema_v9(&db)?;
 
         Ok(DatabaseConnection {
             db: Some(db),

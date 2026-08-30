@@ -7,7 +7,6 @@ use super::super::format::num_or;
 use super::super::output::SearchOutput;
 use super::super::schema::ToolResult;
 use crate::error::Result;
-use crate::extraction::is_generated_file;
 use crate::types::{NodeKind, SearchOptions};
 use crate::utils::clamp;
 
@@ -53,13 +52,12 @@ impl ToolHandler {
         )?;
 
         let mut ranked = results;
-        ranked.sort_by_key(|r| {
-            if is_generated_file(&r.node.file_path) {
-                1
-            } else {
-                0
-            }
-        });
+        let paths = ranked
+            .iter()
+            .map(|result| result.node.file_path.clone())
+            .collect::<Vec<_>>();
+        let generated = cg.generated_file_predicate(&paths)?;
+        ranked.sort_by_key(|result| generated.is_generated(&result.node.file_path));
 
         let formatted = self.format_search_results(&ranked);
         let output = SearchOutput::new(query, kind.map(str::to_string), limit, &ranked);

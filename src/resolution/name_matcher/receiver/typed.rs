@@ -9,7 +9,7 @@ use crate::types::{Language, Node, NodeKind};
 /// `dao/converter/` and `service/converter/`), the FQN's file-path-suffix
 /// picks the right one — the disambiguation signal Java imports carry but
 /// the call site doesn't (#314).
-pub(in crate::resolution::name_matcher) fn resolve_method_on_type(
+pub(crate) fn resolve_method_on_type(
     type_name: &str,
     method_name: &str,
     reference: &UnresolvedRef,

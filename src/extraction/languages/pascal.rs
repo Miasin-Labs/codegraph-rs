@@ -74,14 +74,13 @@ impl LanguageExtractor for PascalExtractor {
         let mut current = node.parent();
         while let Some(c) = current {
             if c.kind() == "declSection" {
-                for i in 0..c.child_count() as u32 {
-                    if let Some(child) = c.child(i) {
-                        match child.kind() {
-                            "kPublic" | "kPublished" => return Some(Visibility::Public),
-                            "kPrivate" => return Some(Visibility::Private),
-                            "kProtected" => return Some(Visibility::Protected),
-                            _ => {}
-                        }
+                let mut cursor = c.walk();
+                for child in c.children(&mut cursor) {
+                    match child.kind() {
+                        "kPublic" | "kPublished" => return Some(Visibility::Public),
+                        "kPrivate" => return Some(Visibility::Private),
+                        "kProtected" => return Some(Visibility::Protected),
+                        _ => {}
                     }
                 }
             }
@@ -96,11 +95,10 @@ impl LanguageExtractor for PascalExtractor {
     }
 
     fn is_static(&self, node: SyntaxNode<'_>, _source: &str) -> Option<bool> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "kClass" {
-                    return Some(true);
-                }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "kClass" {
+                return Some(true);
             }
         }
         Some(false)

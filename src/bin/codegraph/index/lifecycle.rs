@@ -1,3 +1,5 @@
+use codegraph::utils::validate_project_path;
+
 use super::{
     BufRead,
     CodeGraph,
@@ -41,12 +43,17 @@ use super::{
 // =============================================================================
 
 /// codegraph init [path]
-pub(crate) async fn cmd_init(path_arg: Option<&str>, verbose: bool) {
+pub(crate) async fn cmd_init(path_arg: Option<&str>, force: bool, verbose: bool) {
     let project_path = resolve_absolute(path_arg);
 
     clack_intro("Initializing CodeGraph");
 
     let body = async {
+        if !force {
+            if let Some(reason) = validate_project_path(&project_path) {
+                return Err(format!("{reason}. Pass --force to override."));
+            }
+        }
         if is_initialized(&project_path) {
             clack_log_warn(&format!(
                 "Already initialized in {}",
@@ -145,6 +152,11 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
     let project_path = resolve_project_path(path_arg);
 
     let body = async {
+        if !force {
+            if let Some(reason) = validate_project_path(&project_path) {
+                return Err(format!("{reason}. Pass --force to override."));
+            }
+        }
         if !is_initialized(&project_path) {
             error_msg(&format!(
                 "CodeGraph not initialized in {}",

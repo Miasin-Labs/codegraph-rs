@@ -145,13 +145,13 @@ fn canonicalized_root_cached(project_root: &Path) -> Option<PathBuf> {
     Some(real_root)
 }
 
-/// Validate an existing filesystem path using both lexical and realpath checks.
+/// Resolve an existing filesystem path to its canonical target and require
+/// that target to remain within the canonical project root.
 ///
-/// This is stricter than [`validate_path_within_root`]: symlinks are resolved
-/// and the final target must still be under the canonical project root. The
-/// canonical root is memoized per process (see [`REAL_ROOT_CACHE`]) to avoid
-/// re-canonicalizing the invariant root on every validated file.
-pub fn validate_existing_path_within_root_real(
+/// Callers that are about to read a file should open the returned canonical
+/// path rather than re-opening the lexical path, which could otherwise follow
+/// a symlink replacement outside the project after validation.
+pub fn resolve_existing_path_within_root_real(
     project_root: &Path,
     file_path: &str,
 ) -> Option<PathBuf> {
@@ -160,10 +160,25 @@ pub fn validate_existing_path_within_root_real(
     let real_root = canonicalized_root_cached(project_root)?;
 
     if real_path == real_root || real_path.starts_with(&real_root) {
-        Some(resolved)
+        Some(real_path)
     } else {
         None
     }
+}
+
+/// Validate an existing filesystem path using both lexical and realpath checks.
+///
+/// This preserves the lexical path for callers that need project-relative path
+/// identity. Callers that read the target should prefer
+/// [`resolve_existing_path_within_root_real`] and open the returned canonical
+/// path directly.
+pub fn validate_existing_path_within_root_real(
+    project_root: &Path,
+    file_path: &str,
+) -> Option<PathBuf> {
+    let resolved = validate_path_within_root(project_root, file_path)?;
+    resolve_existing_path_within_root_real(project_root, file_path)?;
+    Some(resolved)
 }
 
 /// Validate that a path is a safe project root directory.
@@ -189,8 +204,19 @@ pub fn validate_project_path(dir_path: &Path) -> Option<String> {
         ));
     }
 
-    // Also block common sensitive home subdirectories
+    // Also block the home directory, its ancestors, and sensitive children.
     if let Some(home) = dirs::home_dir() {
+        let home = lexical_resolve(&PathBuf::from("/"), &home.to_string_lossy());
+        if resolved == home {
+            return Some(format!(
+                "Refusing to operate on your home directory: {resolved_str}"
+            ));
+        }
+        if home.starts_with(&resolved) {
+            return Some(format!(
+                "Refusing to operate on a parent of your home directory: {resolved_str}"
+            ));
+        }
         for dir in [".ssh", ".gnupg", ".aws", ".config"] {
             let sensitive = home.join(dir);
             if resolved == sensitive || resolved.starts_with(&sensitive) {

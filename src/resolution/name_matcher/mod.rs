@@ -33,6 +33,7 @@ pub(crate) use method::{capitalize_first_shared, split_method_call};
 pub use method::{match_method_call, match_method_call_hinted};
 pub use qualified::match_by_qualified_name;
 use qualified::match_by_qualified_name as qualified_name;
+pub(crate) use receiver::{infer_receiver_type_from_declaration, resolve_method_on_type};
 
 use crate::resolution::types::{ResolutionContext, ResolvedRef, UnresolvedRef};
 use crate::types::Node;

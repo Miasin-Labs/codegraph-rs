@@ -53,11 +53,12 @@ pub struct UnresolvedBatch {
     pub last_id: i64,
 }
 
-/// Key identifying a resolved reference for precise deletion
-/// (TS `{ fromNodeId, referenceName, referenceKind }`).
+/// Key identifying one resolved source location for precise deletion.
 #[derive(Debug, Clone)]
 pub struct ResolvedRefKey {
     pub from_node_id: String,
     pub reference_name: String,
     pub reference_kind: String,
+    pub line: u32,
+    pub column: u32,
 }

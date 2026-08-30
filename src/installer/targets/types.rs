@@ -59,6 +59,14 @@ pub enum TargetId {
     Gemini,
     Antigravity,
     Kiro,
+    #[serde(rename = "copilot-vscode")]
+    CopilotVscode,
+    #[serde(rename = "copilot-cli")]
+    CopilotCli,
+    #[serde(rename = "copilot-jetbrains")]
+    CopilotJetbrains,
+    Prime,
+    Pi,
 }
 
 impl TargetId {
@@ -72,6 +80,11 @@ impl TargetId {
             TargetId::Gemini => "gemini",
             TargetId::Antigravity => "antigravity",
             TargetId::Kiro => "kiro",
+            TargetId::CopilotVscode => "copilot-vscode",
+            TargetId::CopilotCli => "copilot-cli",
+            TargetId::CopilotJetbrains => "copilot-jetbrains",
+            TargetId::Prime => "prime",
+            TargetId::Pi => "pi",
         }
     }
 }

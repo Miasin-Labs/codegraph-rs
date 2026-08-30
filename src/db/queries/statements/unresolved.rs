@@ -243,8 +243,7 @@ impl QueryBuilder {
         Ok(())
     }
 
-    /// Delete specific resolved references by (from_node_id, reference_name,
-    /// reference_kind) tuples. More precise than
+    /// Delete specific resolved references by source location. More precise than
     /// [`Self::delete_resolved_references`] — only removes refs that were
     /// actually resolved.
     pub fn delete_specific_resolved_references(&self, refs: &[ResolvedRefKey]) -> Result<()> {
@@ -253,13 +252,17 @@ impl QueryBuilder {
         }
         self.db.transaction(|| {
             let mut stmt = self.db.conn().prepare_cached(
-                "DELETE FROM unresolved_refs WHERE from_node_id = ? AND reference_name = ? AND reference_kind = ?",
+                "DELETE FROM unresolved_refs
+                 WHERE from_node_id = ? AND reference_name = ? AND reference_kind = ?
+                   AND line = ? AND col = ?",
             )?;
             for r in refs {
-                stmt.execute([
-                    r.from_node_id.as_str(),
-                    r.reference_name.as_str(),
-                    r.reference_kind.as_str(),
+                stmt.execute(rusqlite::params![
+                    r.from_node_id,
+                    r.reference_name,
+                    r.reference_kind,
+                    r.line,
+                    r.column,
                 ])?;
             }
             Ok(())

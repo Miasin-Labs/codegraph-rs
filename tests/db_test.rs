@@ -344,8 +344,8 @@ fn gets_schema_version() {
     let (_dir, db, _q) = setup();
     let version = db.get_schema_version().unwrap();
     assert!(version.is_some());
-    assert_eq!(version.unwrap().version, 8);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 8);
+    assert_eq!(version.unwrap().version, 9);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 9);
 }
 
 #[test]
@@ -799,7 +799,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 8);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 9);
 
     let handle = db.get_db().unwrap();
     // Migration 2 added columns + project_metadata
@@ -840,7 +840,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     // History records each applied migration
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 }
 
 #[test]
@@ -851,12 +851,12 @@ fn open_does_not_rerun_migrations_on_current_database() {
         let _db = DatabaseConnection::initialize(&db_path).unwrap();
     }
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 8);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 9);
     let handle = db.get_db().unwrap();
     assert!(!codegraph::db::needs_migration(&handle));
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 8]);
+    assert_eq!(versions, vec![1, 9]);
 }
 
 #[test]
@@ -912,7 +912,7 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 8);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 9);
     let handle = db.get_db().unwrap();
 
     // v5 added the nullable byte-offset columns.
@@ -961,7 +961,7 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
 
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
 }
 
 #[test]
@@ -1013,7 +1013,7 @@ fn open_migrates_rust_v7_shape_and_enforces_edge_identity() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 8);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 9);
     let handle = db.get_db().unwrap();
 
     let return_type_exists: i64 = handle
@@ -1114,7 +1114,7 @@ fn open_migrates_typescript_v7_shape_without_duplicate_column_failures() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 8);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 9);
     let handle = db.get_db().unwrap();
 
     let node_columns: Vec<String> = {
@@ -1146,6 +1146,90 @@ fn open_migrates_typescript_v7_shape_without_duplicate_column_failures() {
     assert_eq!(factory.return_type.as_deref(), Some("Widget"));
     assert_eq!(factory.start_byte, None);
     assert_eq!(factory.address, None);
+}
+
+#[test]
+fn open_repairs_a_typescript_v9_database_to_the_shared_superset_shape() {
+    // Given: a current TypeScript v9 database without Rust-only columns.
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("typescript-v9.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_versions (
+               version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, description TEXT
+             );
+             INSERT INTO schema_versions VALUES (9, 0, 'TypeScript schema 9');
+             CREATE TABLE nodes (
+               id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,
+               qualified_name TEXT NOT NULL, file_path TEXT NOT NULL,
+               language TEXT NOT NULL, start_line INTEGER NOT NULL,
+               end_line INTEGER NOT NULL, start_column INTEGER NOT NULL,
+               end_column INTEGER NOT NULL, docstring TEXT, signature TEXT,
+               visibility TEXT, is_exported INTEGER DEFAULT 0,
+               is_async INTEGER DEFAULT 0, is_static INTEGER DEFAULT 0,
+               is_abstract INTEGER DEFAULT 0, decorators TEXT,
+               type_parameters TEXT, return_type TEXT, updated_at INTEGER NOT NULL
+             );
+             INSERT INTO nodes (
+               id, kind, name, qualified_name, file_path, language,
+               start_line, end_line, start_column, end_column, updated_at
+             ) VALUES ('source-node', 'function', 'sourceNode', 'sourceNode',
+                       'src/a.ts', 'typescript', 1, 1, 0, 10, 0);
+             CREATE TABLE edges (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+               target TEXT NOT NULL, kind TEXT NOT NULL, metadata TEXT,
+               line INTEGER, col INTEGER, provenance TEXT DEFAULT NULL
+             );
+             CREATE TABLE files (
+               path TEXT PRIMARY KEY, content_hash TEXT NOT NULL,
+               language TEXT NOT NULL, size INTEGER NOT NULL,
+               modified_at INTEGER NOT NULL, indexed_at INTEGER NOT NULL,
+               node_count INTEGER DEFAULT 0, errors TEXT,
+               generated INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE unresolved_refs (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, from_node_id TEXT NOT NULL,
+               reference_name TEXT NOT NULL, reference_kind TEXT NOT NULL,
+               line INTEGER NOT NULL, col INTEGER NOT NULL, candidates TEXT,
+               file_path TEXT NOT NULL DEFAULT '', language TEXT NOT NULL DEFAULT 'unknown',
+               status TEXT NOT NULL DEFAULT 'pending', name_tail TEXT NOT NULL DEFAULT ''
+             );",
+        )
+        .unwrap();
+    }
+
+    // When: Rust opens the already-current foreign store.
+    let db = DatabaseConnection::open(&db_path).unwrap();
+    let q = QueryBuilder::new(db.get_db().unwrap());
+
+    // Then: Rust-only readers work and the source columns remain available.
+    let node = q
+        .get_node_by_id("source-node")
+        .unwrap()
+        .expect("source node should remain readable");
+    assert_eq!(node.start_byte, None);
+    assert_eq!(node.address, None);
+    assert!(q.get_unresolved_references().unwrap().is_empty());
+    let handle = db.get_db().unwrap();
+    for (table, column) in [
+        ("nodes", "start_byte"),
+        ("nodes", "address"),
+        ("unresolved_refs", "metadata"),
+        ("unresolved_refs", "status"),
+        ("unresolved_refs", "name_tail"),
+        ("files", "generated"),
+    ] {
+        let count: i64 = handle
+            .conn()
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?"),
+                [column],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "missing {table}.{column}");
+    }
 }
 
 // =============================================================================
@@ -1369,11 +1453,13 @@ fn unresolved_refs_roundtrip() {
     // LIMIT/OFFSET pagination
     assert_eq!(q.get_unresolved_references_batch(1, 10).unwrap().len(), 2);
 
-    // Precise deletion by (from, name, kind)
+    // Precise deletion by source location.
     q.delete_specific_resolved_references(&[ResolvedRefKey {
         from_node_id: "n1".to_string(),
         reference_name: "helper".to_string(),
         reference_kind: "calls".to_string(),
+        line: 1,
+        column: 0,
     }])
     .unwrap();
     assert_eq!(q.get_unresolved_references_count().unwrap(), 2);

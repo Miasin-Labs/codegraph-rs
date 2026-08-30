@@ -5,16 +5,17 @@ use super::super::format::{ExploreOutputBudget, FlowInfo, OrderedNodeMap};
 use super::adaptive::{AdaptiveRequest, render_adaptive_section};
 use super::cluster::{ClusterRequest, render_clustered_file};
 use super::types::{
+    ExploreBackReference,
     OmissionReason,
     OmittedFile,
     RankedExploreFiles,
-    RenderedFile,
     StructuredSourceFile,
 };
 use super::whole_file::{WholeFileRequest, render_whole_file};
 use crate::codegraph::CodeGraph;
 use crate::error::Result;
-use crate::utils::validate_path_within_root;
+use crate::mcp::explore_session::ProjectState;
+use crate::utils::resolve_existing_path_within_root_real;
 
 pub(in crate::mcp::tools::explore) struct SourceFilesRequest<'a> {
     pub cg: &'a CodeGraph,
@@ -27,6 +28,7 @@ pub(in crate::mcp::tools::explore) struct SourceFilesRequest<'a> {
     pub max_files: usize,
     pub with_line_numbers: bool,
     pub initial_chars: usize,
+    pub prior: Option<&'a ProjectState>,
 }
 
 pub(in crate::mcp::tools::explore) struct SourceFilesResult {
@@ -34,6 +36,8 @@ pub(in crate::mcp::tools::explore) struct SourceFilesResult {
     pub any_file_trimmed: bool,
     pub rendered_files: Vec<StructuredSourceFile>,
     pub omissions: Vec<OmittedFile>,
+    pub back_references: Vec<ExploreBackReference>,
+    pub stale_files: Vec<String>,
 }
 
 pub(in crate::mcp::tools::explore) fn render_source_files(
@@ -42,14 +46,44 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
 ) -> Result<SourceFilesResult> {
     let mut sibling_super = HashMap::new();
     let mut super_many = HashMap::new();
-    let mut total_chars = req.initial_chars;
-    let mut files_included = 0usize;
     let mut any_file_trimmed = false;
-    let mut rendered_files = Vec::new();
     let mut omissions = Vec::new();
+    let mut stale_files = Vec::new();
+    let mut appender = dedup::Appender::new(
+        lines,
+        dedup::Context {
+            root: req.project_root,
+            prior: req.prior,
+            line_numbers: req.with_line_numbers,
+        },
+        req.initial_chars,
+    );
+    let plan = allocation::plan(&req);
+    for reference in plan.back_references {
+        appender.add_back_reference(reference);
+    }
+    let held_paths = plan.held_paths;
+    let allocation = plan.allocation;
+    debug_assert!(allocation.allowances.values().sum::<usize>() <= allocation.pool);
+    let mut carry = 0usize;
 
     for (idx, file_path) in req.ranked.sorted_files.iter().enumerate() {
-        if files_included >= req.max_files {
+        crate::graph::cancel::check()?;
+        if held_paths.contains(file_path.as_str()) {
+            continue;
+        }
+        let Some(reserved) = allocation.allowances.get(file_path).copied() else {
+            let reason = if allocation.slot_limited.contains(file_path) {
+                OmissionReason::MaxFiles
+            } else if allocation.cliffed.contains(file_path) {
+                OmissionReason::Budget
+            } else {
+                OmissionReason::MaxFiles
+            };
+            omissions.push(omitted_file(req.ranked, file_path, reason));
+            continue;
+        };
+        if appender.files_included() >= req.max_files {
             omissions.extend(
                 req.ranked.sorted_files[idx..]
                     .iter()
@@ -63,12 +97,15 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
                 || req.flow.path_node_ids.contains(&n.id)
                 || req.flow.unique_named_node_ids.contains(&n.id)
         });
-        if !file_necessary && total_chars as f64 > req.budget.max_output_chars as f64 * 0.9 {
+        if !file_necessary
+            && appender.total_chars() as f64 > req.budget.max_output_chars as f64 * 0.9
+        {
             omissions.push(omitted_file(req.ranked, file_path, OmissionReason::Budget));
             continue;
         }
 
-        let Some(abs_path) = validate_path_within_root(req.project_root, file_path) else {
+        let Some(abs_path) = resolve_existing_path_within_root_real(req.project_root, file_path)
+        else {
             omissions.push(omitted_file(
                 req.ranked,
                 file_path,
@@ -76,14 +113,6 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
             ));
             continue;
         };
-        if !abs_path.exists() {
-            omissions.push(omitted_file(
-                req.ranked,
-                file_path,
-                OmissionReason::Unavailable,
-            ));
-            continue;
-        }
         let Ok(file_content) = std::fs::read_to_string(&abs_path) else {
             omissions.push(omitted_file(
                 req.ranked,
@@ -98,6 +127,53 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
             .first()
             .map(|n| n.language.as_str())
             .unwrap_or("");
+        let funded = reserved.saturating_add(carry);
+        let mut file_budget = req.budget;
+        file_budget.max_chars_per_file = funded;
+        file_budget.max_output_chars = appender
+            .total_chars()
+            .saturating_add(funded)
+            .saturating_add(200);
+
+        let file_stale = req
+            .cg
+            .get_file(file_path)
+            .ok()
+            .flatten()
+            .is_some_and(|indexed| {
+                crate::extraction::hash_content(&file_content) != indexed.content_hash
+            });
+        if file_stale {
+            stale_files.push(file_path.clone());
+            if let Some(mut rendered) = render_whole_file(WholeFileRequest {
+                file_path,
+                group,
+                file_content: &file_content,
+                file_lines: &file_lines,
+                language,
+                budget: file_budget,
+                total_chars: appender.total_chars(),
+                is_central_file: req.ranked.central_files.contains(file_path),
+                with_line_numbers: req.with_line_numbers,
+            }) {
+                rendered.header.push_str(
+                    " · ⚠ changed since last index sync — source below is full and current; indexed symbol lines may be shifted",
+                );
+                let spent = appender.append(file_path, rendered);
+                carry = funded.saturating_sub(spent);
+            } else {
+                appender.append_notice(format!(
+                    "#### {file_path} — ⚠ changed on disk after the last index sync — source omitted because indexed line ranges no longer match and a slice could show the wrong code. Read this file directly for current content."
+                ));
+                any_file_trimmed = true;
+                omissions.push(omitted_file(
+                    req.ranked,
+                    file_path,
+                    OmissionReason::StaleIndex,
+                ));
+            }
+            continue;
+        }
 
         if let Some(rendered) = render_adaptive_section(AdaptiveRequest {
             cg: req.cg,
@@ -111,10 +187,8 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
             sibling_super: &mut sibling_super,
             super_many: &mut super_many,
         })? {
-            let (source_file, cost) = append_rendered(lines, file_path, rendered);
-            rendered_files.push(source_file);
-            total_chars += cost;
-            files_included += 1;
+            let spent = appender.append(file_path, rendered);
+            carry = funded.saturating_sub(spent);
             continue;
         }
 
@@ -124,20 +198,20 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
             file_content: &file_content,
             file_lines: &file_lines,
             language,
-            budget: req.budget,
-            total_chars,
+            budget: file_budget,
+            total_chars: appender.total_chars(),
             is_central_file: req.ranked.central_files.contains(file_path),
             with_line_numbers: req.with_line_numbers,
         }) {
-            if !file_necessary && total_chars + rendered.cost > req.budget.max_output_chars {
+            if !file_necessary
+                && appender.total_chars() + rendered.cost > req.budget.max_output_chars
+            {
                 any_file_trimmed = true;
                 omissions.push(omitted_file(req.ranked, file_path, OmissionReason::Budget));
                 continue;
             }
-            let (source_file, cost) = append_rendered(lines, file_path, rendered);
-            rendered_files.push(source_file);
-            total_chars += cost;
-            files_included += 1;
+            let spent = appender.append(file_path, rendered);
+            carry = funded.saturating_sub(spent);
             continue;
         }
 
@@ -150,21 +224,21 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
             nodes: req.nodes,
             glue_node_ids: req.glue_node_ids,
             flow: req.flow,
-            budget: req.budget,
+            budget: file_budget,
             entry_node_ids: &req.ranked.entry_node_ids,
             connected_to_entry: &req.ranked.connected_to_entry,
-            total_chars,
+            total_chars: appender.total_chars(),
             with_line_numbers: req.with_line_numbers,
         })? {
-            if !file_necessary && total_chars + rendered.cost > req.budget.max_output_chars {
+            if !file_necessary
+                && appender.total_chars() + rendered.cost > req.budget.max_output_chars
+            {
                 any_file_trimmed = true;
                 omissions.push(omitted_file(req.ranked, file_path, OmissionReason::Budget));
                 continue;
             }
-            let (source_file, cost) = append_rendered(lines, file_path, rendered);
-            rendered_files.push(source_file);
-            total_chars += cost;
-            files_included += 1;
+            let spent = appender.append(file_path, rendered);
+            carry = funded.saturating_sub(spent);
             continue;
         }
 
@@ -175,27 +249,16 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
         ));
     }
 
+    let (files_included, rendered_files, back_references) = appender.finish();
+
     Ok(SourceFilesResult {
         files_included,
         any_file_trimmed,
         rendered_files,
         omissions,
+        back_references,
+        stale_files,
     })
-}
-
-fn append_rendered(
-    lines: &mut Vec<String>,
-    file_path: &str,
-    rendered: RenderedFile,
-) -> (StructuredSourceFile, usize) {
-    let cost = rendered.cost;
-    lines.push(rendered.header.clone());
-    lines.push(String::new());
-    lines.push(format!("```{}", rendered.language));
-    lines.push(rendered.body.clone());
-    lines.push("```".to_string());
-    lines.push(String::new());
-    (rendered.into_structured(file_path), cost)
 }
 
 fn omitted_file(
@@ -223,3 +286,5 @@ fn omitted_file(
         symbols,
     }
 }
+mod allocation;
+mod dedup;

@@ -80,15 +80,14 @@ impl LanguageExtractor for PhpExtractor {
     }
 
     fn get_visibility(&self, node: SyntaxNode<'_>, source: &str) -> Option<Visibility> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "visibility_modifier" {
-                    match get_node_text(child, source) {
-                        "public" => return Some(Visibility::Public),
-                        "private" => return Some(Visibility::Private),
-                        "protected" => return Some(Visibility::Protected),
-                        _ => {}
-                    }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "visibility_modifier" {
+                match get_node_text(child, source) {
+                    "public" => return Some(Visibility::Public),
+                    "private" => return Some(Visibility::Private),
+                    "protected" => return Some(Visibility::Protected),
+                    _ => {}
                 }
             }
         }
@@ -97,11 +96,10 @@ impl LanguageExtractor for PhpExtractor {
     }
 
     fn is_static(&self, node: SyntaxNode<'_>, _source: &str) -> Option<bool> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "static_modifier" {
-                    return Some(true);
-                }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "static_modifier" {
+                return Some(true);
             }
         }
         Some(false)

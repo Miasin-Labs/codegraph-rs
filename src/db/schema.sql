@@ -76,7 +76,10 @@ CREATE TABLE IF NOT EXISTS files (
     modified_at INTEGER NOT NULL,
     indexed_at INTEGER NOT NULL,
     node_count INTEGER DEFAULT 0,
-    errors TEXT -- JSON array
+    errors TEXT, -- JSON array
+    -- TypeScript v9 compatibility; populated by source implementations that
+    -- inspect generated-file banners, otherwise remains the safe 0 default.
+    generated INTEGER NOT NULL DEFAULT 0
 );
 
 -- Unresolved References: References that need resolution after full indexing
@@ -91,6 +94,10 @@ CREATE TABLE IF NOT EXISTS unresolved_refs (
     metadata TEXT,
     file_path TEXT NOT NULL DEFAULT '',
     language TEXT NOT NULL DEFAULT 'unknown',
+    -- TypeScript v8 retry lifecycle. Rust inserts pending rows and may leave
+    -- these defaults untouched while remaining store-compatible.
+    status TEXT NOT NULL DEFAULT 'pending',
+    name_tail TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (from_node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
 
@@ -159,12 +166,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_identity
 -- File indexes
 CREATE INDEX IF NOT EXISTS idx_files_language ON files(language);
 CREATE INDEX IF NOT EXISTS idx_files_modified_at ON files(modified_at);
+CREATE INDEX IF NOT EXISTS idx_files_generated ON files(path) WHERE generated = 1;
 
 -- Unresolved refs indexes
 CREATE INDEX IF NOT EXISTS idx_unresolved_from_node ON unresolved_refs(from_node_id);
 CREATE INDEX IF NOT EXISTS idx_unresolved_name ON unresolved_refs(reference_name);
 CREATE INDEX IF NOT EXISTS idx_unresolved_file_path ON unresolved_refs(file_path);
 CREATE INDEX IF NOT EXISTS idx_unresolved_from_name ON unresolved_refs(from_node_id, reference_name);
+CREATE INDEX IF NOT EXISTS idx_unresolved_status ON unresolved_refs(status);
+CREATE INDEX IF NOT EXISTS idx_unresolved_failed_tail ON unresolved_refs(name_tail) WHERE status = 'failed';
 CREATE INDEX IF NOT EXISTS idx_edges_provenance ON edges(provenance);
 
 -- Project metadata for version/provenance tracking

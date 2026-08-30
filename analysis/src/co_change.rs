@@ -46,7 +46,8 @@ pub struct CommitInfo {
     pub files: Vec<String>,
 }
 
-/// Parse git log output (from `git log --name-only --format="%H"`) into commits.
+/// Parse record-separated git log output, accepting the legacy blank-line
+/// format for callers that already captured it.
 ///
 /// The expected format is blocks separated by empty lines, where each block
 /// has the commit hash on the first line followed by file paths:
@@ -60,6 +61,24 @@ pub struct CommitInfo {
 /// src/baz.rs
 /// ```
 pub fn parse_git_log(output: &str) -> Vec<CommitInfo> {
+    if output.contains('\x1e') {
+        return output
+            .split('\x1e')
+            .filter_map(|record| {
+                let mut lines = record
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty());
+                let hash = lines.next()?;
+                let files: Vec<String> = lines.map(str::to_string).collect();
+                (!files.is_empty()).then(|| CommitInfo {
+                    hash: hash.to_string(),
+                    files,
+                })
+            })
+            .collect();
+    }
+
     let mut commits = Vec::new();
     let mut current_hash: Option<String> = None;
     let mut current_files: Vec<String> = Vec::new();
@@ -241,7 +260,7 @@ fn build_file_to_nodes_map(graph: &CodeGraph) -> HashMap<&str, Vec<NodeId>> {
     map
 }
 
-/// Shell out to `git log` and parse the result. Returns an empty vec if
+/// Shell out to `git log` with an unambiguous record separator and parse the result. Returns an empty vec if
 /// git is unavailable or the directory is not a git repository.
 ///
 /// `workspace_root`: the directory from which to run `git log`.
@@ -251,7 +270,7 @@ pub fn fetch_git_history(workspace_root: &Path, max_commits: usize) -> Vec<Commi
         .args([
             "log",
             "--name-only",
-            "--format=%H",
+            "--format=%x1e%H",
             &format!("-n{}", max_commits),
         ])
         .current_dir(workspace_root)
@@ -346,6 +365,22 @@ src/baz.rs
         assert_eq!(commits[0].files, vec!["src/foo.rs", "src/bar.rs"]);
         assert_eq!(commits[1].hash, "def456");
         assert_eq!(commits[1].files, vec!["src/baz.rs"]);
+    }
+
+    #[test]
+    fn record_separated_git_log_keeps_the_first_file_of_each_commit() {
+        // Given: the unambiguous record format emitted by fetch_git_history.
+        let output = "\x1eabc123\n\nsrc/first.rs\nsrc/second.rs\n\x1edef456\n\nsrc/third.rs\n";
+
+        // When: the history is parsed.
+        let commits = parse_git_log(output);
+
+        // Then: each record starts with its hash and keeps every following path.
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].hash, "abc123");
+        assert_eq!(commits[0].files, ["src/first.rs", "src/second.rs"]);
+        assert_eq!(commits[1].hash, "def456");
+        assert_eq!(commits[1].files, ["src/third.rs"]);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::Path;
 use std::rc::Rc;
 
 use codegraph::mcp::ToolHandler;
@@ -17,6 +18,7 @@ use serde_json::{Map, Value};
 use super::{
     error_msg,
     format_duration,
+    get_codegraph_dir,
     info,
     is_initialized,
     now_ms,
@@ -83,24 +85,18 @@ pub(crate) fn cmd_node(
     }
 
     let mut args = Map::new();
-    match (name, file) {
-        (Some(name), Some(file)) => {
-            args.insert("file".to_string(), Value::String(file.to_string()));
-            if name != file {
-                args.insert("symbol".to_string(), Value::String(name.to_string()));
-            }
+    if let Some(file) = file {
+        args.insert("file".to_string(), Value::String(file.to_string()));
+        if let Some(name) = name.filter(|name| *name != file) {
+            args.insert("symbol".to_string(), Value::String(name.to_string()));
         }
-        (None, Some(file)) => {
-            args.insert("file".to_string(), Value::String(file.to_string()));
-        }
-        (Some(name), None) if name.contains('/') || name.contains('\\') => {
+    } else if let Some(name) = name {
+        if name.contains('/') || name.contains('\\') {
             args.insert("file".to_string(), Value::String(name.replace('\\', "/")));
-        }
-        (Some(name), None) => {
+        } else {
             args.insert("symbol".to_string(), Value::String(name.to_string()));
             args.insert("includeCode".to_string(), Value::Bool(true));
         }
-        (None, None) => unreachable!(),
     }
     if let Some(offset) = offset.and_then(parse_int_js) {
         args.insert("offset".to_string(), Value::from(offset));
@@ -148,6 +144,42 @@ fn print_daemon(record: &DaemonRecord) {
     );
 }
 
+fn daemon_pending_json(root: &Path) -> Value {
+    if !is_initialized(root) {
+        return Value::Null;
+    }
+    let Ok(graph) = CodeGraph::open(root, &OpenOptions::default()) else {
+        return Value::Null;
+    };
+    let value = graph
+        .get_changed_files()
+        .map(|changes| {
+            serde_json::json!({
+                "added": changes.added.len(),
+                "modified": changes.modified.len(),
+                "removed": changes.removed.len(),
+            })
+        })
+        .unwrap_or(Value::Null);
+    graph.close();
+    value
+}
+
+fn daemon_record_json(record: &DaemonRecord) -> Value {
+    let root = Path::new(&record.root);
+    let uptime = now_ms().saturating_sub(record.started_at);
+    serde_json::json!({
+        "root": record.root,
+        "pid": record.pid,
+        "version": record.version,
+        "socketPath": record.socket_path,
+        "startedAt": record.started_at,
+        "uptimeMs": uptime,
+        "indexPath": get_codegraph_dir(root).to_string_lossy(),
+        "pendingChanges": daemon_pending_json(root),
+    })
+}
+
 pub(crate) fn cmd_daemon(path_arg: Option<&str>, stop: bool, all: bool, json: bool) {
     if stop {
         let results = if all {
@@ -189,6 +221,7 @@ pub(crate) fn cmd_daemon(path_arg: Option<&str>, stop: bool, all: bool, json: bo
 
     let records = discover_daemons(path_arg);
     if json {
+        let records: Vec<Value> = records.iter().map(daemon_record_json).collect();
         println!(
             "{}",
             serde_json::to_string_pretty(&records).unwrap_or_else(|_| "[]".to_string())

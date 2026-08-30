@@ -152,6 +152,74 @@ async fn resolve_one_skips_c_stdlib_calls_unless_declared_locally() {
     assert_eq!(resolved.target_node_id, "func:src/main.c:printf:7");
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn resolves_static_call_through_cpp_union_to_member() {
+    let fx = Fx::new();
+    let q = fx.q();
+    fx.write("ops.hpp", "union Ops { static int run() { return 1; } };\n");
+    fx.write(
+        "main.cpp",
+        "#include \"ops.hpp\"\nint invoke() { return Ops::run(); }\n",
+    );
+    fx.track(&q, "ops.hpp", Language::Cpp);
+    fx.track(&q, "main.cpp", Language::Cpp);
+
+    let ops = node(
+        "union:ops.hpp:Ops:1",
+        NodeKind::Union,
+        "Ops",
+        "Ops",
+        "ops.hpp",
+        Language::Cpp,
+        1,
+        1,
+    );
+    let run = node(
+        "method:ops.hpp:Ops::run:1",
+        NodeKind::Method,
+        "run",
+        "Ops::run",
+        "ops.hpp",
+        Language::Cpp,
+        1,
+        1,
+    );
+    let invoke = node(
+        "func:main.cpp:invoke:2",
+        NodeKind::Function,
+        "invoke",
+        "invoke",
+        "main.cpp",
+        Language::Cpp,
+        2,
+        2,
+    );
+    q.insert_nodes(&[ops.clone(), run.clone(), invoke.clone()])
+        .unwrap();
+    q.insert_edges(&[Edge::new(&ops.id, &run.id, EdgeKind::Contains)])
+        .unwrap();
+    q.insert_unresolved_refs_batch(&[uref(
+        &invoke.id,
+        "Ops::run",
+        EdgeKind::Calls,
+        2,
+        "main.cpp",
+        Language::Cpp,
+    )])
+    .unwrap();
+
+    fx.resolver()
+        .resolve_and_persist_batched(None, None)
+        .await
+        .unwrap();
+
+    assert!(
+        outgoing(&q, &invoke.id, EdgeKind::Calls)
+            .iter()
+            .any(|edge| edge.target == run.id)
+    );
+}
+
 // =============================================================================
 // Progress reporting + resolve_all shape (resolver-internal contracts the TS
 // suite exercised through cg.resolveReferences)

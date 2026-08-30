@@ -49,6 +49,14 @@ impl<'a> TreeSitterExtractor<'a> {
 
     /// Extract a struct
     pub(super) fn extract_struct(&mut self, node: SyntaxNode<'_>) {
+        self.extract_aggregate(node, NodeKind::Struct);
+    }
+
+    pub(super) fn extract_union(&mut self, node: SyntaxNode<'_>) {
+        self.extract_aggregate(node, NodeKind::Union);
+    }
+
+    fn extract_aggregate(&mut self, node: SyntaxNode<'_>, kind: NodeKind) {
         let Some(ext) = self.extractor else { return };
 
         // A missing body field is a definition for some grammars and a forward
@@ -68,8 +76,8 @@ impl<'a> TreeSitterExtractor<'a> {
         let visibility = ext.get_visibility(node, self.source);
         let is_exported = ext.is_exported(node, self.source);
 
-        let Some(struct_node) = self.create_node(
-            NodeKind::Struct,
+        let Some(aggregate_node) = self.create_node(
+            kind,
             &name,
             node,
             NodeExtra {
@@ -83,16 +91,16 @@ impl<'a> TreeSitterExtractor<'a> {
         };
 
         // Extract inheritance (e.g. Swift: struct HTTPMethod: RawRepresentable)
-        self.extract_inheritance(node, &struct_node.id);
+        self.extract_inheritance(node, &aggregate_node.id);
         // Rust `#[derive(Clone, Serialize, …)]` → Implements edges.
-        self.extract_rust_derives(node, &struct_node.id);
+        self.extract_rust_derives(node, &aggregate_node.id);
 
         // Push to stack for field extraction. A unit struct has no body and
         // nothing to descend into. A tuple struct's positional fields live in an
         // `ordered_field_declaration_list` (no field names) — extract them as
         // index-named Field nodes (`0`, `1`, …) so the field types are still
         // reachable; a regular `field_declaration_list` is walked normally.
-        self.node_stack.push(struct_node.id.clone());
+        self.node_stack.push(aggregate_node.id.clone());
         if let Some(body) = body {
             if body.kind() == "ordered_field_declaration_list" {
                 self.extract_tuple_fields(body);

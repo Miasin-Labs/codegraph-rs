@@ -24,6 +24,9 @@ pub struct ToolHandler {
     /// Promise; here it is a one-shot closure run (and cleared) on the next
     /// `execute()`. Failures inside the closure are the engine's to log.
     pub(in crate::mcp::tools::context) catch_up_gate: RefCell<Option<Box<dyn FnOnce()>>>,
+    /// Reason the default project's index no longer auto-syncs. Set by the
+    /// engine when watching is disabled by policy or cannot be established.
+    pub(in crate::mcp::tools::context) auto_sync_disabled: RefCell<Option<String>>,
     /// EXCEEDS TS: per-call context (progress emitter + cooperative cancel
     /// flag) the engine sets around each `execute()` — see [`CallContext`].
     pub(in crate::mcp::tools::context) call_context: Rc<CallContext>,
@@ -90,6 +93,7 @@ impl ToolHandler {
             default_project_hint: RefCell::new(None),
             worktree_mismatch_cache: RefCell::new(HashMap::new()),
             catch_up_gate: RefCell::new(None),
+            auto_sync_disabled: RefCell::new(None),
             call_context: Rc::new(CallContext::default()),
         }
     }
@@ -109,6 +113,15 @@ impl ToolHandler {
     /// call runs it before serving. Cleared on first use.
     pub fn set_catch_up_gate(&self, gate: Option<Box<dyn FnOnce()>>) {
         *self.catch_up_gate.borrow_mut() = gate;
+    }
+
+    /// Mark the default project as frozen because automatic filesystem sync is unavailable.
+    pub fn set_auto_sync_disabled(&self, reason: impl Into<String>) {
+        *self.auto_sync_disabled.borrow_mut() = Some(reason.into());
+    }
+
+    pub(in crate::mcp::tools) fn auto_sync_disabled_reason(&self) -> Option<String> {
+        self.auto_sync_disabled.borrow().clone()
     }
 
     /// Record the directory the server tried to resolve the default project

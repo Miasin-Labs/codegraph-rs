@@ -9,6 +9,8 @@
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
+use jsonc_parser::ParseOptions;
+use jsonc_parser::cst::{CstInputValue, CstRootNode};
 use serde_json::{Map, Value, json};
 
 use super::types::{FileAction, FileWrite};
@@ -44,6 +46,13 @@ pub(crate) fn home_dir() -> PathBuf {
 /// Node `process.cwd()` parity.
 pub(crate) fn cwd() -> PathBuf {
     env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+pub(crate) fn nonblank_env_path(name: &str) -> Option<PathBuf> {
+    env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
 }
 
 /// JS truthiness for a JSON value (`!!config.mcpServers?.codegraph`).
@@ -163,6 +172,149 @@ pub fn write_json_file(file_path: &Path, data: &Map<String, Value>) {
 pub fn json_deep_equal(a: &Value, b: &Value) -> bool {
     // serde_json's PartialEq is structural and key-order-independent.
     a == b
+}
+
+pub(crate) fn read_jsonc_file(file_path: &Path) -> String {
+    fs::read_to_string(file_path).unwrap_or_default()
+}
+
+pub(crate) fn parse_jsonc_object(text: &str) -> Map<String, Value> {
+    if text.trim().is_empty() {
+        return Map::new();
+    }
+    match jsonc_parser::parse_to_value(text, &ParseOptions::default()) {
+        Ok(Some(jsonc_parser::JsonValue::Object(object))) => object
+            .into_iter()
+            .map(|(key, value)| (key, jsonc_to_serde(value)))
+            .collect(),
+        _ => Map::new(),
+    }
+}
+
+fn jsonc_to_serde(value: jsonc_parser::JsonValue<'_>) -> Value {
+    use jsonc_parser::JsonValue as Jsonc;
+    match value {
+        Jsonc::Null => Value::Null,
+        Jsonc::Boolean(value) => Value::Bool(value),
+        Jsonc::Number(value) => value
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        Jsonc::String(value) => Value::String(value.into_owned()),
+        Jsonc::Array(values) => Value::Array(
+            values
+                .take_inner()
+                .into_iter()
+                .map(jsonc_to_serde)
+                .collect(),
+        ),
+        Jsonc::Object(values) => Value::Object(
+            values
+                .into_iter()
+                .map(|(key, value)| (key, jsonc_to_serde(value)))
+                .collect(),
+        ),
+    }
+}
+
+pub(crate) fn upsert_jsonc_entry(
+    file_path: &Path,
+    wrapper: &str,
+    key: &str,
+    after: &Value,
+    input: CstInputValue,
+) -> FileWrite {
+    let existed = file_path.exists();
+    let mut text = read_jsonc_file(file_path);
+    if text.trim().is_empty() {
+        text = "{}\n".to_string();
+    }
+    let config = parse_jsonc_object(&text);
+    if config
+        .get(wrapper)
+        .and_then(|value| value.get(key))
+        .is_some_and(|before| json_deep_equal(before, after))
+    {
+        return FileWrite {
+            path: file_path.to_path_buf(),
+            action: FileAction::Unchanged,
+        };
+    }
+
+    let root = CstRootNode::parse(&text, &ParseOptions::default()).unwrap_or_else(|_| {
+        CstRootNode::parse("{}\n", &ParseOptions::default())
+            .expect("static empty JSONC object is valid")
+    });
+    let object = root.object_value_or_set();
+    let entries = object.object_value_or_set(wrapper);
+    match entries.get(key) {
+        Some(property) => property.set_value(input),
+        None => {
+            entries.append(key, input);
+        }
+    }
+    let _ = atomic_write_file_sync(file_path, &root.to_string());
+    FileWrite {
+        path: file_path.to_path_buf(),
+        action: if existed {
+            FileAction::Updated
+        } else {
+            FileAction::Created
+        },
+    }
+}
+
+pub(crate) fn remove_jsonc_entry(file_path: &Path, wrapper: &str, key: &str) -> FileWrite {
+    if !file_path.exists() {
+        return FileWrite {
+            path: file_path.to_path_buf(),
+            action: FileAction::NotFound,
+        };
+    }
+    let text = read_jsonc_file(file_path);
+    let config = parse_jsonc_object(&text);
+    if !config
+        .get(wrapper)
+        .and_then(|value| value.get(key))
+        .map(is_truthy)
+        .unwrap_or(false)
+    {
+        return FileWrite {
+            path: file_path.to_path_buf(),
+            action: FileAction::NotFound,
+        };
+    }
+    let root = match CstRootNode::parse(&text, &ParseOptions::default()) {
+        Ok(root) => root,
+        Err(_) => {
+            return FileWrite {
+                path: file_path.to_path_buf(),
+                action: FileAction::NotFound,
+            };
+        }
+    };
+    if let Some(object) = root.object_value() {
+        if let Some(entries) = object
+            .get(wrapper)
+            .and_then(|property| property.object_value())
+        {
+            if let Some(property) = entries.get(key) {
+                property.remove();
+            }
+            if entries.properties().is_empty() {
+                if let Some(property) = object.get(wrapper) {
+                    property.remove();
+                }
+            }
+        }
+    }
+    let _ = atomic_write_file_sync(file_path, &root.to_string());
+    FileWrite {
+        path: file_path.to_path_buf(),
+        action: FileAction::Removed,
+    }
 }
 
 /// Action returned by [`replace_or_append_marked_section`].

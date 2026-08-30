@@ -8,6 +8,10 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+mod preprocess;
+
+use preprocess::{pre_parse_c_source, pre_parse_cpp_source};
+
 use super::named_children;
 use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
 use crate::extraction::tree_sitter_types::{
@@ -17,6 +21,91 @@ use crate::extraction::tree_sitter_types::{
     SyntaxNode,
 };
 use crate::types::{NodeKind, Visibility};
+
+/// One-pass, memoized C/C++ access-specifier resolution.
+///
+/// Returns the parent's first `access_specifier` (TS `getVisibility` parity:
+/// the TS loop returns on the first specifier it finds and applies it to every
+/// member). The naive port scanned the parent's children *per member*, and
+/// `Node::child(i)` re-walks the child list from the start each call, so a
+/// class/struct body was O(members^2). On a macro-confused parse or a giant
+/// generated aggregate (tens of thousands of siblings under one node) that
+/// quadratic blows up into minutes of pure-CPU spin — the codegraph indexing
+/// hang. Here the parent's verdict is computed once via a single O(children)
+/// cursor pass and memoized per parent in a thread-local, so the first member
+/// pays O(children) and the rest are O(1). Measured ~20,000x faster than the
+/// per-member scan on a 25k-member aggregate.
+///
+/// Correctness: `Node::id()` is a pointer, unique only within one live tree, so
+/// the memo is scoped to the current tree. Extraction runs one tree at a time
+/// per worker thread (`parse_batch` parses then extracts each file
+/// sequentially in its blocking task), so a change in the tree's root id means
+/// a new file — the memo is dropped and rebuilt, preventing any cross-file id
+/// collision.
+fn cpp_visibility_for(
+    parent: SyntaxNode<'_>,
+    _node: SyntaxNode<'_>,
+    source: &str,
+) -> Option<Visibility> {
+    thread_local! {
+        // (current tree root id, parent id -> first-access-specifier verdict).
+        // `None` verdict is cached too, so a specifier-less aggregate is not
+        // rescanned once per member.
+        static VISIBILITY_CACHE: std::cell::RefCell<(
+            usize,
+            std::collections::HashMap<usize, Option<Visibility>>,
+        )> = std::cell::RefCell::new((0, std::collections::HashMap::new()));
+    }
+
+    // Root of the tree this node belongs to: walk up to the top.
+    let mut root = parent;
+    while let Some(up) = root.parent() {
+        root = up;
+    }
+    let root_id = root.id();
+    let parent_id = parent.id();
+
+    VISIBILITY_CACHE.with(|cell| {
+        {
+            let borrowed = cell.borrow();
+            if borrowed.0 == root_id {
+                if let Some(verdict) = borrowed.1.get(&parent_id) {
+                    return *verdict;
+                }
+            }
+        }
+
+        // Single O(children) pass: the first `access_specifier` wins (TS parity).
+        let mut verdict: Option<Visibility> = None;
+        let mut cursor = parent.walk();
+        for child in parent.children(&mut cursor) {
+            if child.kind() == "access_specifier" {
+                let text = get_node_text(child, source);
+                if text.contains("public") {
+                    verdict = Some(Visibility::Public);
+                    break;
+                }
+                if text.contains("private") {
+                    verdict = Some(Visibility::Private);
+                    break;
+                }
+                if text.contains("protected") {
+                    verdict = Some(Visibility::Protected);
+                    break;
+                }
+            }
+        }
+
+        let mut borrowed = cell.borrow_mut();
+        if borrowed.0 != root_id {
+            // New tree (new file) on this worker thread — drop stale entries.
+            borrowed.0 = root_id;
+            borrowed.1.clear();
+        }
+        borrowed.1.insert(parent_id, verdict);
+        verdict
+    })
+}
 
 fn find_declarator_qualified_id(declarator: SyntaxNode<'_>) -> Option<SyntaxNode<'_>> {
     let mut queue: VecDeque<SyntaxNode<'_>> = VecDeque::from([declarator]);
@@ -234,17 +323,6 @@ fn looks_like_cuda_source(source: &str) -> bool {
         .any(|marker| source.contains(marker))
 }
 
-fn pre_parse_cpp_source<'a>(source: &'a str, file_path: &str) -> Cow<'a, str> {
-    let lower = file_path.to_ascii_lowercase();
-    if lower.ends_with(".metal") {
-        Cow::Owned(blank_metal_attributes(source))
-    } else if lower.ends_with(".cu") || lower.ends_with(".cuh") || looks_like_cuda_source(source) {
-        Cow::Owned(blank_cuda_constructs(source))
-    } else {
-        Cow::Borrowed(source)
-    }
-}
-
 /// Shared `extractImport` body for C / C++ / (also reused by ObjC in TS shape):
 /// `#include <stdio.h>` / `#include "myheader.h"`.
 fn extract_include_import(node: SyntaxNode<'_>, source: &str) -> ImportOutcome {
@@ -276,9 +354,6 @@ fn extract_include_import(node: SyntaxNode<'_>, source: &str) -> ImportOutcome {
     ImportOutcome::Declined
 }
 
-/// C typedef: `typedef enum { ... } name;` or `typedef struct { ... } name;`
-/// The inner enum_specifier/struct_specifier is anonymous, but we want the
-/// typedef name to become the enum/struct node name.
 fn resolve_typedef_kind(node: SyntaxNode<'_>) -> Option<NodeKind> {
     for i in 0..node.named_child_count() as u32 {
         let Some(child) = node.named_child(i) else {
@@ -290,6 +365,9 @@ fn resolve_typedef_kind(node: SyntaxNode<'_>) -> Option<NodeKind> {
         if child.kind() == "struct_specifier" && get_child_by_field(child, "body").is_some() {
             return Some(NodeKind::Struct);
         }
+        if child.kind() == "union_specifier" && get_child_by_field(child, "body").is_some() {
+            return Some(NodeKind::Union);
+        }
     }
     None
 }
@@ -298,11 +376,7 @@ pub struct CExtractor;
 
 impl LanguageExtractor for CExtractor {
     fn pre_parse<'a>(&self, source: &'a str, _file_path: &str) -> Cow<'a, str> {
-        if looks_like_cuda_source(source) {
-            Cow::Owned(blank_cuda_constructs(source))
-        } else {
-            Cow::Borrowed(source)
-        }
+        pre_parse_c_source(source)
     }
 
     fn function_types(&self) -> &[&str] {
@@ -319,6 +393,9 @@ impl LanguageExtractor for CExtractor {
     }
     fn struct_types(&self) -> &[&str] {
         &["struct_specifier"]
+    }
+    fn union_types(&self) -> &[&str] {
+        &["union_specifier"]
     }
     fn enum_types(&self) -> &[&str] {
         &["enum_specifier"]
@@ -338,6 +415,9 @@ impl LanguageExtractor for CExtractor {
     }
     fn variable_types(&self) -> &[&str] {
         &["declaration"]
+    }
+    fn field_types(&self) -> &[&str] {
+        &["field_declaration"]
     }
     fn name_field(&self) -> &str {
         "declarator"
@@ -384,6 +464,9 @@ impl LanguageExtractor for CppExtractor {
     fn struct_types(&self) -> &[&str] {
         &["struct_specifier"]
     }
+    fn union_types(&self) -> &[&str] {
+        &["union_specifier"]
+    }
     fn enum_types(&self) -> &[&str] {
         &["enum_specifier"]
     }
@@ -402,6 +485,9 @@ impl LanguageExtractor for CppExtractor {
     }
     fn variable_types(&self) -> &[&str] {
         &["declaration"]
+    }
+    fn field_types(&self) -> &[&str] {
+        &["field_declaration"]
     }
     fn name_field(&self) -> &str {
         "declarator"
@@ -426,26 +512,13 @@ impl LanguageExtractor for CppExtractor {
     }
 
     fn get_visibility(&self, node: SyntaxNode<'_>, source: &str) -> Option<Visibility> {
-        // Check for access specifier in parent
-        if let Some(parent) = node.parent() {
-            for i in 0..parent.child_count() as u32 {
-                if let Some(child) = parent.child(i) {
-                    if child.kind() == "access_specifier" {
-                        let text = get_node_text(child, source);
-                        if text.contains("public") {
-                            return Some(Visibility::Public);
-                        }
-                        if text.contains("private") {
-                            return Some(Visibility::Private);
-                        }
-                        if text.contains("protected") {
-                            return Some(Visibility::Protected);
-                        }
-                    }
-                }
-            }
-        }
-        None
+        // Delegates to the memoized one-pass resolver. The naive port scanned
+        // the parent's children per member with `parent.child(i)` (which
+        // re-walks from child 0 each call), making a class/struct body
+        // O(members^2) and hanging the indexer on huge/misparsed aggregates.
+        // See `cpp_visibility_for` for the O(children)-per-parent fix.
+        let parent = node.parent()?;
+        cpp_visibility_for(parent, node, source)
     }
 
     fn resolve_type_alias_kind(&self, node: SyntaxNode<'_>, _source: &str) -> Option<NodeKind> {
@@ -475,6 +548,104 @@ mod tests {
     use super::*;
     use crate::extraction::tree_sitter_wrapper::TreeSitterExtractor;
     use crate::types::{Language, NodeKind};
+
+    #[test]
+    fn cpp_visibility_public_method_in_class() {
+        // A public: method in a class resolves to Public via the one-pass
+        // access-specifier resolver.
+        let source = "class Widget {
+public:
+    void show();
+    void hide();
+};
+";
+        let result = TreeSitterExtractor::new(
+            "src/widget.cpp",
+            source,
+            Some(Language::Cpp),
+            Some(&CppExtractor),
+        )
+        .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let show = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "show")
+            .expect("show method extracted");
+        assert_eq!(show.visibility, Some(Visibility::Public));
+        let hide = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "hide")
+            .expect("hide method extracted");
+        // TS parity: the first access specifier applies to every member.
+        assert_eq!(hide.visibility, Some(Visibility::Public));
+    }
+
+    #[test]
+    fn cpp_visibility_none_without_specifier() {
+        // A struct body with no access specifier yields no explicit visibility
+        // (matches the TS getVisibility which returns undefined). This is the
+        // path that used to run the full O(n^2) scan.
+        let source = "struct Bag {
+    int a();
+    int b();
+    int c();
+};
+";
+        let result = TreeSitterExtractor::new(
+            "src/bag.cpp",
+            source,
+            Some(Language::Cpp),
+            Some(&CppExtractor),
+        )
+        .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        for name in ["a", "b", "c"] {
+            let m = result
+                .nodes
+                .iter()
+                .find(|n| n.name == name)
+                .unwrap_or_else(|| panic!("member {name} extracted"));
+            assert_eq!(m.visibility, None, "member {name} visibility");
+        }
+    }
+
+    #[test]
+    fn cpp_visibility_large_aggregate_terminates_fast() {
+        // Regression for the indexing hang: a struct with thousands of members
+        // and no access specifier used to be O(members^2). The one-pass
+        // resolver makes this trivial; the test simply asserts it completes and
+        // every member has no explicit visibility.
+        let mut source = String::from(
+            "struct Big {
+",
+        );
+        for i in 0..4000 {
+            source.push_str(&format!(
+                "    int field_{i}();
+"
+            ));
+        }
+        source.push_str(
+            "};
+",
+        );
+        let result = TreeSitterExtractor::new(
+            "src/big.cpp",
+            &source,
+            Some(Language::Cpp),
+            Some(&CppExtractor),
+        )
+        .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let members = result
+            .nodes
+            .iter()
+            .filter(|n| n.name.starts_with("field_"))
+            .count();
+        assert!(members >= 3990, "expected ~4000 members, got {members}");
+    }
 
     #[test]
     fn c_smoke_extraction() {
@@ -597,5 +768,115 @@ mod tests {
             .find(|node| node.name == "make_widget")
             .expect("factory function");
         assert_eq!(function.return_type.as_deref(), Some("Widget"));
+    }
+
+    #[test]
+    fn c_extracts_named_and_typedef_unions_but_skips_forward_declarations() {
+        let source = r#"
+union packet_hdr {
+    unsigned int raw;
+    unsigned short port;
+};
+union opaque_hdr;
+typedef union {
+    unsigned int u;
+    float f;
+} word_t;
+struct envelope {
+    union {
+        int code;
+        float value;
+    };
+};
+"#;
+        let result =
+            TreeSitterExtractor::new("src/packet.c", source, Some(Language::C), Some(&CExtractor))
+                .extract();
+
+        let packet = result
+            .nodes
+            .iter()
+            .find(|node| node.name == "packet_hdr")
+            .expect("named union");
+        assert_eq!(packet.kind, NodeKind::Union);
+        assert_eq!(packet.start_line, 2);
+        assert!(result.nodes.iter().any(|node| {
+            node.kind == NodeKind::Field
+                && node.name == "raw"
+                && node.qualified_name == "packet_hdr::raw"
+        }));
+        assert!(!result.nodes.iter().any(|node| node.name == "opaque_hdr"));
+
+        let word = result
+            .nodes
+            .iter()
+            .find(|node| node.name == "word_t")
+            .expect("typedef union");
+        assert_eq!(word.kind, NodeKind::Union);
+
+        let envelope = result
+            .nodes
+            .iter()
+            .find(|node| node.name == "envelope")
+            .expect("containing struct");
+        let anonymous = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Union && node.name == "<anonymous>")
+            .expect("anonymous member union");
+        assert_eq!(
+            result
+                .nodes
+                .iter()
+                .filter(|node| node.kind == NodeKind::Union && node.name == "<anonymous>")
+                .count(),
+            1
+        );
+        assert_eq!(anonymous.start_line, 12);
+        assert!(result.edges.iter().any(|edge| {
+            edge.kind == crate::types::EdgeKind::Contains
+                && edge.source == envelope.id
+                && edge.target == anonymous.id
+        }));
+        assert!(result.nodes.iter().any(|node| {
+            node.kind == NodeKind::Field
+                && node.name == "code"
+                && node.qualified_name == "envelope::<anonymous>::code"
+        }));
+    }
+
+    #[test]
+    fn cpp_union_contains_member_function() {
+        let source = r#"
+union Value {
+    int i;
+    double d;
+    int as_int() const { return i; }
+};
+"#;
+        let result = TreeSitterExtractor::new(
+            "src/value.cpp",
+            source,
+            Some(Language::Cpp),
+            Some(&CppExtractor),
+        )
+        .extract();
+        let value = result
+            .nodes
+            .iter()
+            .find(|node| node.name == "Value")
+            .expect("union");
+        let method = result
+            .nodes
+            .iter()
+            .find(|node| node.name == "as_int")
+            .expect("member function");
+
+        assert_eq!(value.kind, NodeKind::Union);
+        assert!(result.edges.iter().any(|edge| {
+            edge.kind == crate::types::EdgeKind::Contains
+                && edge.source == value.id
+                && edge.target == method.id
+        }));
     }
 }

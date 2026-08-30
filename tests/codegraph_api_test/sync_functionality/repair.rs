@@ -78,7 +78,6 @@ async fn sync_repairs_callers_when_removed_target_reappears() {
     );
     let cg = CodeGraph::init_sync(dir.path()).unwrap();
     cg.index_all(&IndexOptions::default()).await.unwrap();
-
     let target = cg
         .search_nodes("missingLater", None)
         .unwrap()
@@ -124,4 +123,101 @@ async fn sync_repairs_callers_when_removed_target_reappears() {
         callers.iter().any(|r| r.node.name == "caller"),
         "sync should restore caller edge when an unchanged caller's target reappears"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sync_preserves_incoming_calls_when_only_the_callee_body_changes() {
+    // Given: a resolved cross-file call.
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("src/caller.ts"),
+        "import { target } from './target';\nexport function caller() { return target(); }",
+    );
+    write(
+        &dir.path().join("src/target.ts"),
+        "export function target() { return 1; }",
+    );
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+
+    // When: only the callee body changes and incremental sync replaces its nodes.
+    write(
+        &dir.path().join("src/target.ts"),
+        "export function target() { return 2; }",
+    );
+    cg.sync(&IndexOptions::default()).await.unwrap();
+
+    // Then: the unchanged caller remains connected to the replacement target.
+    let target = cg
+        .search_nodes("target", None)
+        .unwrap()
+        .into_iter()
+        .map(|result| result.node)
+        .find(|node| node.kind == NodeKind::Function)
+        .expect("target function should remain indexed");
+    assert!(
+        cg.get_callers(&target.id, None)
+            .unwrap()
+            .iter()
+            .any(|reference| reference.node.name == "caller"),
+        "callee-only sync must preserve incoming calls from unchanged files"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sync_preserves_repeated_incoming_call_sites_when_the_callee_changes() {
+    // Given: one caller invokes the same cross-file target at two source locations.
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("src/caller.ts"),
+        "import { target } from './target';\nexport function caller() {\n  target();\n  target();\n}",
+    );
+    write(
+        &dir.path().join("src/target.ts"),
+        "export function target() { return 1; }",
+    );
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    let initial_target = cg
+        .search_nodes("target", None)
+        .unwrap()
+        .into_iter()
+        .map(|result| result.node)
+        .find(|node| node.kind == NodeKind::Function)
+        .unwrap();
+    let initial_db = rusqlite::Connection::open(dir.path().join(".codegraph/codegraph.db")).unwrap();
+    let initial_count: i64 = initial_db
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE target = ?1 AND kind = 'calls'",
+            [&initial_target.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(initial_count, 2, "fixture must begin with two call sites");
+    drop(initial_db);
+
+    // When: incremental sync replaces only the callee.
+    write(
+        &dir.path().join("src/target.ts"),
+        "export function target() { return 2; }",
+    );
+    cg.sync(&IndexOptions::default()).await.unwrap();
+
+    // Then: both location-distinct call edges are restored.
+    let target = cg
+        .search_nodes("target", None)
+        .unwrap()
+        .into_iter()
+        .map(|result| result.node)
+        .find(|node| node.kind == NodeKind::Function)
+        .unwrap();
+    let db = rusqlite::Connection::open(dir.path().join(".codegraph/codegraph.db")).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE target = ?1 AND kind = 'calls'",
+            [&target.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 2);
 }

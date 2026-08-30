@@ -22,6 +22,8 @@
 mod aliases;
 #[path = "resolution_test/barrels.rs"]
 mod barrels;
+#[path = "resolution_test/batching.rs"]
+mod batching;
 #[path = "resolution_test/builtins.rs"]
 mod builtins;
 #[path = "resolution_test/component_re_exports.rs"]
@@ -46,6 +48,8 @@ mod jvm;
 mod progress;
 #[path = "resolution_test/re_exports.rs"]
 mod re_exports;
+#[path = "resolution_test/receiver_parity/mod.rs"]
+mod receiver_parity;
 #[path = "resolution_test/store_actions.rs"]
 mod store_actions;
 #[path = "resolution_test/type_alias_members.rs"]

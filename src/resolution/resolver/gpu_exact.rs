@@ -16,7 +16,7 @@ impl ReferenceResolver {
                 NodeKind::Function => 1,
                 NodeKind::Method => 2,
                 NodeKind::Class => 3,
-                NodeKind::Struct => 4,
+                NodeKind::Struct | NodeKind::Union => 4,
                 NodeKind::Interface => 5,
                 _ => 0,
             }

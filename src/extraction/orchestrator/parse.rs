@@ -1,6 +1,6 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::{fmt, fs};
 
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -35,9 +35,9 @@ use crate::utils::validate_path_within_root;
 /// Each batch fans out across Tokio's blocking pool, then results are stored
 /// serially (SQLite is single-threaded), so the batch size caps effective
 /// parallelism and amortizes the store barrier. Worst-case memory is
-/// `FILE_IO_BATCH_SIZE` files of held content (plus extraction results) — there
-/// is no per-file size cap, so a batch's footprint scales with its largest
-/// files.
+/// `FILE_IO_BATCH_SIZE` files of held content (plus extraction results). Files
+/// larger than `MAX_FILE_SIZE` are skipped before their body is read, so a
+/// batch's footprint is bounded by the cap times the batch size.
 pub(super) const FILE_IO_BATCH_SIZE: usize = 64;
 
 /// How many fully parsed batches the parse producer may run ahead of the
@@ -45,6 +45,30 @@ pub(super) const FILE_IO_BATCH_SIZE: usize = 64;
 /// `(PARSE_PIPELINE_DEPTH + 1) × FILE_IO_BATCH_SIZE` files of content +
 /// extraction results while keeping parse workers busy during SQLite writes.
 pub(super) const PARSE_PIPELINE_DEPTH: usize = 2;
+
+/// Default maximum size of a file that gets parsed. Files larger than this are
+/// recorded with a `size_exceeded` warning and skipped, mirroring the TS
+/// reference (`src/extraction/index.ts` `MAX_FILE_SIZE`). Vendored/generated
+/// multi-MB inputs — minified bundles, amalgamated `sqlite3.c`, base64 resource
+/// blobs like `qrc_emoji_*.cpp` — carry no useful symbols but do carry
+/// pathological syntax trees (tens of thousands of siblings under one node)
+/// that make extraction quadratic. Skipping them by size is the cheap,
+/// deterministic guard the parser-level algorithmic fixes back up. 1 MiB
+/// covers essentially all hand-written source.
+pub(super) const DEFAULT_MAX_FILE_SIZE: u64 = 1024 * 1024;
+
+/// Resolved per-file size cap. Overridable with `CODEGRAPH_MAX_FILE_SIZE`
+/// (bytes); a value of `0` disables the cap entirely (index everything, at the
+/// caller's own risk on pathological inputs). Invalid/empty values fall back to
+/// [`DEFAULT_MAX_FILE_SIZE`].
+pub(super) fn max_file_size() -> u64 {
+    match std::env::var("CODEGRAPH_MAX_FILE_SIZE") {
+        Ok(raw) if !raw.trim().is_empty() => {
+            raw.trim().parse::<u64>().unwrap_or(DEFAULT_MAX_FILE_SIZE)
+        }
+        _ => DEFAULT_MAX_FILE_SIZE,
+    }
+}
 
 pub(super) fn worker_count_for(work_items: usize) -> usize {
     let available = std::thread::available_parallelism()
@@ -187,9 +211,55 @@ pub fn extract_from_source(
 // ExtractionOrchestrator
 // =============================================================================
 
+#[derive(Debug)]
+pub(super) enum ReadFailure {
+    Cancelled,
+    PathTraversal,
+    NotRegularFile,
+    Io(std::io::Error),
+}
+
+impl ReadFailure {
+    pub(super) fn code(&self) -> &'static str {
+        match self {
+            Self::PathTraversal => "path_traversal",
+            Self::Cancelled | Self::NotRegularFile | Self::Io(_) => "read_error",
+        }
+    }
+
+    pub(super) fn extraction_message(&self) -> String {
+        match self {
+            Self::PathTraversal => self.to_string(),
+            Self::Cancelled | Self::NotRegularFile | Self::Io(_) => {
+                format!("Failed to read file: {self}")
+            }
+        }
+    }
+}
+
+impl fmt::Display for ReadFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cancelled => formatter.write_str("Parsing cancelled"),
+            Self::PathTraversal => formatter.write_str("Path traversal blocked"),
+            Self::NotRegularFile => formatter.write_str("Path is not a regular file"),
+            Self::Io(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for ReadFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Cancelled | Self::PathTraversal | Self::NotRegularFile => None,
+        }
+    }
+}
+
 /// Outcome of the parallel read+parse stage for one file.
 pub(super) enum BatchOutcome {
-    ReadError(String),
+    ReadError(ReadFailure),
     Parsed {
         content: String,
         stats: FileStats,
@@ -234,7 +304,7 @@ pub(super) async fn parse_batch(
                 let item = if cancellation.is_cancelled() {
                     BatchItem {
                         file_path,
-                        outcome: BatchOutcome::ReadError("Parsing cancelled".to_string()),
+                        outcome: BatchOutcome::ReadError(ReadFailure::Cancelled),
                     }
                 } else {
                     read_and_parse(
@@ -324,31 +394,69 @@ pub(super) fn read_and_parse(
         );
         return BatchItem {
             file_path: file_path.to_string(),
-            outcome: BatchOutcome::ReadError("Path traversal blocked".to_string()),
+            outcome: BatchOutcome::ReadError(ReadFailure::PathTraversal),
         };
     };
 
-    let read = fs::read(&full_path).and_then(|bytes| {
-        let meta = fs::metadata(&full_path)?;
-        Ok((bytes, meta))
-    });
-    let (content, stats) = match read {
-        Ok((bytes, meta)) => (
-            String::from_utf8_lossy(&bytes).into_owned(),
-            FileStats::from_metadata(&meta),
-        ),
+    let meta = match fs::metadata(&full_path) {
+        Ok(meta) if meta.is_file() => meta,
+        Ok(_) => {
+            return BatchItem {
+                file_path: file_path.to_string(),
+                outcome: BatchOutcome::ReadError(ReadFailure::NotRegularFile),
+            };
+        }
         Err(err) => {
             return BatchItem {
                 file_path: file_path.to_string(),
-                outcome: BatchOutcome::ReadError(err.to_string()),
+                outcome: BatchOutcome::ReadError(ReadFailure::Io(err)),
             };
         }
     };
 
-    // No size cap: every file is indexed regardless of size (large
-    // hand-written sources — e.g. a 1.2 MiB expression printer — must not be
-    // silently dropped). Pathological inputs are excluded by .gitignore /
-    // ignore-dir / generated-file detection, not by a byte threshold.
+    // Honour MAX_FILE_SIZE before reading the body. Vendored/generated multi-MB
+    // files (minified bundles, amalgamated C, base64 resource blobs) carry no
+    // useful symbols but do carry pathological syntax trees that make
+    // extraction quadratic; skip them with a `size_exceeded` warning (TS parity)
+    // and still record the file so accounting/reconciliation stays correct.
+    let size_cap = max_file_size();
+    if size_cap > 0 && meta.len() > size_cap {
+        return BatchItem {
+            file_path: file_path.to_string(),
+            outcome: BatchOutcome::Parsed {
+                content: String::new(),
+                stats: FileStats::from_metadata(&meta),
+                result: ExtractionResult {
+                    errors: vec![ExtractionError {
+                        message: format!(
+                            "File exceeds max size ({} > {})",
+                            meta.len(),
+                            size_cap
+                        ),
+                        file_path: Some(file_path.to_string()),
+                        line: None,
+                        column: None,
+                        severity: Severity::Warning,
+                        code: Some("size_exceeded".to_string()),
+                    }],
+                    ..Default::default()
+                },
+            },
+        };
+    }
+
+    let bytes = match fs::read(&full_path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return BatchItem {
+                file_path: file_path.to_string(),
+                outcome: BatchOutcome::ReadError(ReadFailure::Io(err)),
+            };
+        }
+    };
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+    let stats = FileStats::from_metadata(&meta);
+
     let language = detect_language_with_overrides(
         file_path,
         Some(&content),
@@ -370,13 +478,25 @@ pub(super) fn extraction_error_result(
     file_path: &str,
     code: &str,
 ) -> ExtractionResult {
+    extraction_error_result_with_severity(message, file_path, code, Severity::Error)
+}
+
+/// Like [`extraction_error_result`] but with an explicit severity. Used for the
+/// `size_exceeded` skip, which is a warning (the file is intentionally not
+/// parsed) rather than an error.
+pub(super) fn extraction_error_result_with_severity(
+    message: String,
+    file_path: &str,
+    code: &str,
+    severity: Severity,
+) -> ExtractionResult {
     ExtractionResult {
         errors: vec![ExtractionError {
             message,
             file_path: Some(file_path.to_string()),
             line: None,
             column: None,
-            severity: Severity::Error,
+            severity,
             code: Some(code.to_string()),
         }],
         ..Default::default()
@@ -437,4 +557,65 @@ mod tests {
             Ok(_) => panic!("cancelled parse unexpectedly succeeded"),
         }
     }
+
+    #[test]
+    fn read_and_parse_rejects_directory_paths_before_reading() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("not_a_file.rs")).unwrap();
+
+        let item = read_and_parse(temp.path(), "not_a_file.rs", &[], &ProjectConfig::default());
+
+        match item.outcome {
+            BatchOutcome::ReadError(failure) => {
+                assert!(matches!(failure, ReadFailure::NotRegularFile));
+                assert_eq!(failure.code(), "read_error");
+                assert_eq!(failure.to_string(), "Path is not a regular file");
+            }
+            BatchOutcome::Parsed { .. } => panic!("directory path unexpectedly parsed"),
+        }
+    }
+
+    #[test]
+    fn read_and_parse_skips_files_over_max_size_with_warning() {
+        let temp = tempfile::tempdir().unwrap();
+        // Write a file larger than MAX_FILE_SIZE.
+        let big = "a".repeat((max_file_size() as usize) + 1024);
+        std::fs::write(temp.path().join("huge.cpp"), &big).unwrap();
+
+        let item = read_and_parse(temp.path(), "huge.cpp", &[], &ProjectConfig::default());
+
+        match item.outcome {
+            BatchOutcome::Parsed {
+                content, result, ..
+            } => {
+                // Body is not read/parsed; a size_exceeded warning is recorded.
+                assert!(content.is_empty(), "oversized file body should not be read");
+                assert!(result.nodes.is_empty());
+                assert_eq!(result.errors.len(), 1);
+                let err = &result.errors[0];
+                assert_eq!(err.code.as_deref(), Some("size_exceeded"));
+                assert_eq!(err.severity, Severity::Warning);
+            }
+            BatchOutcome::ReadError(failure) => {
+                panic!("oversized file should be a size_exceeded warning, got {failure:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn read_and_parse_indexes_files_at_or_below_max_size() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("ok.rs"), "fn small() {}
+").unwrap();
+
+        let item = read_and_parse(temp.path(), "ok.rs", &[], &ProjectConfig::default());
+
+        match item.outcome {
+            BatchOutcome::Parsed { content, .. } => {
+                assert!(content.contains("fn small"));
+            }
+            BatchOutcome::ReadError(failure) => panic!("small file failed: {failure:?}"),
+        }
+    }
+
 }

@@ -8,7 +8,7 @@ use super::git::get_git_visible_files;
 use super::ignore::{build_default_ignore, build_defaults_only_ignore, gitignore_ignores};
 use crate::directory::is_codegraph_data_dir;
 use crate::error::log_debug;
-use crate::extraction::grammars::is_source_file_with_overrides;
+use crate::extraction::file_selection::is_indexable_existing_file;
 use crate::project_config::{ProjectConfig, load_project_config, matcher_matches};
 use crate::utils::{normalize_path, validate_existing_path_within_root_real};
 
@@ -38,8 +38,7 @@ pub(super) fn scan_directory_with_config(
         let mut count = 0usize;
         for file_path in git_files {
             if !matcher_matches(exclude.as_ref(), &file_path, false)
-                && is_source_file_with_overrides(&file_path, config.extension_overrides())
-                && validate_existing_path_within_root_real(root_dir, &file_path).is_some()
+                && is_indexable_existing_file(root_dir, &file_path, config.extension_overrides())
                 && seen.insert(file_path.clone())
             {
                 count += 1;
@@ -239,7 +238,8 @@ fn scan_directory_walk_with_config(
                             }
                         } else if stat.is_file()
                             && !is_ignored(&full_path, false, matchers)
-                            && is_source_file_with_overrides(
+                            && is_indexable_existing_file(
+                                root_dir,
                                 &relative_path,
                                 config.extension_overrides(),
                             )
@@ -279,7 +279,11 @@ fn scan_directory_walk_with_config(
                 }
             } else if file_type.is_file()
                 && !is_ignored(&full_path, false, matchers)
-                && is_source_file_with_overrides(&relative_path, config.extension_overrides())
+                && is_indexable_existing_file(
+                    root_dir,
+                    &relative_path,
+                    config.extension_overrides(),
+                )
                 && seen.insert(relative_path.clone())
             {
                 files.push(relative_path.clone());
@@ -401,8 +405,7 @@ fn collect_included_files(root_dir: &Path, config: &ProjectConfig) -> Vec<String
                 }
             } else if file_type.is_file()
                 && matcher_matches(Some(include), &relative, false)
-                && is_source_file_with_overrides(&relative, config.extension_overrides())
-                && validate_existing_path_within_root_real(root_dir, &relative).is_some()
+                && is_indexable_existing_file(root_dir, &relative, config.extension_overrides())
             {
                 files.push(relative);
             }
@@ -422,4 +425,52 @@ fn collect_included_files(root_dir: &Path, config: &ProjectConfig) -> Vec<String
     );
     files.sort();
     files
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::{Command, Stdio};
+
+    use super::*;
+
+    fn git(root: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("git should be runnable");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[test]
+    fn git_scan_skips_submodule_gitlink_directories_with_source_extensions() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("third_party/llama.cpp")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        git(root, &["init", "-q"]);
+        git(root, &["add", "src/main.rs"]);
+        git(
+            root,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "160000,a94e6ff8774b7c9f950d9545baf0ce35e8d1ed2f,third_party/llama.cpp",
+            ],
+        );
+
+        let files = scan_directory_with_config(root, None, &ProjectConfig::default());
+
+        assert!(files.iter().any(|file| file == "src/main.rs"), "{files:?}");
+        assert!(
+            !files.iter().any(|file| file == "third_party/llama.cpp"),
+            "gitlinks that materialize as directories are not readable source files: {files:?}"
+        );
+    }
 }

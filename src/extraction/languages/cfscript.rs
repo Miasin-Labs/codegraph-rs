@@ -136,10 +136,9 @@ impl LanguageExtractor for CfscriptExtractor {
         };
         let module_name = if source_node.kind() == "import_path" {
             let mut segments = Vec::new();
-            for index in 0..source_node.named_child_count() as u32 {
-                if let Some(child) = source_node.named_child(index) {
-                    segments.push(get_node_text(child, source));
-                }
+            let mut cursor = source_node.walk();
+            for child in source_node.named_children(&mut cursor) {
+                segments.push(get_node_text(child, source));
             }
             segments.join(".")
         } else {

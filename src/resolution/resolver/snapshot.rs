@@ -81,7 +81,7 @@ pub(super) struct SnapshotContext {
     go_module: Option<GoModule>,
     workspace_packages: Option<WorkspacePackages>,
     cpp_include_dirs: Vec<String>,
-    file_cache: Mutex<HashMap<String, Option<String>>>,
+    file_cache: Mutex<HashMap<String, Option<Arc<str>>>>,
     import_mapping_cache: Mutex<HashMap<ImportCacheKey, Vec<ImportMapping>>>,
     re_export_cache: Mutex<HashMap<ImportCacheKey, Vec<ReExport>>>,
 }

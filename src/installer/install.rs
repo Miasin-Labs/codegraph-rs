@@ -21,6 +21,14 @@ use super::targets::registry::{ALL_TARGETS, detect_all, resolve_target_flag};
 use super::targets::shared::{cwd, home_dir};
 use super::targets::types::{AgentTarget, FileAction, InstallOptions, Location, TargetId};
 use crate::error::Result;
+use crate::sync::{
+    DEFAULT_SYNC_HOOKS,
+    WatchProbe,
+    install_git_sync_hook,
+    is_git_repo,
+    is_sync_hook_installed,
+    watch_disabled_reason,
+};
 
 fn get_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -663,14 +671,73 @@ fn initialize_local_project(_use_defaults: bool) {
     log_info("Skipping project initialization. Run \"codegraph init\" later.");
 }
 
-/// Stale-index fallback for environments where the live file watcher is
-/// disabled (WSL2 /mnt drives, CODEGRAPH_NO_WATCH).
-///
-/// NOT YET PORTED — depends on `sync::watch_policy::watch_disabled_reason`,
-/// `sync::git_hooks::{is_git_repo, is_sync_hook_installed,
-/// install_git_sync_hook}`, owned by the sync port wave. See
-/// `notes/installer.md` for the full TS flow to reconnect
-/// (`offerWatchFallback`, `src/installer/index.ts` lines 504-564).
-pub fn offer_watch_fallback(_project_path: &Path, _yes: bool) {
-    // TODO(wiring): port body once sync module lands.
+/// Offer Git sync hooks when live watching is disabled for this project.
+pub fn offer_watch_fallback(project_path: &Path, yes: bool) {
+    let root = project_path.to_string_lossy();
+    let Some(reason) = watch_disabled_reason(&root, &WatchProbe::default()) else {
+        return;
+    };
+
+    log_warn(&format!("Live file watching is disabled here — {reason}."));
+    log_info(
+        "Until you re-sync, the CodeGraph index stays frozen — it will not pick up edits on its own.",
+    );
+    if !is_git_repo(project_path) {
+        log_info("Run `codegraph sync` after changing files to refresh the index.");
+        return;
+    }
+    if is_sync_hook_installed(project_path, &DEFAULT_SYNC_HOOKS) {
+        log_info(
+            "Git sync hooks are already installed — the index refreshes after commit / pull / checkout.",
+        );
+        return;
+    }
+
+    let install = if yes {
+        true
+    } else {
+        let options = [
+            (
+                "Sync on git commit / pull / checkout".to_string(),
+                "installs git hooks (recommended)".to_string(),
+            ),
+            (
+                "I'll run `codegraph sync` myself".to_string(),
+                "fully manual".to_string(),
+            ),
+        ];
+        match prompt_select("How should CodeGraph keep its index fresh?", &options, 0) {
+            Some(0) => true,
+            Some(_) => false,
+            None => {
+                log_info("Skipped — run `codegraph sync` after changes to refresh the index.");
+                return;
+            }
+        }
+    };
+
+    if !install {
+        log_info("Run `codegraph sync` after changing files to refresh the index.");
+        return;
+    }
+
+    let result = install_git_sync_hook(project_path, &DEFAULT_SYNC_HOOKS);
+    if result.installed.is_empty() {
+        let reason = result
+            .skipped
+            .map(|reason| format!(" ({reason})"))
+            .unwrap_or_default();
+        log_warn(&format!(
+            "Could not install git hooks{reason}. Run `codegraph sync` after changes instead."
+        ));
+        return;
+    }
+
+    let names: Vec<&str> = result.installed.iter().map(|hook| hook.as_str()).collect();
+    log_success(&format!(
+        "Installed git {} hook{} — the index refreshes in the background after each.",
+        names.join(", "),
+        if names.len() == 1 { "" } else { "s" }
+    ));
+    log_info("Run `codegraph sync` anytime to refresh immediately.");
 }

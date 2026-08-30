@@ -106,6 +106,32 @@ async fn explore_v2_payload_validates_against_the_advertised_output_schema() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn explore_v2_literal_payload_retains_the_released_lines_shape() {
+    let _env = env_read().await;
+    let schema = explore_output_schema();
+    let dir = TempDir::new().unwrap();
+    write(
+        &dir.path().join("src/state.ts"),
+        "export const ready = true;\n// TODO preserve literal wire shape\n",
+    );
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    let structured = handler
+        .execute("codegraph_explore", &json!({ "query": "TODO preserve" }))
+        .structured_content
+        .expect("structured literal explore");
+
+    assert!(schema_matches(&schema, &structured), "{structured}");
+    assert_eq!(structured["schemaVersion"], 2);
+    let literal = &structured["literalMatches"][0];
+    assert!(literal["lines"].is_array(), "{literal}");
+    assert!(literal.get("chunks").is_none(), "{literal}");
+    assert!(structured.get("literalTotalFiles").is_none(), "{structured}");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn explore_output_schema_rejects_legacy_header_body_payload() {
     let _env = env_read().await;
     let schema = explore_output_schema();

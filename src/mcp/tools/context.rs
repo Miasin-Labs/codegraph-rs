@@ -1,7 +1,7 @@
 //! MCP handler state, project context, and dispatch.
 
 mod dispatch;
-mod notices;
+pub(in crate::mcp::tools) mod notices;
 mod project;
 mod state;
 mod tools;

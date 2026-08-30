@@ -1,7 +1,7 @@
 //! Dynamic MCP tool listing and allowlist handling.
 
 use super::super::format::{get_explore_budget, to_locale_string};
-use super::super::registry::{short_tool_name, tool_allowlist, tools};
+use super::super::registry::{default_tool, short_tool_name, tool_allowlist, tools};
 use super::super::schema::ToolDefinition;
 use super::ToolHandler;
 
@@ -21,7 +21,10 @@ impl ToolHandler {
                 .into_iter()
                 .filter(|t| set.contains(short_tool_name(&t.name)))
                 .collect(),
-            None => tools(),
+            None => tools()
+                .into_iter()
+                .filter(|tool| default_tool(&tool.name))
+                .collect(),
         };
         let cg_ref = self.cg.borrow();
         let Some(cg) = cg_ref.as_ref() else {

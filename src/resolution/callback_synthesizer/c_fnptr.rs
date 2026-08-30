@@ -75,14 +75,15 @@ static ARRAY_DESIGNATOR_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static LEADING_CAST_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\((?:[\w\s*]+)\)\s*").expect("valid leading C cast regex"));
-static INLINE_STRUCT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bstruct\s+(\w+)\s*\{").expect("valid inline struct regex"));
+static INLINE_STRUCT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:struct|union)\s+(\w+)\s*\{").expect("valid inline aggregate regex")
+});
 static INLINE_STRUCT_TAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*(\w+)\s*(\[[^\]]*\])?\s*(=\s*\{)?").expect("valid inline struct tail regex")
 });
 static INIT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?:^|[;{}])\s*(?:(?:static|const|extern|register|volatile)\s+)*(?:struct\s+)?(\w+)\s+(\w+)\s*(\[[^\]]*\])?\s*=\s*\{",
+        r"(?:^|[;{}])\s*(?:(?:static|const|extern|register|volatile)\s+)*(?:(?:struct|union)\s+)?(\w+)\s+(\w+)\s*(\[[^\]]*\])?\s*=\s*\{",
     )
     .expect("valid struct initializer regex")
 });
@@ -432,7 +433,11 @@ fn resolve_type_name(name: &str, environment: &HashMap<String, String>) -> Strin
         let Some(value) = environment.get(&current) else {
             break;
         };
-        let value = value.trim().strip_prefix("struct ").unwrap_or(value.trim());
+        let value = value.trim();
+        let value = value
+            .strip_prefix("struct ")
+            .or_else(|| value.strip_prefix("union "))
+            .unwrap_or(value);
         if value.is_empty()
             || !value
                 .bytes()
@@ -597,30 +602,33 @@ impl<'a> FnPtrSynthesis<'a> {
     }
 
     fn collect_struct_layouts(&mut self, queries: &QueryBuilder) -> Result<()> {
-        queries.iterate_nodes_by_kind(NodeKind::Struct, |node| {
-            if !C_CPP_EXT_RE.is_match(&node.file_path) {
-                return true;
-            }
-            let Some(source) = self.stripped_source(&node.file_path) else {
-                return true;
-            };
-            let Some(body) = slice_lines(&source, node.start_line, node.end_line) else {
-                return true;
-            };
-            let Some(open) = body.find('{') else {
-                return true;
-            };
-            let Some(close) = match_brace(&body, open) else {
-                return true;
-            };
-            let fields = parse_struct_fields(
-                &body[open + 1..close],
-                &self.fn_ptr_typedefs,
-                &self.fn_type_typedefs,
-            );
-            self.register_struct_layout(node.name, fields);
-            true
-        })
+        for kind in [NodeKind::Struct, NodeKind::Union] {
+            queries.iterate_nodes_by_kind(kind, |node| {
+                if !C_CPP_EXT_RE.is_match(&node.file_path) {
+                    return true;
+                }
+                let Some(source) = self.stripped_source(&node.file_path) else {
+                    return true;
+                };
+                let Some(body) = slice_lines(&source, node.start_line, node.end_line) else {
+                    return true;
+                };
+                let Some(open) = body.find('{') else {
+                    return true;
+                };
+                let Some(close) = match_brace(&body, open) else {
+                    return true;
+                };
+                let fields = parse_struct_fields(
+                    &body[open + 1..close],
+                    &self.fn_ptr_typedefs,
+                    &self.fn_type_typedefs,
+                );
+                self.register_struct_layout(node.name, fields);
+                true
+            })?;
+        }
+        Ok(())
     }
 
     fn is_fn_ptr_field(&self, struct_name: &str, field_name: &str) -> bool {
@@ -1413,67 +1421,71 @@ mod tests {
     }
 
     #[test]
-    fn links_a_struct_field_dispatch_to_its_designated_handler() {
-        let directory = tempdir().expect("temporary project");
-        let source = "typedef void (*handler_t)(int);\nstruct hooks { handler_t run; };\nvoid on_event(int value) {}\nvoid dispatch(struct hooks *h) { h->run(1); }\nstatic struct hooks default_hooks = { .run = on_event };\n";
-        fs::write(directory.path().join("hooks.c"), source).expect("write C fixture");
-        let connection = DatabaseConnection::initialize(directory.path().join("codegraph.db"))
-            .expect("initialize database");
-        let queries = QueryBuilder::new(connection.get_db().expect("database handle"));
-        queries
-            .insert_nodes(&[
-                Node::new(
-                    "struct-hooks",
-                    NodeKind::Struct,
-                    "hooks",
-                    "hooks",
-                    "hooks.c",
-                    Language::C,
-                    2,
-                    2,
-                ),
-                Node::new(
-                    "handler",
-                    NodeKind::Function,
-                    "on_event",
-                    "on_event",
-                    "hooks.c",
-                    Language::C,
-                    3,
-                    3,
-                ),
-                Node::new(
-                    "dispatcher",
-                    NodeKind::Function,
-                    "dispatch",
-                    "dispatch",
-                    "hooks.c",
-                    Language::C,
-                    4,
-                    4,
-                ),
-            ])
-            .expect("insert fixture nodes");
-        let context = TestContext {
-            root: directory.path().to_path_buf(),
-            root_string: directory.path().to_string_lossy().into_owned(),
-            files: vec!["hooks.c".to_string()],
-            queries,
-        };
+    fn links_aggregate_field_dispatch_to_its_designated_handler() {
+        for (keyword, kind) in [("struct", NodeKind::Struct), ("union", NodeKind::Union)] {
+            let directory = tempdir().expect("temporary project");
+            let source = format!(
+                "typedef void (*handler_t)(int);\n{keyword} hooks {{ handler_t run; }};\nvoid on_event(int value) {{}}\nvoid dispatch({keyword} hooks *h) {{ h->run(1); }}\nstatic {keyword} hooks default_hooks = {{ .run = on_event }};\n"
+            );
+            fs::write(directory.path().join("hooks.c"), source).expect("write C fixture");
+            let connection = DatabaseConnection::initialize(directory.path().join("codegraph.db"))
+                .expect("initialize database");
+            let queries = QueryBuilder::new(connection.get_db().expect("database handle"));
+            queries
+                .insert_nodes(&[
+                    Node::new(
+                        "aggregate-hooks",
+                        kind,
+                        "hooks",
+                        "hooks",
+                        "hooks.c",
+                        Language::C,
+                        2,
+                        2,
+                    ),
+                    Node::new(
+                        "handler",
+                        NodeKind::Function,
+                        "on_event",
+                        "on_event",
+                        "hooks.c",
+                        Language::C,
+                        3,
+                        3,
+                    ),
+                    Node::new(
+                        "dispatcher",
+                        NodeKind::Function,
+                        "dispatch",
+                        "dispatch",
+                        "hooks.c",
+                        Language::C,
+                        4,
+                        4,
+                    ),
+                ])
+                .expect("insert fixture nodes");
+            let context = TestContext {
+                root: directory.path().to_path_buf(),
+                root_string: directory.path().to_string_lossy().into_owned(),
+                files: vec!["hooks.c".to_string()],
+                queries,
+            };
 
-        let edges = c_fn_pointer_dispatch_edges(&context.queries, &context)
-            .expect("synthesize function-pointer edge");
-        let edge = edges
-            .iter()
-            .find(|edge| edge.source == "dispatcher" && edge.target == "handler")
-            .expect("dispatcher reaches its registered handler");
-        assert_eq!(edge.line, Some(4));
-        assert_eq!(
-            edge.metadata
-                .as_ref()
-                .and_then(|metadata| metadata.get("via"))
-                .and_then(Value::as_str),
-            Some("hooks.run")
-        );
+            let edges = c_fn_pointer_dispatch_edges(&context.queries, &context)
+                .expect("synthesize function-pointer edge");
+            let edge = edges
+                .iter()
+                .find(|edge| edge.source == "dispatcher" && edge.target == "handler")
+                .expect("dispatcher reaches its registered handler");
+            assert_eq!(edge.line, Some(4));
+            assert_eq!(
+                edge.metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("via"))
+                    .and_then(Value::as_str),
+                Some("hooks.run")
+            );
+        }
     }
 }

@@ -93,6 +93,7 @@ fn is_iface_override_lang(lang: Language) -> bool {
             | Language::Csharp
             | Language::Typescript
             | Language::Javascript
+            | Language::Rust
             | Language::Swift
             | Language::Scala
     )
@@ -113,7 +114,7 @@ pub(super) fn interface_override_edges(queries: &QueryBuilder) -> Result<Vec<Edg
     // Concrete-side kinds vary by language: `class` covers Java / Kotlin /
     // C# / TS / Swift-classes / Scala-classes; `struct` covers Swift value
     // types that conform to protocols. Iterate both.
-    let concrete_kinds = [NodeKind::Class, NodeKind::Struct];
+    let concrete_kinds = [NodeKind::Class, NodeKind::Struct, NodeKind::Union];
     for kind in concrete_kinds {
         for cls in queries.get_nodes_by_kind(kind)? {
             let impl_methods: Vec<Node> = methods_of(queries, &cls.id)?
@@ -181,4 +182,70 @@ pub(super) fn interface_override_edges(queries: &QueryBuilder) -> Result<Vec<Edg
         }
     }
     Ok(edges)
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::db::{DatabaseConnection, QueryBuilder};
+
+    fn node(id: &str, kind: NodeKind, name: &str, qualified_name: &str) -> Node {
+        Node::new(
+            id,
+            kind,
+            name,
+            qualified_name,
+            "src/lib.rs",
+            Language::Rust,
+            1,
+            1,
+        )
+    }
+
+    #[test]
+    fn bridges_rust_trait_method_to_union_implementor() {
+        let directory = tempdir().unwrap();
+        let connection =
+            DatabaseConnection::initialize(directory.path().join("codegraph.db")).unwrap();
+        let queries = QueryBuilder::new(connection.get_db().unwrap());
+        queries
+            .insert_nodes(&[
+                node("reg", NodeKind::Union, "Reg", "Reg"),
+                node("describe", NodeKind::Trait, "Describe", "Describe"),
+                node(
+                    "trait-method",
+                    NodeKind::Method,
+                    "describe",
+                    "Describe::describe",
+                ),
+                node(
+                    "union-method",
+                    NodeKind::Method,
+                    "describe",
+                    "Reg::describe",
+                ),
+            ])
+            .unwrap();
+        queries
+            .insert_edges(&[
+                Edge::new("reg", "describe", EdgeKind::Implements),
+                Edge::new("describe", "trait-method", EdgeKind::Contains),
+                Edge::new("reg", "union-method", EdgeKind::Contains),
+            ])
+            .unwrap();
+
+        let edges = interface_override_edges(&queries).unwrap();
+        let edge = edges
+            .iter()
+            .find(|edge| edge.source == "trait-method" && edge.target == "union-method")
+            .expect("trait dispatch edge");
+        assert_eq!(edge.kind, EdgeKind::Calls);
+        assert_eq!(edge.provenance, Some(crate::types::Provenance::Heuristic));
+        assert_eq!(
+            edge.metadata.as_ref().unwrap()["synthesizedBy"],
+            "interface-impl"
+        );
+    }
 }

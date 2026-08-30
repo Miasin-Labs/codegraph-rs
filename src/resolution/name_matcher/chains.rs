@@ -71,7 +71,10 @@ fn class_exists(
         .unwrap_or(type_name);
     context.get_nodes_by_name(simple).into_iter().any(|node| {
         node.language == reference.language
-            && matches!(node.kind, NodeKind::Class | NodeKind::Struct)
+            && matches!(
+                node.kind,
+                NodeKind::Class | NodeKind::Struct | NodeKind::Union
+            )
     })
 }
 

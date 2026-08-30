@@ -1,5 +1,6 @@
 use super::context::{extract_name, find_named_child, init_signature, named_children};
 use super::extractor::TreeSitterExtractor;
+use super::value_references::{c_declarator_identifier, swift_property_info};
 use crate::extraction::tree_sitter_helpers::{
     get_child_by_field,
     get_node_text,
@@ -133,7 +134,9 @@ impl<'a> TreeSitterExtractor<'a> {
             let right = get_child_by_field(node, "right").or_else(|| node.named_child(1));
 
             if let Some(left) = left {
-                if left.kind() == "identifier" {
+                if left.kind() == "identifier"
+                    || (self.language == Language::Ruby && left.kind() == "constant")
+                {
                     let name = get_node_text(left, self.source).to_string();
                     // Python constants are usually UPPER_CASE
                     let init_sig = right.map(|r| init_signature(get_node_text(r, self.source)));
@@ -222,6 +225,54 @@ impl<'a> TreeSitterExtractor<'a> {
                         );
                     }
                 }
+            }
+        } else if self.language == Language::Swift {
+            let (name_node, is_let, is_computed) = swift_property_info(node, self.source);
+            if let Some(name_node) = name_node.filter(|_| !is_computed) {
+                self.create_node(
+                    if is_let {
+                        NodeKind::Constant
+                    } else {
+                        NodeKind::Variable
+                    },
+                    get_node_text(name_node, self.source),
+                    node,
+                    NodeExtra {
+                        docstring,
+                        is_exported: Some(is_exported),
+                        ..Default::default()
+                    },
+                );
+            }
+        } else if self.language == Language::C {
+            for child in named_children(node) {
+                if !matches!(
+                    child.kind(),
+                    "init_declarator" | "pointer_declarator" | "array_declarator"
+                ) {
+                    continue;
+                }
+                let Some(name_node) = c_declarator_identifier(child) else {
+                    continue;
+                };
+                let name = get_node_text(name_node, self.source);
+                let value = if child.kind() == "init_declarator" {
+                    get_child_by_field(child, "value")
+                } else {
+                    None
+                };
+                self.create_node(
+                    kind,
+                    name,
+                    child,
+                    NodeExtra {
+                        docstring: docstring.clone(),
+                        signature: value
+                            .map(|value| init_signature(get_node_text(value, self.source))),
+                        is_exported: Some(is_exported),
+                        ..Default::default()
+                    },
+                );
             }
         } else if matches!(self.language, Language::Lua | Language::Luau) {
             // Lua/Luau: variable_declaration → assignment_statement → variable_list

@@ -1,7 +1,9 @@
 //! Deep context exploration MCP tool.
 
 mod adaptive;
+mod allocation;
 mod cluster;
+mod execution;
 mod handler;
 mod literal;
 mod payload;

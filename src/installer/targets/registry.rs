@@ -8,15 +8,20 @@
 use super::antigravity::ANTIGRAVITY_TARGET;
 use super::claude::CLAUDE_TARGET;
 use super::codex::CODEX_TARGET;
+use super::copilot_cli::COPILOT_CLI_TARGET;
+use super::copilot_jetbrains::COPILOT_JETBRAINS_TARGET;
+use super::copilot_vscode::COPILOT_VSCODE_TARGET;
 use super::cursor::CURSOR_TARGET;
 use super::gemini::GEMINI_TARGET;
 use super::hermes::HERMES_TARGET;
 use super::kiro::KIRO_TARGET;
 use super::opencode::OPENCODE_TARGET;
+use super::pi::PI_TARGET;
+use super::prime::PRIME_TARGET;
 use super::types::{AgentTarget, DetectionResult, Location, TargetId};
 use crate::error::{CodeGraphError, Result};
 
-pub static ALL_TARGETS: [&dyn AgentTarget; 8] = [
+pub static ALL_TARGETS: [&dyn AgentTarget; 13] = [
     &CLAUDE_TARGET,
     &CURSOR_TARGET,
     &CODEX_TARGET,
@@ -25,6 +30,11 @@ pub static ALL_TARGETS: [&dyn AgentTarget; 8] = [
     &GEMINI_TARGET,
     &ANTIGRAVITY_TARGET,
     &KIRO_TARGET,
+    &COPILOT_VSCODE_TARGET,
+    &COPILOT_CLI_TARGET,
+    &COPILOT_JETBRAINS_TARGET,
+    &PRIME_TARGET,
+    &PI_TARGET,
 ];
 
 pub fn get_target(id: &str) -> Option<&'static dyn AgentTarget> {

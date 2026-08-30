@@ -15,10 +15,38 @@ fn registry_get_target_returns_right_target_for_each_id() {
         "gemini",
         "antigravity",
         "kiro",
+        "copilot-vscode",
+        "copilot-cli",
+        "copilot-jetbrains",
+        "prime",
+        "pi",
     ] {
         assert_eq!(get_target(id).map(|t| t.id().as_str()), Some(id));
     }
     assert!(get_target("not-a-real-target").is_none());
+}
+
+#[test]
+fn registry_resolve_all_and_csv_include_copilot_targets_in_source_order() {
+    let _env = TestEnv::new();
+    let all: Vec<&str> = resolve_target_flag("all", Location::Global)
+        .unwrap()
+        .iter()
+        .map(|target| target.id().as_str())
+        .collect();
+    assert!(all.ends_with(&["copilot-jetbrains", "prime", "pi",]));
+
+    let csv = resolve_target_flag(
+        "copilot-vscode,copilot-cli,copilot-jetbrains",
+        Location::Global,
+    )
+    .unwrap();
+    assert_eq!(
+        csv.iter()
+            .map(|target| target.id().as_str())
+            .collect::<Vec<_>>(),
+        vec!["copilot-vscode", "copilot-cli", "copilot-jetbrains"]
+    );
 }
 
 #[test]

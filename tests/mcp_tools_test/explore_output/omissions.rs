@@ -83,9 +83,43 @@ async fn explore_reports_omissions_and_continuation() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn explore_cap_retains_omission_metadata_and_marks_truncation() {
+async fn explore_returns_a_structured_error_when_metadata_alone_exceeds_cap() {
     let _env = env_write().await;
     let _guard = EnvVarGuard::set("CODEGRAPH_MAX_OUTPUT_CHARS", "600");
+    let dir = TempDir::new().unwrap();
+    let mut query = Vec::new();
+    for index in 0..20 {
+        let symbol = format!("veryLongWidgetSymbolName{index:02}");
+        query.push(symbol.clone());
+        write(
+            &dir
+                .path()
+                .join(format!("src/very-long-widget-file-name-{index:02}.ts")),
+            &format!("export function {symbol}(): number {{ return {index}; }}\n"),
+        );
+    }
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    let result = handler.execute(
+        "codegraph_explore",
+        &json!({ "query": query.join(" "), "maxFiles": 1 }),
+    );
+
+    assert_eq!(result.is_error, Some(true), "{}", result.text());
+    let structured = result.structured_content.expect("structured cap error");
+    assert_eq!(structured["kind"], "error");
+    assert!(
+        serde_json::to_string(&structured).unwrap().len() <= 600,
+        "cap error exceeded configured limit: {structured}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explore_cap_retains_omission_metadata_and_marks_truncation() {
+    let _env = env_write().await;
+    let _guard = EnvVarGuard::set("CODEGRAPH_MAX_OUTPUT_CHARS", "2000");
     let dir = TempDir::new().unwrap();
     let big = "z".repeat(4000);
     for i in 0..4 {
@@ -112,10 +146,15 @@ async fn explore_cap_retains_omission_metadata_and_marks_truncation() {
     );
     assert!(omissions.iter().any(|o| o["reason"] == "max_files"));
 
-    // The included file explicitly marks source truncation.
+    // The included file explicitly marks source truncation without corrupting
+    // an emitted source chunk with presentation markers.
     let file = &structured["sourceFiles"][0];
     assert_eq!(file["sourceTruncated"], true, "{file}");
-    let source = file["chunks"][0]["source"].as_str().unwrap();
-    assert!(source.contains("[truncated]"), "{source}");
-    assert!(source.len() < big.len(), "structured source was not capped");
+    assert!(file["chunks"].as_array().unwrap().iter().all(|chunk| {
+        !chunk["source"].as_str().unwrap().contains("[truncated]")
+    }));
+    assert!(
+        serde_json::to_string(structured).unwrap().len() <= 2_000,
+        "structured output exceeded configured cap: {structured}"
+    );
 }

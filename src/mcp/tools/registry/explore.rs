@@ -1,10 +1,10 @@
 //! Deep exploration tool schema.
 
-use serde_json::{Map, Value};
+use serde_json::Map;
 
 use super::super::output::explore_output_schema;
 use super::super::schema::{InputSchema, ToolDefinition};
-use super::schema_builder::{project_path_property, prop, prop_default, read_only_annotations};
+use super::schema_builder::{project_path_property, prop, read_only_annotations};
 
 pub(in crate::mcp::tools::registry) fn push_explore_tool(out: &mut Vec<ToolDefinition>) {
     // codegraph_explore
@@ -14,15 +14,14 @@ pub(in crate::mcp::tools::registry) fn push_explore_tool(out: &mut Vec<ToolDefin
             "query".into(),
             prop(
                 "string",
-                "Symbol names, file names, or short code terms to explore (e.g., \"AuthService loginUser session-manager\", \"GraphTraverser BFS impact traversal.ts\"). Use codegraph_search first to find relevant names.",
+                "Symbol names, file names, or short code terms to explore (e.g., \"AuthService loginUser session-manager\", \"GraphTraverser BFS impact traversal.ts\"). For a flow question, name the symbols spanning the flow (e.g. \"mutateElement renderScene\"). A natural-language question works too — no prior codegraph_search needed.",
             ),
         );
         props.insert(
             "maxFiles".into(),
-            prop_default(
+            prop(
                 "number",
-                "Maximum number of files to include source code from (default: 12)",
-                Value::from(12),
+                "Maximum number of ranked files whose source is included. It does not change symbol or literal discovery. The default adapts to project size (4-8).",
             ),
         );
         props.insert("projectPath".into(), project_path_property());

@@ -7,12 +7,13 @@ pub mod daemon;
 pub mod daemon_paths;
 pub mod daemon_registry;
 pub mod engine;
+pub(crate) mod explore_session;
 pub mod proxy;
 pub mod server;
 pub mod server_instructions;
-pub mod session;
+pub mod service;
+pub mod startup;
 pub mod tools;
-pub mod transport;
 pub mod version;
 
 // Surface a few daemon-mode bits for tests + diagnostics.
@@ -20,6 +21,4 @@ pub mod version;
 pub use daemon::Daemon;
 pub use server::MCPServer;
 pub use tools::{ToolHandler, tools};
-// Export for use in CLI (mirrors TS `export { StdioTransport } from './transport'`).
-pub use transport::StdioTransport;
 pub use version::CODEGRAPH_PACKAGE_VERSION;

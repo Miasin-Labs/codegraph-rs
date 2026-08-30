@@ -86,9 +86,10 @@ impl LanguageExtractor for RustExtractor {
         &["trait_item"]
     }
     fn struct_types(&self) -> &[&str] {
-        // `union_item` is struct-shaped (a `field_declaration_list` body); the
-        // generic struct walker handles its fields just like a struct.
-        &["struct_item", "union_item"]
+        &["struct_item"]
+    }
+    fn union_types(&self) -> &[&str] {
+        &["union_item"]
     }
     fn enum_types(&self) -> &[&str] {
         &["enum_item"]
@@ -244,26 +245,24 @@ impl LanguageExtractor for RustExtractor {
     }
 
     fn is_async(&self, node: SyntaxNode<'_>, _source: &str) -> Option<bool> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "async" {
-                    return Some(true);
-                }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "async" {
+                return Some(true);
             }
         }
         Some(false)
     }
 
     fn get_visibility(&self, node: SyntaxNode<'_>, source: &str) -> Option<Visibility> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "visibility_modifier" {
-                    return Some(if get_node_text(child, source).contains("pub") {
-                        Visibility::Public
-                    } else {
-                        Visibility::Private
-                    });
-                }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "visibility_modifier" {
+                return Some(if get_node_text(child, source).contains("pub") {
+                    Visibility::Public
+                } else {
+                    Visibility::Private
+                });
             }
         }
         // Rust defaults to private
@@ -478,9 +477,8 @@ extern "C" {
         assert_eq!(field_v.kind, NodeKind::Field);
         assert_eq!(field_v.qualified_name, "config::Inner::v");
 
-        // union_item → Struct-kind with extracted fields
         let union = find("MyUnion").expect("union node");
-        assert_eq!(union.kind, NodeKind::Struct);
+        assert_eq!(union.kind, NodeKind::Union);
         assert!(find("a").is_some_and(|n| n.kind == NodeKind::Field));
 
         // macro_definition → Macro node
@@ -504,6 +502,53 @@ extern "C" {
         // foreign function in `extern "C"` block (function_signature_item)
         let c_fn = find("c_fn").expect("FFI fn in extern block");
         assert!(matches!(c_fn.kind, NodeKind::Function | NodeKind::Method));
+    }
+
+    #[test]
+    fn rust_union_keeps_fields_and_impl_relationships() {
+        let source = r#"
+pub union Reg {
+    pub raw: u32,
+    pub halves: [u16; 2],
+}
+pub trait Describe {
+    fn describe(&self) -> u32;
+}
+impl Describe for Reg {
+    fn describe(&self) -> u32 { 0 }
+}
+"#;
+        let result = TreeSitterExtractor::new(
+            "src/reg.rs",
+            source,
+            Some(Language::Rust),
+            Some(&RustExtractor),
+        )
+        .extract();
+        let reg = result
+            .nodes
+            .iter()
+            .find(|node| node.name == "Reg")
+            .expect("union");
+        let method = result
+            .nodes
+            .iter()
+            .find(|node| node.qualified_name == "Reg::describe")
+            .expect("union impl method");
+
+        assert_eq!(reg.kind, NodeKind::Union);
+        assert_eq!(reg.start_line, 2);
+        assert!(result.nodes.iter().any(|node| {
+            node.kind == NodeKind::Field && node.name == "raw" && node.qualified_name == "Reg::raw"
+        }));
+        assert!(result.unresolved_references.iter().any(|reference| {
+            reference.from_node_id == reg.id
+                && reference.reference_kind == EdgeKind::Implements
+                && reference.reference_name == "Describe"
+        }));
+        assert!(result.edges.iter().any(|edge| {
+            edge.kind == EdgeKind::Contains && edge.source == reg.id && edge.target == method.id
+        }));
     }
 
     /// Pins a second batch of constructs: unit structs, tuple structs (+

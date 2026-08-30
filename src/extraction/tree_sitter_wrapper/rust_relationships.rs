@@ -80,12 +80,11 @@ impl<'a> TreeSitterExtractor<'a> {
     pub(super) fn extract_rust_impl_item(&mut self, node: SyntaxNode<'_>) {
         // Check if this is `impl Trait for Type` by looking for a `for` keyword
         let mut has_for = false;
-        for i in 0..node.child_count() as u32 {
-            if let Some(c) = node.child(i) {
-                if c.kind() == "for" && !c.is_named() {
-                    has_for = true;
-                    break;
-                }
+        let mut cursor = node.walk();
+        for c in node.children(&mut cursor) {
+            if c.kind() == "for" && !c.is_named() {
+                has_for = true;
+                break;
             }
         }
         if !has_for {
@@ -168,7 +167,10 @@ impl<'a> TreeSitterExtractor<'a> {
             .iter()
             .find(|n| {
                 n.name == name
-                    && matches!(n.kind, NodeKind::Struct | NodeKind::Enum | NodeKind::Class)
+                    && matches!(
+                        n.kind,
+                        NodeKind::Struct | NodeKind::Union | NodeKind::Enum | NodeKind::Class
+                    )
             })
             .map(|n| n.id.clone())
     }

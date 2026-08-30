@@ -10,6 +10,7 @@ pub mod astro_extractor;
 pub mod cfml_extractor;
 pub mod dfm_extractor;
 pub mod extraction_version;
+pub(crate) mod file_selection;
 pub mod generated_detection;
 pub mod grammars;
 pub mod ida_c_extractor;
@@ -34,7 +35,13 @@ pub use astro_extractor::AstroExtractor;
 pub use cfml_extractor::CfmlExtractor;
 pub use dfm_extractor::DfmExtractor;
 pub use extraction_version::EXTRACTION_VERSION;
-pub use generated_detection::is_generated_file;
+pub use generated_detection::{
+    GeneratedFilePredicate,
+    GenerationStatus,
+    detect_generated_file,
+    has_generated_header,
+    is_generated_file,
+};
 // `export { detectLanguage, isSourceFile, isLanguageSupported, isGrammarLoaded,
 //  getSupportedLanguages, initGrammars, loadGrammarsForLanguages, loadAllGrammars }
 //  from './grammars'` — the whole grammar surface is re-exported (superset).

@@ -29,6 +29,11 @@ pub(super) fn r_dollar_call_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^([0-9A-Za-z_.]+)\$([0-9A-Za-z_]+)$").expect("valid regex"))
 }
 
+pub(super) fn php_property_call_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^(this->[0-9A-Za-z_]+)\.([0-9A-Za-z_]+)$").expect("valid regex"))
+}
+
 pub(super) fn cpp_keyword_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -175,6 +180,7 @@ pub(super) fn find_best_match<'a>(
         if reference.reference_kind == EdgeKind::Instantiates
             && (candidate.kind == NodeKind::Class
                 || candidate.kind == NodeKind::Struct
+                || candidate.kind == NodeKind::Union
                 || candidate.kind == NodeKind::Interface)
         {
             score += 25.0;

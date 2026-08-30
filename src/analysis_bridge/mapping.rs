@@ -10,7 +10,7 @@ use crate::types::{EdgeKind, Node, NodeKind, Visibility};
 pub fn map_node_kind(kind: NodeKind) -> Option<ANodeKind> {
     match kind {
         NodeKind::Function | NodeKind::Method => Some(ANodeKind::Function),
-        NodeKind::Class | NodeKind::Struct => Some(ANodeKind::Struct),
+        NodeKind::Class | NodeKind::Struct | NodeKind::Union => Some(ANodeKind::Struct),
         NodeKind::Enum => Some(ANodeKind::Enum),
         NodeKind::File | NodeKind::Module | NodeKind::Namespace => Some(ANodeKind::Module),
         NodeKind::Trait | NodeKind::Interface | NodeKind::Protocol => Some(ANodeKind::Trait),

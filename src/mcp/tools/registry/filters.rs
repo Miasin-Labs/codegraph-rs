@@ -5,12 +5,14 @@ use std::collections::HashSet;
 use super::super::schema::ToolDefinition;
 use super::catalog::tools;
 
+const DEFAULT_MCP_TOOLS: &[&str] = &["explore"];
+
 pub(in crate::mcp::tools) fn short_tool_name(name: &str) -> &str {
     name.strip_prefix("codegraph_").unwrap_or(name)
 }
 
 /// Optional allowlist of exposed tools, parsed from the CODEGRAPH_MCP_TOOLS
-/// env var (comma-separated short names). Unset/empty → every tool exposed.
+/// env var (comma-separated short names). Unset/empty → the minimal default.
 pub(in crate::mcp::tools) fn tool_allowlist() -> Option<HashSet<String>> {
     let raw = std::env::var("CODEGRAPH_MCP_TOOLS").ok()?;
     if raw.trim().is_empty() {
@@ -32,6 +34,13 @@ pub fn get_static_tools() -> Vec<ToolDefinition> {
             .into_iter()
             .filter(|t| allow.contains(short_tool_name(&t.name)))
             .collect(),
-        None => tools(),
+        None => tools()
+            .into_iter()
+            .filter(|tool| DEFAULT_MCP_TOOLS.contains(&short_tool_name(&tool.name)))
+            .collect(),
     }
+}
+
+pub(in crate::mcp::tools) fn default_tool(name: &str) -> bool {
+    DEFAULT_MCP_TOOLS.contains(&short_tool_name(name))
 }

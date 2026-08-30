@@ -6,6 +6,8 @@ use super::parse::{
     FILE_IO_BATCH_SIZE,
     extract_from_source,
     extraction_error_result,
+    extraction_error_result_with_severity,
+    max_file_size,
     parse_batch,
 };
 use super::pipeline::ExtractionOrchestrator;
@@ -114,9 +116,22 @@ impl<'a> ExtractionOrchestrator<'a> {
             ));
         }
 
-        // No size cap — files are indexed regardless of size (see the parallel
-        // batch path). Exclusion is by ignore rules / generated detection, not
-        // by a byte threshold.
+        // Honour MAX_FILE_SIZE (TS parity) — skip oversized inputs with a
+        // `size_exceeded` warning. `content` is already in memory here, so the
+        // guard bounds only extraction work, not I/O.
+        let size_cap = max_file_size();
+        if size_cap > 0 && content.len() as u64 > size_cap {
+            return Ok(extraction_error_result_with_severity(
+                format!(
+                    "File exceeds max size ({} > {})",
+                    content.len(),
+                    size_cap
+                ),
+                relative_path,
+                "size_exceeded",
+                Severity::Warning,
+            ));
+        }
 
         // Detect language
         let language = detect_language_with_overrides(
@@ -157,12 +172,9 @@ impl<'a> ExtractionOrchestrator<'a> {
 
     pub(super) fn persist_batch_item(&self, item: BatchItem) -> Result<ExtractionResult> {
         match item.outcome {
-            BatchOutcome::ReadError(message) => {
-                let (message, code) = if message == "Path traversal blocked" {
-                    (message, "path_traversal")
-                } else {
-                    (format!("Failed to read file: {message}"), "read_error")
-                };
+            BatchOutcome::ReadError(failure) => {
+                let code = failure.code();
+                let message = failure.extraction_message();
                 Ok(extraction_error_result(message, &item.file_path, code))
             }
             BatchOutcome::Parsed {

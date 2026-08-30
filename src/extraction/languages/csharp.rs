@@ -68,16 +68,15 @@ impl LanguageExtractor for CsharpExtractor {
     }
 
     fn get_visibility(&self, node: SyntaxNode<'_>, source: &str) -> Option<Visibility> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "modifier" {
-                    match get_node_text(child, source) {
-                        "public" => return Some(Visibility::Public),
-                        "private" => return Some(Visibility::Private),
-                        "protected" => return Some(Visibility::Protected),
-                        "internal" => return Some(Visibility::Internal),
-                        _ => {}
-                    }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "modifier" {
+                match get_node_text(child, source) {
+                    "public" => return Some(Visibility::Public),
+                    "private" => return Some(Visibility::Private),
+                    "protected" => return Some(Visibility::Protected),
+                    "internal" => return Some(Visibility::Internal),
+                    _ => {}
                 }
             }
         }
@@ -86,22 +85,40 @@ impl LanguageExtractor for CsharpExtractor {
     }
 
     fn is_static(&self, node: SyntaxNode<'_>, source: &str) -> Option<bool> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "modifier" && get_node_text(child, source) == "static" {
-                    return Some(true);
-                }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "modifier" && get_node_text(child, source) == "static" {
+                return Some(true);
             }
         }
         Some(false)
     }
 
+    fn is_const(&self, node: SyntaxNode<'_>, source: &str) -> Option<bool> {
+        let mut has_static = false;
+        let mut has_readonly = false;
+        for index in 0..node.child_count() as u32 {
+            let Some(child) = node.child(index) else {
+                continue;
+            };
+            if child.kind() != "modifier" {
+                continue;
+            }
+            match get_node_text(child, source) {
+                "const" => return Some(true),
+                "static" => has_static = true,
+                "readonly" => has_readonly = true,
+                _ => {}
+            }
+        }
+        Some(has_static && has_readonly)
+    }
+
     fn is_async(&self, node: SyntaxNode<'_>, source: &str) -> Option<bool> {
-        for i in 0..node.child_count() as u32 {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "modifier" && get_node_text(child, source) == "async" {
-                    return Some(true);
-                }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "modifier" && get_node_text(child, source) == "async" {
+                return Some(true);
             }
         }
         Some(false)
