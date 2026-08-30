@@ -36,6 +36,7 @@ fn framework_registry_preserves_ts_registration_order() {
             "react-native-bridge",
             "expo-modules",
             "fabric-view",
+            "tauri-ipc",
             "cics",
             "terraform",
             "salesforce",
