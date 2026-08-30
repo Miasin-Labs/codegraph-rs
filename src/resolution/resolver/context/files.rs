@@ -13,6 +13,16 @@ impl ResolverContext {
                 return true;
             }
         }
+        // Bound the filesystem fallback to the project root. Relative-import
+        // resolution can hand us paths carrying `../` segments, and `Path::join`
+        // does not clamp, so an unguarded probe would `stat` arbitrary absolute
+        // paths outside the root. A path outside the root can never be an
+        // indexed project file, so refusing it here is the correct answer, not
+        // a new restriction. Lexical-only containment mirrors the indexing
+        // tier's `allowSymlinkEscape` behavior: in-root symlinks still resolve.
+        if !crate::utils::is_path_within_root(file_path, Path::new(&self.project_root)) {
+            return false;
+        }
         Path::new(&self.project_root).join(file_path).exists()
     }
 

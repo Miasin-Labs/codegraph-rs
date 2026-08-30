@@ -284,4 +284,83 @@ mod tests {
         assert_eq!(context.get_nodes_in_file("src/a.rs").len(), 2);
         assert!(context.get_node_by_id("unknown").is_none());
     }
+
+    // Regression for upstream #1631: the filesystem fallback in `file_exists`
+    // must stay inside the project root. A crafted relative import can hand the
+    // resolver a path carrying `../` segments; `Path::join` does not clamp, so
+    // an unguarded probe would `stat` arbitrary absolute paths outside the root.
+    #[test]
+    fn file_exists_refuses_paths_escaping_the_root_even_when_target_exists() {
+        let base = tempfile::tempdir().unwrap();
+        // Layout: <base>/proj (the root) and <base>/outside/secret.js.
+        let root = base.path().join("proj");
+        let outside = base.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let secret = outside.join("secret.js");
+        std::fs::write(&secret, "export const x = 42;\n").unwrap();
+
+        // The escaping target really exists on disk, so a `false` result can
+        // only come from the containment guard, not from a missing file.
+        assert!(secret.exists());
+
+        let context = SnapshotContext::from_nodes(
+            &root.to_string_lossy(),
+            vec![node("n1", "x", "a::x", "src/a.rs")],
+            vec!["src/a.rs".into()],
+        )
+        .unwrap();
+
+        assert!(
+            !context.file_exists("../outside/secret.js"),
+            "escaping relative path must be refused despite existing on disk"
+        );
+    }
+
+    #[test]
+    fn file_exists_still_resolves_files_inside_the_root() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/present.js"), "export const y = 1;\n").unwrap();
+
+        let context = SnapshotContext::from_nodes(
+            &root.path().to_string_lossy(),
+            vec![node("n1", "y", "a::y", "src/a.rs")],
+            vec!["src/a.rs".into()],
+        )
+        .unwrap();
+
+        // Present and absent in-root files both behave normally.
+        assert!(context.file_exists("src/present.js"));
+        assert!(!context.file_exists("src/absent.js"));
+        // Indexed files still resolve regardless of the disk probe.
+        assert!(context.file_exists("src/a.rs"));
+    }
+
+    // Guards the #935 behavior: an in-root symlink whose target lives outside
+    // the root still resolves, because containment here is lexical only.
+    #[cfg(unix)]
+    #[test]
+    fn file_exists_follows_in_root_symlink_pointing_outside() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("proj");
+        let outside = base.path().join("vendor");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("lib.js"), "export const z = 3;\n").unwrap();
+        // In-root symlink `proj/vendored` -> outside `vendor` directory.
+        std::os::unix::fs::symlink(&outside, root.join("vendored")).unwrap();
+
+        let context = SnapshotContext::from_nodes(
+            &root.to_string_lossy(),
+            vec![node("n1", "z", "a::z", "src/a.rs")],
+            vec!["src/a.rs".into()],
+        )
+        .unwrap();
+
+        assert!(
+            context.file_exists("vendored/lib.js"),
+            "in-root symlink to an outside target must still resolve (#935)"
+        );
+    }
 }
