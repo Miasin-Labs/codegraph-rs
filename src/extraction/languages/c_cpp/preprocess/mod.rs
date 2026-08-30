@@ -23,6 +23,7 @@ use common::{
     blank_cpp_annotation_macro_calls,
     blank_lone_macro_lines,
     restore_directive_lines,
+    restore_raw_string_spans,
 };
 use cpp::{
     blank_cpp_api_prefix_macros,
@@ -49,7 +50,8 @@ pub(super) fn pre_parse_cpp_source<'a>(source: &'a str, file_path: &str) -> Cow<
     {
         blanked = super::blank_cuda_constructs(&blanked);
     }
-    Cow::Owned(restore_directive_lines(source, &blanked))
+    let restored = restore_directive_lines(source, &blanked);
+    Cow::Owned(restore_raw_string_spans(source, &restored))
 }
 
 pub(super) fn pre_parse_c_source(source: &str) -> Cow<'_, str> {

@@ -879,4 +879,67 @@ union Value {
                 && edge.target == method.id
         }));
     }
+
+    #[test]
+    fn cpp_indexes_functions_after_anonymous_namespace_of_raw_strings() {
+        // Upstream #1505: a C++ file that opens with anonymous `namespace { ... }`
+        // blocks containing raw-string literals, followed by top-level
+        // functions. Macro-shaped text inside the raw strings must NOT trip the
+        // pre-parse blanking passes into consuming the raw-string delimiter — if
+        // it does, tree-sitter loses the delimiter and every function after the
+        // raw string vanishes.
+        let source = concat!(
+            "namespace {\n",
+            "const char* kSchema = R\"SQL(\n",
+            "CREATE TABLE foo (\n",
+            "  id INTEGER,\n",
+            ");\n",
+            "CALL_SOMETHING(arg\n",
+            "BIG_UPPER_MACRO_NAME\n",
+            "  { unbalanced braces }\n",
+            ")SQL\";\n",
+            "}\n",
+            "\n",
+            "namespace {\n",
+            "const char* kJson = R\"JSON(\n",
+            "{ \"key\": \"value\",\n",
+            "NLOHMANN_JSON_NAMESPACE_BEGIN(\n",
+            ")JSON\";\n",
+            "}\n",
+            "\n",
+            "int create_scaffold() {\n",
+            "    return 0;\n",
+            "}\n",
+            "\n",
+            "void helper_after() {\n",
+            "}\n",
+        );
+        let result = TreeSitterExtractor::new(
+            "src/scaffold.cpp",
+            source,
+            Some(Language::Cpp),
+            Some(&CppExtractor),
+        )
+        .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|node| node.name == "create_scaffold" && node.kind == NodeKind::Function),
+            "create_scaffold should be indexed; nodes: {:?}",
+            result
+                .nodes
+                .iter()
+                .map(|node| (&node.name, node.kind))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|node| node.name == "helper_after" && node.kind == NodeKind::Function),
+            "helper_after should be indexed"
+        );
+    }
 }
