@@ -58,6 +58,7 @@ impl<'a> TreeSitterExtractor<'a> {
         let docstring = get_preceding_docstring(node, self.source);
         let signature = ext.get_signature(node, self.source);
         let visibility = ext.get_visibility(node, self.source);
+        let is_exported = ext.is_exported(node, self.source);
         let is_async = ext.is_async(node, self.source);
         let is_static = ext.is_static(node, self.source);
         let return_type = ext.get_return_type(node, self.source);
@@ -71,6 +72,7 @@ impl<'a> TreeSitterExtractor<'a> {
                 docstring,
                 signature,
                 visibility,
+                is_exported,
                 is_async,
                 is_static,
                 return_type,
