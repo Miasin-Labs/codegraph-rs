@@ -31,6 +31,7 @@ use super::{
     process,
     remove_git_sync_hook,
     resolve_absolute,
+    resolve_index_path,
     resolve_project_path,
     run_index_all,
     success,
@@ -149,7 +150,16 @@ pub(crate) fn cmd_uninit(path_arg: Option<&str>, force: bool) {
 
 /// codegraph index [path]
 pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, verbose: bool) {
-    let project_path = resolve_project_path(path_arg);
+    // `index` builds an index at the location the caller named — when a path is
+    // given explicitly it must NOT walk up to an initialized ancestor the way
+    // query commands do. That fallback silently rebuilt some ancestor's index
+    // (potentially a huge, unrelated one many directories up) and reported
+    // success, never saying it had ignored the requested path. Resolve an
+    // explicit path literally and, when it is not initialized, refuse and point
+    // at `init` for that exact path. A bare `index` (no path) keeps the
+    // subdirectory convenience of resolving the nearest initialized project.
+    // (upstream #1524)
+    let project_path = resolve_index_path(path_arg);
 
     let body = async {
         if !force {
@@ -162,7 +172,10 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
                 "CodeGraph not initialized in {}",
                 project_path.display()
             ));
-            info("Run \"codegraph init\" first");
+            info(&format!(
+                "Run \"codegraph init {}\" first",
+                project_path.display()
+            ));
             process::exit(1);
         }
 

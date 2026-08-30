@@ -40,6 +40,7 @@ use super::{
     process,
     remove_git_sync_hook,
     resolve_absolute,
+    resolve_index_path,
     resolve_project_path,
     run_index_all,
     success,

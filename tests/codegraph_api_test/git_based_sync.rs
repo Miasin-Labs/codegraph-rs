@@ -209,6 +209,84 @@ mod git_based_sync {
         let changes = cg.get_changed_files().unwrap();
         assert!(changes.modified.contains(&"src/index.ts".to_string()));
     }
+
+    // =========================================================================
+    // Project in a subdirectory of its git repo (refPR #1636)
+    //
+    // In the TS upstream, `getGitChangedFiles` ran `git status --porcelain` with
+    // cwd = project root but got REPOSITORY-relative paths back covering the
+    // WHOLE repo, so a project below the repo root read every edit as unreadable
+    // (wrong path) and reported "up to date" no matter what changed. The Rust
+    // port never took that path: change detection is filesystem-vs-index and its
+    // scan uses `git ls-files`, which is both cwd-relative and cwd-scoped — so a
+    // subdirectory project is scoped correctly for free. These tests pin that
+    // invariant so it stays deliberate.
+    // =========================================================================
+
+    async fn setup_git_repo_with_subdir_project(repo: &Path) -> CodeGraph {
+        git(repo, &["init", "-q"]);
+        git(repo, &["config", "user.email", "test@test.com"]);
+        git(repo, &["config", "user.name", "Test"]);
+        git(repo, &["config", "commit.gpgsign", "false"]);
+        // The indexed project lives in app/; server/ is a sibling package.
+        write(
+            &repo.join("app/src/index.ts"),
+            "export function appFn() { return 'app'; }",
+        );
+        write(
+            &repo.join("server/s.ts"),
+            "export function serverFn() { return 'server'; }",
+        );
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", "initial"]);
+
+        let app = repo.join("app");
+        let cg = CodeGraph::init_sync(&app).unwrap();
+        cg.index_all(&IndexOptions::default()).await.unwrap();
+        cg
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn detects_changes_when_project_lives_in_a_subdirectory_of_its_repo() {
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path();
+        let cg = setup_git_repo_with_subdir_project(repo).await;
+
+        // Edit a file inside the subdirectory project.
+        write(
+            &repo.join("app/src/index.ts"),
+            "export function appFn() { return 'app v2'; }",
+        );
+
+        let changes = cg.get_changed_files().unwrap();
+        assert!(
+            changes.modified.contains(&"src/index.ts".to_string()),
+            "subdir project edit must be reported project-relative: {changes:?}"
+        );
+
+        let result = cg.sync(&IndexOptions::default()).await.unwrap();
+        assert_eq!(result.files_modified, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ignores_sibling_package_edits_for_a_subdirectory_project() {
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path();
+        let cg = setup_git_repo_with_subdir_project(repo).await;
+
+        // Edit a SIBLING package outside the indexed project. It must not be
+        // counted as this project's change.
+        write(
+            &repo.join("server/s.ts"),
+            "export function serverFn() { return 'server v2'; }",
+        );
+
+        let changes = cg.get_changed_files().unwrap();
+        assert!(
+            changes.added.is_empty() && changes.modified.is_empty() && changes.removed.is_empty(),
+            "a sibling package edit must not count as the subdir project's change: {changes:?}"
+        );
+    }
 }
 
 // =============================================================================

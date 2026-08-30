@@ -12,6 +12,53 @@ use crate::extraction::file_selection::is_indexable_existing_file;
 use crate::project_config::{ProjectConfig, load_project_config, matcher_matches};
 use crate::utils::{normalize_path, validate_existing_path_within_root_real};
 
+/// What a scan saw but could not index, tallied by extension.
+///
+/// Filled during the walk the scan already performs. A project written entirely
+/// in a language CodeGraph has no grammar for is otherwise indistinguishable
+/// from an empty one — unsupported extensions are filtered out at discovery and
+/// counted nowhere, so `index`/`init` report "No files found" with a `complete`
+/// index state and exit 0, telling neither a human nor an agent that there was
+/// code here it could not read (issue #1502 / refPR #1605).
+#[derive(Debug, Clone, Default)]
+pub struct ScanSkipStats {
+    /// Lowercased extension (with dot) → how many files carried it. A `Vec`
+    /// (not a map) preserves first-seen order, mirroring the TS `Map`.
+    pub unsupported_by_extension: Vec<(String, usize)>,
+}
+
+impl ScanSkipStats {
+    /// Record one file the scan declined to index. Files without an extension
+    /// are ignored, matching the TS `tallySkip` (`path.extname` empty → skip).
+    fn tally(&mut self, relative_path: &str) {
+        let name = relative_path.rsplit('/').next().unwrap_or(relative_path);
+        let Some(dot) = name.rfind('.') else {
+            return;
+        };
+        // A leading dot (dotfile with no other dot) has no extension in Node's
+        // `path.extname` sense — `.gitignore` → "".
+        if dot == 0 {
+            return;
+        }
+        let ext = name[dot..].to_ascii_lowercase();
+        match self
+            .unsupported_by_extension
+            .iter_mut()
+            .find(|(e, _)| *e == ext)
+        {
+            Some((_, count)) => *count += 1,
+            None => self.unsupported_by_extension.push((ext, 1)),
+        }
+    }
+}
+
+/// Record one skipped file into the optional stats sink.
+fn tally_skip(stats: &mut Option<&mut ScanSkipStats>, relative_path: &str) {
+    if let Some(s) = stats.as_deref_mut() {
+        s.tally(relative_path);
+    }
+}
+
 /// Recursively scan a directory for source files.
 ///
 /// In git repos, uses `git ls-files` (inherently respects .gitignore at all
@@ -27,8 +74,19 @@ pub fn scan_directory(
 
 pub(super) fn scan_directory_with_config(
     root_dir: &Path,
+    on_progress: Option<&mut dyn FnMut(usize, &str)>,
+    config: &ProjectConfig,
+) -> Vec<String> {
+    scan_directory_with_config_stats(root_dir, on_progress, config, None)
+}
+
+/// Like [`scan_directory_with_config`] but also tallies files the scan saw yet
+/// has no grammar for, into `stats` (issue #1502).
+pub(super) fn scan_directory_with_config_stats(
+    root_dir: &Path,
     mut on_progress: Option<&mut dyn FnMut(usize, &str)>,
     config: &ProjectConfig,
+    mut stats: Option<&mut ScanSkipStats>,
 ) -> Vec<String> {
     let exclude = config.exclude_matcher(root_dir);
     // Fast path: use git to get all visible files (respects .gitignore everywhere)
@@ -37,15 +95,21 @@ pub(super) fn scan_directory_with_config(
         let mut seen = HashSet::new();
         let mut count = 0usize;
         for file_path in git_files {
-            if !matcher_matches(exclude.as_ref(), &file_path, false)
-                && is_indexable_existing_file(root_dir, &file_path, config.extension_overrides())
-                && seen.insert(file_path.clone())
-            {
-                count += 1;
-                if let Some(cb) = on_progress.as_deref_mut() {
-                    cb(count, &file_path);
+            if matcher_matches(exclude.as_ref(), &file_path, false) {
+                continue;
+            }
+            if is_indexable_existing_file(root_dir, &file_path, config.extension_overrides()) {
+                if seen.insert(file_path.clone()) {
+                    count += 1;
+                    if let Some(cb) = on_progress.as_deref_mut() {
+                        cb(count, &file_path);
+                    }
+                    files.push(file_path);
                 }
-                files.push(file_path);
+            } else {
+                // Visible to git and not excluded, but no grammar for it — count
+                // it so an all-unsupported project isn't reported as empty (#1502).
+                tally_skip(&mut stats, &file_path);
             }
         }
         append_included_files(
@@ -60,7 +124,7 @@ pub(super) fn scan_directory_with_config(
     }
 
     // Fallback: walk filesystem for non-git projects
-    scan_directory_walk_with_config(root_dir, on_progress, config)
+    scan_directory_walk_with_config(root_dir, on_progress, config, stats)
 }
 
 /// A .gitignore matcher scoped to the directory that declared it. Patterns in
@@ -112,6 +176,7 @@ fn scan_directory_walk_with_config(
     root_dir: &Path,
     mut on_progress: Option<&mut dyn FnMut(usize, &str)>,
     config: &ProjectConfig,
+    mut stats: Option<&mut ScanSkipStats>,
 ) -> Vec<String> {
     let mut files: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -131,6 +196,7 @@ fn scan_directory_walk_with_config(
         seen: &mut HashSet<String>,
         count: &mut usize,
         on_progress: &mut Option<&mut dyn FnMut(usize, &str)>,
+        stats: &mut Option<&mut ScanSkipStats>,
     ) {
         let real_dir = match fs::canonicalize(dir) {
             Ok(p) => p,
@@ -234,21 +300,24 @@ fn scan_directory_walk_with_config(
                                     seen,
                                     count,
                                     on_progress,
+                                    stats,
                                 );
                             }
-                        } else if stat.is_file()
-                            && !is_ignored(&full_path, false, matchers)
-                            && is_indexable_existing_file(
+                        } else if stat.is_file() && !is_ignored(&full_path, false, matchers) {
+                            if is_indexable_existing_file(
                                 root_dir,
                                 &relative_path,
                                 config.extension_overrides(),
-                            )
-                            && seen.insert(relative_path.clone())
-                        {
-                            files.push(relative_path.clone());
-                            *count += 1;
-                            if let Some(cb) = on_progress.as_deref_mut() {
-                                cb(*count, &relative_path);
+                            ) {
+                                if seen.insert(relative_path.clone()) {
+                                    files.push(relative_path.clone());
+                                    *count += 1;
+                                    if let Some(cb) = on_progress.as_deref_mut() {
+                                        cb(*count, &relative_path);
+                                    }
+                                }
+                            } else {
+                                tally_skip(stats, &relative_path);
                             }
                         }
                     }
@@ -275,21 +344,24 @@ fn scan_directory_walk_with_config(
                         seen,
                         count,
                         on_progress,
+                        stats,
                     );
                 }
-            } else if file_type.is_file()
-                && !is_ignored(&full_path, false, matchers)
-                && is_indexable_existing_file(
+            } else if file_type.is_file() && !is_ignored(&full_path, false, matchers) {
+                if is_indexable_existing_file(
                     root_dir,
                     &relative_path,
                     config.extension_overrides(),
-                )
-                && seen.insert(relative_path.clone())
-            {
-                files.push(relative_path.clone());
-                *count += 1;
-                if let Some(cb) = on_progress.as_deref_mut() {
-                    cb(*count, &relative_path);
+                ) {
+                    if seen.insert(relative_path.clone()) {
+                        files.push(relative_path.clone());
+                        *count += 1;
+                        if let Some(cb) = on_progress.as_deref_mut() {
+                            cb(*count, &relative_path);
+                        }
+                    }
+                } else {
+                    tally_skip(stats, &relative_path);
                 }
             }
         }
@@ -316,6 +388,7 @@ fn scan_directory_walk_with_config(
         &mut seen,
         &mut count,
         &mut on_progress,
+        &mut stats,
     );
     append_included_files(
         root_dir,
@@ -471,6 +544,82 @@ mod tests {
         assert!(
             !files.iter().any(|file| file == "third_party/llama.cpp"),
             "gitlinks that materialize as directories are not readable source files: {files:?}"
+        );
+    }
+
+    #[test]
+    fn scan_tallies_unsupported_extensions_on_the_git_path() {
+        // A project of only unsupported files must not look empty: the scan
+        // records what it declined to index, by extension (#1502).
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("a.pl"), "print 1;\n").unwrap();
+        fs::write(root.join("b.pl"), "print 2;\n").unwrap();
+        fs::write(root.join("c.foobar"), "x\n").unwrap();
+        git(root, &["init", "-q"]);
+        git(root, &["add", "a.pl", "b.pl", "c.foobar"]);
+
+        let mut stats = ScanSkipStats::default();
+        let files = scan_directory_with_config_stats(
+            root,
+            None,
+            &ProjectConfig::default(),
+            Some(&mut stats),
+        );
+
+        assert!(files.is_empty(), "no file should be indexable: {files:?}");
+        let by_ext: std::collections::HashMap<_, _> =
+            stats.unsupported_by_extension.iter().cloned().collect();
+        assert_eq!(by_ext.get(".pl"), Some(&2));
+        assert_eq!(by_ext.get(".foobar"), Some(&1));
+    }
+
+    #[test]
+    fn scan_tallies_unsupported_extensions_on_the_filesystem_walk_path() {
+        // Same tally on the non-git fallback (no `.git` here), because the two
+        // discovery paths filter in different places (#1502).
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("a.pl"), "print 1;\n").unwrap();
+        fs::write(root.join("b.foobar"), "x\n").unwrap();
+
+        let mut stats = ScanSkipStats::default();
+        let files = scan_directory_with_config_stats(
+            root,
+            None,
+            &ProjectConfig::default(),
+            Some(&mut stats),
+        );
+
+        assert!(files.is_empty(), "no file should be indexable: {files:?}");
+        let by_ext: std::collections::HashMap<_, _> =
+            stats.unsupported_by_extension.iter().cloned().collect();
+        assert_eq!(by_ext.get(".pl"), Some(&1));
+        assert_eq!(by_ext.get(".foobar"), Some(&1));
+    }
+
+    #[test]
+    fn scan_records_no_skips_when_every_file_is_indexable() {
+        // The counter must stay empty on a healthy project so it never fires on
+        // the happy path (#1502).
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        fs::write(root.join("b.ts"), "export const b = 1;\n").unwrap();
+
+        let mut stats = ScanSkipStats::default();
+        let files = scan_directory_with_config_stats(
+            root,
+            None,
+            &ProjectConfig::default(),
+            Some(&mut stats),
+        );
+
+        assert_eq!(files.len(), 2, "both files should index: {files:?}");
+        assert!(
+            stats.unsupported_by_extension.is_empty(),
+            "no skips expected: {:?}",
+            stats.unsupported_by_extension
         );
     }
 }

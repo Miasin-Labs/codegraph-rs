@@ -24,6 +24,7 @@ pub use progress::{
     IndexResult,
     ReconcileResult,
     SyncResult,
+    UnsupportedExtension,
 };
 pub use scan::scan_directory;
 pub use store::hash_content;

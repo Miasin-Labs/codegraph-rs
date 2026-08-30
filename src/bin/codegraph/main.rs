@@ -161,7 +161,7 @@ use output::{
     white,
     yellow,
 };
-use path::{resolve_absolute, resolve_project_path};
+use path::{resolve_absolute, resolve_index_path, resolve_project_path};
 use serve::cmd_serve;
 use tool_commands::{
     cmd_daemon,

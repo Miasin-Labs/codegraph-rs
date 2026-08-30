@@ -173,6 +173,34 @@ pub(crate) fn print_index_result(
             get_glyphs().dash,
             format_number(result.files_errored as u64)
         ));
+    } else if let Some(skipped) = result.files_skipped_unsupported {
+        // A project CodeGraph has no grammar for used to be indistinguishable
+        // from an empty one: same message, same `complete` state, same exit 0.
+        // Say which files were there and that the graph is empty on purpose, so
+        // nobody — and no agent trusting the graph — reads silence as "this code
+        // doesn't exist" (#1502).
+        let top = result
+            .top_unsupported_extensions
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|e| format!("{} ({})", e.ext, format_number(e.count as u64)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let suffix = if top.is_empty() {
+            String::new()
+        } else {
+            format!(": {top}")
+        };
+        clack_log_warn(&format!(
+            "No supported source files found {} {} file(s) present, none in a language CodeGraph indexes{}",
+            get_glyphs().dash,
+            format_number(skipped as u64),
+            suffix
+        ));
+        clack_log_info(
+            "CodeGraph is inactive for this workspace — searches will return nothing. Use your own file tools here.",
+        );
     } else {
         clack_log_warn("No files found to index");
     }

@@ -689,3 +689,88 @@ async fn callers_callees_impact_attribute_per_definition_and_scope_by_file() {
         "a missed --file falls back to showing all definitions: {v}"
     );
 }
+
+// index <path> must not silently rebuild an ancestor's index (issue #1524)
+// =============================================================================
+
+#[test]
+fn index_explicit_uninitialized_path_refuses_instead_of_indexing_ancestor() {
+    // Given: only the parent is initialized; its child is an explicit, un-indexed
+    // subdirectory. `index child/` used to walk up, rebuild the PARENT index, and
+    // print success — never saying the named child had been ignored (#1524).
+    let (_dir, root) = temp_project_without_parent_index();
+    let parent = root.join("parent");
+    let child = parent.join("child");
+    fs::create_dir_all(&child).unwrap();
+    fs::write(parent.join("p.py"), "def parent_only():\n    return 1\n").unwrap();
+    fs::write(child.join("c.py"), "def child_only():\n    return 2\n").unwrap();
+
+    let init = run_cli(&parent, &["init", "."]);
+    assert!(
+        init.status.success(),
+        "init parent failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    // When: the child is named explicitly for indexing.
+    let out = run_cli(&child, &["index", "."]);
+
+    // Then: it refuses (non-zero) and names the child path — no silent success,
+    // and the child is never given an index of the ancestor's contents.
+    assert!(
+        !out.status.success(),
+        "index of an uninitialized explicit path should fail, not silently index an ancestor"
+    );
+    assert!(
+        !child.join(".codegraph").join("codegraph.db").exists(),
+        "child must not gain an index"
+    );
+    let combined = format!(
+        "{}{}",
+        stdout_str(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("not initialized"),
+        "message should explain the child is not initialized: {combined}"
+    );
+    assert!(
+        combined.contains("child"),
+        "message should reference the named path, not an ancestor: {combined}"
+    );
+    assert!(
+        !combined.contains("Indexed"),
+        "must not report a successful index: {combined}"
+    );
+}
+
+#[test]
+fn bare_index_from_subdirectory_still_resolves_initialized_ancestor() {
+    // A bare `index` (no path) keeps the query-style convenience of resolving the
+    // nearest initialized project, so running it from a subdir of an initialized
+    // project still indexes that project. Only an EXPLICIT path is literal (#1524).
+    let (_dir, root) = temp_project_without_parent_index();
+    let sub = root.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(root.join("main.py"), "def top():\n    return 1\n").unwrap();
+
+    let init = run_cli(&root, &["init", "."]);
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let out = run_cli(&sub, &["index"]);
+    assert!(
+        out.status.success(),
+        "bare index from a subdir of an initialized project should succeed: {} {}",
+        stdout_str(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout_str(&out).contains("Indexed"),
+        "bare index should report indexing the ancestor project: {}",
+        stdout_str(&out)
+    );
+}

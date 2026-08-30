@@ -195,6 +195,8 @@ fn lock_failure_index_result() -> IndexResult {
         files_skipped: 0,
         files_errored: 0,
         files_discovered: None,
+        files_skipped_unsupported: None,
+        top_unsupported_extensions: None,
         nodes_created: 0,
         edges_created: 0,
         errors: vec![ExtractionError {

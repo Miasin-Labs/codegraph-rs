@@ -61,6 +61,7 @@ pub use orchestrator::{
     IndexResult,
     ReconcileResult,
     SyncResult,
+    UnsupportedExtension,
     build_default_ignore,
     extract_from_source,
     hash_content,
