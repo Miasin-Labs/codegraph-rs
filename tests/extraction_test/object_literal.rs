@@ -31,11 +31,14 @@ fn object_literal_extracts_zustand_store_actions_as_function_nodes() {
 
     // Each action's body was walked: fetchUser references its sibling `reset`,
     // so an in-store calls edge will resolve once the pipeline runs.
+    // Select the object-literal action (a Function), not the interface
+    // `fetchUser(): Promise<void>` member (a Method) that #1638 now also
+    // indexes — both share the name, only the Function has the walked body.
     let fetch_user = result
         .nodes
         .iter()
-        .find(|n| n.name == "fetchUser")
-        .expect("fetchUser");
+        .find(|n| n.name == "fetchUser" && n.kind == NodeKind::Function)
+        .expect("fetchUser function");
     let fetch_user_refs: Vec<&str> = result
         .unresolved_references
         .iter()
