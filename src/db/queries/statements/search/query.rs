@@ -8,7 +8,7 @@ use super::super::rows::node_from_row;
 use super::filters::{intersect_filter_axis, push_kind_filter, push_language_filter};
 use crate::error::Result;
 use crate::search::{kind_bonus, name_match_bonus, parse_query, score_path_relevance};
-use crate::types::{SearchOptions, SearchResult};
+use crate::types::{Language, NodeKind, SearchOptions, SearchResult};
 
 impl QueryBuilder {
     /// Search nodes by name using FTS with fallback to LIKE for better matching.
@@ -64,6 +64,22 @@ impl QueryBuilder {
             // results despite the DB having plenty of matches.
             self.search_all_by_filters(kinds, languages, fetch_limit * 5, exhaustive_candidates)?
         };
+
+        // FTS unicode61 keeps camelCase/PascalCase identifiers as opaque
+        // tokens, so a query like `checkout` misses
+        // `getShippingMethodIdFromCheckout`. name_segment_vocab already stores
+        // those sub-words at index time — merge them into the candidate set
+        // before falling through to LIKE (#1520).
+        if !text.is_empty() {
+            let supplement_limit = (limit * 5).max(100);
+            self.supplement_with_segment_matches(
+                &mut results,
+                text,
+                kinds,
+                languages,
+                supplement_limit,
+            )?;
+        }
 
         // If no FTS results, try LIKE-based substring search
         if results.is_empty() && text.chars().count() >= 2 {
@@ -166,5 +182,78 @@ impl QueryBuilder {
         }
 
         Ok(results.into_iter().skip(offset).take(limit).collect())
+    }
+    /// Merge camelCase/PascalCase sub-word hits from `name_segment_vocab` into
+    /// an FTS candidate set. FTS5's default tokenizer does not split case
+    /// boundaries, so queries like `checkout` otherwise miss
+    /// `getShippingMethodIdFromCheckout` even though that segment was
+    /// materialized at index time (#1520).
+    fn supplement_with_segment_matches(
+        &self,
+        results: &mut Vec<SearchResult>,
+        text: &str,
+        kinds: Option<&[NodeKind]>,
+        languages: Option<&[Language]>,
+        limit: usize,
+    ) -> Result<()> {
+        // Same tokenisation as `search_nodes_fts`: `::` splits, FTS5 special
+        // chars are stripped, boolean operators dropped, terms lowercased.
+        let terms: Vec<String> = text
+            .replace("::", " ")
+            .chars()
+            .filter(|c| !matches!(c, '\'' | '"' | '*' | '(' | ')' | ':' | '^'))
+            .collect::<String>()
+            .split_whitespace()
+            .map(|t| t.to_lowercase())
+            .filter(|t| t.chars().count() >= 2)
+            .filter(|t| !matches!(t.as_str(), "and" | "or" | "not" | "near"))
+            .collect();
+        if terms.is_empty() {
+            return Ok(());
+        }
+
+        let mut existing_ids: HashSet<String> = results.iter().map(|r| r.node.id.clone()).collect();
+        // Use the max BM25 score as the base so segment-derived candidates
+        // enter rescoring on par with the FTS hits; fall back to 1.0 when FTS
+        // returned nothing.
+        let base_score = results
+            .iter()
+            .map(|r| r.score)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let base_score = if base_score.is_finite() {
+            base_score
+        } else {
+            1.0
+        };
+        let per_term = (limit.div_ceil(terms.len().max(1))).max(20);
+
+        for term in terms {
+            let names = self.get_names_for_segment(&term, per_term)?;
+            if names.is_empty() {
+                continue;
+            }
+            let placeholders = names.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let mut sql = format!("SELECT * FROM nodes WHERE name IN ({placeholders})");
+            let mut params: Vec<Value> = names.iter().map(|n| Value::Text(n.clone())).collect();
+            push_kind_filter(&mut sql, &mut params, "", kinds);
+            push_language_filter(&mut sql, &mut params, "", languages);
+            sql.push_str(" LIMIT ?");
+            params.push(Value::Integer((per_term * 3) as i64));
+            let mut stmt = self.db.conn().prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(params), node_from_row)?;
+            for row in rows {
+                let node = row?;
+                if existing_ids.contains(&node.id) {
+                    continue;
+                }
+                existing_ids.insert(node.id.clone());
+                results.push(SearchResult {
+                    node,
+                    score: base_score,
+                    highlights: None,
+                });
+            }
+        }
+        Ok(())
     }
 }
