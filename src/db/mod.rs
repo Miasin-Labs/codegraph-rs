@@ -18,7 +18,10 @@ pub use connection::{
     Db,
     SCHEMA_SQL,
     SqliteBackend,
+    WalHealResult,
     get_database_path,
+    resolve_wal_heal_bytes,
+    wal_heal_threshold_bytes,
 };
 pub use migrations::{
     CURRENT_SCHEMA_VERSION,
