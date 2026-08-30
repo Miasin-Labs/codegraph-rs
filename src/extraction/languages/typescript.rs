@@ -56,7 +56,14 @@ impl LanguageExtractor for TypescriptExtractor {
         &["class_declaration", "abstract_class_declaration"]
     }
     fn method_types(&self) -> &[&str] {
-        &["method_definition", "public_field_definition"]
+        &[
+            "method_definition",
+            "public_field_definition",
+            "method_signature",
+        ]
+    }
+    fn property_types(&self) -> &[&str] {
+        &["property_signature"]
     }
     fn interface_types(&self) -> &[&str] {
         &["interface_declaration"]
@@ -279,5 +286,70 @@ mod tests {
             .find(|n| n.kind == NodeKind::Import)
             .expect("import node");
         assert_eq!(import.name, "./mod");
+    }
+
+    /// Regression for upstream #1638: interface member `method_signature` and
+    /// `property_signature` nodes must be indexed. Before the fix an interface
+    /// declared its methods/properties but they never became graph nodes, so
+    /// every call site through a `.d.ts` platform API was invisible.
+    #[test]
+    fn typescript_interface_members_are_indexed() {
+        let source = "export interface PlatformContext {
+  deleteQueueCustomAck(queueName: string, thingId: number): void
+  createQueueCustomAckKey(queueName: string, thingId: number): void
+  readonly tenantId: string
+}
+";
+        let result = TreeSitterExtractor::new(
+            "src/api.d.ts",
+            source,
+            Some(Language::Typescript),
+            Some(&TypescriptExtractor),
+        )
+        .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let iface = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "PlatformContext")
+            .expect("interface node");
+        assert_eq!(iface.kind, NodeKind::Interface);
+
+        let del = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "deleteQueueCustomAck")
+            .expect("method_signature node");
+        assert_eq!(del.kind, NodeKind::Method);
+        assert_eq!(del.qualified_name, "PlatformContext::deleteQueueCustomAck");
+
+        let create = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "createQueueCustomAckKey")
+            .expect("second method_signature node");
+        assert_eq!(create.kind, NodeKind::Method);
+
+        let prop = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "tenantId")
+            .expect("property_signature node");
+        assert_eq!(prop.kind, NodeKind::Property);
+        assert_eq!(prop.qualified_name, "PlatformContext::tenantId");
+
+        let method_count = result
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Method)
+            .count();
+        assert_eq!(method_count, 2, "expected 2 interface methods");
+        let property_count = result
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Property)
+            .count();
+        assert_eq!(property_count, 1, "expected 1 interface property");
     }
 }
