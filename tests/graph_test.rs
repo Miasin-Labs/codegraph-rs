@@ -762,6 +762,86 @@ fn finds_trivial_self_path() {
     assert!(path[0].edge.is_none());
 }
 
+// Regression guard for #1359: findPath's BFS must gate queue pushes with an
+// enqueue-once guard (mark visited AT ENQUEUE), not only at dequeue. On a
+// fan-in hub — many predecessors pointing at the same targets — a dequeue-only
+// guard re-enqueues each shared target once per incoming edge (O(k^2) pushes,
+// each copying a path), while the enqueue-once guard pushes each target once.
+// Result correctness is identical (still the shortest path), so this test pins
+// the correct shortest-path answer through a dense fan-in layer; the perf win
+// is structural (see `find_path`, where `visited.insert` precedes the push).
+#[test]
+fn find_path_shortest_through_a_fan_in_hub() {
+    let dir = TempDir::new().expect("tempdir");
+    let conn = DatabaseConnection::initialize(dir.path().join("codegraph.db")).expect("init db");
+    let queries = Rc::new(QueryBuilder::new(conn.get_db().expect("db handle")));
+    queries.upsert_file(&make_file("src/hub.ts")).expect("file");
+
+    // A single source fans out to k "left" nodes; every left node points at
+    // every one of k "right" nodes (a complete bipartite fan-in on the right
+    // layer); every right node points at a single sink. Each right node is
+    // thus reachable via k distinct predecessors in one BFS layer.
+    let k = 8usize;
+    let mut nodes = vec![make_node(
+        "src",
+        NodeKind::Function,
+        "src",
+        "src/hub.ts::src",
+        "src/hub.ts",
+        false,
+    )];
+    let sink = "sink";
+    for i in 0..k {
+        for side in ["L", "R"] {
+            let id = format!("{side}{i}");
+            nodes.push(make_node(
+                &id,
+                NodeKind::Function,
+                &id,
+                &format!("src/hub.ts::{id}"),
+                "src/hub.ts",
+                false,
+            ));
+        }
+    }
+    nodes.push(make_node(
+        sink,
+        NodeKind::Function,
+        "sink",
+        "src/hub.ts::sink",
+        "src/hub.ts",
+        false,
+    ));
+    queries.insert_nodes(&nodes).expect("insert nodes");
+
+    let mut edges = Vec::new();
+    for i in 0..k {
+        edges.push(Edge::new("src", format!("L{i}"), EdgeKind::Calls));
+        for j in 0..k {
+            edges.push(Edge::new(format!("L{i}"), format!("R{j}"), EdgeKind::Calls));
+        }
+        edges.push(Edge::new(format!("R{i}"), sink, EdgeKind::Calls));
+    }
+    queries.insert_edges(&edges).expect("insert edges");
+
+    let traverser = GraphTraverser::new(Rc::clone(&queries));
+    let path = traverser
+        .find_path("src", sink, &[])
+        .unwrap()
+        .expect("src -> sink path exists through the fan-in hub");
+
+    // Shortest route is src -> L? -> R? -> sink: exactly four nodes, three hops.
+    assert_eq!(path.len(), 4, "shortest path spans src, one L, one R, sink");
+    assert_eq!(path[0].node.id, "src");
+    assert!(path[0].edge.is_none());
+    assert!(path[1].node.id.starts_with('L'));
+    assert!(path[2].node.id.starts_with('R'));
+    assert_eq!(path[3].node.id, sink);
+    for step in &path[1..] {
+        assert_eq!(step.edge.as_ref().map(|e| e.kind), Some(EdgeKind::Calls));
+    }
+}
+
 // A cancelled tool call must stop an in-flight traversal: with the thread-local
 // cancel token already tripped, find_path bails out with an error instead of
 // walking the graph. The guard restores the (empty) token on drop.
