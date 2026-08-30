@@ -1,0 +1,47 @@
+# Lefthook git hooks for codegraph-rs.
+#
+# Runs via the global hooks dispatcher (core.hooksPath = ~/.config/git/hooks).
+# Fast checks gate every commit; the heavier CI-equivalent checks gate every push
+# so nothing that would fail CI (`.github/workflows/ci.yml`) reaches the remote.
+#
+# Escape hatches:
+#   LEFTHOOK=0 git commit ...     # skip all hooks once
+#   git commit --no-verify ...    # same, git-native
+#   git push --no-verify ...
+#
+# Tune parallelism per hook with `parallel: true` (already set where safe).
+
+pre-commit:
+  parallel: true
+  commands:
+    # `cargo fmt --all --check` parity with the CI `rustfmt` job. Fast; fails
+    # the commit if any tracked Rust file is unformatted.
+    fmt:
+      glob: "*.rs"
+      run: cargo fmt --all --check
+    # Block accidentally committed credentials/private keys. Scans only the
+    # staged files (fast) for high-signal secret shapes; source identifiers like
+    # `api_key:` without a literal value do not match.
+    secret-scan:
+      run: |
+        if git diff --cached --name-only --diff-filter=ACM -z \
+          | xargs -0 -r grep -nIEH \
+              -e '-----BEGIN (RSA|OPENSSH|EC|DSA|PGP) PRIVATE KEY-----' \
+              -e '(api[_-]?key|secret|token|password)[[:space:]]*[:=][[:space:]]*["'"'"'][A-Za-z0-9/+_.-]{20,}["'"'"']' \
+              -e 'gh[pousr]_[A-Za-z0-9]{30,}' \
+              -e 'AKIA[0-9A-Z]{16}' \
+          ; then
+          echo "lefthook: potential secret detected in staged changes — commit blocked." >&2
+          echo "  If this is a false positive, commit with: git commit --no-verify" >&2
+          exit 1
+        fi
+
+pre-push:
+  parallel: false
+  commands:
+    # `cargo clippy --workspace --all-targets -- -D warnings` parity with CI.
+    clippy:
+      run: cargo clippy --workspace --all-targets -- -D warnings
+    # `cargo test --workspace` parity with CI.
+    test:
+      run: cargo test --workspace
