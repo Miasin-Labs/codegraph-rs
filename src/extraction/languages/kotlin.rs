@@ -2,8 +2,8 @@
 //!
 //! Ported from `src/extraction/languages/kotlin.ts`.
 
-use super::find_named_child;
-use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
+use super::{find_named_child, named_children};
+use crate::extraction::tree_sitter_helpers::get_node_text;
 use crate::extraction::tree_sitter_types::{
     ClassLikeKind,
     ExtractorContext,
@@ -369,8 +369,30 @@ impl LanguageExtractor for KotlinExtractor {
 
     fn get_signature(&self, node: SyntaxNode<'_>, source: &str) -> Option<String> {
         // Kotlin function signature: fun name(params): ReturnType
-        let params = get_child_by_field(node, "function_value_parameters")?;
-        let return_type = get_child_by_field(node, "type");
+        //
+        // tree-sitter-kotlin exposes no field names, so `getChildByField`
+        // always returns undefined here. Mirror `get_receiver_type` /
+        // `extractKotlinReturnType` and locate nodes positionally by their
+        // `kind`: the params are the `function_value_parameters` named child,
+        // and the declared return type is the first `user_type` / `nullable_type`
+        // that FOLLOWS the params (an extension receiver's type sits before the
+        // params, so it is never mistaken for the return). If the body or a
+        // `where`-clause is reached first, there is no declared return type.
+        let mut params: Option<SyntaxNode<'_>> = None;
+        let mut return_type: Option<SyntaxNode<'_>> = None;
+        for child in named_children(node) {
+            match child.kind() {
+                "function_value_parameters" => params = Some(child),
+                _ if params.is_none() => {}
+                "function_body" | "type_constraints" => break,
+                "user_type" | "nullable_type" => {
+                    return_type = Some(child);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let params = params?;
         let mut sig = get_node_text(params, source).to_string();
         if let Some(rt) = return_type {
             sig.push_str(": ");
@@ -526,5 +548,60 @@ mod tests {
             "extension fn should carry receiver type, got {:?}",
             shout.qualified_name
         );
+    }
+
+    #[test]
+    fn kotlin_function_signature_fieldless_grammar() {
+        // Regression for upstream #1495: tree-sitter-kotlin exposes no field
+        // names, so `get_child_by_field(node, "function_value_parameters")`
+        // always returned None and the signature resolved to undefined. The
+        // params + return type must be located positionally by node kind.
+        let source = "class Calc {\n    fun add(a: Int, b: Int): Int { return a + b }\n    fun greet(name: String) { println(name) }\n}\n";
+        let result = TreeSitterExtractor::new(
+            "src/Calc.kt",
+            source,
+            Some(Language::Kotlin),
+            Some(&KotlinExtractor),
+        )
+        .extract();
+
+        let add = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "add")
+            .expect("add method");
+        assert_eq!(
+            add.signature.as_deref(),
+            Some("(a: Int, b: Int): Int"),
+            "signature must include params and return type"
+        );
+
+        // No declared return type -> signature is just the params, no trailing `:`.
+        let greet = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "greet")
+            .expect("greet method");
+        assert_eq!(greet.signature.as_deref(), Some("(name: String)"));
+    }
+
+    #[test]
+    fn kotlin_extension_function_signature_excludes_receiver() {
+        // The extension receiver type sits BEFORE the params, so it must never
+        // be picked up as the return type.
+        let source = "fun String.shout(loud: Boolean): String = this.uppercase()\n";
+        let result = TreeSitterExtractor::new(
+            "src/Ext.kt",
+            source,
+            Some(Language::Kotlin),
+            Some(&KotlinExtractor),
+        )
+        .extract();
+        let shout = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "shout")
+            .expect("extension fn");
+        assert_eq!(shout.signature.as_deref(), Some("(loud: Boolean): String"));
     }
 }
