@@ -282,6 +282,16 @@ pub struct WorkspacePackages {
 pub trait ResolutionContext {
     /// Get all nodes in a file
     fn get_nodes_in_file(&self, file_path: &str) -> Vec<Node>;
+    /// Get a single node by its id.
+    ///
+    /// Used by the alias-binding hop (see `alias_binding`) to inspect a
+    /// resolved target and, when it is a pure alias, forward the call to the
+    /// symbol it names. Defaulted to `None` so lightweight test/framework
+    /// contexts compile without change; the production resolver contexts
+    /// (snapshot + query-backed) override it.
+    fn get_node_by_id(&self, _id: &str) -> Option<Node> {
+        None
+    }
     /// Get all nodes by name
     fn get_nodes_by_name(&self, name: &str) -> Vec<Node>;
     /// Get all nodes by qualified name
