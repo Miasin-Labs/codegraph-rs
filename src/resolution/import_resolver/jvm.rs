@@ -2,6 +2,7 @@ mod cpp;
 mod go;
 mod imports;
 mod path_imports;
+mod php;
 mod python;
 mod re_exports;
 
@@ -71,6 +72,17 @@ pub fn resolve_via_import(
     if reference.language == Language::Python {
         if let Some(python_result) = python::resolve_python_receiver(reference, &imports, context) {
             return Some(python_result);
+        }
+    }
+
+    // PHP: `use App\Services\Foo as Bar;` then `Bar::method()`. PHP
+    // qualified names drop the namespace, so the file-path import lookup
+    // below can't follow the FQN import; resolve the receiver alias to
+    // its class and constrain the method lookup to it (issue #1545).
+    if reference.language == Language::Php {
+        if let Some(php_result) = php::resolve_php_imported_reference(reference, &imports, context)
+        {
+            return Some(php_result);
         }
     }
 
