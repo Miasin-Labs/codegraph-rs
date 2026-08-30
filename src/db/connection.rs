@@ -155,11 +155,66 @@ fn configure_connection(conn: &Connection) -> Result<()> {
          PRAGMA temp_store = MEMORY;      -- temp tables in memory
          PRAGMA mmap_size = 268435456;    -- 256 MB memory-mapped I/O",
     )?;
+    // Without a journal_size_limit the -wal file never shrinks below its
+    // high-water mark while a connection lives: checkpoints fold frames back
+    // but leave the file at full size, so one giant deferred-sync WAL stays
+    // giant forever. With the limit set, any checkpoint that resets the WAL
+    // truncates the file back down. Killed-process leftovers are handled
+    // separately by `heal_oversized_wal` at open. (#1431, #1539)
+    conn.execute_batch(&format!(
+        "PRAGMA journal_size_limit = {}",
+        wal_heal_threshold_bytes()
+    ))?;
     // The QueryBuilder keeps ~30 distinct prepared statements hot via
     // prepare_cached (the TS lazily-initialized `stmts` map); raise the
     // cache above rusqlite's default of 16 so none thrash.
     conn.set_prepared_statement_cache_capacity(64);
     Ok(())
+}
+
+/// Default WAL heal / `journal_size_limit` threshold in bytes (64 MiB).
+const DEFAULT_WAL_HEAL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// WAL size past which [`DatabaseConnection::heal_oversized_wal`] (run at every
+/// `open`) checkpoints and truncates the file, and to which
+/// `journal_size_limit` clips the WAL after any resetting checkpoint.
+///
+/// A SIGKILL'd process (the #850 liveness watchdog, OOM, a crash) can leave an
+/// arbitrarily large WAL behind — a whole deferred-sync run's worth (#1248,
+/// #1539) — and before this fix no later session ever shrank it: the file just
+/// grew, killed session after killed session, until the disk filled (64 GiB
+/// observed in #1539, 25.6 GB in #1431). 64 MiB is far above anything a healthy
+/// open ever sees (a clean close deletes the WAL) yet small enough to cap the
+/// leak. Override with `CODEGRAPH_WAL_HEAL_MB` (also feeds `journal_size_limit`).
+pub fn wal_heal_threshold_bytes() -> u64 {
+    resolve_wal_heal_bytes(std::env::var("CODEGRAPH_WAL_HEAL_MB").ok().as_deref())
+}
+
+/// Resolve the heal threshold from the env override (MB); invalid ⇒ 64 MiB.
+/// Mirrors TS `resolveWalHealBytes`.
+pub fn resolve_wal_heal_bytes(env_val: Option<&str>) -> u64 {
+    if let Some(v) = env_val {
+        if !v.is_empty() {
+            if let Ok(n) = v.trim().parse::<f64>() {
+                if n.is_finite() && n > 0.0 {
+                    return (n * 1024.0 * 1024.0).floor() as u64;
+                }
+            }
+        }
+    }
+    DEFAULT_WAL_HEAL_BYTES
+}
+
+/// Result of a [`DatabaseConnection::heal_oversized_wal`] pass. Mirrors the TS
+/// `healOversizedWal` return shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalHealResult {
+    /// Whether the WAL file shrank as a result of the heal.
+    pub healed: bool,
+    /// WAL size in bytes before the heal ran.
+    pub before_bytes: u64,
+    /// WAL size in bytes after the heal ran.
+    pub after_bytes: u64,
 }
 
 /// Database connection wrapper with lifecycle management.
@@ -234,11 +289,21 @@ impl DatabaseConnection {
         }
         repair_shared_schema_v9(&db)?;
 
-        Ok(DatabaseConnection {
+        let conn = DatabaseConnection {
             db: Some(db),
             db_path: db_path.to_path_buf(),
             backend: SqliteBackend::Native,
-        })
+        };
+
+        // Self-heal a killed session's leftover oversized WAL (#1431, #1539) —
+        // one stat when healthy, checkpoint+truncate when not. Unlike the TS
+        // (which fires this off-thread against a worker connection), the port
+        // owns the only connection and runs it inline at open, before any
+        // writer is live, so a multi-GB WAL cannot silently ratchet across
+        // killed daemons until the disk fills.
+        conn.heal_oversized_wal();
+
+        Ok(conn)
     }
 
     fn db_ref(&self) -> Result<&Db> {
@@ -308,6 +373,91 @@ impl DatabaseConnection {
         Ok(fs::metadata(&self.db_path)?.len())
     }
 
+    /// Size of the `-wal` sidecar file in bytes. 0 when it doesn't exist
+    /// (non-WAL journal mode, in-memory DB, or no write since the last
+    /// checkpoint+reset). Mirrors TS `getWalSizeBytes`.
+    pub fn get_wal_size_bytes(&self) -> u64 {
+        wal_size_bytes(&self.db_path)
+    }
+
+    /// Size of the main DB file in bytes (0 for unknown). Mirrors TS
+    /// `getDbFileSizeBytes`.
+    pub fn get_db_file_size_bytes(&self) -> u64 {
+        fs::metadata(&self.db_path).map(|m| m.len()).unwrap_or(0)
+    }
+
+    /// `PRAGMA wal_checkpoint(<mode>)`. Returns SQLite's checkpoint result row
+    /// `(busy, log, checkpointed)` — `log == checkpointed` with `busy == 0`
+    /// means the ENTIRE WAL was backfilled, so the writer's next commit
+    /// restarts the WAL from the top and (with `journal_size_limit` set) the
+    /// file is clipped. `TRUNCATE` additionally chops the file to zero when no
+    /// reader holds a WAL mark. Best-effort: `None` on any failure. Mirrors TS
+    /// `checkpointWalPassive` / `checkpointWalTruncate` (which the port runs on
+    /// the single owning connection rather than a worker thread — at `open`
+    /// there is no live writer to block).
+    fn checkpoint_wal(&self, mode: &str) -> Option<(i64, i64, i64)> {
+        let db = self.db.as_ref()?;
+        db.conn()
+            .query_row(&format!("PRAGMA wal_checkpoint({mode})"), [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .ok()
+    }
+
+    /// Shrink a leftover oversized WAL (#1431, #1539). A SIGKILL'd session — the
+    /// #850 liveness watchdog, OOM, a crash — leaves its WAL on disk, the next
+    /// session appends to the same file, and (pre-fix) nothing ever truncated
+    /// it: PASSIVE checkpoints fold frames but keep the file at its high-water
+    /// mark, and the one shrinking path (a clean last-connection close) is
+    /// exactly what the killed world never takes. Unbounded growth until the
+    /// disk fills (64 GiB in #1539).
+    ///
+    /// Called from every `open`: cost is one `stat` when the WAL is small (the
+    /// overwhelmingly common case). Past the threshold it runs a PASSIVE fold
+    /// then TRUNCATE, retrying a few times so a racing reader/writer degrades a
+    /// checkpoint pass to a busy no-op the next attempt (or open) retries
+    /// rather than a stall.
+    pub fn heal_oversized_wal(&self) -> WalHealResult {
+        let before_bytes = self.get_wal_size_bytes();
+        let threshold = wal_heal_threshold_bytes();
+        if before_bytes <= threshold {
+            return WalHealResult {
+                healed: false,
+                before_bytes,
+                after_bytes: before_bytes,
+            };
+        }
+        // A racing reader/writer (another session healing the same file, a
+        // query pool warming up) degrades a checkpoint pass to a busy no-op —
+        // retry a few times before leaving the rest to the next open.
+        for attempt in 0..3 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+            let _ = self.checkpoint_wal("PASSIVE");
+            let _ = self.checkpoint_wal("TRUNCATE");
+            if self.get_wal_size_bytes() <= threshold {
+                break;
+            }
+        }
+        let after_bytes = self.get_wal_size_bytes();
+        if std::env::var_os("CODEGRAPH_WAL_VALVE_DEBUG").is_some() {
+            crate::error::log_debug(
+                &format!(
+                    "[wal-heal] oversized WAL at open: {}MB -> {}MB",
+                    before_bytes / (1024 * 1024),
+                    after_bytes / (1024 * 1024)
+                ),
+                None,
+            );
+        }
+        WalHealResult {
+            healed: after_bytes < before_bytes,
+            before_bytes,
+            after_bytes,
+        }
+    }
+
     /// Optimize database (vacuum and analyze).
     pub fn optimize(&self) -> Result<()> {
         let db = self.db_ref()?;
@@ -349,10 +499,151 @@ impl DatabaseConnection {
     }
 }
 
+/// Size of the `-wal` sidecar for `db_path` in bytes; 0 when it doesn't exist.
+fn wal_size_bytes(db_path: &Path) -> u64 {
+    let mut wal = db_path.as_os_str().to_os_string();
+    wal.push("-wal");
+    fs::metadata(PathBuf::from(wal))
+        .map(|m| m.len())
+        .unwrap_or(0)
+}
+
 /// Default database filename.
 pub const DATABASE_FILENAME: &str = "codegraph.db";
 
 /// Get the default database path for a project.
 pub fn get_database_path(project_root: impl AsRef<Path>) -> PathBuf {
     crate::directory::get_codegraph_dir(project_root.as_ref()).join(DATABASE_FILENAME)
+}
+
+#[cfg(test)]
+mod wal_heal_tests {
+    //! Regression tests for #1431 / #1539: a SIGKILL'd session leaves the
+    //! SQLite WAL on disk; the next session appends to the same file; and
+    //! before the fix NOTHING ever truncated it — PASSIVE checkpoints fold
+    //! frames but keep the file at its high-water mark, and the only shrinking
+    //! path (a clean last-connection close) is exactly what a killed-daemon
+    //! world never takes. Observed in the wild at 64 GiB (#1539).
+    //!
+    //! The fix: `journal_size_limit` on every connection (resetting checkpoints
+    //! now clip the file), plus `heal_oversized_wal()` fired from every
+    //! `DatabaseConnection::open`.
+    use tempfile::tempdir;
+
+    use super::*;
+
+    const MB: u64 = 1024 * 1024;
+
+    #[test]
+    fn resolves_heal_threshold_from_env_override_defaulting_to_64mb() {
+        assert_eq!(resolve_wal_heal_bytes(None), 64 * MB);
+        assert_eq!(resolve_wal_heal_bytes(Some("")), 64 * MB);
+        assert_eq!(resolve_wal_heal_bytes(Some("nope")), 64 * MB);
+        assert_eq!(resolve_wal_heal_bytes(Some("-3")), 64 * MB);
+        assert_eq!(resolve_wal_heal_bytes(Some("0")), 64 * MB);
+        assert_eq!(resolve_wal_heal_bytes(Some("128")), 128 * MB);
+    }
+
+    #[test]
+    fn sets_journal_size_limit_on_every_connection() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("codegraph.db");
+        DatabaseConnection::initialize(&db_path).unwrap().close();
+
+        let conn = DatabaseConnection::open(&db_path).unwrap();
+        let limit: i64 = conn
+            .get_db()
+            .unwrap()
+            .conn()
+            .query_row("PRAGMA journal_size_limit", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(limit as u64, wal_heal_threshold_bytes());
+    }
+
+    #[test]
+    fn leaves_healthy_small_wals_alone() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("codegraph.db");
+        DatabaseConnection::initialize(&db_path).unwrap().close();
+
+        let conn = DatabaseConnection::open(&db_path).unwrap();
+        let res = conn.heal_oversized_wal();
+        assert!(!res.healed);
+        assert!(res.before_bytes <= wal_heal_threshold_bytes());
+    }
+
+    /// Reproduce the ratchet with a tiny threshold: an orphaned oversized WAL
+    /// (as a SIGKILL leaves behind) is folded + truncated on the next
+    /// `heal_oversized_wal`, while all committed data survives.
+    #[test]
+    fn heals_an_orphaned_oversized_wal_and_keeps_the_data() {
+        // Shrink the threshold so the test doesn't need to write 64 MiB.
+        // Safe within a single test process (serialized by cargo per binary
+        // only across threads — guard with a fixed value the assertions use).
+        let prev = std::env::var("CODEGRAPH_WAL_HEAL_MB").ok();
+        std::env::set_var("CODEGRAPH_WAL_HEAL_MB", "1");
+        let threshold = wal_heal_threshold_bytes();
+        assert_eq!(threshold, MB);
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("codegraph.db");
+        DatabaseConnection::initialize(&db_path).unwrap().close();
+
+        // Grow the WAL well past the 1 MiB threshold with autocheckpoint off
+        // (deferred-checkpoint sync mode, #1248), then DROP the connection
+        // WITHOUT a clean checkpoint to mimic a killed session's leftover.
+        {
+            let conn = DatabaseConnection::open(&db_path).unwrap();
+            let db = conn.get_db().unwrap();
+            db.exec("PRAGMA wal_autocheckpoint = 0").unwrap();
+            db.exec("CREATE TABLE junk (id INTEGER PRIMARY KEY, blob BLOB)")
+                .unwrap();
+            let chunk = vec![0xabu8; 256 * 1024];
+            while wal_size_bytes(&db_path) < 4 * MB {
+                db.exec("BEGIN").unwrap();
+                {
+                    let mut stmt = db
+                        .conn()
+                        .prepare("INSERT INTO junk (blob) VALUES (?)")
+                        .unwrap();
+                    for _ in 0..20 {
+                        stmt.execute(rusqlite::params![chunk]).unwrap();
+                    }
+                }
+                db.exec("COMMIT").unwrap();
+            }
+            // Leak the connection so Drop cannot run a clean checkpoint —
+            // the WAL file survives just as after a SIGKILL.
+            std::mem::forget(conn);
+        }
+
+        let before = wal_size_bytes(&db_path);
+        assert!(
+            before > threshold,
+            "WAL should be oversized: {before} bytes"
+        );
+
+        // A fresh open both auto-heals and lets us call the heal explicitly.
+        let conn = DatabaseConnection::open(&db_path).unwrap();
+        conn.heal_oversized_wal();
+        let after = wal_size_bytes(&db_path);
+        assert!(
+            after <= threshold,
+            "WAL should be clipped below threshold: {after} bytes"
+        );
+        // The folded data is all there.
+        let n: i64 = conn
+            .get_db()
+            .unwrap()
+            .conn()
+            .query_row("SELECT COUNT(*) FROM junk", [], |row| row.get(0))
+            .unwrap();
+        assert!(n > 0);
+
+        // Restore env for other tests in this binary.
+        match prev {
+            Some(v) => std::env::set_var("CODEGRAPH_WAL_HEAL_MB", v),
+            None => std::env::remove_var("CODEGRAPH_WAL_HEAL_MB"),
+        }
+    }
 }
