@@ -46,21 +46,22 @@ pub(super) const FILE_IO_BATCH_SIZE: usize = 64;
 /// extraction results while keeping parse workers busy during SQLite writes.
 pub(super) const PARSE_PIPELINE_DEPTH: usize = 2;
 
-/// Default maximum size of a file that gets parsed. Files larger than this are
-/// recorded with a `size_exceeded` warning and skipped, mirroring the TS
-/// reference (`src/extraction/index.ts` `MAX_FILE_SIZE`). Vendored/generated
-/// multi-MB inputs — minified bundles, amalgamated `sqlite3.c`, base64 resource
-/// blobs like `qrc_emoji_*.cpp` — carry no useful symbols but do carry
-/// pathological syntax trees (tens of thousands of siblings under one node)
-/// that make extraction quadratic. Skipping them by size is the cheap,
-/// deterministic guard the parser-level algorithmic fixes back up. 1 MiB
-/// covers essentially all hand-written source.
-pub(super) const DEFAULT_MAX_FILE_SIZE: u64 = 1024 * 1024;
+/// Default per-file size cap: `0` = **disabled**. This crate deliberately
+/// indexes every file regardless of size (a tracked file that grows past 1 MiB
+/// is re-indexed, not dropped — see the `git_based_sync` integration test);
+/// exclusion is by ignore rules / generated-file detection, not a byte
+/// threshold. The quadratic blow-up that oversized generated files used to
+/// cause is fixed at the algorithm level (one-pass access-specifier resolution,
+/// cursor iteration, `Arc<str>` file sharing), so no default cap is needed.
+///
+/// The cap remains available as an **opt-in** for callers indexing hostile or
+/// pathological trees who prefer to skip multi-MB blobs outright.
+pub(super) const DEFAULT_MAX_FILE_SIZE: u64 = 0;
 
-/// Resolved per-file size cap. Overridable with `CODEGRAPH_MAX_FILE_SIZE`
-/// (bytes); a value of `0` disables the cap entirely (index everything, at the
-/// caller's own risk on pathological inputs). Invalid/empty values fall back to
-/// [`DEFAULT_MAX_FILE_SIZE`].
+/// Resolved per-file size cap in bytes. `0` (the default) disables the cap;
+/// set `CODEGRAPH_MAX_FILE_SIZE=<bytes>` to skip files larger than that with a
+/// `size_exceeded` warning (TS `MAX_FILE_SIZE` behaviour). Invalid values fall
+/// back to [`DEFAULT_MAX_FILE_SIZE`] (disabled).
 pub(super) fn max_file_size() -> u64 {
     match std::env::var("CODEGRAPH_MAX_FILE_SIZE") {
         Ok(raw) if !raw.trim().is_empty() => {
@@ -428,11 +429,7 @@ pub(super) fn read_and_parse(
                 stats: FileStats::from_metadata(&meta),
                 result: ExtractionResult {
                     errors: vec![ExtractionError {
-                        message: format!(
-                            "File exceeds max size ({} > {})",
-                            meta.len(),
-                            size_cap
-                        ),
+                        message: format!("File exceeds max size ({} > {})", meta.len(), size_cap),
                         file_path: Some(file_path.to_string()),
                         line: None,
                         column: None,
@@ -507,6 +504,9 @@ pub(super) fn extraction_error_result_with_severity(
 mod tests {
     use super::*;
 
+    /// Serializes env-var mutation across the size-cap tests in this process.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[tokio::test(flavor = "current_thread")]
     async fn parse_batch_preserves_input_order() {
         let temp = tempfile::tempdir().unwrap();
@@ -576,19 +576,46 @@ mod tests {
     }
 
     #[test]
-    fn read_and_parse_skips_files_over_max_size_with_warning() {
-        let temp = tempfile::tempdir().unwrap();
-        // Write a file larger than MAX_FILE_SIZE.
-        let big = "a".repeat((max_file_size() as usize) + 1024);
-        std::fs::write(temp.path().join("huge.cpp"), &big).unwrap();
+    fn max_file_size_defaults_to_disabled_and_honours_env_override() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
+        // SAFETY: single-threaded within the lock; restored before release.
+        let prev = std::env::var("CODEGRAPH_MAX_FILE_SIZE").ok();
+        unsafe { std::env::remove_var("CODEGRAPH_MAX_FILE_SIZE") };
+        assert_eq!(max_file_size(), 0, "default cap is disabled");
+
+        unsafe { std::env::set_var("CODEGRAPH_MAX_FILE_SIZE", "1048576") };
+        assert_eq!(max_file_size(), 1024 * 1024);
+
+        unsafe { std::env::set_var("CODEGRAPH_MAX_FILE_SIZE", "not-a-number") };
+        assert_eq!(max_file_size(), 0, "invalid value falls back to disabled");
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("CODEGRAPH_MAX_FILE_SIZE", v) },
+            None => unsafe { std::env::remove_var("CODEGRAPH_MAX_FILE_SIZE") },
+        }
+    }
+
+    #[test]
+    fn read_and_parse_skips_files_over_the_opt_in_cap_with_warning() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+        let temp = tempfile::tempdir().unwrap();
+        // Small file, but set a tiny opt-in cap so it counts as oversized.
+        std::fs::write(temp.path().join("huge.cpp"), "int a; int b; int c;\n").unwrap();
+
+        let prev = std::env::var("CODEGRAPH_MAX_FILE_SIZE").ok();
+        unsafe { std::env::set_var("CODEGRAPH_MAX_FILE_SIZE", "8") };
         let item = read_and_parse(temp.path(), "huge.cpp", &[], &ProjectConfig::default());
+        match prev {
+            Some(v) => unsafe { std::env::set_var("CODEGRAPH_MAX_FILE_SIZE", v) },
+            None => unsafe { std::env::remove_var("CODEGRAPH_MAX_FILE_SIZE") },
+        }
 
         match item.outcome {
             BatchOutcome::Parsed {
                 content, result, ..
             } => {
-                // Body is not read/parsed; a size_exceeded warning is recorded.
                 assert!(content.is_empty(), "oversized file body should not be read");
                 assert!(result.nodes.is_empty());
                 assert_eq!(result.errors.len(), 1);
@@ -603,12 +630,19 @@ mod tests {
     }
 
     #[test]
-    fn read_and_parse_indexes_files_at_or_below_max_size() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("ok.rs"), "fn small() {}
-").unwrap();
+    fn read_and_parse_indexes_files_when_cap_disabled() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("ok.rs"), "fn small() {}\n").unwrap();
+
+        let prev = std::env::var("CODEGRAPH_MAX_FILE_SIZE").ok();
+        unsafe { std::env::remove_var("CODEGRAPH_MAX_FILE_SIZE") };
         let item = read_and_parse(temp.path(), "ok.rs", &[], &ProjectConfig::default());
+        match prev {
+            Some(v) => unsafe { std::env::set_var("CODEGRAPH_MAX_FILE_SIZE", v) },
+            None => unsafe { std::env::remove_var("CODEGRAPH_MAX_FILE_SIZE") },
+        }
 
         match item.outcome {
             BatchOutcome::Parsed { content, .. } => {
@@ -617,5 +651,4 @@ mod tests {
             BatchOutcome::ReadError(failure) => panic!("small file failed: {failure:?}"),
         }
     }
-
 }

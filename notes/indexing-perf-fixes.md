@@ -48,15 +48,20 @@ String.
 Benchmark (540 KB file, 2,200 refs): clone+resplit-per-ref 237 ms →
 Arc + cached line index 0.05 ms (~4,395x).
 
-## 4. `MAX_FILE_SIZE` guard restored (TS parity)  [FIXED]
+## 4. `MAX_FILE_SIZE` guard — available as OPT-IN (default disabled)  [ADDED]
 
-The port had dropped the TS `MAX_FILE_SIZE` cap ("no size cap: index every
-file"). The current TS reference (`src/extraction/index.ts`) keeps a 1 MiB cap
-that skips oversized files with a `size_exceeded` warning — vendored/generated
-multi-MB inputs (minified bundles, amalgamated `sqlite3.c`, base64 `qrc_*.cpp`)
-have no useful symbols but pathological trees. Restored in both the bulk parse
-path and the single-file path. Overridable with `CODEGRAPH_MAX_FILE_SIZE`
-(bytes; `0` disables).
+The TS reference (`src/extraction/index.ts`) keeps a 1 MiB cap that skips
+oversized files with a `size_exceeded` warning. This crate, however,
+deliberately indexes every file regardless of size — a tracked file that grows
+past 1 MiB is re-indexed, not dropped (enforced by the `git_based_sync`
+integration test). Because the quadratic blow-up is now fixed at the algorithm
+level (items 1-3), no default cap is needed.
+
+The cap is therefore wired as an **opt-in**: `DEFAULT_MAX_FILE_SIZE = 0`
+(disabled). Set `CODEGRAPH_MAX_FILE_SIZE=<bytes>` to skip larger files with a
+`size_exceeded` warning (bulk + single-file paths); `0`/unset/invalid = no cap.
+This respects the project's "no size cap" design while giving operators indexing
+hostile trees an escape hatch.
 
 ## 5. Cooperative-yield + main-thread liveness watchdog — INTENTIONALLY NOT PORTED
 

@@ -122,11 +122,7 @@ impl<'a> ExtractionOrchestrator<'a> {
         let size_cap = max_file_size();
         if size_cap > 0 && content.len() as u64 > size_cap {
             return Ok(extraction_error_result_with_severity(
-                format!(
-                    "File exceeds max size ({} > {})",
-                    content.len(),
-                    size_cap
-                ),
+                format!("File exceeds max size ({} > {})", content.len(), size_cap),
                 relative_path,
                 "size_exceeded",
                 Severity::Warning,
