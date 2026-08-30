@@ -80,10 +80,13 @@ fn framework_registry_matches_ts_order_and_names() {
         .iter()
         .map(|r| r.name().to_string())
         .collect();
-    assert_eq!(names.len(), 28);
+    // 28 TS-parity resolvers + the Tauri IPC bridge (upstream #1543 / PR #878,
+    // a Rust-side addition not yet in TS main).
+    assert_eq!(names.len(), 29);
     assert_eq!(names[0], "laravel");
     assert!(names.contains(&"express".to_string()));
     assert!(names.contains(&"django".to_string()));
     assert!(names.contains(&"fabric-view".to_string()));
     assert!(names.contains(&"salesforce".to_string()));
+    assert!(names.contains(&"tauri-ipc".to_string()));
 }
