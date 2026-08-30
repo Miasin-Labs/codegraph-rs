@@ -168,4 +168,44 @@ fn build_pipeline() {
     assert!(!refs.contains(&"some_local".to_string()), "{refs:?}");
 }
 
+#[test]
+fn rust_unit_struct_is_indexed_with_implements_edge() {
+    // Regression for upstream #1513: a Rust unit struct (`struct Unit;`) is a
+    // complete definition, not a forward declaration. It must be indexed and
+    // keep its `impl Trait for Unit` implements edge — like brace and tuple
+    // structs already do.
+    let code = r#"
+pub struct UnitStruct;
+pub struct TupleStruct(pub u32);
+pub struct BraceStruct { pub x: u32 }
+
+pub trait Greet { fn hi(&self) -> String; }
+
+impl Greet for UnitStruct  { fn hi(&self) -> String { "unit".into()  } }
+impl Greet for TupleStruct { fn hi(&self) -> String { "tuple".into() } }
+impl Greet for BraceStruct { fn hi(&self) -> String { "brace".into() } }
+"#;
+    let result = extract("lib.rs", code);
+
+    // All three struct forms are indexed (the unit form was previously dropped).
+    let struct_names = names(&filter_kind(&result, NodeKind::Struct));
+    for expected in ["UnitStruct", "TupleStruct", "BraceStruct"] {
+        assert!(
+            struct_names.contains(&expected.to_string()),
+            "missing struct {expected}: {struct_names:?}"
+        );
+    }
+
+    // Each struct keeps its `impl Greet for _` implements edge.
+    let implements = refs_of_kind(&result, EdgeKind::Implements);
+    let greet_impls = implements
+        .iter()
+        .filter(|r| r.reference_name == "Greet")
+        .count();
+    assert_eq!(
+        greet_impls, 3,
+        "expected 3 Greet implements edges: {implements:?}"
+    );
+}
+
 // =============================================================================
