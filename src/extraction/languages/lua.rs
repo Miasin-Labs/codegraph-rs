@@ -201,10 +201,19 @@ impl LanguageExtractor for LuaExtractor {
         None
     }
 
-    /// Emit import nodes for `require(...)`. The local-declaration form is handled
-    /// explicitly because the variable branch skips the initializer subtree; bare
-    /// and global `require` calls are caught when the walker reaches the
-    /// function_call node.
+    /// Emit import nodes for `require(...)` and function nodes for function
+    /// expressions bound to table fields / table-constructor keys.
+    ///
+    /// The local-declaration form of `require` is handled explicitly because the
+    /// variable branch skips the initializer subtree; bare and global `require`
+    /// calls are caught when the walker reaches the function_call node.
+    ///
+    /// Function expressions (`function_definition`) assigned to a name have no
+    /// `function_declaration` wrapper, so the generic walker never treats them as
+    /// functions — their body calls would wrongly attribute to the file node
+    /// (upstream #1616). We claim the enclosing `assignment_statement` and emit a
+    /// function/method node per bound function expression, then walk each body
+    /// under the new node so its calls attribute correctly.
     fn visit_node(&self, node: SyntaxNode<'_>, ctx: &mut dyn ExtractorContext) -> bool {
         // Bare / global `require("x")` — claim it so it isn't double-counted as a call.
         if node.kind() == "function_call" {
@@ -236,8 +245,182 @@ impl LanguageExtractor for LuaExtractor {
             return false;
         }
 
+        // `M.assignedFn = function() ... end` / `g = function() ... end` /
+        // `M.callbacks = { onStart = function() ... end }` — function expressions
+        // bound to a target. `function_declaration` forms (`function M.f()`,
+        // `local function f()`) are NOT assignment_statements, so this never
+        // double-extracts them.
+        if node.kind() == "assignment_statement" {
+            return handle_function_assignment(node, ctx);
+        }
+
         false
     }
+}
+
+/// Name + optional receiver for an assignment target.
+///
+/// - `identifier` (`g = ...`)            → (`g`, None)          → Function
+/// - `dot_index_expression` (`M.f = ...`) → (`f`, Some(`M`))     → Method `M::f`
+///
+/// Mirrors `get_receiver_type` / `extract_name` for the `function t.f()` form so
+/// `M.assignedFn = function() end` extracts identically to `function M.assignedFn()`.
+/// (`method_index_expression` cannot appear on the left of `=` in Lua, but is
+/// handled defensively.)
+fn target_name_and_receiver(target: SyntaxNode<'_>, source: &str) -> (String, Option<String>) {
+    match target.kind() {
+        "identifier" => (get_node_text(target, source).to_string(), None),
+        "dot_index_expression" => {
+            let name = get_child_by_field(target, "field")
+                .map(|f| get_node_text(f, source).to_string())
+                .unwrap_or_default();
+            let receiver =
+                get_child_by_field(target, "table").map(|t| get_node_text(t, source).to_string());
+            (name, receiver)
+        }
+        "method_index_expression" => {
+            let name = get_child_by_field(target, "method")
+                .map(|m| get_node_text(m, source).to_string())
+                .unwrap_or_default();
+            let receiver =
+                get_child_by_field(target, "table").map(|t| get_node_text(t, source).to_string());
+            (name, receiver)
+        }
+        _ => (String::new(), None),
+    }
+}
+
+/// Emit a function/method node for a `function_definition` bound to `name`, then
+/// walk its body so its calls/instantiations attribute to the new node instead of
+/// the enclosing file. A receiver makes it a method with a `receiver::name`
+/// qualified name (parity with `function t.f()`).
+fn emit_function_binding(
+    func_def: SyntaxNode<'_>,
+    name: &str,
+    receiver: Option<&str>,
+    ctx: &mut dyn ExtractorContext,
+) {
+    if name.is_empty() {
+        // Anonymous target we cannot name — still walk the body so its calls are
+        // not lost (they stay attributed to the enclosing scope, as before).
+        if let Some(body) = get_child_by_field(func_def, "body") {
+            ctx.visit_function_body(body, "");
+        }
+        return;
+    }
+    let signature = get_child_by_field(func_def, "parameters")
+        .map(|p| get_node_text(p, ctx.source()).to_string());
+    let (kind, qualified_name) = match receiver {
+        Some(r) => (NodeKind::Method, Some(format!("{}::{}", r, name))),
+        None => (NodeKind::Function, None),
+    };
+    let created = ctx.create_node(
+        kind,
+        name,
+        func_def,
+        NodeExtra {
+            signature,
+            qualified_name,
+            ..Default::default()
+        },
+    );
+    if let Some(created) = created {
+        ctx.push_scope(created.id.clone());
+        if let Some(body) = get_child_by_field(func_def, "body") {
+            ctx.visit_function_body(body, &created.id);
+        }
+        ctx.pop_scope();
+    }
+}
+
+/// Emit function nodes for `field = function() ... end` entries of a
+/// `table_constructor`, recursing into nested table literals. Non-function field
+/// values are dispatched through the normal walker so their calls/requires are
+/// still recorded.
+fn emit_table_function_fields(table: SyntaxNode<'_>, ctx: &mut dyn ExtractorContext) {
+    for field in named_children(table) {
+        if field.kind() != "field" {
+            // Positional / non-`field` entries (arrays, bare expressions) — walk
+            // normally so any calls inside are recorded.
+            ctx.visit_node(field);
+            continue;
+        }
+        let Some(value) = get_child_by_field(field, "value") else {
+            continue;
+        };
+        match value.kind() {
+            "function_definition" => {
+                // Only identifier keys yield a name; bracket/string keys fall
+                // through to a normal body walk (calls preserved, no named node).
+                let key = get_child_by_field(field, "name")
+                    .filter(|k| k.kind() == "identifier")
+                    .map(|k| get_node_text(k, ctx.source()).to_string())
+                    .unwrap_or_default();
+                emit_function_binding(value, &key, None, ctx);
+            }
+            "table_constructor" => emit_table_function_fields(value, ctx),
+            _ => ctx.visit_node(value),
+        }
+    }
+}
+
+/// Handle an `assignment_statement` whose right-hand side binds a function
+/// expression (directly, or inside a table-constructor key). Returns `true` when
+/// it claimed the node (so the generic walker skips its children); `false` leaves
+/// the assignment to the default traversal (e.g. `x = require("y")`, `x = 5`).
+fn handle_function_assignment(node: SyntaxNode<'_>, ctx: &mut dyn ExtractorContext) -> bool {
+    let children = named_children(node);
+    let Some(var_list) = children
+        .iter()
+        .find(|c| c.kind() == "variable_list")
+        .copied()
+    else {
+        return false;
+    };
+    let Some(expr_list) = children
+        .iter()
+        .find(|c| c.kind() == "expression_list")
+        .copied()
+    else {
+        return false;
+    };
+    let targets = named_children(var_list);
+    let values = named_children(expr_list);
+
+    // Only claim assignments that actually bind a function expression somewhere;
+    // otherwise let the default walker handle them (require calls, plain data).
+    let binds_function = values
+        .iter()
+        .any(|v| matches!(v.kind(), "function_definition" | "table_constructor"));
+    if !binds_function {
+        return false;
+    }
+
+    for (i, value) in values.iter().enumerate() {
+        let target = targets.get(i).copied();
+        match value.kind() {
+            "function_definition" => match target {
+                Some(target) => {
+                    let (name, receiver) = target_name_and_receiver(target, ctx.source());
+                    emit_function_binding(*value, &name, receiver.as_deref(), ctx);
+                }
+                None => emit_function_binding(*value, "", None, ctx),
+            },
+            "table_constructor" => emit_table_function_fields(*value, ctx),
+            // Other values (calls, requires, ...) still need normal handling.
+            _ => ctx.visit_node(*value),
+        }
+    }
+
+    // Index targets like `t[compute()] = ...` may carry calls — walk non-identifier
+    // targets so those are not dropped by claiming the assignment.
+    for target in &targets {
+        if target.kind() != "identifier" {
+            ctx.visit_node(*target);
+        }
+    }
+
+    true
 }
 
 #[cfg(test)]
