@@ -10,3 +10,4 @@ include!("codegraph_api_test/path_traversal_prevention.rs");
 include!("codegraph_api_test/foundation_facade.rs");
 include!("codegraph_api_test/watcher_integration.rs");
 include!("codegraph_api_test/end_to_end.rs");
+include!("codegraph_api_test/go_resolution.rs");

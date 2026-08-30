@@ -119,6 +119,14 @@ impl<'a> TreeSitterExtractor<'a> {
             // Extract interface inheritance from the inner type node
             if let Some(type_child) = get_child_by_field(node, "type") {
                 self.extract_inheritance(type_child, &interface_node.id);
+                // Go: surface the interface's method specs as `method` nodes
+                // contained by the interface (e.g. `Handle` of an `IAlpha`
+                // interface). A package-qualified accessor returning the
+                // interface resolves its outer method against these, and the
+                // dynamic-dispatch pass bridges to the implementation (#1640).
+                if self.language == Language::Go && type_child.kind() == "interface_type" {
+                    self.extract_go_interface_methods(type_child, &interface_node.id);
+                }
             }
             return true;
         }
@@ -152,6 +160,44 @@ impl<'a> TreeSitterExtractor<'a> {
             }
         }
         false
+    }
+
+    /// Go: extract the method specs of an `interface_type` body as `method`
+    /// nodes contained by the interface (e.g. `Handle` of an `IAlpha`
+    /// interface). tree-sitter-go names these `method_elem` (newer) or
+    /// `method_spec` (older). Embedded interfaces (`Reader` inside
+    /// `ReadWriter`) are `type_identifier`s, not methods, and are left to
+    /// inheritance extraction. Ported from TS `extractGoInterfaceMethods`.
+    pub(super) fn extract_go_interface_methods(
+        &mut self,
+        interface_type: SyntaxNode<'_>,
+        iface_id: &str,
+    ) {
+        self.node_stack.push(iface_id.to_string());
+        for member in named_children(interface_type) {
+            if member.kind() != "method_elem" && member.kind() != "method_spec" {
+                continue;
+            }
+            let name_node = get_child_by_field(member, "name").or_else(|| member.named_child(0));
+            let Some(name_node) = name_node else { continue };
+            let mname = get_node_text(name_node, self.source).to_string();
+            if mname.is_empty() {
+                continue;
+            }
+            let signature = self
+                .extractor
+                .and_then(|ext| ext.get_signature(member, self.source));
+            self.create_node(
+                NodeKind::Method,
+                &mname,
+                member,
+                NodeExtra {
+                    signature,
+                    ..Default::default()
+                },
+            );
+        }
+        self.node_stack.pop();
     }
 
     /// Surface the members of a TypeScript `type X = { ... }` (or intersection

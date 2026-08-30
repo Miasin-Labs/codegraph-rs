@@ -154,12 +154,25 @@ impl<'a> TreeSitterExtractor<'a> {
                 }
             }
         } else if self.language == Language::Go {
-            // Go: var_declaration, short_var_declaration, const_declaration
-            // These can have multiple identifiers on the left
-            let specs: Vec<SyntaxNode<'_>> = named_children(node)
-                .into_iter()
-                .filter(|c| c.kind() == "var_spec" || c.kind() == "const_spec")
-                .collect();
+            // Go: var_declaration, short_var_declaration, const_declaration.
+            // Collect every var_spec/const_spec. A grouped `var ( ... )` wraps
+            // its specs in a `var_spec_list` node, while a grouped
+            // `const ( ... )` does NOT (its specs are direct children) — a
+            // tree-sitter-go grammar asymmetry. Filtering only direct children
+            // makes a grouped `var` block produce zero nodes, so flatten the
+            // `*_spec_list` wrapper too.
+            let mut specs: Vec<SyntaxNode<'_>> = Vec::new();
+            for child in named_children(node) {
+                if child.kind() == "var_spec" || child.kind() == "const_spec" {
+                    specs.push(child);
+                } else if child.kind() == "var_spec_list" || child.kind() == "const_spec_list" {
+                    for inner in named_children(child) {
+                        if inner.kind() == "var_spec" || inner.kind() == "const_spec" {
+                            specs.push(inner);
+                        }
+                    }
+                }
+            }
 
             for spec in specs {
                 let name_node = spec.named_child(0);
@@ -178,17 +191,45 @@ impl<'a> TreeSitterExtractor<'a> {
                         } else {
                             NodeKind::Variable
                         };
+                        // Go export rule = leading uppercase. The is_exported
+                        // hook reads the `name` field, so feed it the SPEC
+                        // (whose `name` field IS the identifier) — NOT the
+                        // declaration node (no `name` field -> always false).
+                        // Recompute per-spec here; do NOT reuse the shared
+                        // declaration-level `is_exported` above (which other
+                        // languages compute off the declaration node).
+                        let spec_exported = ext.is_exported(spec, self.source).unwrap_or(false);
 
-                        self.create_node(
+                        let var_node = self.create_node(
                             spec_kind,
                             &name,
                             spec,
                             NodeExtra {
                                 docstring: docstring.clone(),
                                 signature: init_sig,
+                                is_exported: Some(spec_exported),
                                 ..Default::default()
                             },
                         );
+
+                        // Walk the initializer so composite literals and calls
+                        // in a package-level `var c = pkg.New()` (including a
+                        // grouped `var ( logger = pkg.NewLogger("x") )`) are
+                        // extracted as instantiates/calls dependencies — the
+                        // body walker only covers initializers inside functions,
+                        // not these top-level declarations. Scope the walk to the
+                        // declared symbol so a call inside the initializer
+                        // attributes to the var instead of leaking to the file
+                        // node (which reads as "no caller"), issue #693.
+                        if let Some(value_field) = get_child_by_field(spec, "value") {
+                            if let Some(ref var_node) = var_node {
+                                self.node_stack.push(var_node.id.clone());
+                                self.visit_function_body(value_field, &var_node.id);
+                                self.node_stack.pop();
+                            } else {
+                                self.visit_function_body(value_field, "");
+                            }
+                        }
                     }
                 }
             }
