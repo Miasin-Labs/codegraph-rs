@@ -86,6 +86,10 @@ pub(super) fn cpp_override_edges(queries: &QueryBuilder) -> Result<Vec<Edge>> {
 /// and are included; their concrete-side nodes can be a `struct` (Swift)
 /// or an `object` (Scala) so the loop also iterates those kinds.
 fn is_iface_override_lang(lang: Language) -> bool {
+    // Mirrors TS `IFACE_OVERRIDE_LANGS`. Go is included so an interface-method
+    // call bridges to the concrete struct's override (paired with the
+    // `go-implements` method-set pass), closing caller -> interface -> impl for
+    // the package-accessor chain (#1640).
     matches!(
         lang,
         Language::Java
@@ -96,6 +100,8 @@ fn is_iface_override_lang(lang: Language) -> bool {
             | Language::Rust
             | Language::Swift
             | Language::Scala
+            | Language::Go
+            | Language::Arkts
     )
 }
 

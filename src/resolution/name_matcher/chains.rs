@@ -2,6 +2,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use super::exact::match_by_exact_name;
+use super::fuzzy::match_fuzzy;
 use super::receiver::{infer_cpp_receiver_type, resolve_method_on_type};
 use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
 use crate::types::{Language, NodeKind};
@@ -27,6 +29,82 @@ fn imported_fqn(
         .into_iter()
         .find(|mapping| mapping.local_name == type_name)
         .map(|mapping| mapping.source)
+}
+
+/// Go: the declared return type of a package-qualified factory — `pkg.Factory()`.
+///
+/// Go package-level functions are indexed with a BARE `qualified_name`
+/// (`Order`, not `service.Order`), so the `Class::method` lookup that serves
+/// the dot-notation languages can never match `service::Order`. A dotted prefix
+/// at a Go call site is a PACKAGE qualifier, not a receiver type (Go has no
+/// `Class.staticMethod()` form), so resolve it as one: among the package-level
+/// functions sharing the factory's name, prefer those declared in the
+/// qualifying package's directory. When several plausible candidates disagree
+/// on their return type the result is `None`, so a guess produces no edge
+/// rather than a wrong one (#750).
+fn lookup_go_package_func_return_type(
+    pkg: &str,
+    func_name: &str,
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+) -> Option<String> {
+    let candidates: Vec<crate::types::Node> = context
+        .get_nodes_by_name(func_name)
+        .into_iter()
+        .filter(|node| {
+            node.kind == NodeKind::Function
+                && node.language == Language::Go
+                && node.return_type.is_some()
+        })
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    // `pkg` is the name at the CALL SITE, which an alias detaches from the
+    // directory (`ctrlcart "app/internal/controller/order/cart"`). Map it back
+    // through the file's imports; a plain import maps to itself. A package whose
+    // name differs from its directory (legal) is covered too — the import PATH
+    // is what's matched, never the package clause.
+    let import_path = context
+        .get_import_mappings(&reference.file_path, reference.language)
+        .into_iter()
+        .find(|mapping| mapping.local_name == pkg)
+        .map(|mapping| mapping.source)
+        .unwrap_or_else(|| pkg.to_string());
+    // Go requires one package per directory, so the import path's tail IS the
+    // declaring directory. Match the longest tail available — the candidate's
+    // full directory path — which separates same-named packages under different
+    // parents.
+    let by_dir: Vec<&crate::types::Node> = candidates
+        .iter()
+        .filter(|node| {
+            let dir = go_dir_of(&node.file_path);
+            !dir.is_empty() && (import_path == dir || import_path.ends_with(&format!("/{dir}")))
+        })
+        .collect();
+    let pool: Vec<&crate::types::Node> = if by_dir.is_empty() {
+        candidates.iter().collect()
+    } else {
+        by_dir
+    };
+    let types: std::collections::HashSet<&str> = pool
+        .iter()
+        .filter_map(|node| node.return_type.as_deref())
+        .collect();
+    if types.len() == 1 {
+        pool[0].return_type.clone()
+    } else {
+        None
+    }
+}
+
+/// The directory path a file lives in — the package scope for Go.
+fn go_dir_of(file_path: &str) -> String {
+    let normalized = file_path.replace('\\', "/");
+    match normalized.rfind('/') {
+        Some(idx) if idx > 0 => normalized[..idx].to_string(),
+        _ => String::new(),
+    }
 }
 
 fn lookup_callee_return_type(
@@ -115,6 +193,76 @@ fn cpp_call_result_type(
     })
 }
 
+/// Go: resolve a re-encoded chain `<inner>().<method>`.
+///
+/// A dotted inner (`pkg.Factory`) is a PACKAGE-qualified factory: the dotted
+/// prefix is a package qualifier, not a receiver type (Go has no
+/// `Class.staticMethod()` form), and package-level functions carry a BARE
+/// `qualified_name` (`Order`, not `service.Order`), so the `Class::method`
+/// lookup the dot-notation languages use can never match it. Resolve the
+/// factory as a package-level function and VALIDATE the method on its declared
+/// return type. An interface return lands on the interface's method, which the
+/// dynamic-dispatch pass bridges to the implementation. A package qualifier the
+/// file doesn't import, or candidates disagreeing on their return type, yields
+/// no edge rather than a guess (#1640/#750).
+///
+/// A bare inner (`New`) is a package-level factory FUNCTION whose declared
+/// return type is the receiver's type. When that return type isn't recoverable
+/// (typically a package-level VARIABLE holding a function value), fall back to
+/// bare-name resolution of the method so a re-encoded ref never DROPS an edge
+/// the un-re-encoded bare path would have found. When `inner` IS a real factory
+/// but the method is absent on its return type, the return type is recovered
+/// and `resolve_method_on_type` yields no edge — the absent-method safety
+/// guarantee is preserved.
+fn match_go_call_chain(
+    inner: &str,
+    outer_method: &str,
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+) -> Option<ResolvedRef> {
+    if let Some((receiver, factory_method)) = inner.rsplit_once('.') {
+        let pkg = receiver.split('.').rfind(|part| !part.is_empty())?;
+        let receiver_type =
+            lookup_go_package_func_return_type(pkg, factory_method, reference, context)?;
+        let preferred = imported_fqn(&receiver_type, reference, context);
+        return resolve_method_on_type(
+            &receiver_type,
+            outer_method,
+            reference,
+            context,
+            0.85,
+            ResolvedBy::InstanceMethod,
+            preferred.as_deref(),
+        );
+    }
+    // Bare package-level factory `New().Method()`.
+    if let Some(receiver_type) = lookup_callee_return_type(inner, reference, context) {
+        let preferred = imported_fqn(&receiver_type, reference, context);
+        return resolve_method_on_type(
+            &receiver_type,
+            outer_method,
+            reference,
+            context,
+            0.85,
+            ResolvedBy::InstanceMethod,
+            preferred.as_deref(),
+        );
+    }
+    // Return type not recoverable: fall back to bare-name resolution of the
+    // method, but tie the match to the ORIGINAL re-encoded ref so the batched
+    // resolver's cleanup can clear the stored row.
+    let bare_ref = UnresolvedRef {
+        reference_name: outer_method.to_string(),
+        ..reference.clone()
+    };
+    let bare_match =
+        match_by_exact_name(&bare_ref, context).or_else(|| match_fuzzy(&bare_ref, context))?;
+    Some(ResolvedRef {
+        original: reference.clone(),
+        ..bare_match
+    })
+}
+
 pub(super) fn match_call_chain(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
@@ -135,11 +283,11 @@ pub(super) fn match_call_chain(
                 }
             })
         }
+        Language::Go => return match_go_call_chain(inner, outer_method, reference, context),
         Language::Java
         | Language::Kotlin
         | Language::Csharp
         | Language::Swift
-        | Language::Go
         | Language::Scala
         | Language::Dart
         | Language::Objc
@@ -161,8 +309,6 @@ pub(super) fn match_call_chain(
                             && matches!(factory_class.chars().next(), Some('T' | 'I'))))
                     .then(|| factory_class.to_string())
                 })
-            } else if reference.language == Language::Go {
-                lookup_callee_return_type(inner, reference, context)
             } else if matches!(
                 reference.language,
                 Language::Kotlin

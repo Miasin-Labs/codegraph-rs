@@ -241,6 +241,68 @@ impl<'a> TreeSitterExtractor<'a> {
         false
     }
 
+    /// Go: re-encode a factory-chain call receiver `<inner>().<method>` when the
+    /// inner callee is a bare package-level factory (`New()`) or a
+    /// package-qualified factory whose operand names an imported package
+    /// (`service.Order()`). An instance chain (`obj.Method()`) keeps the bare
+    /// method name — the resolver can't recover a variable's type, so
+    /// re-encoding would only drop the edge (#1640).
+    fn go_reencode_call_receiver(&mut self, receiver: SyntaxNode<'_>, method_name: &str) -> String {
+        let inner_fn = get_child_by_field(receiver, "function");
+        let reencode = match inner_fn {
+            // Bare package-level factory (`New().Method()`).
+            Some(inner_fn) if inner_fn.kind() == "identifier" => true,
+            // Package-qualified factory (`service.Order().Method()`): the inner
+            // callee is a `selector_expression`, the SAME node type as an
+            // instance chain, so re-encode only when its operand names a package
+            // this file imports (alias included).
+            Some(inner_fn) if inner_fn.kind() == "selector_expression" => {
+                get_child_by_field(inner_fn, "operand")
+                    .filter(|operand| operand.kind() == "identifier")
+                    .map(|operand| get_node_text(operand, self.source).to_string())
+                    .is_some_and(|pkg| self.go_imported_packages(inner_fn).contains(&pkg))
+            }
+            _ => false,
+        };
+        if !reencode {
+            return method_name.to_string();
+        }
+        let inner_callee = inner_fn
+            .map(|f| {
+                get_node_text(f, self.source)
+                    .replace("->", ".")
+                    .split_whitespace()
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        if inner_callee.is_empty() {
+            method_name.to_string()
+        } else {
+            format!("{}().{}", inner_callee, method_name)
+        }
+    }
+
+    /// Go: the package identifiers this file imports — the alias when one is
+    /// given, otherwise the import path's last segment. Memoized; the extractor
+    /// instance is per-file. Used to tell a package-qualified factory chain from
+    /// an instance chain, which share the `selector_expression` inner-callee
+    /// shape. `from` is any node in the file's tree — the walk climbs to the
+    /// root to find the import declarations.
+    fn go_imported_packages(&mut self, from: SyntaxNode<'_>) -> &std::collections::HashSet<String> {
+        if self.go_imported_pkgs.is_none() {
+            let mut root = from;
+            while let Some(parent) = root.parent() {
+                root = parent;
+            }
+            let mut pkgs = std::collections::HashSet::new();
+            collect_go_imported_packages(root, self.source, &mut pkgs);
+            self.go_imported_pkgs = Some(pkgs);
+        }
+        self.go_imported_pkgs
+            .as_ref()
+            .expect("go_imported_pkgs just set")
+    }
+
     /// Extract a function call
     pub(super) fn extract_call(&mut self, node: SyntaxNode<'_>) {
         let Some(caller_id) = self.node_stack.last().cloned() else {
@@ -395,6 +457,24 @@ impl<'a> TreeSitterExtractor<'a> {
                             .or_else(|| func.named_child(0));
                         const SKIP_RECEIVERS: &[&str] = &["self", "this", "cls", "super"];
                         match receiver {
+                            // Go: the receiver is itself a call — a factory chain
+                            // `New().Method()` or `service.Order().Method()`. Keep
+                            // the inner call so resolution can infer the method's
+                            // type from what the inner call RETURNS (the #645/#608
+                            // mechanism), encoded as `<innerCallee>().<method>`. An
+                            // instance chain (`obj.Method().Other()`) shares the
+                            // `selector_expression` inner-callee shape but a
+                            // variable's type isn't recoverable here, so it must
+                            // stay bare — re-encoding would drop the edge. The
+                            // file's import set separates a package qualifier from
+                            // a variable receiver.
+                            Some(receiver)
+                                if self.language == Language::Go
+                                    && receiver.kind() == "call_expression" =>
+                            {
+                                callee_name =
+                                    self.go_reencode_call_receiver(receiver, &method_name);
+                            }
                             Some(receiver)
                                 if matches!(
                                     receiver.kind(),
@@ -426,6 +506,52 @@ impl<'a> TreeSitterExtractor<'a> {
 
         if !callee_name.is_empty() {
             self.push_call_reference(&caller_id, callee_name, node);
+        }
+    }
+}
+
+/// Walk a Go file's import declarations and collect the package identifiers it
+/// binds — the alias when one is given, otherwise the import path's last
+/// segment. Only descends `source_file` / `import_declaration` /
+/// `import_spec_list`, matching the TS `goImportedPackages` walk.
+fn collect_go_imported_packages(
+    node: SyntaxNode<'_>,
+    source: &str,
+    pkgs: &mut std::collections::HashSet<String>,
+) {
+    use super::context::named_children;
+    if node.kind() == "import_spec" {
+        // An explicit alias (`svcx "repro/svc"` or `. "..."`) is a
+        // package_identifier / identifier child. Prefer it over the path.
+        if let Some(alias) = named_children(node)
+            .into_iter()
+            .find(|c| c.kind() == "package_identifier" || c.kind() == "identifier")
+        {
+            let text = get_node_text(alias, source);
+            if !text.is_empty() {
+                pkgs.insert(text.to_string());
+            }
+            return;
+        }
+        if let Some(path) = named_children(node)
+            .into_iter()
+            .find(|c| c.kind() == "interpreted_string_literal" || c.kind() == "raw_string_literal")
+        {
+            let raw = get_node_text(path, source).replace(['\'', '"', '`'], "");
+            if let Some(last) = raw.split('/').next_back() {
+                if !last.is_empty() {
+                    pkgs.insert(last.to_string());
+                }
+            }
+        }
+        return;
+    }
+    if matches!(
+        node.kind(),
+        "source_file" | "import_declaration" | "import_spec_list"
+    ) {
+        for child in named_children(node) {
+            collect_go_imported_packages(child, source, pkgs);
         }
     }
 }

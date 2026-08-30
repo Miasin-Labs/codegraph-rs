@@ -46,6 +46,13 @@ pub struct TreeSitterExtractor<'a> {
     pub(super) method_index: Option<HashMap<String, String>>,
     pub(super) value_references: ValueReferenceState,
     pub(super) value_references_enabled: bool,
+    /// Go: the package identifiers this file imports (alias when given,
+    /// otherwise the import path's last segment). Memoized lazily — the
+    /// extractor instance is per-file. Used to tell a package-qualified
+    /// factory chain (`service.Order().Method()`) from an instance chain
+    /// (`obj.Method().Other()`), which share the `selector_expression`
+    /// inner-callee shape.
+    pub(super) go_imported_pkgs: Option<std::collections::HashSet<String>>,
 }
 
 impl<'a> TreeSitterExtractor<'a> {
@@ -78,6 +85,7 @@ impl<'a> TreeSitterExtractor<'a> {
             value_references_enabled: super::value_references::value_references_enabled(
                 std::env::var_os("CODEGRAPH_VALUE_REFS").as_deref(),
             ),
+            go_imported_pkgs: None,
         }
     }
 
