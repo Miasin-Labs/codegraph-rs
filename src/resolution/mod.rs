@@ -6,6 +6,7 @@
 //! by the TS barrel; reach them via their modules
 //! (`crate::resolution::name_matcher::match_reference`, etc.).
 
+pub mod alias_binding;
 pub mod callback_synthesizer;
 pub mod frameworks;
 pub mod go_module;

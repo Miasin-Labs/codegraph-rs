@@ -135,6 +135,10 @@ impl ResolutionContext for ResolverContext {
         self.cached_nodes_in_file(file_path)
     }
 
+    fn get_node_by_id(&self, id: &str) -> Option<Node> {
+        self.queries.get_node_by_id(id).ok().flatten()
+    }
+
     fn get_nodes_by_name(&self, name: &str) -> Vec<Node> {
         self.cached_nodes_by_name(name)
     }

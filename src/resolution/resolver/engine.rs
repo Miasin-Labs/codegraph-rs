@@ -2,11 +2,11 @@
 use std::collections::HashMap;
 
 use crate::resolution::import_resolver::{resolve_jvm_import, resolve_via_import};
-use crate::resolution::name_matcher;
 use crate::resolution::types::{FrameworkResolver, ResolutionContext, ResolvedRef, UnresolvedRef};
 #[cfg(not(feature = "gpu"))]
 use crate::resolution::types::{ResolutionResult, ResolutionStats};
-use crate::types::{Language, Node};
+use crate::resolution::{alias_binding, name_matcher};
+use crate::types::{EdgeKind, Language, Node};
 
 pub(super) trait ResolutionPolicy {
     fn is_built_in_or_external(&self, reference: &UnresolvedRef) -> bool;
@@ -15,8 +15,59 @@ pub(super) trait ResolutionPolicy {
     fn matches_any_import(&self, reference: &UnresolvedRef) -> bool;
 }
 
+/// Resolve one reference, then forward calls that landed on an alias binding
+/// to the symbol the alias names (see [`crate::resolution::alias_binding`]).
+///
+/// The strategies resolve `alias()` to the BINDING, which is one hop short of
+/// the truth: the real function then reports zero callers even though the edge
+/// was built. The hop is applied here rather than inside each strategy because
+/// every strategy can produce such a target - import, name-match, or framework.
 #[allow(clippy::type_complexity)]
 pub(super) fn resolve_one<P>(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+    frameworks: &[Box<dyn FrameworkResolver>],
+    policy: &P,
+    known_hint: Option<bool>,
+    ranked: Option<Option<&Node>>,
+    s12: Option<Option<(&Node, bool)>>,
+    fuzzy: Option<Option<(&Node, bool)>>,
+) -> Option<ResolvedRef>
+where
+    P: ResolutionPolicy + ?Sized,
+{
+    let resolved = resolve_one_strategies(
+        reference, context, frameworks, policy, known_hint, ranked, s12, fuzzy,
+    )?;
+    if reference.reference_kind != EdgeKind::Calls {
+        return Some(resolved);
+    }
+
+    let Some(target) = context.get_node_by_id(&resolved.target_node_id) else {
+        return Some(resolved);
+    };
+
+    let member_name = reference
+        .reference_name
+        .rsplit_once('.')
+        .map(|(_, member)| member);
+    let Some(forwarded) = alias_binding::resolve_alias_binding(&target, member_name, context)
+    else {
+        return Some(resolved);
+    };
+    if forwarded.id == resolved.target_node_id {
+        return Some(resolved);
+    }
+
+    Some(ResolvedRef {
+        target_node_id: forwarded.id,
+        confidence: resolved.confidence.min(0.85),
+        ..resolved
+    })
+}
+
+#[allow(clippy::type_complexity)]
+fn resolve_one_strategies<P>(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
     frameworks: &[Box<dyn FrameworkResolver>],

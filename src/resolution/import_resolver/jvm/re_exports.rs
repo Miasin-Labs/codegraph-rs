@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use super::super::paths::resolve_import_path;
+use crate::resolution::alias_binding::extract_local_export_aliases;
 use crate::resolution::types::{ReExport, ResolutionContext};
 use crate::types::{Language, Node, NodeKind};
 
@@ -80,6 +81,18 @@ pub(super) fn find_exported_symbol(
         if let Some(direct) = direct {
             return Some(direct.clone());
         }
+        // Local export clause: `export { realImpl as alias }` (no `from`).
+        // `extractReExports` only models the `export ... from './other'` form,
+        // so the exported name matches no `isExported` declaration - the
+        // extractor never flagged the bare declaration exported. Bind the
+        // clause's exported name to its local declaration so an importer asking
+        // for the renamed name gets the real symbol instead of falling through
+        // to the name-matcher (which cannot cross the rename). #1482 / PR #1485.
+        if let Some(local) =
+            resolve_local_export_alias(&nodes_in_file, &want.exported_name, context, file_path)
+        {
+            return Some(local);
+        }
     }
 
     // 2. Re-export hit: the file forwards the symbol to another module.
@@ -142,4 +155,28 @@ pub(super) fn find_exported_symbol(
     }
 
     None
+}
+
+/// Bind a local `export { local as exported }` clause to its declaration.
+///
+/// Reads the file's local export clauses (see
+/// [`extract_local_export_aliases`]) and, when one exports `exported_name`,
+/// returns the matching declaration in the file - exported or not, since the
+/// extractor never flags a bare declaration exported. Guarded to JS/TS-family
+/// files (the only export-clause shape this understands). #1482 / PR #1485.
+fn resolve_local_export_alias(
+    nodes_in_file: &[Node],
+    exported_name: &str,
+    context: &dyn ResolutionContext,
+    file_path: &str,
+) -> Option<Node> {
+    let content = context.read_file(file_path)?;
+    if content.is_empty() || !content.contains("export") {
+        return None;
+    }
+    let local_name = extract_local_export_aliases(&content)
+        .into_iter()
+        .find(|alias| alias.exported_name == exported_name)?
+        .local_name;
+    nodes_in_file.iter().find(|n| n.name == local_name).cloned()
 }

@@ -18,6 +18,8 @@
 //! real production code end-to-end via `create_resolver` +
 //! `resolve_and_persist_batched`.
 
+#[path = "resolution_test/alias_binding.rs"]
+mod alias_binding;
 #[path = "resolution_test/aliases.rs"]
 mod aliases;
 #[path = "resolution_test/barrels.rs"]

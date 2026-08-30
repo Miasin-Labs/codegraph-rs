@@ -23,6 +23,10 @@ impl ResolutionContext for SnapshotContext {
         })
     }
 
+    fn get_node_by_id(&self, id: &str) -> Option<Node> {
+        SnapshotContext::get_node_by_id(self, id).cloned()
+    }
+
     fn get_nodes_by_name(&self, name: &str) -> Vec<Node> {
         self.lookup_nodes(&self.nodes_by_name, name, |node, key| node.name == key)
     }
