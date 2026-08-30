@@ -32,3 +32,19 @@ pub(crate) fn resolve_absolute(path_arg: Option<&str>) -> PathBuf {
         _ => cwd,
     }
 }
+
+/// Path resolution for `codegraph index`.
+///
+/// `index` writes an index at the location it is pointed at, so an explicitly
+/// named path is resolved literally — never substituted for an initialized
+/// ancestor. Silently walking up rebuilt an unrelated ancestor's index (up to
+/// the filesystem root) and reported success, so the caller could not tell the
+/// named directory had been ignored (upstream #1524). A bare `index` (no path)
+/// keeps the query-style convenience of resolving the nearest initialized
+/// project from the current directory.
+pub(crate) fn resolve_index_path(path_arg: Option<&str>) -> PathBuf {
+    match path_arg {
+        Some(p) if !p.is_empty() => resolve_absolute(Some(p)),
+        _ => resolve_project_path(None),
+    }
+}
