@@ -180,3 +180,140 @@ pub(super) fn restore_directive_lines(original: &str, blanked: &str) -> String {
     }
     blanked_lines.join("\n")
 }
+
+/// Byte spans of every C++ raw-string literal in `source`, inclusive of the
+/// `R"delim(` prefix and the `)delim"` suffix.
+///
+/// The macro-blanking passes match on lexical shape, so an ALL-CAPS
+/// `MACRO(` token or a lone ALL-CAPS line *inside* a raw string
+/// (`R"SQL(... CALL_SOMETHING(arg ...)SQL"`) looks exactly like real code to
+/// them. `balanced_paren_end` then scans past the raw string's closing
+/// delimiter, blanks it, and the resulting parse loses the delimiter — so
+/// tree-sitter drops into error recovery and every declaration *after* the
+/// raw string vanishes (upstream #1505: functions after a large anonymous
+/// namespace of raw strings were never indexed). Recording the spans lets the
+/// pipeline restore the original bytes after blanking, exactly as
+/// `restore_directive_lines` protects `#`-directives.
+///
+/// The scan is a single lexer pass that skips line/block comments, character
+/// literals, and ordinary string literals, so a literal `R"(` that appears
+/// inside a comment or a normal string is never mistaken for a raw-string
+/// opener.
+fn raw_string_spans(source: &str) -> Vec<(usize, usize)> {
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    let mut spans = Vec::new();
+    let mut index = 0usize;
+    let is_ident = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    while index < len {
+        match bytes[index] {
+            b'/' if index + 1 < len && bytes[index + 1] == b'/' => {
+                index += 2;
+                while index < len && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'/' if index + 1 < len && bytes[index + 1] == b'*' => {
+                index += 2;
+                while index + 1 < len && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
+                    index += 1;
+                }
+                index += 2;
+            }
+            b'\'' => {
+                index += 1;
+                while index < len && bytes[index] != b'\'' {
+                    if bytes[index] == b'\\' {
+                        index += 1;
+                    }
+                    index += 1;
+                }
+                index += 1;
+            }
+            b'R' | b'u' | b'U' | b'L'
+                if is_raw_string_opener(bytes, index)
+                    && (index == 0 || !is_ident(bytes[index - 1])) =>
+            {
+                let quote = index + raw_prefix_len(bytes, index);
+                // quote points at the opening `"`. Read the delimiter up to `(`.
+                let mut cursor = quote + 1;
+                let delim_start = cursor;
+                while cursor < len && bytes[cursor] != b'(' {
+                    cursor += 1;
+                }
+                if cursor >= len {
+                    index += 1;
+                    continue;
+                }
+                let delimiter = &source[delim_start..cursor];
+                let closing = format!("){delimiter}\"");
+                let body_start = cursor + 1;
+                if let Some(rel) = source[body_start..].find(&closing) {
+                    let end = body_start + rel + closing.len();
+                    spans.push((index, end));
+                    index = end;
+                } else {
+                    // Unterminated raw string: protect the remainder.
+                    spans.push((index, len));
+                    index = len;
+                }
+            }
+            b'"' => {
+                index += 1;
+                while index < len && bytes[index] != b'"' {
+                    if bytes[index] == b'\\' {
+                        index += 1;
+                    }
+                    index += 1;
+                }
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    spans
+}
+
+/// Length of a raw-string prefix (`R`, `LR`, `uR`, `UR`, `u8R`) ending at the
+/// opening `"`, given `start` points at the first prefix byte.
+fn raw_prefix_len(bytes: &[u8], start: usize) -> usize {
+    // The opener has already been validated; find the `R"` and return the
+    // count of bytes from `start` up to and including the `"`.
+    let mut cursor = start;
+    while bytes.get(cursor) != Some(&b'R') {
+        cursor += 1;
+    }
+    cursor + 2 - start
+}
+
+/// True if a raw-string literal opens at `start`: an optional encoding prefix
+/// (`u8`, `u`, `U`, `L`) followed by `R"`.
+fn is_raw_string_opener(bytes: &[u8], start: usize) -> bool {
+    let rest = &bytes[start..];
+    for prefix in [b"u8R\"".as_slice(), b"uR\"", b"UR\"", b"LR\"", b"R\""] {
+        if rest.starts_with(prefix) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Restore the original bytes of every C++ raw-string span into `blanked`,
+/// undoing any blanking that scanned into raw-string content. All blanking
+/// passes are byte-offset preserving, so the spans computed from `original`
+/// line up exactly in `blanked`.
+pub(super) fn restore_raw_string_spans(original: &str, blanked: &str) -> String {
+    let spans = raw_string_spans(original);
+    if spans.is_empty() {
+        return blanked.to_string();
+    }
+    let original_bytes = original.as_bytes();
+    let mut bytes = blanked.as_bytes().to_vec();
+    for (start, end) in spans {
+        let end = end.min(bytes.len()).min(original_bytes.len());
+        if start < end {
+            bytes[start..end].copy_from_slice(&original_bytes[start..end]);
+        }
+    }
+    finish(bytes)
+}

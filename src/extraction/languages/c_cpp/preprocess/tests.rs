@@ -280,3 +280,23 @@ fn preprocessing_recovers_c_and_cpp_extraction_with_original_lines() {
     assert_eq!(class.start_line, 1);
     assert!(cpp_result.nodes.iter().any(|node| node.name == "value"));
 }
+
+#[test]
+fn cpp_preparse_preserves_raw_string_content_and_delimiters() {
+    // Macro-shaped text inside a raw string must survive pre-parse untouched,
+    // so the closing delimiter is never blanked (upstream #1505).
+    let source = concat!(
+        "const char* q = R\"SQL(\n",
+        "CALL_SOMETHING(arg\n",
+        "BIG_UPPER_MACRO_NAME\n",
+        ")SQL\";\n",
+        "int after() { return 0; }\n",
+    );
+    let output = pre_parse_cpp_source(source, "q.cpp");
+    assert_offsets_preserved(source, &output);
+    // The raw-string body and its closing delimiter are intact.
+    assert!(output.contains("CALL_SOMETHING(arg"));
+    assert!(output.contains(")SQL\";"));
+    // The real declaration after the raw string is untouched.
+    assert!(output.contains("int after() { return 0; }"));
+}
