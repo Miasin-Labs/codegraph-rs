@@ -189,6 +189,9 @@ pub(crate) enum Commands {
         /// Project path
         #[arg(short = 'p', long, value_name = "path")]
         path: Option<String>,
+        /// Scope to one definition by file path/suffix
+        #[arg(short = 'f', long, value_name = "file")]
+        file: Option<String>,
         /// Maximum results
         #[arg(short = 'l', long, value_name = "number", default_value = "20")]
         limit: String,
@@ -203,6 +206,9 @@ pub(crate) enum Commands {
         /// Project path
         #[arg(short = 'p', long, value_name = "path")]
         path: Option<String>,
+        /// Scope to one definition by file path/suffix
+        #[arg(short = 'f', long, value_name = "file")]
+        file: Option<String>,
         /// Maximum results
         #[arg(short = 'l', long, value_name = "number", default_value = "20")]
         limit: String,
@@ -217,6 +223,9 @@ pub(crate) enum Commands {
         /// Project path
         #[arg(short = 'p', long, value_name = "path")]
         path: Option<String>,
+        /// Scope to one definition by file path/suffix
+        #[arg(short = 'f', long, value_name = "file")]
+        file: Option<String>,
         /// Traversal depth
         #[arg(short = 'd', long, value_name = "number", default_value = "2")]
         depth: String,

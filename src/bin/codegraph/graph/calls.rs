@@ -51,11 +51,82 @@ pub(crate) fn is_exact_symbol_match(name: &str, symbol: &str) -> bool {
         || name.ends_with(&format!("::{symbol}"))
 }
 
+/// One distinct definition: its identifying node fields plus the ids of every
+/// node that maps to it (same `(filePath, qualifiedName)`), so same-file
+/// overloads stay together while same-named defs in different files stay apart.
+pub(crate) struct DefinitionGroup {
+    pub qualified_name: String,
+    pub kind: String,
+    pub file_path: String,
+    pub start_line: u32,
+    pub node_ids: Vec<String>,
+}
+
+/// Group matched nodes into DISTINCT DEFINITIONS — one group per
+/// `(filePath, qualifiedName)` — mirroring the MCP `groupDefinitions` helper so
+/// the two surfaces answer the same question the same way. Optionally narrow to
+/// a `file` path/suffix first; if the filter matches nothing, keep all groups
+/// and report it via the returned `filtered_out` flag.
+pub(crate) fn group_definitions(
+    nodes: &[codegraph::Node],
+    file_filter: Option<&str>,
+) -> (Vec<DefinitionGroup>, bool) {
+    let mut pool: Vec<&codegraph::Node> = nodes.iter().collect();
+    let mut filtered_out = false;
+    if let Some(filter) = file_filter {
+        let wanted = filter.strip_prefix("./").unwrap_or(filter);
+        let narrowed: Vec<&codegraph::Node> = pool
+            .iter()
+            .copied()
+            .filter(|n| {
+                n.file_path == wanted
+                    || n.file_path.ends_with(wanted)
+                    || n.file_path.ends_with(&format!("/{wanted}"))
+            })
+            .collect();
+        if narrowed.is_empty() {
+            filtered_out = true;
+        } else {
+            pool = narrowed;
+        }
+    }
+
+    // Preserve first-seen order (TS keyed a `Map`, which is insertion-ordered).
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: std::collections::HashMap<String, DefinitionGroup> =
+        std::collections::HashMap::new();
+    for n in pool {
+        let key = format!("{}|{}", n.file_path, n.qualified_name);
+        match groups.get_mut(&key) {
+            Some(group) => group.node_ids.push(n.id.clone()),
+            None => {
+                order.push(key.clone());
+                groups.insert(
+                    key,
+                    DefinitionGroup {
+                        qualified_name: n.qualified_name.clone(),
+                        kind: n.kind.as_str().to_string(),
+                        file_path: n.file_path.clone(),
+                        start_line: n.start_line,
+                        node_ids: vec![n.id.clone()],
+                    },
+                );
+            }
+        }
+    }
+    let ordered = order
+        .into_iter()
+        .filter_map(|k| groups.remove(&k))
+        .collect();
+    (ordered, filtered_out)
+}
+
 /// codegraph callers <symbol> / codegraph callees <symbol>
 pub(crate) fn cmd_call_graph(
     direction: CallDirection,
     symbol: &str,
     path_arg: Option<&str>,
+    file_arg: Option<&str>,
     limit_arg: &str,
     json: bool,
 ) {
@@ -89,6 +160,30 @@ pub(crate) fn cmd_call_graph(
             return Ok(());
         }
 
+        // Which matched nodes answer for the typed symbol: exact-name matches
+        // when the name exists several times, else the single top hit.
+        let mut chosen: Vec<codegraph::Node> = matches
+            .iter()
+            .filter(|m| is_exact_symbol_match(&m.node.name, symbol) || matches.len() == 1)
+            .map(|m| m.node.clone())
+            .collect();
+        if chosen.is_empty() {
+            if let Some(first) = matches.first() {
+                chosen.push(first.node.clone());
+            }
+        }
+
+        let (groups, filtered_out) = group_definitions(&chosen, file_arg);
+        let filter_note = if filtered_out {
+            file_arg.map(|f| {
+                format!(
+                    "no definition of \"{symbol}\" matches file \"{f}\" — showing all definitions instead"
+                )
+            })
+        } else {
+            None
+        };
+
         let fetch = |node_id: &str| -> Result<Vec<codegraph::NodeRef>, String> {
             match direction {
                 CallDirection::Callers => cg.get_callers(node_id, None),
@@ -97,32 +192,16 @@ pub(crate) fn cmd_call_graph(
             .map_err(|e| e.to_string())
         };
 
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut all: Vec<(String, String, String, u32)> = Vec::new(); // (name, kind, filePath, startLine)
-
-        for m in &matches {
-            let exact_match = is_exact_symbol_match(&m.node.name, symbol);
-            if !exact_match && matches.len() > 1 {
-                continue;
-            }
-            for c in fetch(&m.node.id)? {
-                if seen.insert(c.node.id.clone()) {
-                    all.push((
-                        c.node.name.clone(),
-                        c.node.kind.as_str().to_string(),
-                        c.node.file_path.clone(),
-                        c.node.start_line,
-                    ));
-                }
-            }
-        }
-
-        // Fallback: if exact filter removed everything, use the top match
-        if all.is_empty() {
-            if let Some(first) = matches.first() {
-                for c in fetch(&first.node.id)? {
+        // Collect one deduped edge set per distinct definition.
+        type Related = Vec<(String, String, String, u32)>; // (name, kind, filePath, startLine)
+        let mut per_def: Vec<(&DefinitionGroup, Related)> = Vec::new();
+        for group in &groups {
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut related: Related = Vec::new();
+            for id in &group.node_ids {
+                for c in fetch(id)? {
                     if seen.insert(c.node.id.clone()) {
-                        all.push((
+                        related.push((
                             c.node.name.clone(),
                             c.node.kind.as_str().to_string(),
                             c.node.file_path.clone(),
@@ -131,55 +210,135 @@ pub(crate) fn cmd_call_graph(
                     }
                 }
             }
+            related.truncate(limit);
+            per_def.push((group, related));
         }
 
-        let limited = &all[..all.len().min(limit)];
+        let single = groups.len() == 1;
 
         if json {
-            let entries: Vec<serde_json::Value> = limited
-                .iter()
-                .map(|(name, kind, file_path, start_line)| {
-                    serde_json::json!({
-                        "name": name,
-                        "kind": kind,
-                        "filePath": file_path,
-                        "startLine": start_line,
+            let related_json = |related: &Related| -> Vec<serde_json::Value> {
+                related
+                    .iter()
+                    .map(|(name, kind, file_path, start_line)| {
+                        serde_json::json!({
+                            "name": name,
+                            "kind": kind,
+                            "filePath": file_path,
+                            "startLine": start_line,
+                        })
                     })
-                })
-                .collect();
-            // `{ symbol, callers }` / `{ symbol, callees }` — the key name
-            // follows the command, so build the object manually.
+                    .collect()
+            };
+
             let mut obj = serde_json::Map::new();
             obj.insert("symbol".to_string(), serde_json::json!(symbol));
-            obj.insert(
-                direction.noun().to_string(),
-                serde_json::Value::Array(entries),
-            );
+            if let Some(note) = &filter_note {
+                obj.insert("note".to_string(), serde_json::json!(note));
+            }
+            if single {
+                // Familiar flat envelope: `{ symbol, callers|callees }`.
+                let related = per_def.first().map(|(_, r)| r.clone()).unwrap_or_default();
+                obj.insert(
+                    direction.noun().to_string(),
+                    serde_json::Value::Array(related_json(&related)),
+                );
+            } else {
+                // Multiple distinct definitions: nest edges under their def so
+                // attribution survives (a flat union cannot express it).
+                let defs: Vec<serde_json::Value> = per_def
+                    .iter()
+                    .map(|(group, related)| {
+                        serde_json::json!({
+                            "definition": {
+                                "qualifiedName": group.qualified_name,
+                                "kind": group.kind,
+                                "filePath": group.file_path,
+                                "startLine": group.start_line,
+                            },
+                            direction.noun(): related_json(related),
+                        })
+                    })
+                    .collect();
+                obj.insert("definitions".to_string(), serde_json::Value::Array(defs));
+            }
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::Value::Object(obj))
                     .map_err(|e| e.to_string())?
             );
-        } else if limited.is_empty() {
-            info(&format!("No {} found for \"{symbol}\"", direction.noun()));
+        } else if single {
+            let related = per_def.first().map(|(_, r)| r.clone()).unwrap_or_default();
+            if related.is_empty() {
+                info(&format!("No {} found for \"{symbol}\"", direction.noun()));
+            } else {
+                println!(
+                    "{}",
+                    bold(&format!(
+                        "\n{} of \"{symbol}\" ({}):\n",
+                        direction.heading(),
+                        related.len()
+                    ))
+                );
+                for (name, kind, file_path, start_line) in &related {
+                    let loc = if *start_line != 0 {
+                        format!(":{start_line}")
+                    } else {
+                        String::new()
+                    };
+                    println!("{}{}", cyan(&format!("{kind:<12}")), white(name));
+                    println!("{}", dim(&format!("  {file_path}{loc}")));
+                    println!();
+                }
+            }
+            if let Some(note) = &filter_note {
+                println!("{}", dim(&format!("Note: {note}")));
+            }
         } else {
+            // Multiple distinct definitions: one attributed section each so a
+            // consumer never mistakes one definition's edges for another's.
             println!(
                 "{}",
                 bold(&format!(
-                    "\n{} of \"{symbol}\" ({}):\n",
+                    "\n{} of \"{symbol}\" — {} distinct definitions (narrow with --file):\n",
                     direction.heading(),
-                    limited.len()
+                    groups.len()
                 ))
             );
-            for (name, kind, file_path, start_line) in limited {
-                let loc = if *start_line != 0 {
-                    format!(":{start_line}")
+            for (group, related) in &per_def {
+                let head_loc = if group.start_line != 0 {
+                    format!(":{}", group.start_line)
                 } else {
                     String::new()
                 };
-                println!("{}{}", cyan(&format!("{kind:<12}")), white(name));
-                println!("{}", dim(&format!("  {file_path}{loc}")));
+                println!(
+                    "{}",
+                    bold(&format!(
+                        "{} ({}) — {}{}",
+                        group.qualified_name, group.kind, group.file_path, head_loc
+                    ))
+                );
+                if related.is_empty() {
+                    println!("{}", dim(&format!("  (no {})", direction.noun())));
+                } else {
+                    for (name, kind, file_path, start_line) in related {
+                        let loc = if *start_line != 0 {
+                            format!(":{start_line}")
+                        } else {
+                            String::new()
+                        };
+                        println!(
+                            "  {}{} {}",
+                            cyan(&format!("{kind:<12}")),
+                            white(name),
+                            dim(&format!("{file_path}{loc}"))
+                        );
+                    }
+                }
                 println!();
+            }
+            if let Some(note) = &filter_note {
+                println!("{}", dim(&format!("Note: {note}")));
             }
         }
 
