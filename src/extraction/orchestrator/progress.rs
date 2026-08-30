@@ -58,10 +58,28 @@ pub struct IndexResult {
     /// targeted `index_files` runs, where there is no scan ground truth.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub files_discovered: Option<usize>,
+    /// Files the scan saw but has no grammar for, tallied by extension. Only the
+    /// degenerate case needs it: a project of unsupported files otherwise looks
+    /// exactly like an empty one (0 files, state `complete`), so nothing tells
+    /// the user — or an agent — that there was code here CodeGraph could not
+    /// read (issue #1502). Counted during the scan's existing walk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_skipped_unsupported: Option<usize>,
+    /// The most common unsupported extensions, biggest first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_unsupported_extensions: Option<Vec<UnsupportedExtension>>,
     pub nodes_created: usize,
     pub edges_created: usize,
     pub errors: Vec<ExtractionError>,
     pub duration_ms: i64,
+}
+
+/// One unsupported extension and how many files carried it (#1502).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsupportedExtension {
+    pub ext: String,
+    pub count: usize,
 }
 
 /// Result of a sync operation.

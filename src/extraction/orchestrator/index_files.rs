@@ -73,6 +73,8 @@ impl<'a> ExtractionOrchestrator<'a> {
             files_skipped,
             files_errored,
             files_discovered: None,
+            files_skipped_unsupported: None,
+            top_unsupported_extensions: None,
             nodes_created: total_nodes,
             edges_created: total_edges,
             errors,

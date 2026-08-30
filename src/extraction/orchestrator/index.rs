@@ -15,12 +15,13 @@ use super::progress::{
     IndexPhase,
     IndexProgress,
     IndexResult,
+    UnsupportedExtension,
     aborted_error,
     emit,
     is_aborted,
     now_ms,
 };
-use super::scan::scan_directory_with_config;
+use super::scan::{ScanSkipStats, scan_directory_with_config_stats};
 use crate::error::{CodeGraphError, Result};
 use crate::extraction::grammars::{
     detect_language_with_overrides,
@@ -29,6 +30,32 @@ use crate::extraction::grammars::{
     load_grammars_for_languages,
 };
 use crate::types::{ExtractionError, Language, Severity};
+
+/// Cap on how many unsupported extensions the report enumerates (TS: `.slice(0, 5)`).
+const TOP_UNSUPPORTED_EXTENSIONS: usize = 5;
+
+/// Summarize skipped-file stats for [`IndexResult`]. Returns `(None, None)` when
+/// everything was indexable, so the counter can't fire on a healthy project;
+/// otherwise the total plus the biggest-first top extensions (#1502).
+fn skip_summary(stats: &ScanSkipStats) -> (Option<usize>, Option<Vec<UnsupportedExtension>>) {
+    let total: usize = stats
+        .unsupported_by_extension
+        .iter()
+        .map(|(_, count)| *count)
+        .sum();
+    if total == 0 {
+        return (None, None);
+    }
+    let mut sorted = stats.unsupported_by_extension.clone();
+    // Biggest first; ties broken by extension name for a stable order.
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    sorted.truncate(TOP_UNSUPPORTED_EXTENSIONS);
+    let top = sorted
+        .into_iter()
+        .map(|(ext, count)| UnsupportedExtension { ext, count })
+        .collect();
+    (Some(total), Some(top))
+}
 
 impl<'a> ExtractionOrchestrator<'a> {
     /// Index all files in the project.
@@ -62,6 +89,11 @@ impl<'a> ExtractionOrchestrator<'a> {
             },
         );
 
+        // The scan already visits every file, so tally the ones it declined to
+        // index (no grammar) on the walk it was doing anyway — no second pass.
+        // This is the only signal that separates an all-unsupported project from
+        // a genuinely empty one (#1502).
+        let mut skip_stats = ScanSkipStats::default();
         let files = match on_progress {
             Some(cb) => {
                 let mut scan_cb = |current: usize, file: &str| {
@@ -72,11 +104,22 @@ impl<'a> ExtractionOrchestrator<'a> {
                         current_file: Some(file.to_string()),
                     });
                 };
-                scan_directory_with_config(&self.root_dir, Some(&mut scan_cb), &self.project_config)
+                scan_directory_with_config_stats(
+                    &self.root_dir,
+                    Some(&mut scan_cb),
+                    &self.project_config,
+                    Some(&mut skip_stats),
+                )
             }
-            None => scan_directory_with_config(&self.root_dir, None, &self.project_config),
+            None => scan_directory_with_config_stats(
+                &self.root_dir,
+                None,
+                &self.project_config,
+                Some(&mut skip_stats),
+            ),
         };
         let files_discovered = files.len();
+        let (files_skipped_unsupported, top_unsupported_extensions) = skip_summary(&skip_stats);
 
         // Detect frameworks once per index_all run using the scanned file list.
         // Names are passed to each parse call so framework-specific extractors
@@ -93,6 +136,8 @@ impl<'a> ExtractionOrchestrator<'a> {
                 files_skipped: 0,
                 files_errored: 0,
                 files_discovered: Some(files_discovered),
+                files_skipped_unsupported,
+                top_unsupported_extensions: top_unsupported_extensions.clone(),
                 nodes_created: 0,
                 edges_created: 0,
                 errors: vec![aborted_error()],
@@ -181,6 +226,8 @@ impl<'a> ExtractionOrchestrator<'a> {
                     files_skipped,
                     files_errored,
                     files_discovered: Some(files_discovered),
+                    files_skipped_unsupported,
+                    top_unsupported_extensions: top_unsupported_extensions.clone(),
                     nodes_created: total_nodes,
                     edges_created: total_edges,
                     errors: all_errors,
@@ -202,6 +249,8 @@ impl<'a> ExtractionOrchestrator<'a> {
                         files_skipped,
                         files_errored,
                         files_discovered: Some(files_discovered),
+                        files_skipped_unsupported,
+                        top_unsupported_extensions: top_unsupported_extensions.clone(),
                         nodes_created: total_nodes,
                         edges_created: total_edges,
                         errors: all_errors,
@@ -325,6 +374,8 @@ impl<'a> ExtractionOrchestrator<'a> {
             files_skipped,
             files_errored,
             files_discovered: Some(files_discovered),
+            files_skipped_unsupported,
+            top_unsupported_extensions,
             nodes_created: total_nodes,
             edges_created: total_edges,
             errors,
