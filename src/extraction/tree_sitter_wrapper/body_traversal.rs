@@ -37,6 +37,11 @@ impl<'a> TreeSitterExtractor<'a> {
 
         if ext.call_types().contains(&node_type) {
             self.extract_call(node);
+        } else if matches!(node_type, "binary_expression" | "subscript_expression") {
+            // C++ operator overloads invoked infix (`a + b`) or via subscript
+            // (`a[i]`) — record a `calls` edge into the operator method (#1258).
+            // A no-op for every non-C++ language and every non-operator receiver.
+            self.extract_cpp_operator_call(node);
         } else if INSTANTIATION_KINDS.contains(&node_type) {
             // `new Foo()` inside a function body — emit an `instantiates`
             // reference. Without this branch the body walker only knew

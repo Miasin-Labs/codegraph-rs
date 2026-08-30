@@ -125,7 +125,121 @@ fn find_declarator_qualified_id(declarator: SyntaxNode<'_>) -> Option<SyntaxNode
     None
 }
 
+/// Macro-shaped identifier: ALL-CAPS with at least one underscore
+/// (`NATIVE_FN`, `DEFINE_FLASH_FORWARD_KERNEL`). `TEST` never matches; K&R C
+/// definitions have lowercase names.
+static CPP_MACRO_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$").expect("valid C++ macro-name regex")
+});
+
+/// A "lone identifier" parameter — a `parameter_declaration` whose only named
+/// child is a bare `type_identifier` (no declarator, no real type). Returns the
+/// identifier text. tree-sitter parses `MACRO(name)`'s argument this way, since
+/// `name` looks like an unadorned type.
+fn lone_param_ident_text<'s>(param: SyntaxNode<'_>, source: &'s str) -> Option<&'s str> {
+    if param.kind() == "parameter_declaration"
+        && param.named_child_count() == 1
+        && param.named_child(0).map(|c| c.kind()) == Some("type_identifier")
+    {
+        param.named_child(0).map(|c| get_node_text(c, source))
+    } else {
+        None
+    }
+}
+
+/// Recover the real function name from the macro-definition idiom, where
+/// tree-sitter parses the invocation as a `function_definition` NAMED after the
+/// macro instead of the function it defines:
+///
+///   - single-arg `FN_MACRO(name) { … }` — the sole argument IS the name
+///     (`NATIVE_FN(get_version)`, #1373);
+///   - multi-arg `MACRO(name, typed args…) { … }` — the first argument is the
+///     name, the rest are real parameters
+///     (`DEFINE_FLASH_FORWARD_KERNEL(flash_fwd_kernel, bool Is_dropout, …)`,
+///     #1172).
+///
+/// Deliberately narrow so name-in-first-arg is unambiguous — ALL of:
+///  - the parsed name is macro-shaped: ALL-CAPS with at least one underscore;
+///  - the first "parameter" is a LONE identifier containing a lowercase letter
+///    — the name being defined;
+///  - for the multi-arg form, NONE of the remaining parameters is another lone
+///    identifier — a second bare arg means the first isn't the name (gtest's
+///    `TEST_F(Fixture, Name)`, `PYBIND11_MODULE(ext, m)`,
+///    google-benchmark's `BENCHMARK_DEFINE_F(Fix, name)` all bail here).
+fn recover_cpp_macro_defined_name(node: SyntaxNode<'_>, source: &str) -> Option<String> {
+    if node.kind() != "function_definition" {
+        return None;
+    }
+    let declarator = get_child_by_field(node, "declarator")?;
+    if declarator.kind() != "function_declarator" {
+        return None;
+    }
+    let inner = get_child_by_field(declarator, "declarator")?;
+    if inner.kind() != "identifier" {
+        return None;
+    }
+    let macro_name = get_node_text(inner, source);
+    if !CPP_MACRO_NAME_RE.is_match(macro_name) {
+        return None;
+    }
+    let params = get_child_by_field(declarator, "parameters")?;
+    let count = params.named_child_count();
+    if count < 1 {
+        return None;
+    }
+    let first = params.named_child(0)?;
+    let name = lone_param_ident_text(first, source)?;
+    if !name.bytes().any(|b| b.is_ascii_lowercase()) {
+        return None;
+    }
+    // Multi-arg: a second lone identifier means the first isn't the name.
+    for i in 1..count {
+        if let Some(child) = params.named_child(i as u32) {
+            if lone_param_ident_text(child, source).is_some() {
+                return None;
+            }
+        }
+    }
+    Some(name.to_string())
+}
+
+/// Recover the real function name from a single-argument function-defining
+/// macro in **C**, where tree-sitter parses `FN_MACRO(name) { … }` as a
+/// `function_definition` whose return `type` is the macro name and whose
+/// `declarator` is a `parenthesized_declarator` wrapping the sole argument —
+/// the real name (`NATIVE_FN(get_version)` → `get_version`, #1373). Without
+/// this the name keeps its stray parentheses (`(get_version)`), so calls to the
+/// real function never resolve.
+///
+/// Narrow by construction: the return type must be a macro-shaped identifier
+/// (ALL-CAPS with an underscore) and the declarator must be a
+/// `parenthesized_declarator` wrapping exactly one `identifier` — the shape the
+/// unexpanded macro idiom produces, never a normal C definition.
+fn recover_c_macro_defined_name(node: SyntaxNode<'_>, source: &str) -> Option<String> {
+    if node.kind() != "function_definition" {
+        return None;
+    }
+    let type_node = get_child_by_field(node, "type")?;
+    if type_node.kind() != "type_identifier"
+        || !CPP_MACRO_NAME_RE.is_match(get_node_text(type_node, source))
+    {
+        return None;
+    }
+    let declarator = get_child_by_field(node, "declarator")?;
+    if declarator.kind() != "parenthesized_declarator" || declarator.named_child_count() != 1 {
+        return None;
+    }
+    let inner = declarator.named_child(0)?;
+    if inner.kind() != "identifier" {
+        return None;
+    }
+    Some(get_node_text(inner, source).to_string())
+}
+
 fn extract_cpp_qualified_method_name(node: SyntaxNode<'_>, source: &str) -> Option<String> {
+    if let Some(macro_defined) = recover_cpp_macro_defined_name(node, source) {
+        return Some(macro_defined);
+    }
     let declarator = get_child_by_field(node, "declarator")?;
     let qualified = find_declarator_qualified_id(declarator)?;
     get_node_text(qualified, source)
@@ -431,6 +545,15 @@ impl LanguageExtractor for CExtractor {
 
     fn get_return_type(&self, node: SyntaxNode<'_>, source: &str) -> Option<String> {
         extract_cpp_return_type(node, source)
+    }
+
+    fn resolve_name(&self, node: SyntaxNode<'_>, source: &str) -> Option<String> {
+        // Recover the real function name from the single-argument
+        // function-defining macro idiom `FN_MACRO(name) { … }` (#1373); the
+        // default declarator path otherwise keeps the stray parentheses
+        // (`(get_version)`), so calls never resolve. Returns None for every
+        // other node so ordinary declarations use the default name path.
+        recover_c_macro_defined_name(node, source)
     }
 
     fn resolve_type_alias_kind(&self, node: SyntaxNode<'_>, _source: &str) -> Option<NodeKind> {
@@ -940,6 +1063,157 @@ union Value {
                 .iter()
                 .any(|node| node.name == "helper_after" && node.kind == NodeKind::Function),
             "helper_after should be indexed"
+        );
+    }
+
+    #[test]
+    fn cpp_msvc_com_interface_indexes_as_struct() {
+        // #1519: MSVC COM headers alias `interface` with `#define interface
+        // struct`. tree-sitter-cpp reads the bare keyword as a return type and
+        // the class vanishes — the type surfaced as a phantom `function`.
+        // The pre-parse rewrite makes it parse as a struct.
+        let source = "interface IMyComInterface : IParentInterface {\n    virtual void Foo() = 0;\n    virtual void Bar() = 0;\n};\n";
+        let result = TreeSitterExtractor::new(
+            "include/sdk/com/MyInterface.h",
+            source,
+            Some(Language::Cpp),
+            Some(&CppExtractor),
+        )
+        .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let com = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "IMyComInterface")
+            .expect("IMyComInterface indexed");
+        assert_eq!(com.kind, NodeKind::Struct, "COM interface must be a struct");
+        assert!(
+            !result
+                .nodes
+                .iter()
+                .any(|n| n.name == "IMyComInterface" && n.kind == NodeKind::Function),
+            "IMyComInterface must not surface as a phantom function"
+        );
+    }
+
+    #[test]
+    fn cpp_single_arg_defining_macro_indexes_under_real_name() {
+        // #1373 (C++): `FN_MACRO(name) { … }` parses as a function_definition
+        // named after the macro; recover the real name from the sole argument.
+        let source = "#define NATIVE_FN(name) int name(void)\nNATIVE_FN(get_version) { return 1; }\nint use_it(void) { return get_version(); }\nint plain_func(void) { return 42; }\n";
+        let result = TreeSitterExtractor::new(
+            "src/native.cpp",
+            source,
+            Some(Language::Cpp),
+            Some(&CppExtractor),
+        )
+        .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "get_version" && n.kind == NodeKind::Function),
+            "function must index under real name get_version, got {:?}",
+            result.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "NATIVE_FN"),
+            "must not index under the macro name NATIVE_FN"
+        );
+    }
+
+    #[test]
+    fn cpp_multi_arg_defining_macro_still_recovers_first_arg() {
+        // #1172 parity: a multi-arg defining macro recovers the first arg as
+        // the name and treats the rest as real parameters.
+        let source =
+            "#define DEFINE_KERNEL(name, T) void name(T x)\nDEFINE_KERNEL(run_kernel, int) { }\n";
+        let result = TreeSitterExtractor::new(
+            "src/kernel.cpp",
+            source,
+            Some(Language::Cpp),
+            Some(&CppExtractor),
+        )
+        .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result.nodes.iter().any(|n| n.name == "run_kernel"),
+            "multi-arg macro must recover run_kernel, got {:?}",
+            result.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn cpp_gtest_style_macro_is_not_misrecovered() {
+        // gtest's `TEST_F(Fixture, Name)` has two bare-identifier args, so the
+        // first is NOT the defined name — recovery must bail and keep the macro
+        // name (never mis-index under `Fixture`).
+        let source = "#define TEST_F(a, b) void a##_##b()\nTEST_F(MyFixture, DoesThing) { }\n";
+        let result = TreeSitterExtractor::new(
+            "src/test.cpp",
+            source,
+            Some(Language::Cpp),
+            Some(&CppExtractor),
+        )
+        .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "MyFixture"),
+            "must not mis-recover the fixture name as the function name"
+        );
+    }
+
+    #[test]
+    fn c_single_arg_defining_macro_strips_parentheses() {
+        // #1373 (C): `FN_MACRO(name) { … }` parses with a
+        // parenthesized_declarator, so the name kept stray parens
+        // (`(get_version)`). Recover the bare identifier.
+        let source = "#define NATIVE_FN(name) int name(void)\nNATIVE_FN(get_version) { return 1; }\nint use_it(void) { return get_version(); }\nint plain_func(void) { return 42; }\n";
+        let result =
+            TreeSitterExtractor::new("src/native.c", source, Some(Language::C), Some(&CExtractor))
+                .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|n| n.name == "get_version" && n.kind == NodeKind::Function),
+            "function must index under real name get_version, got {:?}",
+            result.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+        assert!(
+            !result.nodes.iter().any(|n| n.name == "(get_version)"),
+            "must not keep the stray parentheses"
+        );
+    }
+
+    #[test]
+    fn cpp_infix_and_subscript_operator_calls_emit_references() {
+        // #1258: infix `a + b` and subscript `a[i]` operator overloads must
+        // emit a `receiver.operator<sym>` call reference so the resolver can
+        // link them to the operator method.
+        let source = "struct V {\n    int x;\n    V operator+(const V& o) const { return V{x + o.x}; }\n    V operator[](int i) const { return V{x + i}; }\n};\nV infixCaller(const V& a, const V& b) { return a + b; }\nV subscriptCaller(const V& a) { return a[3]; }\n";
+        let result = TreeSitterExtractor::new(
+            "src/optest.cpp",
+            source,
+            Some(Language::Cpp),
+            Some(&CppExtractor),
+        )
+        .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let refs: Vec<&str> = result
+            .unresolved_references
+            .iter()
+            .map(|r| r.reference_name.as_str())
+            .collect();
+        assert!(
+            refs.contains(&"a.operator+"),
+            "expected infix operator+ reference, got {refs:?}"
+        );
+        assert!(
+            refs.contains(&"a.operator[]"),
+            "expected subscript operator[] reference, got {refs:?}"
         );
     }
 }

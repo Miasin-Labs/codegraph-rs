@@ -129,3 +129,39 @@ pub(super) fn blank_cpp_inline_annotation_macros(source: &str) -> String {
     }
     finish(bytes)
 }
+
+static CPP_COM_INTERFACE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // MSVC COM headers alias the `interface` keyword with `#define interface
+    // struct`. tree-sitter-cpp doesn't know the alias, so it reads `interface`
+    // as a declaration's return type and the class vanishes — the type surfaces
+    // as a phantom `function` instead of a `struct` (#1519). Match the keyword
+    // only where a class/struct definition follows: `interface Name {` or
+    // `interface Name : Base…{`, so a variable named `interface` or a member
+    // access can never match.
+    Regex::new(r"(?m)\binterface\b([ \t]+[A-Za-z_]\w*[ \t]*[:{])")
+        .expect("valid C++ COM interface regex")
+});
+
+/// Rewrite the MSVC COM `interface` keyword to `struct` so tree-sitter-cpp
+/// parses the definition as a `struct_specifier` instead of misparsing it as a
+/// function (#1519). `interface` is nine bytes and `struct` is six, so the
+/// keyword is replaced with `struct` plus three trailing spaces — every
+/// following byte offset is preserved, exactly as the blanking passes do.
+pub(super) fn rewrite_cpp_com_interface_keyword(source: &str) -> String {
+    if !source.contains("interface") {
+        return source.to_string();
+    }
+    let mut bytes = source.as_bytes().to_vec();
+    for captures in CPP_COM_INTERFACE_RE.captures_iter(source) {
+        let Some(whole) = captures.get(0) else {
+            continue;
+        };
+        // The keyword occupies the first nine bytes of the match.
+        let start = whole.start();
+        bytes[start..start + 6].copy_from_slice(b"struct");
+        for byte in &mut bytes[start + 6..start + 9] {
+            *byte = b' ';
+        }
+    }
+    finish(bytes)
+}

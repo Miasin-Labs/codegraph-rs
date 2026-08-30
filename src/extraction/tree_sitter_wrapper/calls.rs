@@ -31,6 +31,54 @@ impl<'a> TreeSitterExtractor<'a> {
         });
     }
 
+    /// C++ operator overloads invoked via infix (`a + b`) or subscript (`a[i]`)
+    /// syntax get a `calls` edge into the operator method (#1258). tree-sitter
+    /// parses these as `binary_expression` / `subscript_expression`, neither of
+    /// which is a `call_expression`, so they never reached call extraction and
+    /// no edge was recorded.
+    ///
+    /// Emit a `receiver.operator<sym>` reference — the same shape the explicit
+    /// `a.operator+(b)` form resolves through — so the resolver's C++ receiver
+    /// type inference finds the receiver's class and matches the operator method
+    /// on it. Only a bare identifier receiver is emitted: a literal or nested
+    /// expression can't aid type inference, and the `#1566` project-type guard
+    /// plus exact operator-name matching keep a mismatched receiver from
+    /// inventing an edge.
+    pub(super) fn extract_cpp_operator_call(&mut self, node: SyntaxNode<'_>) {
+        if self.language != Language::Cpp {
+            return;
+        }
+        let Some(caller_id) = self.node_stack.last().cloned() else {
+            return;
+        };
+        let (receiver_node, operator_symbol) = match node.kind() {
+            "binary_expression" => {
+                let Some(op) = get_child_by_field(node, "operator") else {
+                    return;
+                };
+                (
+                    get_child_by_field(node, "left"),
+                    get_node_text(op, self.source).to_string(),
+                )
+            }
+            "subscript_expression" => (get_child_by_field(node, "argument"), "[]".to_string()),
+            _ => return,
+        };
+        let Some(receiver_node) = receiver_node else {
+            return;
+        };
+        if receiver_node.kind() != "identifier" {
+            return;
+        }
+        let receiver = get_node_text(receiver_node, self.source);
+        // `self`/`this` receivers don't aid class inference here.
+        if matches!(receiver, "this" | "self") {
+            return;
+        }
+        let callee_name = format!("{receiver}.operator{operator_symbol}");
+        self.push_call_reference(&caller_id, callee_name, node);
+    }
+
     fn emit_arkui_attribute(&mut self, caller_id: &str, name_node: SyntaxNode<'_>) {
         let name = get_node_text(name_node, self.source).to_string();
         if !name.is_empty() {

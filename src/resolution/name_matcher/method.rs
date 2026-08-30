@@ -10,6 +10,7 @@ use super::receiver::{
 use super::support::{
     capitalize_first,
     colon_call_re,
+    cpp_operator_call_re,
     dot_call_re,
     lua_colon_call_re,
     php_property_call_re,
@@ -82,8 +83,18 @@ pub fn match_method_call_hinted(
     context: &dyn ResolutionContext,
     s12: Option<Option<(&Node, bool)>>,
 ) -> Option<ResolvedRef> {
-    // Parse method call patterns like "obj.method" or "Class::method"
-    let dot_match = dot_call_re().captures(&reference.reference_name);
+    // Parse method call patterns like "obj.method" or "Class::method".
+    // C++ operator overloads reach the resolver as `a.operator+` (explicit
+    // `a.operator+(b)` #1247, and infix/subscript `a + b` / `a[i]` #1258) —
+    // the operator's symbol chars fail the word-only method part, so admit the
+    // C++ operator form explicitly (tried after the plain pattern).
+    let dot_match = dot_call_re()
+        .captures(&reference.reference_name)
+        .or_else(|| {
+            (reference.language == Language::Cpp)
+                .then(|| cpp_operator_call_re().captures(&reference.reference_name))
+                .flatten()
+        });
     let is_dot_match = dot_match.is_some();
     let colon_match = colon_call_re().captures(&reference.reference_name);
     let lua_colon_match = matches!(reference.language, Language::Lua | Language::Luau)

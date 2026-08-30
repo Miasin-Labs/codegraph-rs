@@ -19,6 +19,16 @@ pub(super) fn colon_call_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^([0-9A-Za-z_]+)::([0-9A-Za-z_]+)$").expect("valid regex"))
 }
 
+/// C++ operator-overload method call `receiver.operator+` / `a.operator[]`
+/// (#1247, #1258). The operator's symbol chars (`+`, `[]`, `==`) fail the
+/// word-only method part of `dot_call_re`, so admit the operator form
+/// explicitly. Requires at least one non-word, non-space, non-dot char after
+/// `operator`, so a plain method named `operatorTable` never matches here.
+pub(super) fn cpp_operator_call_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^([0-9A-Za-z_.]+)\.(operator[^\w\s.]+)$").expect("valid regex"))
+}
+
 pub(super) fn lua_colon_call_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^([0-9A-Za-z_.]+):([0-9A-Za-z_]+)$").expect("valid regex"))

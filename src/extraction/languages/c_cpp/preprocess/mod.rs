@@ -30,10 +30,12 @@ use cpp::{
     blank_cpp_export_macros,
     blank_cpp_inline_annotation_macros,
     blank_cpp_inline_macros,
+    rewrite_cpp_com_interface_keyword,
 };
 
 pub(super) fn pre_parse_cpp_source<'a>(source: &'a str, file_path: &str) -> Cow<'a, str> {
-    let mut blanked = blank_cpp_export_macros(source);
+    let mut blanked = rewrite_cpp_com_interface_keyword(source);
+    blanked = blank_cpp_export_macros(&blanked);
     blanked = blank_cpp_inline_macros(&blanked);
     blanked = blank_cpp_api_prefix_macros(&blanked);
     blanked = blank_cpp_inline_annotation_macros(&blanked);
