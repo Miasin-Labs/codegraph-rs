@@ -23,12 +23,24 @@ pub(super) fn resolve_python_receiver(
         .iter()
         .filter(|import| import.local_name == receiver)
     {
+        // Join with the EXPORTED name, not the local one: under
+        // `from pkg import mod as alias` the receiver is `alias` but the
+        // module on disk is `pkg.mod`, so building `pkg.alias` looked for a
+        // file that does not exist and the aliased form dropped its `calls`
+        // edge while the plain form (where the two names coincide) worked
+        // (#1626). A namespace import binds at `source`, so `exported_name`
+        // is `*` there — fall back to the local name for it.
+        let module_name = if import.exported_name == "*" {
+            receiver
+        } else {
+            import.exported_name.as_str()
+        };
         let module_path = if import.is_namespace {
             import.source.clone()
         } else if import.source.ends_with('.') {
-            format!("{}{receiver}", import.source)
+            format!("{}{module_name}", import.source)
         } else {
-            format!("{}.{}", import.source, import.exported_name)
+            format!("{}.{}", import.source, module_name)
         };
         let resolved_path = resolve_import_path(
             &module_path,
@@ -103,7 +115,7 @@ fn resolve_imported_instance(
     )
 }
 
-fn find_python_module_file(
+pub(super) fn find_python_module_file(
     module_path: &str,
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
