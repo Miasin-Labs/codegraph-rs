@@ -58,7 +58,7 @@ export function compute() { return helper() + 2; }
         r#"import { compute } from './util';
 
 export interface Runnable {
-  go(): number;
+  run(): number;
 }
 
 export class Engine implements Runnable {
