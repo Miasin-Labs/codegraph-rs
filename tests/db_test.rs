@@ -1750,3 +1750,29 @@ fn reads_ts_written_real_timestamps() {
     // MAX(indexed_at) goes through its own lenient path.
     assert_eq!(q.get_last_indexed_at().unwrap(), Some(1749167999456));
 }
+
+#[test]
+fn search_surfaces_camelcase_symbol_via_segment_vocab() {
+    // #1520: FTS unicode61 keeps camelCase identifiers as one opaque token,
+    // so `checkout` never reaches `getShippingMethodIdFromCheckout`. The LIKE
+    // substring fallback would catch it, but ONLY when FTS returns nothing.
+    // Here a plain `checkout` node makes FTS non-empty, so LIKE/fuzzy are both
+    // skipped and only the segment-vocab supplement can surface the camelCase
+    // symbol.
+    let (_dir, _db, q) = setup();
+    let mut camel = make_node("s1", "getShippingMethodIdFromCheckout");
+    camel.file_path = "src/shipping.ts".to_string();
+    let mut plain = make_node("s2", "checkout");
+    plain.file_path = "src/plain.ts".to_string();
+    q.insert_nodes(&[camel, plain]).unwrap();
+    q.insert_node(&make_node("s3", "unrelatedHelper")).unwrap();
+
+    let results = q
+        .search_nodes("checkout", &SearchOptions::default())
+        .unwrap();
+    let names: Vec<&str> = results.iter().map(|r| r.node.name.as_str()).collect();
+    assert!(
+        names.contains(&"getShippingMethodIdFromCheckout"),
+        "query 'checkout' must surface camelCase symbol via segment vocab, got {names:?}"
+    );
+}
