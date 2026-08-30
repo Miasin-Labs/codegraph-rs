@@ -531,3 +531,161 @@ async fn status_human_output_reports_not_initialized() {
         "stdout: {stdout}"
     );
 }
+
+// =============================================================================
+// #1512: callers/callees/impact must attribute edges per distinct definition
+// and accept --file to scope. Before the fix, every same-named definition was
+// merged into one flat, unlabeled result and there was no --file option, so the
+// answer was a union true of no single definition.
+// =============================================================================
+
+fn write_multi_handle_fixture(root: &Path) {
+    // Two `handle` definitions in different directories: each calls a different
+    // helper and is called by a different caller. Mirrors the issue's repro.
+    for (dir, helper, caller_fn, caller_name) in [
+        ("a", "alpha", "aMain", "aMain"),
+        ("b", "beta", "bMain", "bMain"),
+    ] {
+        fs::create_dir_all(root.join(dir)).unwrap();
+        fs::write(
+            root.join(dir).join(format!("{helper}.js")),
+            format!("function {helper}() {{ return 1; }}\nmodule.exports = {{ {helper} }};\n"),
+        )
+        .unwrap();
+        fs::write(
+            root.join(dir).join("svc.js"),
+            format!(
+                "const {{ {helper} }} = require('./{helper}');\nfunction handle() {{ return {helper}(); }}\nmodule.exports = {{ handle }};\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join(dir).join("main.js"),
+            format!(
+                "const {{ handle }} = require('./svc');\nfunction {caller_fn}() {{ return handle(); }}\nmodule.exports = {{ {caller_name} }};\n"
+            ),
+        )
+        .unwrap();
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn callers_callees_impact_attribute_per_definition_and_scope_by_file() {
+    let (_dir, root) = temp_project_without_parent_index();
+    write_multi_handle_fixture(&root);
+
+    let out = run_cli(&root, &["init"]);
+    assert!(
+        out.status.success(),
+        "init failed: stdout={} stderr={}",
+        stdout_str(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // --- callees --json: two distinct definitions, each with its own edges ---
+    let out = run_cli(&root, &["callees", "handle", "--json"]);
+    assert!(out.status.success(), "callees --json failed");
+    let v: serde_json::Value =
+        serde_json::from_str(stdout_str(&out).trim()).expect("callees --json is valid JSON");
+    let defs = v["definitions"]
+        .as_array()
+        .expect("multi-definition output nests a `definitions` array");
+    assert_eq!(defs.len(), 2, "two `handle` definitions expected: {v}");
+    // No single definition may claim both alpha and beta — that was the merge bug.
+    for def in defs {
+        let names: Vec<&str> = def["callees"]
+            .as_array()
+            .expect("callees array")
+            .iter()
+            .filter_map(|c| c["name"].as_str())
+            .collect();
+        let has_alpha = names.contains(&"alpha");
+        let has_beta = names.contains(&"beta");
+        assert!(
+            has_alpha ^ has_beta,
+            "a single handle definition must call exactly one of alpha/beta, got {names:?}"
+        );
+        // The definition carries its own file attribution.
+        assert!(
+            def["definition"]["filePath"]
+                .as_str()
+                .unwrap()
+                .contains("svc.js"),
+            "definition should be attributed to its file: {def}"
+        );
+    }
+
+    // --- callees --file a/svc.js: scopes to the one definition ---
+    let out = run_cli(
+        &root,
+        &["callees", "handle", "--file", "a/svc.js", "--json"],
+    );
+    assert!(out.status.success(), "callees --file failed");
+    let v: serde_json::Value =
+        serde_json::from_str(stdout_str(&out).trim()).expect("scoped callees is valid JSON");
+    assert!(
+        v.get("definitions").is_none(),
+        "a single scoped definition uses the flat envelope: {v}"
+    );
+    let names: Vec<&str> = v["callees"]
+        .as_array()
+        .expect("callees array")
+        .iter()
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"alpha") && !names.contains(&"beta"),
+        "a/svc.js handle calls only alpha, got {names:?}"
+    );
+
+    // --- callers --json: attributed per definition, never merged ---
+    let out = run_cli(&root, &["callers", "handle", "--json"]);
+    assert!(out.status.success(), "callers --json failed");
+    let v: serde_json::Value =
+        serde_json::from_str(stdout_str(&out).trim()).expect("callers --json is valid JSON");
+    let defs = v["definitions"].as_array().expect("`definitions` array");
+    assert_eq!(defs.len(), 2, "two `handle` definitions expected: {v}");
+    for def in defs {
+        let names: Vec<&str> = def["callers"]
+            .as_array()
+            .expect("callers array")
+            .iter()
+            .filter_map(|c| c["name"].as_str())
+            .collect();
+        let has_a = names.contains(&"aMain");
+        let has_b = names.contains(&"bMain");
+        assert!(
+            has_a ^ has_b,
+            "a single handle definition must be called by exactly one of aMain/bMain, got {names:?}"
+        );
+    }
+
+    // --- impact --json: one blast radius per definition ---
+    let out = run_cli(&root, &["impact", "handle", "--json"]);
+    assert!(out.status.success(), "impact --json failed");
+    let v: serde_json::Value =
+        serde_json::from_str(stdout_str(&out).trim()).expect("impact --json is valid JSON");
+    let defs = v["definitions"].as_array().expect("`definitions` array");
+    assert_eq!(
+        defs.len(),
+        2,
+        "two `handle` impact definitions expected: {v}"
+    );
+
+    // --- --file matching nothing: keep all defs and report it via `note` ---
+    let out = run_cli(
+        &root,
+        &["callees", "handle", "--file", "does/not/exist.js", "--json"],
+    );
+    assert!(out.status.success(), "callees --file miss failed");
+    let v: serde_json::Value = serde_json::from_str(stdout_str(&out).trim()).expect("valid JSON");
+    assert!(
+        v["note"].as_str().unwrap_or("").contains("no definition"),
+        "a non-matching --file must be reported, not ignored: {v}"
+    );
+    assert_eq!(
+        v["definitions"].as_array().map(|d| d.len()),
+        Some(2),
+        "a missed --file falls back to showing all definitions: {v}"
+    );
+}
