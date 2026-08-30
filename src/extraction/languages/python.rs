@@ -85,6 +85,26 @@ impl LanguageExtractor for PythonExtractor {
         Some(false)
     }
 
+    fn is_exported(&self, node: SyntaxNode<'_>, _source: &str) -> Option<bool> {
+        // Python has no export syntax — every module- and class-level
+        // def/class is importable by name (`from module import _foo` works;
+        // a leading underscore is only a PEP 8 convention, and `__all__` only
+        // restricts `import *`). The only names actually unreachable from
+        // outside the file are ones nested inside a function body (closures).
+        // Without this, the extractor left `is_exported` unset for every
+        // Python symbol, so `find_exported_symbol`'s exported-name filter was
+        // always empty for Python — the generic "named import used in a direct
+        // call" resolution path silently failed (#1518).
+        let mut parent = node.parent();
+        while let Some(p) = parent {
+            if p.kind() == "function_definition" {
+                return Some(false);
+            }
+            parent = p.parent();
+        }
+        Some(true)
+    }
+
     fn extract_import(&self, node: SyntaxNode<'_>, source: &str) -> ImportOutcome {
         let import_text = get_node_text(node, source).trim();
         if node.kind() == "import_from_statement" {
@@ -143,5 +163,35 @@ mod tests {
             .find(|n| n.kind == NodeKind::Import)
             .expect("import node");
         assert_eq!(import.name, "os");
+    }
+
+    #[test]
+    fn python_module_and_class_level_defs_are_exported_but_closures_are_not() {
+        // Python has no export syntax; every module- and class-level def/class
+        // is importable by name, so the extractor marks them exported. Names
+        // nested in a function body (closures) are not reachable from outside
+        // and stay unexported. Without this, `find_exported_symbol`'s
+        // exported-name filter dropped every Python target (#1518).
+        let source = "def top():\n    def inner():\n        pass\n    return inner\n\nclass C:\n    def method(self):\n        pass\n";
+        let result = TreeSitterExtractor::new(
+            "src/mod.py",
+            source,
+            Some(Language::Python),
+            Some(&PythonExtractor),
+        )
+        .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let top = result.nodes.iter().find(|n| n.name == "top").unwrap();
+        assert_eq!(top.is_exported, Some(true));
+
+        let class = result.nodes.iter().find(|n| n.name == "C").unwrap();
+        assert_eq!(class.is_exported, Some(true));
+
+        // NB: methods (extract_method) never invoke the is_exported hook —
+        // TS parity, `extractMethod` doesn't set isExported either — so we
+        // only assert module- and class-level defs plus the closure here.
+        let inner = result.nodes.iter().find(|n| n.name == "inner").unwrap();
+        assert_eq!(inner.is_exported, Some(false));
     }
 }

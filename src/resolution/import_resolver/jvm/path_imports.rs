@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use super::super::paths::resolve_import_path;
+use super::python::find_python_module_file;
 use super::re_exports::{WantedSymbol, find_exported_symbol};
 use crate::resolution::name_matcher::{
     infer_receiver_type_from_declaration,
@@ -27,12 +28,28 @@ pub(super) fn resolve_path_import_reference(
                 .reference_name
                 .starts_with(&format!("{}.", imp.local_name))
         {
-            let Some(resolved_path) = resolve_import_path(
+            let mut resolved_path = resolve_import_path(
                 &imp.source,
                 &reference.file_path,
                 reference.language,
                 context,
-            ) else {
+            );
+
+            // Python ABSOLUTE dotted source (`from scripts.lire_fec import
+            // summarize as fec_summary`, source `scripts.lire_fec`):
+            // `resolve_import_path` only maps RELATIVE dotted paths (`.mod`,
+            // `..pkg.mod`) for Python and returns None here, so the whole
+            // block used to no-op and drop the call edge for a directly-called
+            // (non-member, non-namespace) name imported through an absolute
+            // module. `resolve_python_receiver` / `resolve_module_import_to_file`
+            // already carry this fallback for the qualified-member and
+            // whole-module cases (#578); this loop needs it too for a bare
+            // aliased-function call (#1518).
+            if resolved_path.is_none() && reference.language == Language::Python {
+                resolved_path = find_python_module_file(&imp.source, reference, context);
+            }
+
+            let Some(resolved_path) = resolved_path else {
                 continue;
             };
 

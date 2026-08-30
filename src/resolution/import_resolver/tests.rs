@@ -175,3 +175,44 @@ fn svelte_and_vue_reuse_js_import_extraction() {
         assert!(mappings[0].is_default);
     }
 }
+
+#[test]
+fn python_line_wrapped_parenthesized_import_list_captures_every_name() {
+    // PEP 8 wraps a long `from pkg import (...)` list across physical lines.
+    // The old `[^#\n]+` capture stopped at the first newline, so every name
+    // after line one produced no ImportMapping at all (#1517). Two names split
+    // across two lines is the minimal reproduction; assert BOTH resolve so a
+    // fix that only recovers the last name still fails.
+    let content =
+        "from .services import (echeancier,\n                       rentabilite as rent)\n";
+    let mappings = extract_import_mappings("main.py", content, Language::Python);
+    let echeancier = mappings
+        .iter()
+        .find(|m| m.local_name == "echeancier")
+        .expect("first wrapped name");
+    assert_eq!(echeancier.source, ".services");
+    assert_eq!(echeancier.exported_name, "echeancier");
+    let rent = mappings
+        .iter()
+        .find(|m| m.local_name == "rent")
+        .expect("aliased name after the wrap");
+    assert_eq!(rent.source, ".services");
+    assert_eq!(rent.exported_name, "rentabilite");
+}
+
+#[test]
+fn python_single_line_from_import_still_extracts() {
+    // The parenthesized alternation must not break the single-line form.
+    let content = "from pkg import module, other as alias\n";
+    let mappings = extract_import_mappings("main.py", content, Language::Python);
+    let module = mappings
+        .iter()
+        .find(|m| m.local_name == "module")
+        .expect("plain name");
+    assert_eq!(module.exported_name, "module");
+    let alias = mappings
+        .iter()
+        .find(|m| m.local_name == "alias")
+        .expect("aliased name");
+    assert_eq!(alias.exported_name, "other");
+}
