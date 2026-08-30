@@ -51,9 +51,20 @@ impl ResolutionContext for SnapshotContext {
 
     fn file_exists(&self, file_path: &str) -> bool {
         let normalized = file_path.replace('\\', "/");
-        self.known_file(file_path)
-            || self.known_file(&normalized)
-            || Path::new(&self.project_root).join(file_path).exists()
+        if self.known_file(file_path) || self.known_file(&normalized) {
+            return true;
+        }
+        // Bound the filesystem fallback to the project root. Relative-import
+        // resolution can hand us paths carrying `../` segments, and `Path::join`
+        // does not clamp, so an unguarded probe would `stat` arbitrary absolute
+        // paths outside the root. A path outside the root can never be an
+        // indexed project file, so refusing it here is the correct answer, not
+        // a new restriction. Lexical-only containment mirrors the indexing
+        // tier's `allowSymlinkEscape` behavior: in-root symlinks still resolve.
+        if !crate::utils::is_path_within_root(file_path, Path::new(&self.project_root)) {
+            return false;
+        }
+        Path::new(&self.project_root).join(file_path).exists()
     }
 
     fn read_file(&self, file_path: &str) -> Option<String> {
