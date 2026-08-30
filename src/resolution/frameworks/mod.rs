@@ -41,6 +41,7 @@ pub mod salesforce;
 pub mod svelte;
 pub mod swift;
 pub mod swift_objc;
+pub mod tauri;
 pub mod terraform;
 pub mod vue;
 
@@ -68,6 +69,7 @@ pub use salesforce::SalesforceResolver;
 pub use svelte::SvelteResolver;
 pub use swift::{SwiftUIResolver, UIKitResolver, VaporResolver};
 pub use swift_objc::SwiftObjcBridgeResolver;
+pub use tauri::TauriBridgeResolver;
 pub use terraform::TerraformResolver;
 pub use vue::VueResolver;
 
@@ -114,6 +116,8 @@ fn build_framework_resolvers() -> Vec<Box<dyn FrameworkResolver>> {
         Box::new(ExpoModulesResolver),
         // React Native Fabric / Codegen view components — TS spec → component nodes
         Box::new(FabricViewResolver),
+        // Tauri IPC — TS commands/events ↔ Rust #[tauri::command] / Event structs
+        Box::new(TauriBridgeResolver::new()),
         // Mainframe transaction and infrastructure-as-code resolvers
         Box::new(CicsResolver::new()),
         Box::new(TerraformResolver),
