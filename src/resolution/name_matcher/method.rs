@@ -21,6 +21,33 @@ use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, Unres
 use crate::types::{Language, Node, NodeKind};
 
 /// Try to resolve by method name on a class/object
+/// True when `type_name` names a project type node (a class/struct/union/
+/// interface/trait/protocol/enum) in a compatible language — i.e. the graph
+/// actually indexed such a type. When receiver-type inference yields a type
+/// that is NOT a project type (an external/built-in such as `Map`/`Set`/
+/// `Promise`), a same-named project method must not become a guessed edge
+/// (#1566).
+fn is_project_type(
+    type_name: &str,
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+) -> bool {
+    context.get_nodes_by_name(type_name).iter().any(|node| {
+        node.language == reference.language
+            && matches!(
+                node.kind,
+                NodeKind::Class
+                    | NodeKind::Struct
+                    | NodeKind::Union
+                    | NodeKind::Interface
+                    | NodeKind::Trait
+                    | NodeKind::Protocol
+                    | NodeKind::Enum
+                    | NodeKind::TypeAlias
+            )
+    })
+}
+
 pub fn match_method_call(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
@@ -130,6 +157,18 @@ pub fn match_method_call_hinted(
             );
             if typed_match.is_some() {
                 return typed_match;
+            }
+            // #1566: receiver-type inference proved the receiver's type, but no
+            // project method lives on it. When that type is NOT a project class
+            // (an external/built-in such as `Map`/`Set`/`Promise` — a local
+            // `const values = new Map(); values.get(...)`), the receiver is
+            // external, so a sole same-named project method must not become a
+            // guessed edge. Stay unresolved instead of falling through to the
+            // name-similarity strategies below. A genuine project type whose
+            // method simply wasn't found here still falls through, preserving
+            // its existing recall.
+            if !is_project_type(&inferred_type, reference, context) {
+                return None;
             }
         }
     }
