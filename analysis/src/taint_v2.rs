@@ -156,7 +156,7 @@ pub fn analyze(
                 if let Some(s) = sanitizer_on_path.get(&current).cloned() {
                     sanitizer_on_path.insert(next_state.clone(), s);
                 } else if sanitizers.contains(&next) {
-                    sanitizer_on_path.insert(next_state.clone(), next.clone());
+                    sanitizer_on_path.insert(next_state.clone(), next);
                 }
                 frontier.push_back(next_state);
             }

@@ -430,7 +430,7 @@ fn extract_struct(
                     out.push(NodeData {
                         id: fid,
                         kind: NodeKind::Field,
-                        name: field_name.clone(),
+                        name: field_name,
                         qualified_name: qualified,
                         file_path: file_path.to_path_buf(),
                         span,
