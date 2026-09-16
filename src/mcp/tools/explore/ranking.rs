@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use super::super::context::ToolHandler;
@@ -128,49 +129,16 @@ impl ToolHandler {
             .filter(|path| generated.is_generated(path))
             .cloned()
             .collect::<HashSet<_>>();
+        let rank_ctx = FileRankContext {
+            named_seed_files: &named_seed_files,
+            file_graph_score: &file_graph_score,
+            max_graph,
+            file_term_hits: &file_term_hits,
+            generated_files: &generated_files,
+            file_groups: &file_groups,
+        };
         let mut sorted_files = relevant_files;
-        sorted_files.sort_by(|a, b| {
-            use std::cmp::Ordering;
-            let a_named = named_seed_files.contains(a);
-            let b_named = named_seed_files.contains(b);
-            if a_named != b_named {
-                return b_named.cmp(&a_named);
-            }
-            let a_g = file_graph_score.get(a).copied().unwrap_or(0.0);
-            let b_g = file_graph_score.get(b).copied().unwrap_or(0.0);
-            if (a_g - b_g).abs() > max_graph * 0.01 {
-                return b_g.partial_cmp(&a_g).unwrap_or(Ordering::Equal);
-            }
-            let a_hits = file_term_hits.get(a).copied().unwrap_or(0);
-            let b_hits = file_term_hits.get(b).copied().unwrap_or(0);
-            if a_hits != b_hits {
-                return b_hits.cmp(&a_hits);
-            }
-            let a_low = is_low_value(&a.to_lowercase());
-            let b_low = is_low_value(&b.to_lowercase());
-            if a_low != b_low {
-                return if a_low {
-                    Ordering::Greater
-                } else {
-                    Ordering::Less
-                };
-            }
-            let a_gen = generated_files.contains(a);
-            let b_gen = generated_files.contains(b);
-            if a_gen != b_gen {
-                return if a_gen {
-                    Ordering::Greater
-                } else {
-                    Ordering::Less
-                };
-            }
-            let a_score = file_groups[a].score;
-            let b_score = file_groups[b].score;
-            if a_score != b_score {
-                return b_score.cmp(&a_score);
-            }
-            file_groups[b].nodes.len().cmp(&file_groups[a].nodes.len())
-        });
+        sorted_files.sort_by(|a, b| compare_ranked_files(&rank_ctx, a, b));
 
         Ok(RankedExploreFiles {
             file_order,
@@ -182,6 +150,86 @@ impl ToolHandler {
             sorted_files,
         })
     }
+}
+
+/// Everything the file-ranking comparator reads for a pair of files.
+struct FileRankContext<'a> {
+    named_seed_files: &'a HashSet<String>,
+    file_graph_score: &'a HashMap<String, f64>,
+    max_graph: f64,
+    file_term_hits: &'a HashMap<String, usize>,
+    generated_files: &'a HashSet<String>,
+    file_groups: &'a HashMap<String, FileGroup>,
+}
+
+/// Quantize a graph score into `1%`-of-max bands.
+///
+/// The ranking intent is "graph scores inside 1% of the maximum are a tie". Written as a
+/// per-pair tolerance check (`(a_g - b_g).abs() > max_graph * 0.01`) that intent is not
+/// transitive: `a` ties `b`, `b` ties `c`, but `a` and `c` are far enough apart to be
+/// ordered by score, so the lower tie-break tiers can close the triple into a cycle.
+/// `slice::sort_by` detects such a cycle and panics with "user-provided comparison
+/// function does not correctly implement a total order", which kills the whole process.
+/// Comparing a derived band key keeps the tolerance intent and is a genuine total order.
+fn graph_score_band(score: f64, max_graph: f64) -> i64 {
+    let band = max_graph * 0.01;
+    if !band.is_finite() || band <= 0.0 || !score.is_finite() {
+        return 0;
+    }
+    (score / band).floor() as i64
+}
+
+/// Rank two files: named seeds, then graph-score band, term hits, low-value and generated
+/// penalties, group score, and finally group size. Every tier is a total order.
+fn compare_ranked_files(ctx: &FileRankContext<'_>, a: &str, b: &str) -> Ordering {
+    let a_named = ctx.named_seed_files.contains(a);
+    let b_named = ctx.named_seed_files.contains(b);
+    if a_named != b_named {
+        return b_named.cmp(&a_named);
+    }
+    let a_band = graph_score_band(
+        ctx.file_graph_score.get(a).copied().unwrap_or(0.0),
+        ctx.max_graph,
+    );
+    let b_band = graph_score_band(
+        ctx.file_graph_score.get(b).copied().unwrap_or(0.0),
+        ctx.max_graph,
+    );
+    if a_band != b_band {
+        return b_band.cmp(&a_band);
+    }
+    let a_hits = ctx.file_term_hits.get(a).copied().unwrap_or(0);
+    let b_hits = ctx.file_term_hits.get(b).copied().unwrap_or(0);
+    if a_hits != b_hits {
+        return b_hits.cmp(&a_hits);
+    }
+    let a_low = is_low_value(&a.to_lowercase());
+    let b_low = is_low_value(&b.to_lowercase());
+    if a_low != b_low {
+        return if a_low {
+            Ordering::Greater
+        } else {
+            Ordering::Less
+        };
+    }
+    let a_gen = ctx.generated_files.contains(a);
+    let b_gen = ctx.generated_files.contains(b);
+    if a_gen != b_gen {
+        return if a_gen {
+            Ordering::Greater
+        } else {
+            Ordering::Less
+        };
+    }
+    let a_score = ctx.file_groups[a].score;
+    let b_score = ctx.file_groups[b].score;
+    if a_score != b_score {
+        return b_score.cmp(&a_score);
+    }
+    ctx.file_groups[b]
+        .nodes
+        .len()
+        .cmp(&ctx.file_groups[a].nodes.len())
 }
 
 fn count_file_term_hits(
@@ -240,19 +288,168 @@ fn choose_central_files(
         .filter(|(fp, g)| *g > 0.0 && file_term_hits.get(*fp).copied().unwrap_or(0) >= 1)
         .collect();
     entries.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| {
-                file_term_hits
-                    .get(b.0)
-                    .copied()
-                    .unwrap_or(0)
-                    .cmp(&file_term_hits.get(a.0).copied().unwrap_or(0))
-            })
+        // `total_cmp` instead of `partial_cmp(..).unwrap_or(Equal)`: a NaN score would
+        // otherwise compare "equal" to every other score and break the total order.
+        b.1.total_cmp(&a.1).then_with(|| {
+            file_term_hits
+                .get(b.0)
+                .copied()
+                .unwrap_or(0)
+                .cmp(&file_term_hits.get(a.0).copied().unwrap_or(0))
+        })
     });
     entries
         .into_iter()
         .take(2)
         .map(|(f, _)| f.clone())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deterministic xorshift so a failing case is reproducible from its seed.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+
+        fn unit(&mut self) -> f64 {
+            (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next_u64() % n as u64) as usize
+        }
+    }
+
+    struct Case {
+        files: Vec<String>,
+        named_seed_files: HashSet<String>,
+        file_graph_score: HashMap<String, f64>,
+        max_graph: f64,
+        file_term_hits: HashMap<String, usize>,
+        generated_files: HashSet<String>,
+        file_groups: HashMap<String, FileGroup>,
+    }
+
+    impl Case {
+        fn from_seed(seed: u64) -> Self {
+            let mut rng = Rng(seed | 1);
+            let count = 20 + rng.below(180);
+            let files: Vec<String> = (0..count).map(|i| format!("src/f{i:03}.rs")).collect();
+            let mut file_graph_score = HashMap::new();
+            let mut file_term_hits = HashMap::new();
+            let mut file_groups = HashMap::new();
+            for file in &files {
+                file_graph_score.insert(file.clone(), rng.unit());
+                file_term_hits.insert(file.clone(), rng.below(6));
+                file_groups.insert(
+                    file.clone(),
+                    FileGroup {
+                        nodes: Vec::new(),
+                        score: rng.below(8) as i64,
+                    },
+                );
+            }
+            let max_graph = file_graph_score.values().fold(0.0f64, |a, &b| a.max(b));
+            Self {
+                files,
+                named_seed_files: HashSet::new(),
+                file_graph_score,
+                max_graph,
+                file_term_hits,
+                generated_files: HashSet::new(),
+                file_groups,
+            }
+        }
+
+        fn ctx(&self) -> FileRankContext<'_> {
+            FileRankContext {
+                named_seed_files: &self.named_seed_files,
+                file_graph_score: &self.file_graph_score,
+                max_graph: self.max_graph,
+                file_term_hits: &self.file_term_hits,
+                generated_files: &self.generated_files,
+                file_groups: &self.file_groups,
+            }
+        }
+    }
+
+    /// Regression: the graph-score tier used to compare raw scores with a `max_graph * 0.01`
+    /// tolerance, which is not transitive, so `sort_by` aborted the process with
+    /// "user-provided comparison function does not correctly implement a total order".
+    #[test]
+    fn ranked_file_sort_never_violates_total_order() {
+        for seed in 1..=2000u64 {
+            let case = Case::from_seed(seed);
+            let ctx = case.ctx();
+            let mut sorted = case.files.clone();
+            sorted.sort_by(|a, b| compare_ranked_files(&ctx, a, b));
+            assert_eq!(sorted.len(), case.files.len(), "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn ranked_file_comparator_is_a_strict_weak_ordering() {
+        for seed in 1..=40u64 {
+            let case = Case::from_seed(seed);
+            let ctx = case.ctx();
+            let sample: Vec<&String> = case.files.iter().take(24).collect();
+            for a in &sample {
+                assert_eq!(
+                    compare_ranked_files(&ctx, a, a),
+                    Ordering::Equal,
+                    "seed {seed}: comparator is not reflexive for {a}"
+                );
+                for b in &sample {
+                    let ab = compare_ranked_files(&ctx, a, b);
+                    let ba = compare_ranked_files(&ctx, b, a);
+                    assert_eq!(
+                        ab,
+                        ba.reverse(),
+                        "seed {seed}: asymmetry between {a} and {b}"
+                    );
+                    for c in &sample {
+                        let bc = compare_ranked_files(&ctx, b, c);
+                        let ac = compare_ranked_files(&ctx, a, c);
+                        if ab == Ordering::Less && bc == Ordering::Less {
+                            assert_eq!(
+                                ac,
+                                Ordering::Less,
+                                "seed {seed}: {a} < {b} < {c} but not {a} < {c}"
+                            );
+                        }
+                        if ab == Ordering::Equal && bc == Ordering::Equal {
+                            assert_eq!(
+                                ac,
+                                Ordering::Equal,
+                                "seed {seed}: equivalence is not transitive for {a}, {b}, {c}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn graph_score_bands_are_monotone_and_defined_for_degenerate_input() {
+        assert_eq!(graph_score_band(0.0, 1.0), 0);
+        assert_eq!(graph_score_band(0.005, 1.0), 0);
+        assert_eq!(graph_score_band(0.02, 1.0), 2);
+        assert!(graph_score_band(0.9, 1.0) > graph_score_band(0.5, 1.0));
+        // Degenerate inputs collapse to one band instead of producing a partial order.
+        assert_eq!(graph_score_band(1.0, 0.0), 0);
+        assert_eq!(graph_score_band(f64::NAN, 1.0), 0);
+        assert_eq!(graph_score_band(1.0, f64::NAN), 0);
+    }
 }
