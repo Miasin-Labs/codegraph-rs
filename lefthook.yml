@@ -24,6 +24,12 @@ pre-commit:
     # `api_key:` without a literal value do not match.
     secret-scan:
       run: |
+        # Nothing added/copied/modified (e.g. a deletion-only commit): nothing
+        # to scan. Without this, `xargs -r` exits 0 on empty input and the
+        # `if` below reports a secret that isn't there.
+        if [ -z "$(git diff --cached --name-only --diff-filter=ACM)" ]; then
+          exit 0
+        fi
         if git diff --cached --name-only --diff-filter=ACM -z \
           | xargs -0 -r grep -nIEH \
               -e '-----BEGIN (RSA|OPENSSH|EC|DSA|PGP) PRIVATE KEY-----' \
