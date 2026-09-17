@@ -14,15 +14,15 @@ verbatim source PLUS who calls it and what it affects, so you edit with the
 blast radius in view. More accurate context, in far fewer tokens and
 round-trips than reading files yourself.
 
-## One tool: codegraph_explore — use it instead of reading files
+## Primary tool: codegraph_explore — Read-equivalent with structure
 
-There is a single tool, `codegraph_explore`, and it is Read-equivalent. It
-takes either a natural-language question or a bag of symbol/file names and
-returns the **verbatim, line-numbered source** of the relevant symbols
-grouped by file — the same `<n>\t<line>` shape `Read` gives you, safe to
-`Edit` from — PLUS the call path among them (including dynamic-dispatch hops
-like callbacks, React re-render, and JSX children that grep can't follow) and
-a blast-radius summary of what depends on them.
+`codegraph_explore` is the primary tool and is Read-equivalent. It takes
+either a natural-language question or a bag of symbol/file names and returns
+the **verbatim, line-numbered source** of the relevant symbols grouped by
+file — the same `<n>\t<line>` shape `Read` gives you, safe to `Edit` from —
+PLUS the call path among them (including dynamic-dispatch hops like callbacks,
+React re-render, and JSX children that grep can't follow) and a blast-radius
+summary of what depends on them.
 
 Whether you're answering "how does X work" or implementing a change (fixing a
 bug, adding a feature), call `codegraph_explore` before you Read. ONE call
@@ -38,6 +38,26 @@ calls; a grep/read exploration is dozens.
 - **"How does X reach/become Y? / the flow / the path from X to Y"** → `codegraph_explore`, naming the symbols that span the flow (e.g. `mutateElement renderScene`) — it surfaces the call path among them, riding dynamic-dispatch hops, and returns their source.
 - **Reading or editing a file/symbol you can name** → put its name or file path in the `codegraph_explore` query — it returns that current line-numbered source (safe to `Edit` from) with the call path and blast radius attached, so you don't Read it separately. For an overloaded name it returns every matching definition's body in one call.
 - **Need more?** Call `codegraph_explore` again with more specific names — treat the source it returns as already Read.
+
+## Available tools
+
+Eight core tools are available by default:
+
+- **`codegraph_explore`** — Primary context tool: natural-language question or symbol/file names → verbatim source + call paths + dependencies (Read-equivalent)
+- **`codegraph_search`** — Quick symbol lookup: name → locations/kinds/signatures (no source)
+- **`codegraph_node`** — Get one symbol's definition: name → source/signature/location
+- **`codegraph_callers`** — Find who calls a symbol: name → list of callers
+- **`codegraph_callees`** — Find what a symbol calls: name → list of callees  
+- **`codegraph_impact`** — Refactor impact analysis: symbol → affected code
+- **`codegraph_files`** — Project file structure from the index
+- **`codegraph_status`** — Index status and statistics
+
+Most questions are answered by `codegraph_explore` alone. Use the specific
+tools (search/node/callers/etc.) when you need ONLY that focused information
+without full context.
+
+Advanced tools (arch, xref, paths) can be enabled via the `CODEGRAPH_MCP_TOOLS`
+environment variable — see project documentation.
 
 ## Anti-patterns
 

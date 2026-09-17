@@ -23,6 +23,23 @@ Use codegraph for **structural** questions — where X is defined, what X's sign
 - **Don't loop `codegraph_node` over many symbols** — one `codegraph_explore` call returns several symbols' source grouped in a single capped call, while each separate node/Read call re-reads the whole context and costs far more.
 - **Index lag**: the file watcher debounces ~500ms behind writes; don't re-query immediately after editing a file in the same turn.
 
+### Advanced tools and customization
+
+The default configuration exposes 8 core tools. Additional tools can be enabled via the `CODEGRAPH_MCP_TOOLS` environment variable:
+
+```bash
+# Enable specific tools (comma-separated, short names without codegraph_ prefix)
+CODEGRAPH_MCP_TOOLS="search,node,explore,arch,xref,paths"
+
+# Or use codegraph_ prefix
+CODEGRAPH_MCP_TOOLS="codegraph_explore,codegraph_search"
+```
+
+Advanced tools available via opt-in:
+- `arch` — Architecture and component analysis
+- `xref` — Cross-reference tracking
+- `paths` — Call path analysis
+
 ### If `.codegraph/` doesn't exist
 
 The MCP server returns "not initialized." Ask the user: *"I notice this project doesn't have CodeGraph initialized. Want me to run `codegraph init` to build the index?"*
