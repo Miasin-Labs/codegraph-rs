@@ -36,19 +36,6 @@ impl ToolHandler {
         };
         let budget = get_explore_budget(stats.file_count);
 
-        // Tiny-repo tool gating: on projects under TINY_REPO_FILE_THRESHOLD
-        // files, only expose the core tools — the omitted tools reduce to one
-        // grep at this scale (see the TS source for the full A/B rationale).
-        const TINY_REPO_FILE_THRESHOLD: u64 = 500;
-        if stats.file_count < TINY_REPO_FILE_THRESHOLD {
-            visible.retain(|t| {
-                matches!(
-                    t.name.as_str(),
-                    "codegraph_explore" | "codegraph_search" | "codegraph_node"
-                )
-            });
-        }
-
         for tool in &mut visible {
             if tool.name == "codegraph_explore" {
                 tool.description = format!(

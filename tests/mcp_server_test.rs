@@ -369,7 +369,7 @@ async fn responds_to_initialize_quickly_when_no_codegraph_exists_in_cwd() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn initialize_instructions_match_the_explore_only_surface_for_an_indexed_root() {
+async fn initialize_instructions_describe_the_default_surface_for_an_indexed_root() {
     // Given: the server starts in a project with a current index.
     let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
@@ -383,11 +383,11 @@ async fn initialize_instructions_match_the_explore_only_surface_for_an_indexed_r
     });
     let parsed: Value = serde_json::from_str(&response.text).unwrap();
 
-    // Then: the guidance names only the default Explore tool.
+    // Then: the guidance leads with Explore and names the other default tools.
     let instructions = parsed["result"]["instructions"].as_str().unwrap();
-    assert!(instructions.contains("One tool: codegraph_explore"));
-    assert!(!instructions.contains("codegraph_search"));
-    assert!(!instructions.contains("codegraph_node"));
+    assert!(instructions.contains("Primary tool: codegraph_explore"));
+    assert!(instructions.contains("codegraph_search"));
+    assert!(instructions.contains("codegraph_node"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -706,8 +706,9 @@ async fn daemon_proxy_drains_responses_after_client_stdin_closes() {
     let listed = wait_for_message(&server, Duration::from_secs(5), |message| {
         message["id"] == 1
     });
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 1);
-    assert_eq!(listed["result"]["tools"][0]["name"], "codegraph_explore");
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 8);
+    assert!(tools.iter().any(|tool| tool["name"] == "codegraph_explore"));
 }
 
 // =============================================================================

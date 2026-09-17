@@ -1,3 +1,21 @@
+/// The default surface in catalog order (`get_static_tools` keeps it).
+const DEFAULT_TOOLS: [&str; 8] = [
+    "codegraph_search",
+    "codegraph_callers",
+    "codegraph_callees",
+    "codegraph_impact",
+    "codegraph_node",
+    "codegraph_explore",
+    "codegraph_status",
+    "codegraph_files",
+];
+
+fn sorted_default_tools() -> Vec<&'static str> {
+    let mut names = DEFAULT_TOOLS.to_vec();
+    names.sort_unstable();
+    names
+}
+
 fn listed_names() -> Vec<String> {
     let mut names: Vec<String> = ToolHandler::new(None)
         .get_tools()
@@ -9,10 +27,10 @@ fn listed_names() -> Vec<String> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn exposes_only_explore_when_unset() {
+async fn exposes_the_core_tools_when_unset() {
     let _env = env_write().await;
     let _guard = EnvVarGuard::unset("CODEGRAPH_MCP_TOOLS");
-    assert_eq!(listed_names(), vec!["codegraph_explore"]);
+    assert_eq!(listed_names(), sorted_default_tools());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -39,7 +57,7 @@ async fn accepts_fully_qualified_names_and_ignores_whitespace() {
 async fn treats_an_empty_whitespace_value_as_unset() {
     let _env = env_write().await;
     let _guard = EnvVarGuard::set("CODEGRAPH_MCP_TOOLS", "   ");
-    assert_eq!(listed_names(), vec!["codegraph_explore"]);
+    assert_eq!(listed_names(), sorted_default_tools());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -68,7 +86,7 @@ async fn static_tools_honor_the_allowlist_too() {
         let _guard = EnvVarGuard::unset("CODEGRAPH_MCP_TOOLS");
         assert_eq!(
             get_static_tools().into_iter().map(|tool| tool.name).collect::<Vec<_>>(),
-            vec!["codegraph_explore"]
+            DEFAULT_TOOLS
         );
     }
     {

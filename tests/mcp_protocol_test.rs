@@ -208,6 +208,18 @@ fn explore_evidence(response: &Value) -> HashSet<(String, u64, u64, String)> {
 }
 
 /// The annotation set every tool must carry (rmcp ToolAnnotations camelCase).
+/// The default tool surface, in catalog order.
+const DEFAULT_TOOLS: [&str; 8] = [
+    "codegraph_search",
+    "codegraph_callers",
+    "codegraph_callees",
+    "codegraph_impact",
+    "codegraph_node",
+    "codegraph_explore",
+    "codegraph_status",
+    "codegraph_files",
+];
+
 fn expected_annotations() -> Value {
     json!({
         "readOnlyHint": true,
@@ -310,7 +322,7 @@ async fn every_tool_carries_read_only_annotations() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn tools_list_defaults_to_explore_only() {
+async fn tools_list_defaults_to_the_core_tools() {
     let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
@@ -330,11 +342,16 @@ async fn tools_list_defaults_to_explore_only() {
         .map(|tool| tool["name"].as_str().unwrap())
         .collect::<Vec<_>>();
 
-    assert_eq!(names, ["codegraph_explore"]);
-    let query_description =
-        listed["result"]["tools"][0]["inputSchema"]["properties"]["query"]["description"]
-            .as_str()
-            .unwrap();
+    assert_eq!(names, DEFAULT_TOOLS);
+    let explore = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "codegraph_explore")
+        .expect("codegraph_explore");
+    let query_description = explore["inputSchema"]["properties"]["query"]["description"]
+        .as_str()
+        .unwrap();
     assert!(query_description.contains("no prior codegraph_search needed"));
     assert!(!query_description.contains("Use codegraph_search first"));
 }
@@ -449,11 +466,15 @@ async fn emits_tools_list_changed_when_a_late_project_open_changes_the_list() {
 
     server.send(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }));
     let first = wait_for_message(&server, Duration::from_secs(8), |m| m["id"] == 1);
-    assert_eq!(first["result"]["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        first["result"]["tools"].as_array().unwrap().len(),
+        DEFAULT_TOOLS.len()
+    );
 
     // The project appears AFTER the server started (and after the client
     // listed). The next tool call resolves it (retry_initialize_sync), the
-    // tiny-repo gating shrinks the list, and the session must announce it.
+    // explore description gains the project's call budget, and the session
+    // must announce the changed list.
     init_project(tmp.path()).await;
     server.send(&json!({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
@@ -464,7 +485,7 @@ async fn emits_tools_list_changed_when_a_late_project_open_changes_the_list() {
         m["method"] == "notifications/tools/list_changed"
     });
 
-    // Re-listing now returns the gated (tiny-repo) list.
+    // Re-listing keeps the same tools; only the descriptions changed.
     server.send(&json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {} }));
     let second = wait_for_message(&server, Duration::from_secs(8), |m| m["id"] == 3);
     let names: Vec<&str> = second["result"]["tools"]
@@ -474,9 +495,8 @@ async fn emits_tools_list_changed_when_a_late_project_open_changes_the_list() {
         .filter_map(|t| t["name"].as_str())
         .collect();
     assert_eq!(
-        names,
-        ["codegraph_explore"],
-        "the minimal default remains stable after project discovery"
+        names, DEFAULT_TOOLS,
+        "the default surface remains stable after project discovery"
     );
 }
 
@@ -868,13 +888,12 @@ mod direct_fallback {
         server.send(&json!({ "jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": {} }));
         let listed = wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 5);
         let tools = listed["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 1);
         assert_eq!(
             tools
                 .iter()
                 .filter_map(|tool| tool["name"].as_str())
                 .collect::<Vec<_>>(),
-            ["codegraph_explore"]
+            DEFAULT_TOOLS
         );
         for tool in tools {
             assert_eq!(tool["annotations"], expected_annotations());

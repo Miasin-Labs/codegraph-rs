@@ -104,8 +104,16 @@ mod tests {
 
     #[test]
     fn instructions_describe_the_live_default_surfaces() {
-        assert!(SERVER_INSTRUCTIONS.contains("## One tool: codegraph_explore"));
-        assert!(!SERVER_INSTRUCTIONS.contains("codegraph_search"));
+        assert!(SERVER_INSTRUCTIONS.contains("## Primary tool: codegraph_explore"));
+        for tool in [
+            "search", "node", "explore", "callers", "callees", "impact", "files", "status",
+        ] {
+            assert!(
+                SERVER_INSTRUCTIONS.contains(&format!("**`codegraph_{tool}`**")),
+                "default tool codegraph_{tool} is undocumented"
+            );
+        }
+        assert!(SERVER_INSTRUCTIONS.contains("Advanced tools (arch, xref, paths)"));
         assert!(SERVER_INSTRUCTIONS_NO_ROOT_INDEX.contains("pass projectPath"));
     }
 }

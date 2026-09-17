@@ -14,7 +14,7 @@ pub(in crate::mcp::tools) fn short_tool_name(name: &str) -> &str {
 }
 
 /// Optional allowlist of exposed tools, parsed from the CODEGRAPH_MCP_TOOLS
-/// env var (comma-separated short names). Unset/empty → the minimal default.
+/// env var (comma-separated short names). Unset/empty → `DEFAULT_MCP_TOOLS`.
 pub(in crate::mcp::tools) fn tool_allowlist() -> Option<HashSet<String>> {
     let raw = std::env::var("CODEGRAPH_MCP_TOOLS").ok()?;
     if raw.trim().is_empty() {
