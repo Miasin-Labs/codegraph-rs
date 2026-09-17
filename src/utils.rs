@@ -328,41 +328,37 @@ impl FileLock {
         }
     }
 
+    /// PID of the live process holding this lock, if any. A lock file that is
+    /// unreadable, older than the stale timeout, or owned by a dead process is
+    /// not held.
+    pub fn live_holder(&self) -> Option<u32> {
+        let content = fs::read_to_string(&self.lock_path).ok()?;
+        let pid: u32 = content.trim().parse().ok()?;
+        let age = fs::metadata(&self.lock_path)
+            .ok()?
+            .modified()
+            .ok()?
+            .elapsed()
+            .ok()?
+            .as_millis();
+        // Treat locks older than the timeout as stale, regardless of PID
+        (age < Self::STALE_TIMEOUT_MS && is_process_alive(pid)).then_some(pid)
+    }
+
     /// Acquire the lock. Errors if the lock is held by another live process.
     pub fn acquire(&mut self) -> crate::error::Result<()> {
         use crate::error::CodeGraphError;
 
+        if let Some(pid) = self.live_holder() {
+            return Err(CodeGraphError::other(format!(
+                "CodeGraph database is locked by another process (PID {pid}). \
+                 If this is stale, run 'codegraph unlock' or delete {}",
+                self.lock_path.display()
+            )));
+        }
+        // Stale lock (dead process or timed out) or unreadable - remove it
         if self.lock_path.exists() {
-            let stale_or_invalid = (|| -> Option<bool> {
-                let content = fs::read_to_string(&self.lock_path).ok()?;
-                let pid: u32 = content.trim().parse().ok()?;
-                let meta = fs::metadata(&self.lock_path).ok()?;
-                let age = meta.modified().ok()?.elapsed().ok()?.as_millis();
-                // Treat locks older than the timeout as stale, regardless of PID
-                if age < Self::STALE_TIMEOUT_MS && is_process_alive(pid) {
-                    Some(false) // live lock
-                } else {
-                    Some(true) // stale
-                }
-            })();
-
-            match stale_or_invalid {
-                Some(false) => {
-                    let pid = fs::read_to_string(&self.lock_path)
-                        .ok()
-                        .and_then(|c| c.trim().parse::<u32>().ok())
-                        .unwrap_or(0);
-                    return Err(CodeGraphError::other(format!(
-                        "CodeGraph database is locked by another process (PID {pid}). \
-                         If this is stale, run 'codegraph unlock' or delete {}",
-                        self.lock_path.display()
-                    )));
-                }
-                // Stale lock (dead process or timed out) or unreadable - remove it
-                _ => {
-                    let _ = fs::remove_file(&self.lock_path);
-                }
-            }
+            let _ = fs::remove_file(&self.lock_path);
         }
 
         // Write our PID to the lock file using exclusive create

@@ -21,7 +21,7 @@ fn env_enabled(name: &str) -> bool {
         .is_ok_and(|value| !value.is_empty() && value != "0" && value.to_lowercase() != "false")
 }
 
-fn daemon_opt_out_set() -> bool {
+pub(crate) fn daemon_opt_out_set() -> bool {
     env_enabled("CODEGRAPH_NO_DAEMON")
 }
 

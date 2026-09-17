@@ -6,6 +6,9 @@ use super::QueryBuilder;
 use crate::error::Result;
 use crate::search::split_identifier_segments;
 
+const SEGMENT_VOCAB_STATE_KEY: &str = "name_segment_vocab_state";
+const SEGMENT_VOCAB_COMPLETE: &str = "complete";
+
 impl QueryBuilder {
     pub(crate) fn insert_name_segments(&self, name: &str) -> Result<()> {
         let segments = split_identifier_segments(name);
@@ -36,13 +39,23 @@ impl QueryBuilder {
         Ok(value.is_none())
     }
 
-    pub fn get_distinct_node_names(&self, limit: usize, offset: usize) -> Result<Vec<String>> {
+    /// True once a full rebuild has committed. Incremental node writes keep a
+    /// complete vocabulary complete, but cannot complete a partial one (a
+    /// fresh migration, or a rebuild from before rebuilds were atomic).
+    pub fn is_name_segment_vocab_complete(&self) -> Result<bool> {
+        Ok(self.get_metadata(SEGMENT_VOCAB_STATE_KEY)?.as_deref() == Some(SEGMENT_VOCAB_COMPLETE))
+    }
+
+    /// Distinct indexed names sorted after `after`, keyset-paginated so each
+    /// page is an index range scan rather than an OFFSET re-walk. Empty names
+    /// have no segments, so starting from `""` loses nothing.
+    pub fn get_distinct_node_names_after(&self, after: &str, limit: usize) -> Result<Vec<String>> {
         let mut stmt = self.db.conn().prepare_cached(
             "SELECT DISTINCT name FROM nodes
-             WHERE kind NOT IN ('file', 'import')
-             ORDER BY name LIMIT ? OFFSET ?",
+             WHERE kind NOT IN ('file', 'import') AND name > ?
+             ORDER BY name LIMIT ?",
         )?;
-        let rows = stmt.query_map(params![limit as i64, offset as i64], |row| row.get(0))?;
+        let rows = stmt.query_map(params![after, limit as i64], |row| row.get(0))?;
         rows.map(|row| row.map_err(Into::into)).collect()
     }
 
@@ -55,18 +68,24 @@ impl QueryBuilder {
         })
     }
 
+    /// Rebuild the vocabulary from persisted nodes in one transaction, so a
+    /// killed rebuild rolls back instead of leaving a partial vocabulary that
+    /// looks healed.
     pub fn rebuild_name_segment_vocab(&self, batch_size: usize) -> Result<()> {
         let batch_size = batch_size.max(1);
-        self.clear_name_segment_vocab()?;
-        let mut offset = 0usize;
-        loop {
-            let names = self.get_distinct_node_names(batch_size, offset)?;
-            if names.is_empty() {
-                return Ok(());
+        self.db.transaction(|| {
+            self.clear_name_segment_vocab()?;
+            let mut after = String::new();
+            loop {
+                let names = self.get_distinct_node_names_after(&after, batch_size)?;
+                let Some(last) = names.last() else {
+                    break;
+                };
+                after.clone_from(last);
+                self.insert_name_segments_batch(&names)?;
             }
-            self.insert_name_segments_batch(&names)?;
-            offset += names.len();
-        }
+            self.set_metadata(SEGMENT_VOCAB_STATE_KEY, SEGMENT_VOCAB_COMPLETE)
+        })
     }
 
     /// Count the distinct indexed names containing each requested segment.

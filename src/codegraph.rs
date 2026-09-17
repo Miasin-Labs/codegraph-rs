@@ -96,6 +96,17 @@ use crate::types::{
 };
 pub use crate::utils::FileLock;
 
+/// Completeness of the name-segment vocabulary behind prose matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentVocabState {
+    /// Never built: a fresh migration, or cleared by a rebuild in progress.
+    Empty,
+    /// Holds names, but no full rebuild has committed; matches may be missing.
+    Incomplete,
+    /// A full rebuild committed; incremental writes keep it current.
+    Complete,
+}
+
 /// A graph-verified symbol matched from prose through identifier segments.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -803,7 +814,10 @@ impl CodeGraph {
     }
 
     async fn sync_locked(&self, options: &IndexOptions<'_>) -> Result<SyncResult> {
-        let vocab_was_empty = self.queries.is_name_segment_vocab_empty().unwrap_or(false);
+        let vocab_needs_rebuild = !self
+            .queries
+            .is_name_segment_vocab_complete()
+            .unwrap_or(true);
         let orchestrator = self.orchestrator();
         let result = orchestrator.sync(options.on_progress).await?;
 
@@ -859,14 +873,16 @@ impl CodeGraph {
             }
         }
 
-        // Migrated databases start with an empty vocabulary. Incremental node
-        // writes only cover changed files, so heal the unchanged bulk here.
-        if vocab_was_empty && self.queries.get_node_and_edge_count()?.nodes > 0 {
+        // Migrated databases start with an empty vocabulary, and pre-atomic
+        // rebuilds could leave a partial one. Incremental node writes only
+        // cover changed files, so heal the unchanged bulk here. An empty graph
+        // is marked complete too, so the prompt hook stops requesting heals.
+        if vocab_needs_rebuild {
             self.queries.rebuild_name_segment_vocab(2_000)?;
         }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
-        if touched {
+        if touched || vocab_needs_rebuild {
             self.db.borrow().run_maintenance();
         }
 
@@ -878,35 +894,18 @@ impl CodeGraph {
         self.index_mutex.try_lock().is_err()
     }
 
-    /// One-shot upgrade heal for read-mostly callers such as the prompt hook.
-    /// Returns false only for an empty graph or when another writer owns the
-    /// project lock and will perform the same heal itself.
-    pub fn heal_segment_vocab_if_empty(&self) -> Result<bool> {
-        if !self.queries.is_name_segment_vocab_empty()? {
-            return Ok(true);
+    /// How far the name-segment vocabulary can be trusted. Read-only:
+    /// time-boxed callers such as the prompt hook must not rebuild it (a large
+    /// graph takes far longer than a hook may run); `sync` heals anything
+    /// short of [`SegmentVocabState::Complete`].
+    pub fn segment_vocab_state(&self) -> Result<SegmentVocabState> {
+        if self.queries.is_name_segment_vocab_complete()? {
+            Ok(SegmentVocabState::Complete)
+        } else if self.queries.is_name_segment_vocab_empty()? {
+            Ok(SegmentVocabState::Empty)
+        } else {
+            Ok(SegmentVocabState::Incomplete)
         }
-        if self.queries.get_node_and_edge_count()?.nodes == 0 {
-            return Ok(false);
-        }
-
-        let Ok(_guard) = self.index_mutex.try_lock() else {
-            return Ok(false);
-        };
-        if self.file_lock.borrow_mut().acquire().is_err() {
-            return Ok(false);
-        }
-        let result = self
-            .queries
-            .is_name_segment_vocab_empty()
-            .and_then(|empty| {
-                if empty {
-                    self.queries.rebuild_name_segment_vocab(2_000)
-                } else {
-                    Ok(())
-                }
-            });
-        self.file_lock.borrow_mut().release();
-        result.map(|()| true)
     }
 
     /// Match prompt prose to live symbols through the materialized identifier

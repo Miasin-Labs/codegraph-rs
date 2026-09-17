@@ -3,6 +3,8 @@
 //! Schema versioning and migration support.
 //! Ported from `src/db/migrations.ts`.
 
+use std::path::Path;
+
 use crate::db::connection::{Db, now_ms};
 use crate::error::Result;
 
@@ -116,6 +118,15 @@ fn table_exists(db: &Db, table: &str) -> Result<bool> {
     Ok(count == 1)
 }
 
+fn index_exists(db: &Db, index: &str) -> Result<bool> {
+    let count: i64 = db.conn().query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?",
+        [index],
+        |row| row.get(0),
+    )?;
+    Ok(count == 1)
+}
+
 fn add_column_if_missing(db: &Db, table: &str, column: &str, ddl: &str) -> Result<()> {
     if !table_has_column(db, table, column)? {
         db.exec(ddl)?;
@@ -162,15 +173,22 @@ fn migrate_unified_schema_v8(db: &Db) -> Result<()> {
         "ALTER TABLE unresolved_refs ADD COLUMN metadata TEXT;",
     )?;
 
+    // This body also runs on every open (via `repair_shared_schema_v9`). Once
+    // the unique index exists duplicates are impossible, so skip the dedupe:
+    // it is a full edges scan that costs seconds on a multi-million-edge graph.
+    if !index_exists(db, "idx_edges_identity")? {
+        db.exec(
+            "DELETE FROM edges
+             WHERE id NOT IN (
+               SELECT MIN(id) FROM edges
+               GROUP BY source, target, kind, IFNULL(line, -1), IFNULL(col, -1)
+             );
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_identity
+               ON edges(source, target, kind, IFNULL(line, -1), IFNULL(col, -1));",
+        )?;
+    }
     db.exec(
-        "DELETE FROM edges
-         WHERE id NOT IN (
-           SELECT MIN(id) FROM edges
-           GROUP BY source, target, kind, IFNULL(line, -1), IFNULL(col, -1)
-         );
-         CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_identity
-           ON edges(source, target, kind, IFNULL(line, -1), IFNULL(col, -1));
-         CREATE TABLE IF NOT EXISTS name_segment_vocab (
+        "CREATE TABLE IF NOT EXISTS name_segment_vocab (
            segment TEXT NOT NULL,
            name TEXT NOT NULL,
            PRIMARY KEY (segment, name)
@@ -263,6 +281,24 @@ pub fn run_migrations(db: &Db, from_version: u32) -> Result<()> {
 /// Check if the database needs migration.
 pub fn needs_migration(db: &Db) -> bool {
     get_current_version(db) < CURRENT_SCHEMA_VERSION
+}
+
+/// Whether the database file at `db_path` is already at the current schema,
+/// checked through a read-only connection that can never start a migration.
+/// Unreadable or missing databases report `false`.
+pub fn database_schema_is_current(db_path: &Path) -> bool {
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return false;
+    };
+    conn.query_row("SELECT MAX(version) FROM schema_versions", [], |row| {
+        row.get::<_, Option<u32>>(0)
+    })
+    .ok()
+    .flatten()
+    .is_some_and(|version| version >= CURRENT_SCHEMA_VERSION)
 }
 
 /// Get list of pending migrations.

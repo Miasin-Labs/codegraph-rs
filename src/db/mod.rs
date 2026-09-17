@@ -27,6 +27,7 @@ pub use migrations::{
     CURRENT_SCHEMA_VERSION,
     Migration,
     MigrationRecord,
+    database_schema_is_current,
     get_current_version,
     get_migration_history,
     get_pending_migrations,

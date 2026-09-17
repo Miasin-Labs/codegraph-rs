@@ -114,6 +114,141 @@ async fn hidden_prompt_hook_is_fail_open_for_invalid_input() {
     assert!(output.stdout.is_empty());
 }
 
+fn db_path(root: &Path) -> PathBuf {
+    root.join(".codegraph/codegraph.db")
+}
+
+fn sql(root: &Path, batch: &str) {
+    rusqlite::Connection::open(db_path(root))
+        .unwrap()
+        .execute_batch(batch)
+        .unwrap();
+}
+
+fn sql_count(root: &Path, query: &str) -> i64 {
+    rusqlite::Connection::open(db_path(root))
+        .unwrap()
+        .query_row(query, [], |row| row.get(0))
+        .unwrap()
+}
+
+const FORGET_VOCAB: &str = "DELETE FROM name_segment_vocab;
+     DELETE FROM project_metadata WHERE key = 'name_segment_vocab_state';";
+const VOCAB_COMPLETE: &str = "SELECT COUNT(*) FROM project_metadata WHERE key = 'name_segment_vocab_state' AND value = 'complete'";
+const SCHEMA_V9: &str = "SELECT COUNT(*) FROM schema_versions WHERE version = 9";
+// A real v8 index keeps its earlier rows; relabel rather than delete the v9 row
+// so only migration 9 is pending.
+const SCHEMA_BACK_TO_V8: &str = "UPDATE schema_versions SET version = 8 WHERE version = 9;";
+
+/// Run the prompt hook on `prompt`; `background` allows its detached sync.
+fn run_prompt_hook(root: &Path, registry: &Path, prompt: &str, background: bool) -> Output {
+    let input = serde_json::json!({ "prompt": prompt, "cwd": root });
+    let mut command = Command::new(bin());
+    command
+        .arg("prompt-hook")
+        .current_dir(root)
+        .env("CODEGRAPH_DAEMON_REGISTRY_DIR", registry)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    if background {
+        command.env_remove("CODEGRAPH_NO_DAEMON");
+    } else {
+        command.env("CODEGRAPH_NO_DAEMON", "1");
+    }
+    let output = command
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(input.to_string().as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("spawn prompt hook");
+    assert!(output.status.success());
+    output
+}
+
+// Prose only: no structural keyword and no code token, so these prompts reach
+// the segment-vocabulary path.
+const PROSE_PROMPT: &str = "please tokenize the parser input";
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_hook_never_migrates_or_rebuilds_inline() {
+    let (_temp, root, registry) = fixture().await;
+
+    // An outdated schema would be migrated by opening the graph.
+    sql(&root, SCHEMA_BACK_TO_V8);
+    let output = run_prompt_hook(&root, &registry, PROSE_PROMPT, false);
+    assert!(output.stdout.is_empty(), "{}", stdout(&output));
+    assert_eq!(sql_count(&root, SCHEMA_V9), 0, "the hook must not migrate");
+
+    // A never-built vocabulary would be rebuilt.
+    sql(
+        &root,
+        "UPDATE schema_versions SET version = 9 WHERE version = 8;",
+    );
+    sql(&root, FORGET_VOCAB);
+    let output = run_prompt_hook(&root, &registry, PROSE_PROMPT, false);
+    assert!(output.stdout.is_empty(), "{}", stdout(&output));
+    assert_eq!(
+        sql_count(&root, "SELECT COUNT(*) FROM name_segment_vocab"),
+        0,
+        "the hook must not rebuild the vocabulary"
+    );
+
+    let sync = run_cli(&root, &registry, &["sync", "--quiet"]);
+    assert!(
+        sync.status.success(),
+        "sync failed: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert_eq!(
+        sql_count(&root, VOCAB_COMPLETE),
+        1,
+        "sync heals the vocabulary"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_hook_matches_against_an_incomplete_vocabulary() {
+    let (_temp, root, registry) = fixture().await;
+    // Names are present, but no full rebuild is recorded (a pre-atomic heal).
+    sql(
+        &root,
+        "DELETE FROM project_metadata WHERE key = 'name_segment_vocab_state';",
+    );
+
+    let output = run_prompt_hook(&root, &registry, "please parse the token input", false);
+    assert!(
+        stdout(&output).contains("parse_token"),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_hook_heals_the_index_in_a_background_sync() {
+    let (_temp, root, registry) = fixture().await;
+    sql(&root, SCHEMA_BACK_TO_V8);
+    sql(&root, FORGET_VOCAB);
+
+    let output = run_prompt_hook(&root, &registry, PROSE_PROMPT, true);
+    assert!(output.stdout.is_empty(), "{}", stdout(&output));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while sql_count(&root, SCHEMA_V9) == 0 || sql_count(&root, VOCAB_COMPLETE) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the background sync never migrated and healed the index"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(sql_count(&root, "SELECT COUNT(*) FROM name_segment_vocab") > 0);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn explore_and_node_symbol_use_the_mcp_handler_output() {
     let (_temp, root, registry) = fixture().await;

@@ -171,6 +171,36 @@ fn segment_vocabulary_can_be_rebuilt_without_orphans() {
 }
 
 #[test]
+fn segment_vocabulary_is_incomplete_until_a_rebuild_commits() {
+    let (_dir, _db, q) = setup();
+    // Duplicate names straddle single-name pages; keyset paging must neither
+    // repeat nor skip them.
+    q.insert_nodes(&[
+        make_node("n1", "AlphaRoute"),
+        make_node("n2", "AlphaRoute"),
+        make_node("n3", "BetaRoute"),
+        make_node("n4", "GammaRoute"),
+    ])
+    .unwrap();
+    assert!(!q.is_name_segment_vocab_empty().unwrap());
+    assert!(
+        !q.is_name_segment_vocab_complete().unwrap(),
+        "incremental writes alone must not mark the vocabulary complete"
+    );
+
+    q.rebuild_name_segment_vocab(1).unwrap();
+    assert!(q.is_name_segment_vocab_complete().unwrap());
+    assert_eq!(
+        q.get_names_for_segment("route", 10).unwrap(),
+        ["BetaRoute", "AlphaRoute", "GammaRoute"]
+    );
+    assert_eq!(
+        q.get_distinct_node_names_after("AlphaRoute", 10).unwrap(),
+        ["BetaRoute", "GammaRoute"]
+    );
+}
+
+#[test]
 fn get_nodes_by_ids_serves_cache_hits_from_memory() {
     let (_dir, db, q) = setup();
     q.insert_nodes(&[
@@ -1012,8 +1042,13 @@ fn open_migrates_rust_v7_shape_and_enforces_edge_identity() {
         .unwrap();
     }
 
+    // The read-only check sees the pending migration without running it.
+    assert!(!codegraph::db::database_schema_is_current(&db_path));
+    assert!(!codegraph::db::database_schema_is_current(&db_path));
+
     let db = DatabaseConnection::open(&db_path).unwrap();
     assert_eq!(db.get_schema_version().unwrap().unwrap().version, 9);
+    assert!(codegraph::db::database_schema_is_current(&db_path));
     let handle = db.get_db().unwrap();
 
     let return_type_exists: i64 = handle
