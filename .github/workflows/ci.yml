@@ -69,7 +69,5 @@ jobs:
         run: cargo build --workspace
       - name: Test
         run: cargo test --workspace
-      - name: Test vulnerability feature
-        run: cargo test --workspace --features vuln
       - name: Compile GPU feature
         run: cargo check --workspace --all-targets --features gpu

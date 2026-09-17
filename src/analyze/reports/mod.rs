@@ -138,8 +138,6 @@ mod taint_suggest;
 mod traits;
 mod types;
 mod validation;
-#[cfg(feature = "vuln")]
-mod vuln;
 
 pub use boundaries::*;
 pub use capabilities::*;
@@ -182,11 +180,6 @@ pub(crate) use traits::matches_symbol_filter;
 pub use traits::*;
 pub use types::*;
 pub use validation::*;
-#[cfg(test)]
-#[cfg(feature = "vuln")]
-pub(crate) use vuln::severity_for;
-#[cfg(feature = "vuln")]
-pub use vuln::*;
 
 #[cfg(test)]
 mod tests;

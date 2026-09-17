@@ -1,8 +1,6 @@
 //! MCP tool registry and JSON schemas.
 
 mod admin;
-#[cfg(feature = "vuln")]
-mod analysis;
 mod catalog;
 mod explore;
 mod filters;

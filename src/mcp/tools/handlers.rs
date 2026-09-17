@@ -150,8 +150,7 @@ mod tests {
         // default?) order, required present.
         let defs = tools();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-        // vuln + verify_roles are behind the off-by-default `vuln` feature.
-        let mut expected = vec![
+        let expected = vec![
             "codegraph_search",
             "codegraph_callers",
             "codegraph_callees",
@@ -160,10 +159,10 @@ mod tests {
             "codegraph_explore",
             "codegraph_status",
             "codegraph_files",
+            "codegraph_arch",
+            "codegraph_xref",
+            "codegraph_paths",
         ];
-        #[cfg(feature = "vuln")]
-        expected.extend(["codegraph_vuln", "codegraph_verify_roles"]);
-        expected.extend(["codegraph_arch", "codegraph_xref", "codegraph_paths"]);
         assert_eq!(defs.len(), expected.len());
         assert_eq!(names, expected);
         let json = serde_json::to_string(&defs[0]).unwrap();

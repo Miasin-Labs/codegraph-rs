@@ -134,48 +134,7 @@ fn base_snapshot(graph: AnalysisGraph) -> crate::analysis_bridge::BaseSnapshot {
     }
 }
 
-#[cfg(feature = "vuln")]
-use super::{VulnFindingOut, VulnReport, severity_for};
-
-#[cfg(feature = "vuln")]
-fn sample_vuln_report() -> VulnReport {
-    VulnReport {
-        findings: vec![
-            VulnFindingOut {
-                kind: "missing_dominator_check".to_owned(),
-                template: "missing_dominator_check".to_owned(),
-                class: Some("BAC".to_owned()),
-                origin: "frequency".to_owned(),
-                file: "src/handlers/order.rs".to_owned(),
-                line: 42,
-                symbol: "delete_order".to_owned(),
-                confidence: 0.91,
-                severity: severity_for(0.91).to_owned(),
-                message: "reaches `db_delete` without `check_auth` & <tag>".to_owned(),
-            },
-            VulnFindingOut {
-                kind: "lossy_send".to_owned(),
-                template: "must_follow".to_owned(),
-                class: None,
-                origin: "concurrency".to_owned(),
-                file: "src/queue.rs".to_owned(),
-                line: 7,
-                symbol: "enqueue".to_owned(),
-                confidence: 0.9,
-                severity: severity_for(0.9).to_owned(),
-                message: "best-effort send result discarded".to_owned(),
-            },
-        ],
-        missing_guard_count: 1,
-        taint_count: 0,
-        concurrency_count: 1,
-        scanned_functions: 12,
-    }
-}
-
 mod diff;
 mod graph;
 mod graph_algorithms;
 mod query;
-#[cfg(feature = "vuln")]
-mod vuln;

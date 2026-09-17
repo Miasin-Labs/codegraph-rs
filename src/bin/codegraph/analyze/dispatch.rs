@@ -1,5 +1,3 @@
-#[cfg(feature = "vuln")]
-use super::cmd_analyze_vuln;
 use super::{
     AnalyzeCommands,
     cmd_analyze_boundaries,
@@ -248,21 +246,5 @@ pub(crate) fn cmd_analyze(command: AnalyzeCommands) {
             no_cache,
             json,
         } => cmd_analyze_diff(&base, &depth, &top, path.as_deref(), no_cache, json),
-        #[cfg(feature = "vuln")]
-        AnalyzeCommands::Vuln {
-            min_confidence,
-            path,
-            no_cache,
-            sarif,
-            html,
-            json,
-        } => cmd_analyze_vuln(
-            &min_confidence,
-            path.as_deref(),
-            no_cache,
-            sarif.as_deref(),
-            html.as_deref(),
-            json,
-        ),
     }
 }

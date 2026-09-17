@@ -170,18 +170,6 @@
     "tool": "codegraph_impact"
   },
   {
-    "description": "roles is required and array-shaped; a bare string must be a clean validation error.",
-    "group": "fuzz-contract",
-    "id": "CG015",
-    "kind": "mcp",
-    "payload": {
-      "roles": "admin"
-    },
-    "requirement": "Tool argument contract: malformed/missing/wrong-typed arguments are rejected structurally, never with a panic",
-    "title": "codegraph_verify_roles handles a wrong-typed roles argument",
-    "tool": "codegraph_verify_roles"
-  },
-  {
     "description": "symbol is required; omitting it must be a structured error.",
     "group": "fuzz-contract",
     "id": "CG016",

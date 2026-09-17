@@ -477,34 +477,4 @@ per-function complexity so the NEXT diff reports full before/after deltas."
         #[arg(short = 'j', long)]
         json: bool,
     },
-    #[cfg(feature = "vuln")]
-    /// Inference-based vulnerability scan: missing-auth (BAC/IDOR), unsanitized
-    /// flows, and the concurrency/control-plane lint — rules inferred from the
-    /// graph, not hardcoded
-    #[command(
-        after_help = "Discovers guards/sinks/sanitizers from the codebase itself \
-(deviant-frequency mining over the call graph + name-lexicon taint seeds) and \
-flags the call sites that deviate, plus a tree-sitter concurrency lint for \
-lossy best-effort sends. Findings below --min-confidence are dropped."
-    )]
-    Vuln {
-        /// Drop findings below this confidence (0.0–1.0)
-        #[arg(long = "min-confidence", value_name = "number", default_value = "0.5")]
-        min_confidence: String,
-        /// Project path
-        #[arg(short = 'p', long, value_name = "path")]
-        path: Option<String>,
-        /// Rebuild the analysis graph from the index, ignoring the cached snapshot
-        #[arg(long = "no-cache")]
-        no_cache: bool,
-        /// Write a SARIF 2.1.0 log to this path (for GitHub Advanced Security, Defender, etc.)
-        #[arg(long = "sarif", value_name = "path")]
-        sarif: Option<String>,
-        /// Write a standalone HTML report to this path
-        #[arg(long = "html", value_name = "path")]
-        html: Option<String>,
-        /// Output as JSON
-        #[arg(short = 'j', long)]
-        json: bool,
-    },
 }

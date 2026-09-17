@@ -10,10 +10,7 @@
 //! * **hot files & tools** — ranking priors for exploration;
 //! * **co-access** — files read together in a session (coupling the static call
 //!   graph misses);
-//! * **command profile** — the grep/cargo/git chains the user actually runs;
-//!
-//! and it is the corpus the vulnerability engine's fix-history learning
-//! ([`codegraph_analysis::vuln::fix_history`]) draws on.
+//! * **command profile** — the grep/cargo/git chains the user actually runs.
 //!
 //! Redaction happens at *parse* time ([`redact`]): credential-shaped values are
 //! masked before a row is ever constructed, so no raw secret reaches disk.

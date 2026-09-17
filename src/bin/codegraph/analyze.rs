@@ -69,8 +69,6 @@ mod taint;
 mod traits;
 mod types;
 mod validate;
-#[cfg(feature = "vuln")]
-mod vuln;
 
 use boundaries::cmd_analyze_boundaries;
 pub(crate) use bridge::{bridge_project_with_options, print_json, *};
@@ -98,8 +96,6 @@ use taint::cmd_analyze_taint;
 use traits::cmd_analyze_traits;
 use types::cmd_analyze_types;
 use validate::cmd_analyze_validate;
-#[cfg(feature = "vuln")]
-use vuln::cmd_analyze_vuln;
 
 // =============================================================================
 // analyze command family

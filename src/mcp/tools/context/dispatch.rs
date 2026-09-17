@@ -79,10 +79,6 @@ impl ToolHandler {
                 };
             }
             "codegraph_files" => self.handle_files(args),
-            #[cfg(feature = "vuln")]
-            "codegraph_vuln" => self.handle_vuln(args),
-            #[cfg(feature = "vuln")]
-            "codegraph_verify_roles" => self.handle_verify_roles(args),
             "codegraph_arch" => self.handle_arch(args),
             "codegraph_xref" => self.handle_xref(args),
             "codegraph_paths" => self.handle_paths(args),
