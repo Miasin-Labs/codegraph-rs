@@ -14,7 +14,7 @@ Two crates (`[workspace] members = ["analysis"]`):
   - bins: `src/bin/codegraph.rs` (CLI), `src/bin/codegraph-mcp-server.rs` (MCP).
 - **`codegraph-analysis`** (`analysis/`, edition 2024) — the pure analysis
   library: CFG, dataflow, points-to, slicing, dominators, taint, complexity,
-  co-change, the DSL, and the inference-based vuln engine (`analysis/src/vuln/`).
+  co-change, the DSL, and the concurrency lint (`analysis/src/concurrency.rs`).
 
 The root crate depends on `codegraph-analysis` (path dep).
 
@@ -51,17 +51,17 @@ cargo test --workspace
 
 - **MCP tools are extensible.** The old "frozen at 8 for TS wire parity" rule is
   **RETIRED (2026-06)** — the Rust server is the source of truth now, not a TS
-  mirror. **11 tools by default** (`search, callers, callees, impact, node,
-  explore, status, files, arch, xref, paths`); the inference vulnerability engine
-  and its two tools (`vuln`, `verify_roles`) plus the `analyze vuln` CLI sit
-  behind the off-by-default `vuln` cargo feature — build `--features vuln` to
-  expose all 13. (`verify_roles` is the "model proposes, graph proves" boundary:
-  it runs agent-supplied predicate-role proposals through
-  `vuln::classify::GraphVerifier` and emits only graph-corroborated findings
-  tagged `InferenceOrigin::Llm`.)
+  mirror. **8 tools by default** (`DEFAULT_MCP_TOOLS` in
+  `registry/filters.rs`: `search, callers, callees, impact, node, explore,
+  status, files`), listed on every project regardless of size — there is no
+  small-repo gating. `arch, xref, paths` are opt-in through the
+  `CODEGRAPH_MCP_TOOLS` allowlist (comma-separated short names), for 11 in
+  all. Keep `server_instructions.rs` naming exactly the default set. The
+  inference vulnerability engine (`vuln`/`verify_roles` tools, `analyze vuln`)
+  was **deleted (2026-09)** — recover it from git history, don't re-gate it.
   To add one, update the domain-shaped `src/mcp/tools/` tree: (1) route the
   tool in `handlers.rs`/`ToolHandler::execute()`; (2) add the handler in the
-  owning domain module (`graph/`, `explore/`, `analysis.rs`, `admin/`, etc.),
+  owning domain module (`graph/`, `explore/`, `admin/`, etc.),
   getting the graph via `self.get_code_graph(...)` or bridging with
   `analysis_bridge::build_analysis_graph_cached_with_options`; (3) register
   the schema in `registry/` using the shared schema builders and
@@ -71,6 +71,15 @@ cargo test --workspace
   in `tests/mcp_tools_test.rs`. Heavy analyses may ALSO ship as
   `codegraph analyze …` CLI subcommands mirrored by `src/analyze/reports/`
   report fns.
+- **The prompt hook (`src/prompt_hook.rs`) must never do unbounded work.**
+  Claude Code kills a `UserPromptSubmit` hook at 30s, and a killed transaction
+  rolls back, so inline work on a large index times out on every prompt. The
+  hook checks the schema read-only (`db::database_schema_is_current`) and the
+  vocabulary state (`CodeGraph::segment_vocab_state`); anything short of
+  current/complete is handed to a detached `codegraph sync`. Per-open schema
+  repair (`repair_shared_schema_v9`) must stay cheap for the same reason, and
+  `rebuild_name_segment_vocab` must stay one transaction that ends by marking
+  the vocabulary complete.
 - **Recursive AST/graph walkers must call `ensure_sufficient_stack`** (crate
   root fn) at the recursion head — depth is bounded by input, not thread stack;
   a deep input otherwise aborts the process.
@@ -105,11 +114,9 @@ cargo test --workspace
 
 ## Notable subsystems
 
-- **Vuln engine** (`analysis/src/vuln/`): inference-based, rule-free bug finding —
-  templates (`MissingDominatorCheck`, `ReachesWithoutSanitizer`, …) instantiated
-  with *inferred* predicate sets (frequency mining, taint seeds, fix-history,
-  LLM-verified), fused in a confidence-weighted `LearnedStore`. Run via
-  `codegraph analyze vuln`. Concurrency lint in `analysis/src/concurrency.rs`.
+- **Concurrency lint** (`analysis/src/concurrency.rs`, per-language rules in
+  `concurrency_rules.rs`): flags lossy best-effort sends. Library-only since
+  the vuln engine (its sole CLI surface) was deleted.
 - **Tool-history flywheel** (`src/history.rs`): a separate, global, redacted
   SQLite DB of agent tool usage (`codegraph history ingest|show`) — never the
   per-project graph schema.
