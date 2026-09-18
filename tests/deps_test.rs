@@ -581,10 +581,19 @@ fn cli_index_records_dependencies_and_deps_commands_build_show_and_gc() {
         home.registry_path().is_file(),
         "index recorded the dependencies"
     );
-    assert!(
-        !home.ecosystem_dir(Ecosystem::Crates).exists(),
-        "no inline shard build"
-    );
+    // Indexing may write the resolver's per-crate method-name artifacts
+    // (`<name>-<version>.api` files) beside the shards, but no shard — a
+    // directory holding `meta.json` — is built inline.
+    let crates_dir = home.ecosystem_dir(Ecosystem::Crates);
+    let inline_shards = std::fs::read_dir(&crates_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.path().join("meta.json").is_file())
+                .count()
+        })
+        .unwrap_or(0);
+    assert_eq!(inline_shards, 0, "no inline shard build");
     assert!(!project.join(".codegraph").join("deps").exists());
 
     let listed = json(&run(

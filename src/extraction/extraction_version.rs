@@ -1,2 +1,2 @@
 /// Monotonically increasing version of the graph content produced by extraction.
-pub const EXTRACTION_VERSION: u32 = 32;
+pub const EXTRACTION_VERSION: u32 = 33;

@@ -98,7 +98,7 @@ impl DepsEnv {
         Some(DepsEnv {
             cargo_home: from("CARGO_HOME").or_else(|| home.as_ref().map(|h| h.join(".cargo")))?,
             store: from("CODEGRAPH_DEPS_DIR")
-                .or_else(|| home.as_ref().map(|h| h.join(".codegraph").join("deps")))?,
+                .unwrap_or_else(|| crate::directory::codegraph_home().join("deps")),
         })
     }
 }
