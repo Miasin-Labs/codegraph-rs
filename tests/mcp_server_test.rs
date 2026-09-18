@@ -151,6 +151,8 @@ fn spawn_server(cwd: &Path, args: &[&str], no_daemon: bool) -> ServerProc {
         .env_remove("CODEGRAPH_DAEMON_INTERNAL")
         .env_remove("CODEGRAPH_MCP_TOOLS")
         .env_remove("CODEGRAPH_MCP_DEBUG")
+        .env_remove("CODEGRAPH_MAX_OUTPUT_CHARS")
+        .env_remove("CODEGRAPH_EXPLORE_DEDUP")
         .env_remove("CODEGRAPH_WATCH_DEBOUNCE_MS")
         .env_remove("CODEGRAPH_PPID_POLL_MS")
         .env_remove("NODE_ENV")
@@ -514,13 +516,20 @@ async fn direct_tool_results_use_compact_json_projection() {
         message["id"] == 2
     });
 
-    // Then: text-only output receives the versioned fallback projection.
-    assert_compact_mcp_projection(&text_response);
-    assert_eq!(
-        text_response["result"]["structuredContent"]["schemaVersion"],
-        1
+    // Then: a tool without an output schema sends its own text as-is — no
+    // structuredContent, and no JSON envelope escaping the text.
+    let text_result = &text_response["result"];
+    assert!(
+        text_result.get("structuredContent").is_none(),
+        "{text_result}"
     );
-    assert_eq!(text_response["result"]["structuredContent"]["kind"], "text");
+    let text = text_result["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    assert!(
+        text.contains("projectionMissingSymbol") && serde_json::from_str::<Value>(text).is_err(),
+        "{text}"
+    );
     assert_eq!(
         text_response["result"]["_meta"]["notices"][0]["kind"],
         "auto_sync_disabled"
@@ -1354,8 +1363,18 @@ async fn accepts_valid_query_in_codegraph_search() {
     assert_ne!(res.is_error, Some(true));
     let structured = res.structured_content.as_ref().expect("structured search");
     assert_eq!(structured["kind"], "search");
-    assert_eq!(structured["query"], "example");
-    assert!(structured["results"].as_array().unwrap().len() >= 2);
+    // Rows carry what a follow-up call takes (name, file, line), not the
+    // request echoed back or internal ids.
+    assert!(structured.get("query").is_none(), "{structured}");
+    let results = structured["results"].as_array().unwrap();
+    assert!(results.len() >= 2);
+    for row in results {
+        assert!(row["name"].is_string() && row["file"].is_string() && row["line"].is_u64());
+        assert!(
+            row.get("id").is_none() && row.get("score").is_none(),
+            "{row}"
+        );
+    }
     cg.close();
 }
 
@@ -1371,9 +1390,7 @@ async fn codegraph_search_kind_type_matches_type_aliases() {
     let structured = res.structured_content.as_ref().expect("structured search");
     let results = structured["results"].as_array().expect("results array");
     assert!(
-        results
-            .iter()
-            .any(|row| row["node"]["kind"] == "type_alias"),
+        results.iter().any(|row| row["kind"] == "type_alias"),
         "got {results:?}"
     );
     cg.close();
@@ -1629,5 +1646,213 @@ async fn project_path_on_an_outdated_index_upgrades_in_the_background() {
     assert!(
         second.to_string().contains("onlyInOtherProject"),
         "retry was not served from the upgraded index: {second}"
+    );
+}
+
+// =============================================================================
+// Session ledger over the real MCP service — `node` re-reads (direct + daemon)
+// =============================================================================
+
+/// A project with one indexed 60-line file, `src/ledger.ts`.
+async fn ledger_fixture() -> TempDir {
+    let project = TempDir::new().unwrap();
+    let body = (0..60)
+        .map(|index| format!("export const ledger{index} = {index};"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::create_dir_all(project.path().join("src")).unwrap();
+    std::fs::write(project.path().join("src/ledger.ts"), body).unwrap();
+    let cg = CodeGraph::init_sync(project.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    cg.close();
+    project
+}
+
+/// Read `src/ledger.ts` through `codegraph_node` with the given extra
+/// arguments, as tools/call request `id`, and return the result object.
+fn node_read(server: &mut ServerProc, id: u64, extra: Value) -> Value {
+    let mut arguments = json!({ "file": "src/ledger.ts" });
+    if let (Some(arguments), Some(extra)) = (arguments.as_object_mut(), extra.as_object()) {
+        arguments.extend(extra.clone());
+    }
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": { "name": "codegraph_node", "arguments": arguments }
+    }));
+    let response = wait_for_message(server, Duration::from_secs(20), |m| m["id"] == id);
+    assert_compact_mcp_projection(&response);
+    response["result"].clone()
+}
+
+/// The same window twice in one connection: the second reply is a
+/// back-reference, not the source again. A new connection starts clean.
+fn assert_node_reread_is_already_sent(project: &Path, no_daemon: bool) {
+    let connect = || {
+        let mut server = spawn_server(project, &["--no-watch"], no_daemon);
+        server.send(&initialize_msg(Some(project), "2025-11-25", json!({})));
+        wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 0);
+        if !no_daemon {
+            wait_for_event(&server, Duration::from_secs(10), |event| {
+                event.stream == "stderr" && event.text.contains("Attached to shared daemon")
+            });
+        }
+        server
+    };
+    let mut server = connect();
+
+    let first = node_read(&mut server, 1, json!({}));
+    let payload = &first["structuredContent"];
+    assert_eq!(payload["kind"], "file", "{first}");
+    assert!(
+        payload["source"]
+            .as_str()
+            .is_some_and(|source| source.contains("ledger59")),
+        "{first}"
+    );
+    assert!(payload.get("alreadySent").is_none(), "{first}");
+
+    let second = node_read(&mut server, 2, json!({}));
+    let payload = &second["structuredContent"];
+    assert_eq!(payload["alreadySent"], true, "{second}");
+    assert!(payload.get("source").is_none(), "{second}");
+    assert_eq!(payload["startLine"], 1);
+    assert_eq!(payload["endLine"], 60);
+    let first_len = first["content"][0]["text"].as_str().unwrap().len();
+    let second_len = second["content"][0]["text"].as_str().unwrap().len();
+    assert!(second_len * 4 < first_len, "{second_len} vs {first_len}");
+
+    // A window the connection has not seen is still sent.
+    let other = node_read(&mut server, 3, json!({ "offset": 70, "limit": 5 }));
+    let payload = &other["structuredContent"];
+    assert_eq!(payload["requestedOffset"], 70, "{other}");
+    assert_eq!(
+        payload["alreadySent"], true,
+        "the clamped tail was sent in call 1: {other}"
+    );
+
+    // A symbol read of lines the connection already holds is not repeated.
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": { "name": "codegraph_node",
+                    "arguments": { "symbol": "ledger7", "includeCode": true } }
+    }));
+    let symbol = wait_for_message(&server, Duration::from_secs(20), |m| m["id"] == 4);
+    let detail = &symbol["result"]["structuredContent"]["matches"][0];
+    assert_eq!(detail["alreadySent"], true, "{symbol}");
+    assert!(detail.get("code").is_none(), "{symbol}");
+    drop(server);
+
+    // The ledger is per connection: a fresh one gets the source.
+    let mut fresh = connect();
+    let again = node_read(&mut fresh, 1, json!({}));
+    assert!(again["structuredContent"]["source"].is_string(), "{again}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn node_rereads_come_back_already_sent_over_the_direct_service() {
+    let _guard = env_read().await;
+    let project = ledger_fixture().await;
+    assert_node_reread_is_already_sent(project.path(), true);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn node_rereads_come_back_already_sent_through_the_shared_daemon() {
+    let _guard = env_read().await;
+    let project = ledger_fixture().await;
+    // Start the daemon, then attach real proxied connections to it.
+    let mut cold = spawn_server(project.path(), &["--no-watch"], false);
+    cold.send(&initialize_msg(
+        Some(project.path()),
+        "2025-11-25",
+        json!({}),
+    ));
+    wait_for_message(&cold, Duration::from_secs(5), |m| m["id"] == 0);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_node_reread_is_already_sent(project.path(), false);
+}
+
+/// `files` honours `maxDepth` over MCP: deeper directories collapse to file
+/// counts instead of every path coming back.
+#[tokio::test(flavor = "current_thread")]
+async fn files_honours_max_depth_over_mcp() {
+    let _guard = env_read().await;
+    let project = TempDir::new().unwrap();
+    for path in [
+        "top.ts",
+        "src/a.ts",
+        "src/deep/b.ts",
+        "src/deep/deeper/c.ts",
+    ] {
+        let full = project.path().join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, "export const x = 1;\n").unwrap();
+    }
+    let cg = CodeGraph::init_sync(project.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    cg.close();
+    let mut server = spawn_server(project.path(), &["--no-watch"], true);
+    server.send(&initialize_msg(
+        Some(project.path()),
+        "2025-11-25",
+        json!({}),
+    ));
+    wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 0);
+
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": "codegraph_files", "arguments": { "maxDepth": 1 } }
+    }));
+    let response = wait_for_message(&server, Duration::from_secs(20), |m| m["id"] == 1);
+    assert_compact_mcp_projection(&response);
+    let payload = &response["result"]["structuredContent"];
+    assert_eq!(payload["total"], 4, "{payload}");
+    assert_eq!(payload["maxDepth"], 1);
+    // Symbol counts are the index's; the shape and file counts are the point.
+    let listed = |payload: &Value| -> Vec<(String, Vec<String>, Value)> {
+        payload["dirs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|dir| {
+                let files = dir["files"]
+                    .as_object()
+                    .map(|files| files.keys().cloned().collect())
+                    .unwrap_or_default();
+                (
+                    dir["path"].as_str().unwrap().to_string(),
+                    files,
+                    dir["dirs"].clone(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        listed(payload),
+        vec![(
+            ".".to_string(),
+            vec!["top.ts".to_string()],
+            json!({ "src": 3 })
+        )]
+    );
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(!text.contains("deeper"), "depth-3 path leaked: {text}");
+
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "codegraph_files", "arguments": { "maxDepth": 2 } }
+    }));
+    let response = wait_for_message(&server, Duration::from_secs(20), |m| m["id"] == 2);
+    let payload = &response["result"]["structuredContent"];
+    assert_eq!(
+        listed(payload),
+        vec![
+            (".".to_string(), vec!["top.ts".to_string()], Value::Null),
+            (
+                "src".to_string(),
+                vec!["a.ts".to_string()],
+                json!({ "deep": 2 })
+            ),
+        ]
     );
 }

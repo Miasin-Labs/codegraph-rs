@@ -2,6 +2,7 @@
 
 mod files;
 mod glob;
+mod listing;
 mod status;
 mod tree;
 

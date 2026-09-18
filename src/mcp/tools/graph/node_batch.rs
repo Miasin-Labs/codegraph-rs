@@ -8,6 +8,8 @@
 use serde_json::{Map, Value, json};
 
 use super::super::context::ToolHandler;
+use super::super::format::mcp_output_budget;
+use super::super::output::fit_node_payload;
 use super::super::schema::ToolResult;
 use crate::error::Result;
 
@@ -41,9 +43,8 @@ impl ToolHandler {
         let mut sections = Vec::new();
         let mut matches = Vec::new();
         let mut match_count = 0u64;
-        let mut returned_full = 0u64;
         let mut truncated = false;
-        let mut include_code = false;
+        let mut notices = Vec::new();
 
         for name in &names {
             let mut single = args.clone();
@@ -51,33 +52,36 @@ impl ToolHandler {
             single.insert("symbol".into(), Value::String(name.clone()));
             let result = self.handle_node(&single)?;
             sections.push(format!("## `{name}`\n\n{}", result_text(&result)));
+            notices.extend(result.meta.into_iter().flat_map(|meta| meta.notices));
             let Some(payload) = result.structured_content.as_ref() else {
                 continue;
             };
             if payload.get("kind").and_then(Value::as_str) != Some("node") {
                 continue;
             }
-            include_code |= payload["includeCode"].as_bool().unwrap_or(false);
             match_count += payload["matchCount"].as_u64().unwrap_or(0);
-            returned_full += payload["returnedFullCount"].as_u64().unwrap_or(0);
             truncated |= payload["truncated"].as_bool().unwrap_or(false);
             if let Some(items) = payload["matches"].as_array() {
                 matches.extend(items.iter().cloned());
             }
         }
 
-        let payload = json!({
-            "schemaVersion": 1,
+        let mut payload = json!({
+            "schemaVersion": 2,
             "kind": "node",
-            "query": names.join(", "),
-            "includeCode": include_code,
             "matchCount": match_count,
-            "returnedFullCount": returned_full,
-            "truncated": truncated,
             "matches": matches,
         });
+        if truncated {
+            payload["truncated"] = Value::Bool(true);
+        }
+        fit_node_payload(&mut payload, mcp_output_budget());
         let text = self.truncate_output(&sections.join("\n\n"));
-        self.structured_result(&text, &payload)
+        let mut result = self.structured_result(&text, &payload)?;
+        for notice in notices {
+            result = result.with_notice(notice);
+        }
+        Ok(result)
     }
 }
 

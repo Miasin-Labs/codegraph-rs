@@ -59,6 +59,21 @@ fn schema_matches(schema: &serde_json::Value, value: &serde_json::Value) -> bool
                 }
             }
         }
+        // A map (e.g. `files`: name → count) types its values through an
+        // `additionalProperties` schema.
+        if let Some(values) = schema
+            .get("additionalProperties")
+            .filter(|value| value.is_object())
+        {
+            let declared = properties;
+            if obj
+                .iter()
+                .filter(|(key, _)| declared.is_none_or(|props| !props.contains_key(*key)))
+                .any(|(_, child)| !schema_matches(values, child))
+            {
+                return false;
+            }
+        }
     }
     if let Some(arr) = value.as_array() {
         if let Some(items) = schema.get("items") {

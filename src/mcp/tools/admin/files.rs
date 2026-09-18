@@ -1,16 +1,27 @@
 //! codegraph_files handler and list renderers.
+//!
+//! The structured payload lists files grouped by directory, honours
+//! `maxDepth` (deeper directories collapse into file counts), and pages to
+//! the MCP output budget with a `nextCursor`. Without `maxDepth` the server
+//! picks the deepest level whose listing fits, so a whole-repo call on a
+//! 70K-file tree returns a map, not megabytes.
 
 use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
-use super::super::format::{LEADING_DOT_SLASH_RE, locale_cmp};
-use super::super::output::{FileGroupOutput, FileOutput, FilesOutput};
+use super::super::format::{LEADING_DOT_SLASH_RE, json_len, locale_cmp, mcp_output_budget};
+use super::super::output::{FileGroupOutput, FilesOutput};
 use super::super::schema::ToolResult;
 use super::glob_to_regex;
+use super::listing::{Cursor, IndexedFile, Listing, listing_key};
 use crate::error::Result;
 use crate::utils::clamp;
+
+/// Payload keys a page adds besides its directories (`maxDepth`,
+/// `autoDepth`, `truncated`, `nextCursor`).
+const PAGE_OVERHEAD: usize = 128;
 
 impl ToolHandler {
     pub(in crate::mcp::tools) fn handle_files(
@@ -26,50 +37,36 @@ impl ToolHandler {
             .filter(|s| !s.is_empty())
             .unwrap_or("tree");
         let include_metadata = args.get("includeMetadata") != Some(&Value::Bool(false));
-        let max_depth: Option<usize> = match args.get("maxDepth") {
+        let requested_depth: Option<usize> = match args.get("maxDepth") {
             None | Some(Value::Null) => None,
             Some(v) => v.as_f64().map(|d| clamp(d, 1.0, 20.0) as usize),
         };
+        let cursor = match args.get("cursor") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(raw)) if !raw.trim().is_empty() => Some(raw.as_str()),
+            Some(_) => {
+                return Ok(self.validation_error_result(
+                    "cursor",
+                    "cursor must be the `nextCursor` string of a previous codegraph_files page",
+                    "string",
+                    None,
+                ));
+            }
+        };
 
-        // Get all files from the index
-        let all_files: Vec<FileOutput> = cg
-            .get_files()?
-            .into_iter()
-            .map(|f| FileOutput {
-                path: f.path,
-                language: f.language.as_str().to_string(),
-                node_count: f.node_count,
-            })
-            .collect();
-
-        if all_files.is_empty() {
-            let output = FilesOutput {
-                schema_version: 1,
-                kind: "files",
-                path_filter: normalized_path_filter(path_filter),
-                pattern: pattern.map(str::to_string),
-                format: format.to_string(),
-                total: 0,
-                files: Vec::new(),
-                groups: Vec::new(),
-            };
-            return self.structured_result("Files: 0", &output);
-        }
+        let all_files = cg.get_files()?;
 
         // Filter by path prefix, normalizing root-ish and Windows-style
         // variants (#426).
         let normalized_filter = normalized_path_filter(path_filter).unwrap_or_default();
-        let mut files: Vec<&FileOutput> = if !normalized_filter.is_empty() {
-            all_files
-                .iter()
-                .filter(|f| {
-                    f.path == normalized_filter
-                        || f.path.starts_with(&format!("{normalized_filter}/"))
-                })
-                .collect()
-        } else {
-            all_files.iter().collect()
-        };
+        let mut files: Vec<&crate::types::FileRecord> = all_files
+            .iter()
+            .filter(|f| {
+                normalized_filter.is_empty()
+                    || f.path == normalized_filter
+                    || f.path.starts_with(&format!("{normalized_filter}/"))
+            })
+            .collect();
 
         // Filter by glob pattern
         if let Some(pattern) = pattern.filter(|p| !p.is_empty()) {
@@ -78,42 +75,88 @@ impl ToolHandler {
         }
 
         if files.is_empty() {
-            let output = FilesOutput {
-                schema_version: 1,
-                kind: "files",
-                path_filter: normalized_path_filter(path_filter),
-                pattern: pattern.map(str::to_string),
-                format: format.to_string(),
-                total: 0,
-                files: Vec::new(),
-                groups: Vec::new(),
-            };
-            return self.structured_result("Files: 0", &output);
+            return self.structured_result("Files: 0", &FilesOutput::empty());
         }
 
+        let key = listing_key(&normalized_filter, pattern.unwrap_or_default());
+        let cursor = match cursor.map(|raw| Cursor::decode(raw, &key)) {
+            None => None,
+            Some(Some(cursor)) => Some(cursor),
+            Some(None) => {
+                return Ok(self.validation_error_result(
+                    "cursor",
+                    "cursor does not belong to this listing — pass it with the same `path` and \
+                     `pattern` as the call that returned it, or drop it to start over",
+                    "the nextCursor of a previous page",
+                    Some("unknown string"),
+                ));
+            }
+        };
+
+        let indexed: Vec<IndexedFile<'_>> = files
+            .iter()
+            .map(|f| IndexedFile {
+                path: f.path.as_str(),
+                symbols: f.node_count,
+            })
+            .collect();
+        let languages: Vec<&str> = files.iter().map(|f| f.language.as_str()).collect();
+        let mut payload = FilesOutput::empty();
+        payload.total = files.len();
+        payload.groups = file_groups(&languages);
+        let budget = mcp_output_budget();
+        let room = budget.saturating_sub(json_len(&payload) + PAGE_OVERHEAD);
+
+        let (depth, auto_depth, offset) = match cursor {
+            Some(cursor) => (cursor.depth, cursor.auto_depth, cursor.offset),
+            None => match requested_depth {
+                Some(depth) => (Some(depth), false, 0),
+                None => match fitting_depth(&indexed, &normalized_filter, room) {
+                    Some(depth) => (Some(depth), true, 0),
+                    None => (None, false, 0),
+                },
+            },
+        };
+        let listing = Listing::build(&indexed, &normalized_filter, depth);
+        let offset = offset.min(listing.len());
+        let mut end = listing.page_end(offset, room);
+        payload.max_depth = depth;
+        payload.auto_depth = auto_depth;
+        loop {
+            payload.dirs = listing.dirs(offset, end);
+            payload.truncated = end < listing.len();
+            payload.next_cursor = payload.truncated.then(|| {
+                Cursor {
+                    depth,
+                    auto_depth,
+                    offset: end,
+                }
+                .encode(&key)
+            });
+            if json_len(&payload) <= budget || end <= offset + 1 {
+                break;
+            }
+            end -= 1;
+        }
+
+        // The human-readable rendering (CLI, tests) follows the same depth.
+        let base_depth = normalized_filter
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .count();
         let triples: Vec<(&str, &str, u32)> = files
             .iter()
             .map(|f| (f.path.as_str(), f.language.as_str(), f.node_count))
             .collect();
-        let payload_files: Vec<FileOutput> = files.iter().map(|f| (*f).clone()).collect();
-        let groups = file_groups(&payload_files);
-
         let output = match format {
             "flat" => self.format_files_flat(&triples, include_metadata),
             "grouped" => self.format_files_grouped(&triples, include_metadata),
-            _ => self.format_files_tree(&triples, include_metadata, max_depth),
+            _ => self.format_files_tree(
+                &triples,
+                include_metadata,
+                depth.map(|depth| depth + base_depth),
+            ),
         };
-        let payload = FilesOutput {
-            schema_version: 1,
-            kind: "files",
-            path_filter: normalized_path_filter(path_filter),
-            pattern: pattern.map(str::to_string),
-            format: format.to_string(),
-            total: payload_files.len(),
-            files: payload_files,
-            groups,
-        };
-
         self.structured_result(&self.truncate_output(&output), &payload)
     }
 
@@ -173,6 +216,24 @@ impl ToolHandler {
     }
 }
 
+/// With no `maxDepth`: `None` when the whole listing fits `room`, else the
+/// deepest level whose listing still fits (at least 1 — a first level that
+/// is itself too big is paged instead).
+fn fitting_depth(files: &[IndexedFile<'_>], base: &str, room: usize) -> Option<usize> {
+    if Listing::build(files, base, None).cost() <= room {
+        return None;
+    }
+    let deepest = Listing::deepest(files, base);
+    let mut chosen = 1;
+    for depth in 2..deepest {
+        if Listing::build(files, base, Some(depth)).cost() > room {
+            break;
+        }
+        chosen = depth;
+    }
+    Some(chosen)
+}
+
 fn normalized_path_filter(path_filter: Option<&str>) -> Option<String> {
     match path_filter {
         Some(pf) if !pf.is_empty() => {
@@ -190,14 +251,17 @@ fn normalized_path_filter(path_filter: Option<&str>) -> Option<String> {
     }
 }
 
-fn file_groups(files: &[FileOutput]) -> Vec<FileGroupOutput> {
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for file in files {
-        *counts.entry(file.language.clone()).or_default() += 1;
+fn file_groups(languages: &[&str]) -> Vec<FileGroupOutput> {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for language in languages {
+        *counts.entry(language).or_default() += 1;
     }
     let mut groups: Vec<FileGroupOutput> = counts
         .into_iter()
-        .map(|(language, count)| FileGroupOutput { language, count })
+        .map(|(language, count)| FileGroupOutput {
+            language: language.to_string(),
+            count,
+        })
         .collect();
     groups.sort_by(|a, b| {
         b.count

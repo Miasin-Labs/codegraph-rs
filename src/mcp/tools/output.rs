@@ -1,49 +1,37 @@
+//! Structured payloads of the MCP tools and the output schemas that declare
+//! them. Every payload is what goes on the wire as compact JSON (see
+//! `ToolResult::into_mcp_projection`), so fields that repeat the request or
+//! each other are left out, and every payload is bounded by the MCP output
+//! budget with an explicit `truncated` flag rather than silently cut.
+
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-use super::format::output_char_cap;
-use crate::types::{GraphStats, Node, SearchResult};
+use super::format::{json_len, rows_within_budget};
+use crate::types::{GraphStats, SearchResult};
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(in crate::mcp::tools) struct NodeSummary {
-    pub id: String,
-    pub kind: String,
-    pub name: String,
-    pub qualified_name: String,
-    pub file_path: String,
-    pub language: String,
-    pub start_line: u32,
-    pub end_line: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub signature: Option<String>,
+mod rows;
+pub(in crate::mcp::tools) use rows::{SymbolRef, SymbolRow};
+use rows::{symbol_ref_schema, symbol_row_properties, symbol_row_required};
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
-impl From<&Node> for NodeSummary {
-    fn from(node: &Node) -> Self {
-        Self {
-            id: node.id.clone(),
-            kind: node.kind.as_str().to_string(),
-            name: node.name.clone(),
-            qualified_name: node.qualified_name.clone(),
-            file_path: node.file_path.clone(),
-            language: node.language.as_str().to_string(),
-            start_line: node.start_line,
-            end_line: node.end_line,
-            signature: node.signature.clone(),
-        }
-    }
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
+
+// =============================================================================
+// codegraph_search
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(in crate::mcp::tools) struct SearchHitOutput {
-    pub node: NodeSummary,
-    pub score: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub highlights: Option<Vec<String>>,
+    #[serde(flatten)]
+    pub symbol: SymbolRow,
     /// Which of a batch query's names this hit answered. Absent for a single
-    /// query, where it would repeat `query`.
+    /// query, where it would repeat the request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_query: Option<String>,
 }
@@ -51,9 +39,7 @@ pub(in crate::mcp::tools) struct SearchHitOutput {
 impl From<&SearchResult> for SearchHitOutput {
     fn from(result: &SearchResult) -> Self {
         Self {
-            node: NodeSummary::from(&result.node),
-            score: result.score,
-            highlights: result.highlights.clone(),
+            symbol: SymbolRow::new(&result.node),
             matched_query: None,
         }
     }
@@ -64,52 +50,33 @@ impl From<&SearchResult> for SearchHitOutput {
 pub(in crate::mcp::tools) struct SearchOutput {
     pub schema_version: u32,
     pub kind: &'static str,
-    pub query: String,
-    /// Present when the caller passed several names in one call.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub queries: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub filter_kind: Option<String>,
-    pub limit: usize,
-    pub total: usize,
+    /// Ranked best first; the order is the score.
     pub results: Vec<SearchHitOutput>,
+    /// Names of a batch query that matched nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unmatched: Vec<String>,
+    /// Trailing rows were dropped to stay within the output budget.
+    #[serde(skip_serializing_if = "is_false")]
+    pub truncated: bool,
 }
 
 impl SearchOutput {
-    pub fn new(
-        query: String,
-        filter_kind: Option<String>,
-        limit: usize,
-        results: &[SearchResult],
-    ) -> Self {
+    pub fn new(results: &[SearchResult]) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             kind: "search",
-            query,
-            queries: None,
-            filter_kind,
-            limit,
-            total: results.len(),
             results: results.iter().map(SearchHitOutput::from).collect(),
+            unmatched: Vec::new(),
+            truncated: false,
         }
     }
 
     /// One call, several names — agents otherwise emulate this with a regex
     /// alternation through grep (82% of the greps in the mined sessions).
-    pub fn new_batch(
-        queries: Vec<String>,
-        filter_kind: Option<String>,
-        limit: usize,
-        hits: Vec<(String, SearchResult)>,
-    ) -> Self {
+    pub fn new_batch(hits: Vec<(String, SearchResult)>, unmatched: Vec<String>) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             kind: "search",
-            query: queries.join(", "),
-            queries: Some(queries),
-            filter_kind,
-            limit,
-            total: hits.len(),
             results: hits
                 .iter()
                 .map(|(matched, result)| SearchHitOutput {
@@ -117,20 +84,78 @@ impl SearchOutput {
                     ..SearchHitOutput::from(result)
                 })
                 .collect(),
+            unmatched,
+            truncated: false,
         }
     }
+
+    /// Keep the leading (best-ranked) rows that fit `budget`.
+    pub fn fit_to(&mut self, budget: usize) {
+        let rows = std::mem::take(&mut self.results);
+        self.truncated = true;
+        let fixed = json_len(self);
+        let keep = rows_within_budget(budget, fixed, rows.iter().map(json_len));
+        self.truncated = keep < rows.len();
+        self.results = rows;
+        self.results.truncate(keep);
+    }
 }
+
+// =============================================================================
+// codegraph_node — symbol mode
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(in crate::mcp::tools) struct NodeDetailOutput {
-    pub node: NodeSummary,
+    #[serde(flatten)]
+    pub symbol: SymbolRow,
+    /// Verbatim source of the definition (not line-numbered; it starts at
+    /// `line`, or at `codeStartLine` when that is present).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+    /// First line of `code`, when it is not `line` (a file that changed on
+    /// disk since it was indexed is shown whole, from line 1) or the budget
+    /// cut `code` short.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_start_line: Option<usize>,
+    /// Last line of `code` when the output budget cut it short.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_end_line: Option<usize>,
+    /// The output budget cut `code` short (see `codeEndLine`) or withheld it.
+    #[serde(skip_serializing_if = "is_false")]
+    pub code_truncated: bool,
+    /// The definition's lines were already sent in this session and the file
+    /// is unchanged on disk, so `code` is not repeated.
+    #[serde(skip_serializing_if = "is_false")]
+    pub already_sent: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outline: Option<String>,
-    pub callers: Vec<NodeSummary>,
-    pub callees: Vec<NodeSummary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub callers: Vec<SymbolRef>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub callers_omitted: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub callees: Vec<SymbolRef>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub callees_omitted: usize,
+}
+
+impl NodeDetailOutput {
+    pub fn bare(symbol: SymbolRow) -> Self {
+        Self {
+            symbol,
+            code: None,
+            code_start_line: None,
+            code_end_line: None,
+            code_truncated: false,
+            already_sent: false,
+            outline: None,
+            callers: Vec::new(),
+            callers_omitted: 0,
+            callees: Vec::new(),
+            callees_omitted: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -138,211 +163,192 @@ pub(in crate::mcp::tools) struct NodeDetailOutput {
 pub(in crate::mcp::tools) struct NodeOutput {
     pub schema_version: u32,
     pub kind: &'static str,
-    pub query: String,
-    pub include_code: bool,
+    /// Definitions that matched, including any not returned in `matches`.
     pub match_count: usize,
-    pub returned_full_count: usize,
+    /// Some matches, or their code, were left out (relevance cap or budget).
+    #[serde(skip_serializing_if = "is_false")]
     pub truncated: bool,
     pub matches: Vec<NodeDetailOutput>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(untagged)]
-pub(in crate::mcp::tools) enum NodeSuccessOutput {
-    Symbol(NodeOutput),
-    File(NodeFileOutput),
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(in crate::mcp::tools) struct NodeFileSourceChunkOutput {
-    pub start_line: usize,
-    pub end_line: usize,
-    pub source: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(in crate::mcp::tools) struct NodeFileSymbolOutput {
-    pub kind: String,
-    pub name: String,
-    pub start_line: u32,
-    pub end_line: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub signature: Option<String>,
-}
-
-impl From<&Node> for NodeFileSymbolOutput {
-    fn from(node: &Node) -> Self {
+impl NodeOutput {
+    pub fn new(match_count: usize, truncated: bool, matches: Vec<NodeDetailOutput>) -> Self {
         Self {
-            kind: node.kind.as_str().to_string(),
-            name: node.name.clone(),
-            start_line: node.start_line,
-            end_line: node.end_line,
-            signature: node.signature.clone(),
+            schema_version: 2,
+            kind: "node",
+            match_count,
+            truncated,
+            matches,
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub(in crate::mcp::tools) struct NodeFileMetadataOutput {
-    pub path: String,
-    pub language: String,
-    pub symbol_count: usize,
-    pub symbols: Vec<NodeFileSymbolOutput>,
-    pub symbols_truncated: bool,
-    pub dependents: Vec<String>,
-    pub dependents_omitted: usize,
+/// Bound a symbol-mode `node` payload (single or batch) to `budget`: first
+/// withhold code and outlines from the trailing matches, then cut the first
+/// match's code at a line boundary, then drop trailing matches. Code is only
+/// ever cut between lines, never inside one, and every cut is flagged.
+pub(in crate::mcp::tools) fn fit_node_payload(payload: &mut Value, budget: usize) {
+    let count = payload["matches"].as_array().map_or(0, Vec::len);
+    for index in (1..count).rev() {
+        if json_len(payload) <= budget {
+            return;
+        }
+        if withhold_code(&mut payload["matches"][index]) {
+            payload["truncated"] = Value::Bool(true);
+        }
+    }
+    if json_len(payload) <= budget || count == 0 {
+        return;
+    }
+    if clip_code(payload, budget) {
+        payload["truncated"] = Value::Bool(true);
+    }
+    while json_len(payload) > budget && payload["matches"].as_array().is_some_and(|m| m.len() > 1) {
+        if let Some(matches) = payload["matches"].as_array_mut() {
+            matches.pop();
+        }
+        payload["truncated"] = Value::Bool(true);
+    }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(in crate::mcp::tools) struct NodeFileRangeOutput {
-    pub start_line: usize,
-    pub end_line: usize,
+/// Drop a match's code and outline, flagging it. Returns whether anything
+/// was dropped.
+fn withhold_code(detail: &mut Value) -> bool {
+    let Some(detail) = detail.as_object_mut() else {
+        return false;
+    };
+    let had_code = detail.remove("code").is_some();
+    detail.remove("codeStartLine");
+    detail.remove("codeEndLine");
+    let had_outline = detail.remove("outline").is_some();
+    if had_code || had_outline {
+        detail.insert("codeTruncated".into(), Value::Bool(true));
+    }
+    had_code || had_outline
 }
 
-#[derive(Debug, Clone)]
-pub(in crate::mcp::tools) enum NodeFileContent {
-    Source {
-        chunks: Vec<NodeFileSourceChunkOutput>,
-        source_truncated: bool,
-        total_lines: usize,
-        offset: usize,
-        limit: usize,
-    },
-    /// The requested window was already sent in this session and the file is
-    /// unchanged on disk, so the source is replaced by a back-reference.
-    AlreadySent {
-        ranges: Vec<NodeFileRangeOutput>,
-        total_lines: usize,
-        offset: usize,
-        limit: usize,
-    },
-    SymbolsOnly,
-    ValuesWithheld,
+/// Keep as many whole leading lines of the first match's code as fit next to
+/// the rest of the payload. Returns whether the match changed.
+fn clip_code(payload: &mut Value, budget: usize) -> bool {
+    let detail = &payload["matches"][0];
+    let Some(code) = detail["code"].as_str().map(str::to_string) else {
+        return withhold_code(&mut payload["matches"][0]);
+    };
+    let start = detail["codeStartLine"]
+        .as_u64()
+        .or_else(|| detail["line"].as_u64())
+        .map_or(1, |line| line as usize);
+    withhold_code(&mut payload["matches"][0]);
+    // Room left for the code string plus the two line-range fields.
+    let spare = budget.saturating_sub(json_len(payload) + 64);
+    let mut kept = Vec::new();
+    let mut used = 0usize;
+    for line in code.split('\n') {
+        // Escaped length of the line without its quotes, plus the `\n` joint.
+        let cost = json_len(line).saturating_sub(2) + 2;
+        if used + cost > spare {
+            break;
+        }
+        used += cost;
+        kept.push(line);
+    }
+    if !kept.is_empty() {
+        let detail = &mut payload["matches"][0];
+        detail["code"] = Value::String(kept.join("\n"));
+        detail["codeStartLine"] = Value::from(start);
+        detail["codeEndLine"] = Value::from(start + kept.len() - 1);
+    }
+    true
 }
 
+// =============================================================================
+// codegraph_node — file view
+
+/// One page of an indexed file, or its outline.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(in crate::mcp::tools) struct NodeFileOutput {
-    schema_version: u32,
-    kind: &'static str,
-    path: String,
-    language: String,
-    symbol_count: usize,
-    symbols: Vec<NodeFileSymbolOutput>,
-    symbols_truncated: bool,
-    dependents: Vec<String>,
-    dependents_omitted: usize,
-    source_chunks: Vec<NodeFileSourceChunkOutput>,
-    source_truncated: bool,
-    values_withheld: bool,
+    pub schema_version: u32,
+    pub kind: &'static str,
+    pub path: String,
+    pub symbol_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_lines: Option<usize>,
+    /// The window this reply covers (`source`, or `alreadySent`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<usize>,
+    /// Verbatim lines `startLine..=endLine`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The window was already sent in this session and the file is unchanged
+    /// on disk, so `source` is not repeated.
+    #[serde(skip_serializing_if = "is_false")]
+    pub already_sent: bool,
+    /// The `offset` asked for, when it was past the end of the file and the
+    /// window was moved back to the file's last lines.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_offset: Option<usize>,
+    /// The output budget ended the window before `limit` lines; continue
+    /// from `endLine + 1`.
+    #[serde(skip_serializing_if = "is_false")]
+    pub truncated: bool,
+    /// Definitions that begin before the window and reach into it — what
+    /// the first lines shown are part of.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    already_sent: Vec<NodeFileRangeOutput>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    total_lines: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    offset: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    limit: Option<usize>,
+    pub enclosing: Vec<SymbolRow>,
+    /// The file's outline (`symbolsOnly`, or the keys of a data file).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub symbols: Vec<SymbolRow>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub symbols_truncated: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dependents: Vec<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub dependents_omitted: usize,
+    #[serde(skip_serializing_if = "is_false")]
+    pub values_withheld: bool,
 }
 
 impl NodeFileOutput {
-    pub fn new(metadata: NodeFileMetadataOutput, content: NodeFileContent) -> Self {
-        let mut already_sent = Vec::new();
-        let (source_chunks, source_truncated, values_withheld, total_lines, offset, limit) =
-            match content {
-                NodeFileContent::Source {
-                    chunks,
-                    source_truncated,
-                    total_lines,
-                    offset,
-                    limit,
-                } => (
-                    chunks,
-                    source_truncated,
-                    false,
-                    Some(total_lines),
-                    Some(offset),
-                    Some(limit),
-                ),
-                NodeFileContent::AlreadySent {
-                    ranges,
-                    total_lines,
-                    offset,
-                    limit,
-                } => {
-                    already_sent = ranges;
-                    (
-                        Vec::new(),
-                        false,
-                        false,
-                        Some(total_lines),
-                        Some(offset),
-                        Some(limit),
-                    )
-                }
-                NodeFileContent::SymbolsOnly => (Vec::new(), false, false, None, None, None),
-                NodeFileContent::ValuesWithheld => (Vec::new(), false, true, None, None, None),
-            };
+    pub fn new(path: String, symbol_count: usize) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             kind: "file",
-            path: metadata.path,
-            language: metadata.language,
-            symbol_count: metadata.symbol_count,
-            symbols: metadata.symbols,
-            symbols_truncated: metadata.symbols_truncated,
-            dependents: metadata.dependents,
-            dependents_omitted: metadata.dependents_omitted,
-            source_chunks,
-            source_truncated,
-            values_withheld,
-            already_sent,
-            total_lines,
-            offset,
-            limit,
+            path,
+            symbol_count,
+            total_lines: None,
+            start_line: None,
+            end_line: None,
+            source: None,
+            already_sent: false,
+            requested_offset: None,
+            truncated: false,
+            enclosing: Vec::new(),
+            symbols: Vec::new(),
+            symbols_truncated: false,
+            dependents: Vec::new(),
+            dependents_omitted: 0,
+            values_withheld: false,
         }
     }
 
-    /// Enforce the opt-in structured-output cap without mutating metadata or
-    /// pretending a shortened source chunk is complete. Whole chunks are
-    /// withheld and `sourceTruncated` records the loss.
-    pub fn cap_source_to_output_limit(&mut self) -> bool {
-        let Some(cap) = output_char_cap() else {
-            return true;
-        };
-        let serialized_len = |value: &Self| {
-            serde_json::to_string(value)
-                .map(|serialized| serialized.len())
-                .unwrap_or(usize::MAX)
-        };
-        if serialized_len(self) <= cap {
-            return true;
-        }
-        while serialized_len(self) > cap && !self.source_chunks.is_empty() {
-            let largest = self
-                .source_chunks
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, chunk)| chunk.source.len())
-                .map(|(index, _)| index)
-                .unwrap_or(0);
-            self.source_chunks.remove(largest);
-            self.source_truncated = true;
-        }
-        serialized_len(self) <= cap
+    /// Keep the leading outline rows that fit `budget`.
+    pub fn fit_symbols_to(&mut self, budget: usize) {
+        let rows = std::mem::take(&mut self.symbols);
+        let was_truncated = self.symbols_truncated;
+        self.symbols_truncated = true;
+        let fixed = json_len(self) + r#","symbols":[]"#.len();
+        let keep = rows_within_budget(budget, fixed, rows.iter().map(json_len));
+        self.symbols_truncated = was_truncated || keep < rows.len();
+        self.symbols = rows;
+        self.symbols.truncate(keep);
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(in crate::mcp::tools) struct FileOutput {
-    pub path: String,
-    pub language: String,
-    pub node_count: u32,
-}
+// =============================================================================
+// codegraph_files
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -351,19 +357,56 @@ pub(in crate::mcp::tools) struct FileGroupOutput {
     pub count: usize,
 }
 
+/// One directory of a `files` listing.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::mcp::tools) struct FileDirOutput {
+    /// Project-relative directory (`.` for the project root).
+    pub path: String,
+    /// Files directly in this directory: name → indexed symbol count.
+    #[serde(skip_serializing_if = "Map::is_empty")]
+    pub files: Map<String, Value>,
+    /// Subdirectories deeper than `maxDepth`, collapsed: name → file count.
+    #[serde(skip_serializing_if = "Map::is_empty")]
+    pub dirs: Map<String, Value>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(in crate::mcp::tools) struct FilesOutput {
     pub schema_version: u32,
     pub kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path_filter: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pattern: Option<String>,
-    pub format: String,
+    /// Files matching `path`/`pattern`, whether listed or collapsed.
     pub total: usize,
-    pub files: Vec<FileOutput>,
+    /// Depth below `path` that the listing stops at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<usize>,
+    /// `maxDepth` was chosen by the server so the listing fits the budget.
+    #[serde(skip_serializing_if = "is_false")]
+    pub auto_depth: bool,
     pub groups: Vec<FileGroupOutput>,
+    pub dirs: Vec<FileDirOutput>,
+    /// More entries follow; pass `nextCursor` as `cursor` for the next page.
+    #[serde(skip_serializing_if = "is_false")]
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+impl FilesOutput {
+    pub fn empty() -> Self {
+        Self {
+            schema_version: 2,
+            kind: "files",
+            total: 0,
+            max_depth: None,
+            auto_depth: false,
+            groups: Vec::new(),
+            dirs: Vec::new(),
+            truncated: false,
+            next_cursor: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -448,21 +491,34 @@ fn sorted_counts(map: &std::collections::HashMap<String, u64>) -> Vec<CountOutpu
 }
 
 pub(in crate::mcp::tools) fn search_output_schema() -> Value {
+    let mut hit = symbol_row_properties(true);
+    hit.insert("matchedQuery".into(), json!({ "type": "string" }));
+    hit.insert("project".into(), json!({ "type": "string" }));
     success_or_error(json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
             "schemaVersion": { "type": "integer" },
             "kind": { "const": "search" },
-            "query": { "type": "string" },
-            "queries": { "type": "array", "items": { "type": "string" } },
-            "projects": { "type": "array", "items": { "type": "string" } },
-            "filterKind": { "type": "string" },
-            "limit": { "type": "integer" },
-            "total": { "type": "integer" },
-            "results": { "type": "array", "items": search_hit_schema() }
+            "results": { "type": "array", "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": Value::Object(hit),
+                "required": symbol_row_required(true)
+            }},
+            "unmatched": { "type": "array", "items": { "type": "string" } },
+            "failedProjects": { "type": "array", "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "project": { "type": "string" },
+                    "message": { "type": "string" }
+                },
+                "required": ["project", "message"]
+            }},
+            "truncated": { "type": "boolean" }
         },
-        "required": ["schemaVersion", "kind", "query", "limit", "total", "results"]
+        "required": ["schemaVersion", "kind", "results"]
     }))
 }
 
@@ -474,20 +530,43 @@ pub(in crate::mcp::tools) fn node_output_schema() -> Value {
 }
 
 fn node_symbol_output_schema() -> Value {
+    let mut detail = symbol_row_properties(true);
+    for (name, schema) in [
+        ("code", json!({ "type": "string" })),
+        ("codeStartLine", json!({ "type": "integer" })),
+        ("codeEndLine", json!({ "type": "integer" })),
+        ("codeTruncated", json!({ "type": "boolean" })),
+        ("alreadySent", json!({ "type": "boolean" })),
+        ("outline", json!({ "type": "string" })),
+        (
+            "callers",
+            json!({ "type": "array", "items": symbol_ref_schema() }),
+        ),
+        ("callersOmitted", json!({ "type": "integer" })),
+        (
+            "callees",
+            json!({ "type": "array", "items": symbol_ref_schema() }),
+        ),
+        ("calleesOmitted", json!({ "type": "integer" })),
+    ] {
+        detail.insert(name.into(), schema);
+    }
     json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
             "schemaVersion": { "type": "integer" },
             "kind": { "const": "node" },
-            "query": { "type": "string" },
-            "includeCode": { "type": "boolean" },
             "matchCount": { "type": "integer" },
-            "returnedFullCount": { "type": "integer" },
             "truncated": { "type": "boolean" },
-            "matches": { "type": "array", "items": node_detail_schema() }
+            "matches": { "type": "array", "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": Value::Object(detail),
+                "required": symbol_row_required(true)
+            }}
         },
-        "required": ["schemaVersion", "kind", "query", "includeCode", "matchCount", "returnedFullCount", "truncated", "matches"]
+        "required": ["schemaVersion", "kind", "matchCount", "matches"]
     })
 }
 
@@ -499,79 +578,51 @@ fn node_file_output_schema() -> Value {
             "schemaVersion": { "type": "integer" },
             "kind": { "const": "file" },
             "path": { "type": "string" },
-            "language": { "type": "string" },
             "symbolCount": { "type": "integer" },
-            "symbols": { "type": "array", "items": node_file_symbol_schema() },
+            "totalLines": { "type": "integer" },
+            "startLine": { "type": "integer" },
+            "endLine": { "type": "integer" },
+            "source": { "type": "string" },
+            "alreadySent": { "type": "boolean" },
+            "requestedOffset": { "type": "integer" },
+            "truncated": { "type": "boolean" },
+            "enclosing": { "type": "array", "items": rows::symbol_row_schema(false) },
+            "symbols": { "type": "array", "items": rows::symbol_row_schema(false) },
             "symbolsTruncated": { "type": "boolean" },
             "dependents": { "type": "array", "items": { "type": "string" } },
             "dependentsOmitted": { "type": "integer" },
-            "sourceChunks": { "type": "array", "items": node_file_source_chunk_schema() },
-            "sourceTruncated": { "type": "boolean" },
-            "valuesWithheld": { "type": "boolean" },
-            "alreadySent": { "type": "array", "items": node_file_range_schema() },
-            "totalLines": { "type": "integer" },
-            "offset": { "type": "integer" },
-            "limit": { "type": "integer" }
+            "valuesWithheld": { "type": "boolean" }
         },
-        "required": ["schemaVersion", "kind", "path", "language", "symbolCount", "symbols", "symbolsTruncated", "dependents", "dependentsOmitted", "sourceChunks", "sourceTruncated", "valuesWithheld"]
-    })
-}
-
-fn node_file_range_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "startLine": { "type": "integer" },
-            "endLine": { "type": "integer" }
-        },
-        "required": ["startLine", "endLine"]
-    })
-}
-
-fn node_file_source_chunk_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "startLine": { "type": "integer" },
-            "endLine": { "type": "integer" },
-            "source": { "type": "string" }
-        },
-        "required": ["startLine", "endLine", "source"]
-    })
-}
-
-fn node_file_symbol_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "kind": { "type": "string" },
-            "name": { "type": "string" },
-            "startLine": { "type": "integer" },
-            "endLine": { "type": "integer" },
-            "signature": { "type": "string" }
-        },
-        "required": ["kind", "name", "startLine", "endLine"]
+        "required": ["schemaVersion", "kind", "path", "symbolCount"]
     })
 }
 
 pub(in crate::mcp::tools) fn files_output_schema() -> Value {
+    let counts = json!({ "type": "object", "additionalProperties": { "type": "integer" } });
     success_or_error(json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
             "schemaVersion": { "type": "integer" },
             "kind": { "const": "files" },
-            "pathFilter": { "type": "string" },
-            "pattern": { "type": "string" },
-            "format": { "type": "string" },
             "total": { "type": "integer" },
-            "files": { "type": "array", "items": file_schema() },
-            "groups": { "type": "array", "items": count_name_schema("language") }
+            "maxDepth": { "type": "integer" },
+            "autoDepth": { "type": "boolean" },
+            "groups": { "type": "array", "items": count_name_schema("language") },
+            "dirs": { "type": "array", "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "path": { "type": "string" },
+                    "files": counts,
+                    "dirs": counts
+                },
+                "required": ["path"]
+            }},
+            "truncated": { "type": "boolean" },
+            "nextCursor": { "type": "string" }
         },
-        "required": ["schemaVersion", "kind", "format", "total", "files", "groups"]
+        "required": ["schemaVersion", "kind", "total", "groups", "dirs"]
     }))
 }
 
@@ -684,68 +735,6 @@ fn error_output_schema() -> Value {
             }
         },
         "required": ["schemaVersion", "kind", "error"]
-    })
-}
-
-fn node_summary_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "id": { "type": "string" },
-            "kind": { "type": "string" },
-            "name": { "type": "string" },
-            "qualifiedName": { "type": "string" },
-            "filePath": { "type": "string" },
-            "language": { "type": "string" },
-            "startLine": { "type": "integer" },
-            "endLine": { "type": "integer" },
-            "signature": { "type": "string" }
-        },
-        "required": ["id", "kind", "name", "qualifiedName", "filePath", "language", "startLine", "endLine"]
-    })
-}
-
-fn search_hit_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "node": node_summary_schema(),
-            "score": { "type": "number" },
-            "highlights": { "type": "array", "items": { "type": "string" } },
-            "matchedQuery": { "type": "string" },
-            "project": { "type": "string" }
-        },
-        "required": ["node", "score"]
-    })
-}
-
-fn node_detail_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "node": node_summary_schema(),
-            "code": { "type": "string" },
-            "outline": { "type": "string" },
-            "callers": { "type": "array", "items": node_summary_schema() },
-            "callees": { "type": "array", "items": node_summary_schema() }
-        },
-        "required": ["node", "callers", "callees"]
-    })
-}
-
-fn file_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "path": { "type": "string" },
-            "language": { "type": "string" },
-            "nodeCount": { "type": "integer" }
-        },
-        "required": ["path", "language", "nodeCount"]
     })
 }
 

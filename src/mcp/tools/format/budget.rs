@@ -1,12 +1,60 @@
 //! Explore budget and environment knobs.
 
-/// Optional stricter cap for structured tool output. Explore always applies
-/// its adaptive whole-payload budget; this value can only lower that ceiling.
-/// Other tools use this cap when configured. Zero or unset disables it.
+/// Characters one MCP tool result may put on the wire when
+/// `CODEGRAPH_MAX_OUTPUT_CHARS` is unset. It matches explore's largest tier:
+/// agent hosts cut a tool result off somewhere past ~25K characters, and a
+/// cut-off result is worse than a bounded one — the tail is lost, and the
+/// session ledger would record source the model never saw.
+pub(in crate::mcp::tools) const DEFAULT_MCP_OUTPUT_CHARS: usize = 24_000;
+
+/// The explicit `CODEGRAPH_MAX_OUTPUT_CHARS` setting, if any. Explore treats
+/// it as a stricter ceiling on its adaptive budget, and the human-readable
+/// text (what the CLI prints) is truncated to it; unset or zero leaves that
+/// text whole.
 pub(in crate::mcp::tools) fn output_char_cap() -> Option<usize> {
     let v = std::env::var("CODEGRAPH_MAX_OUTPUT_CHARS").ok()?;
     let n: usize = v.trim().parse().ok()?;
     (n > 0).then_some(n)
+}
+
+/// Size bound for what an MCP tool result puts on the wire: the structured
+/// payload of a tool with an output schema, or the text of one without.
+/// `CODEGRAPH_MAX_OUTPUT_CHARS` overrides [`DEFAULT_MCP_OUTPUT_CHARS`] in
+/// either direction; `0` removes the bound.
+pub(in crate::mcp::tools) fn mcp_output_budget() -> usize {
+    match std::env::var("CODEGRAPH_MAX_OUTPUT_CHARS") {
+        Ok(value) => match value.trim().parse::<usize>() {
+            Ok(0) => usize::MAX,
+            Ok(chars) => chars,
+            Err(_) => DEFAULT_MCP_OUTPUT_CHARS,
+        },
+        Err(_) => DEFAULT_MCP_OUTPUT_CHARS,
+    }
+}
+
+/// How many leading rows fit in `budget` next to `fixed` characters of
+/// payload that are sent regardless. Each row costs its serialized length
+/// plus the separating comma.
+pub(in crate::mcp::tools) fn rows_within_budget(
+    budget: usize,
+    fixed: usize,
+    row_lengths: impl IntoIterator<Item = usize>,
+) -> usize {
+    let mut used = fixed;
+    let mut count = 0;
+    for length in row_lengths {
+        used = used.saturating_add(length + 1);
+        if used > budget {
+            break;
+        }
+        count += 1;
+    }
+    count
+}
+
+/// Serialized JSON length of `value`, or `usize::MAX` if it cannot serialize.
+pub(in crate::mcp::tools) fn json_len<T: serde::Serialize + ?Sized>(value: &T) -> usize {
+    serde_json::to_string(value).map_or(usize::MAX, |text| text.len())
 }
 
 /// Calculate the recommended number of codegraph_explore calls based on project size.

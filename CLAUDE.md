@@ -63,12 +63,27 @@ cargo test --workspace
   picks up a run still going — never an unbounded block. Keep `server_instructions.rs` naming exactly the default set. The
   surface is shaped by mined agent behaviour (627k tool calls, 2026-09):
   `search`/`node` take a `symbols` batch (agents otherwise grep `a|b|c`),
-  `search` takes `projectPaths` for several indexes in one call, and the
-  `node` file view records into and honours the per-session ledger
-  (`explore_session`) so a re-read of unchanged lines returns `alreadySent`.
-  Any tool that emits source must do the same, and every new structured field
-  must be declared in its output schema — the payloads set
-  `additionalProperties: false`, and clients reject undeclared fields. The
+  `search` takes `projectPaths` for several indexes in one call, and every
+  tool that emits source (`LEDGER_TOOLS` in `service/execution.rs`: explore,
+  node — file view AND symbol `code`) gets the per-connection ledger
+  (`explore_session`) injected and records into it, so a re-read of
+  unchanged lines returns `alreadySent`. The service records the result
+  *after* the MCP projection (what actually went out), never a cancelled
+  call's. A new source-emitting tool must join `LEDGER_TOOLS`, honour the
+  ledger, and be understood by `explore_session::emissions`. Every structured
+  field must be declared in its output schema — the payloads set
+  `additionalProperties: false`, and clients reject undeclared fields.
+  **Wire shape** (`ToolResult::into_mcp_projection`): a tool with an output
+  schema sends `structuredContent` and, as its one text block, that payload
+  as compact JSON (the spec's SHOULD; hosts show the model the text, so the
+  payload IS the token cost — keep it free of request echoes, ids, and
+  derivable fields; rows are `output::SymbolRow`/`SymbolRef`). A tool without
+  one sends its own text as-is (no JSON envelope). Every result is bounded by
+  `format::mcp_output_budget()` (24K chars default; `CODEGRAPH_MAX_OUTPUT_CHARS`
+  overrides, `0` = unbounded): tools shape their own payloads first — whole
+  rows/lines with a `truncated` flag, `files` pages with `nextCursor` — and
+  the generic `cap_structured_content` is only a last resort. The CLI prints
+  the human text instead, which stays unbounded unless the env var is set. The
   inference vulnerability engine (`vuln`/`verify_roles` tools, `analyze vuln`)
   was **deleted (2026-09)** — recover it from git history, don't re-gate it.
   To add one, update the domain-shaped `src/mcp/tools/` tree: (1) route the

@@ -15,10 +15,15 @@ pub(super) fn convert_tools(
         .collect()
 }
 
-pub(super) fn convert_result(result: ToolResult) -> Result<CallToolResult, McpError> {
-    let projected = result
+/// The wire form of a tool result (see `ToolResult::into_mcp_projection`).
+pub(super) fn project_result(result: ToolResult) -> Result<ToolResult, McpError> {
+    result
         .into_mcp_projection()
-        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        .map_err(|error| McpError::internal_error(error.to_string(), None))
+}
+
+/// An already-projected result as the rmcp type.
+pub(super) fn to_rmcp_result(projected: ToolResult) -> Result<CallToolResult, McpError> {
     serde_json::from_value(
         serde_json::to_value(projected)
             .map_err(|error| McpError::internal_error(error.to_string(), None))?,

@@ -182,5 +182,115 @@ async fn files_returns_structured_payload() {
     let structured = result.structured_content.as_ref().expect("structured files");
     assert_eq!(structured["kind"], "files");
     assert_eq!(structured["total"], 3);
-    assert!(structured["files"].as_array().unwrap().iter().any(|f| f["path"] == "src/index.ts"));
+    assert!(
+        schema_matches(&tool_output_schema("codegraph_files"), structured),
+        "{structured}"
+    );
+    let src = structured["dirs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|dir| dir["path"] == "src")
+        .expect("src directory");
+    assert!(src["files"].get("index.ts").is_some(), "{structured}");
+}
+
+async fn paging_fixture(root: &Path) -> ToolHandler {
+    for index in 0..60 {
+        write(
+            &root.join(format!("pkg/mod_{}/file_number_{index}.ts", index % 3)),
+            "export const x = 1;\n",
+        );
+    }
+    let cg = CodeGraph::init_sync(root).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    ToolHandler::new(Some(Rc::new(cg)))
+}
+
+/// Under a tight budget a listing pages: every page fits on the wire, and
+/// following `nextCursor` lists every file exactly once.
+#[tokio::test(flavor = "current_thread")]
+async fn files_pages_a_listing_to_the_output_budget() {
+    let _env = env_write().await;
+    let _guard = EnvVarGuard::set("CODEGRAPH_MAX_OUTPUT_CHARS", "1500");
+    let dir = TempDir::new().unwrap();
+    let handler = paging_fixture(dir.path()).await;
+
+    let mut listed = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..20 {
+        let mut args = json!({ "maxDepth": 3 });
+        if let Some(cursor) = &cursor {
+            args["cursor"] = json!(cursor);
+        }
+        let projected = handler
+            .execute("codegraph_files", &args)
+            .into_mcp_projection()
+            .unwrap();
+        assert!(projected.text().len() <= 1500, "{}", projected.text());
+        let page = projected.structured_content.as_ref().unwrap();
+        assert!(
+            schema_matches(&tool_output_schema("codegraph_files"), page),
+            "{page}"
+        );
+        assert_eq!(page["total"], 60);
+        for dir in page["dirs"].as_array().unwrap() {
+            for name in dir["files"]
+                .as_object()
+                .into_iter()
+                .flat_map(|files| files.keys())
+            {
+                listed.push(format!("{}/{name}", dir["path"].as_str().unwrap()));
+            }
+        }
+        cursor = page["nextCursor"].as_str().map(str::to_string);
+        assert_eq!(page.get("truncated").is_some(), cursor.is_some(), "{page}");
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert!(cursor.is_none(), "listing never finished");
+    listed.sort();
+    listed.dedup();
+    assert_eq!(listed.len(), 60, "{listed:?}");
+}
+
+/// With no `maxDepth`, a listing too big for one reply is cut at the deepest
+/// level that fits, and the collapsed directories still count every file.
+#[tokio::test(flavor = "current_thread")]
+async fn files_picks_a_depth_that_fits_when_none_is_given() {
+    let _env = env_write().await;
+    let _guard = EnvVarGuard::set("CODEGRAPH_MAX_OUTPUT_CHARS", "1500");
+    let dir = TempDir::new().unwrap();
+    let handler = paging_fixture(dir.path()).await;
+
+    let result = handler.execute("codegraph_files", &json!({}));
+    let payload = result.structured_content.as_ref().unwrap();
+    assert_eq!(payload["autoDepth"], true, "{payload}");
+    assert_eq!(payload["maxDepth"], 2, "{payload}");
+    assert!(payload.get("nextCursor").is_none(), "{payload}");
+    assert_eq!(
+        payload["dirs"],
+        json!([{ "path": "pkg", "dirs": { "mod_0": 20, "mod_1": 20, "mod_2": 20 } }])
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn files_refuses_a_cursor_from_another_listing() {
+    let _env = env_write().await;
+    let _guard = EnvVarGuard::set("CODEGRAPH_MAX_OUTPUT_CHARS", "1500");
+    let dir = TempDir::new().unwrap();
+    let handler = paging_fixture(dir.path()).await;
+
+    let first = handler.execute("codegraph_files", &json!({ "maxDepth": 3 }));
+    let cursor = first.structured_content.as_ref().unwrap()["nextCursor"]
+        .as_str()
+        .expect("a second page")
+        .to_string();
+    let other = handler.execute(
+        "codegraph_files",
+        &json!({ "path": "pkg/mod_1", "cursor": cursor }),
+    );
+    assert_eq!(other.is_error, Some(true), "{}", other.text());
+    assert!(other.text().contains("does not belong"), "{}", other.text());
 }

@@ -77,7 +77,7 @@ async fn node_returns_structured_payload() {
     assert_ne!(res.is_error, Some(true), "node errored: {}", res.text());
     let structured = res.structured_content.as_ref().expect("structured node");
     assert_eq!(structured["kind"], "node");
-    assert_eq!(structured["matches"][0]["node"]["name"], "target");
+    assert_eq!(structured["matches"][0]["name"], "target");
     assert_eq!(structured["matches"][0]["callers"][0]["name"], "caller");
     assert!(structured["matches"][0]["code"].as_str().unwrap().contains("target"));
 }
@@ -101,9 +101,16 @@ async fn node_structured_code_respects_output_cap() {
         &json!({ "symbol": "target", "includeCode": true }),
     );
     let structured = res.structured_content.as_ref().expect("structured node");
-    let code = structured["matches"][0]["code"].as_str().unwrap();
-    assert!(code.contains("[truncated]"), "{code}");
-    assert!(code.len() < repeated.len(), "structured code was not capped");
+    assert!(
+        serde_json::to_string(structured).unwrap().len() <= 600,
+        "{structured}"
+    );
+    // A one-line body longer than the cap is withheld whole, not cut inside
+    // the line, and the cut is flagged.
+    let detail = &structured["matches"][0];
+    assert!(detail.get("code").is_none(), "{detail}");
+    assert_eq!(detail["codeTruncated"], true, "{detail}");
+    assert!(!structured.to_string().contains(&repeated), "structured code was not capped");
 }
 
 #[tokio::test(flavor = "current_thread")]

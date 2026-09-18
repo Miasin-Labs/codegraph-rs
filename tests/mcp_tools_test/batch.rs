@@ -37,10 +37,9 @@ async fn search_accepts_several_names_in_one_call() {
         schema_matches(&tool_output_schema("codegraph_search"), payload),
         "batch search payload failed advertised schema: {payload}"
     );
-    assert_eq!(
-        payload["queries"],
-        json!(["parseToken", "AuthService", "noSuchSymbolAnywhere"])
-    );
+    // Names that found nothing are listed; the request is not echoed back.
+    assert_eq!(payload["unmatched"], json!(["noSuchSymbolAnywhere"]));
+    assert!(payload.get("queries").is_none(), "{payload}");
     let matched: Vec<&str> = payload["results"]
         .as_array()
         .unwrap()
@@ -62,7 +61,7 @@ async fn search_single_name_shape_is_unchanged() {
 
     let result = handler.execute("codegraph_search", &json!({ "query": "parseToken" }));
     let payload = result.structured_content.as_ref().expect("structured search");
-    assert!(payload.get("queries").is_none(), "{payload}");
+    assert!(payload.get("unmatched").is_none(), "{payload}");
     assert!(
         payload["results"][0].get("matchedQuery").is_none(),
         "{payload}"
@@ -87,12 +86,12 @@ async fn node_reads_several_symbols_in_one_call() {
         "batch node payload failed advertised schema: {payload}"
     );
     assert_eq!(payload["kind"], "node");
-    assert_eq!(payload["query"], "parseToken, AuthService");
+    assert_eq!(payload["matchCount"], 2);
     let names: Vec<&str> = payload["matches"]
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|m| m["node"]["name"].as_str())
+        .filter_map(|m| m["name"].as_str())
         .collect();
     assert!(names.contains(&"parseToken"), "{payload}");
     assert!(names.contains(&"AuthService"), "{payload}");
@@ -141,5 +140,37 @@ async fn search_spans_several_projects_in_one_call() {
         .collect();
     assert!(projects.contains(&first_path.as_str()), "{payload}");
     assert!(projects.contains(&second_path.as_str()), "{payload}");
-    assert_eq!(payload["projects"].as_array().unwrap().len(), 2);
+    assert!(payload.get("failedProjects").is_none(), "{payload}");
+}
+
+/// Search rows are cut to the output budget best-first, and flagged.
+#[tokio::test(flavor = "current_thread")]
+async fn search_rows_are_cut_to_the_output_budget() {
+    let _env = env_write().await;
+    let _guard = EnvVarGuard::set("CODEGRAPH_MAX_OUTPUT_CHARS", "2500");
+    let dir = TempDir::new().unwrap();
+    let filler = "x".repeat(40);
+    let source = (0..80)
+        .map(|index| format!("export function budget_{index}_{filler}() {{ return {index}; }}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    write(&dir.path().join("src/budget.ts"), &source);
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    let projected = handler
+        .execute("codegraph_search", &json!({ "query": "budget", "limit": 100 }))
+        .into_mcp_projection()
+        .unwrap();
+
+    assert!(projected.text().len() <= 2500, "{}", projected.text().len());
+    let payload = projected.structured_content.as_ref().unwrap();
+    assert!(
+        schema_matches(&tool_output_schema("codegraph_search"), payload),
+        "{payload}"
+    );
+    assert_eq!(payload["truncated"], true, "{payload}");
+    let rows = payload["results"].as_array().unwrap();
+    assert!(!rows.is_empty() && rows.len() < 80, "{} rows", rows.len());
 }

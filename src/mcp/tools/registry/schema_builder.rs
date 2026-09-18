@@ -75,17 +75,6 @@ pub(in crate::mcp::tools::registry) fn prop_default(
     Value::Object(m)
 }
 
-pub(in crate::mcp::tools::registry) fn prop_enum_default(
-    prop_type: &str,
-    description: &str,
-    enum_values: &[&str],
-    default: Value,
-) -> Value {
-    let mut m = prop_enum_map(prop_type, description, enum_values);
-    m.insert("default".into(), default);
-    Value::Object(m)
-}
-
 /// Common projectPath property for cross-project queries.
 pub(in crate::mcp::tools::registry) fn project_path_property() -> Value {
     prop(

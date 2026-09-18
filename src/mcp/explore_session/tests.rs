@@ -79,8 +79,8 @@ fn bounds_files_and_coalesces_ranges() {
             json!({
                 "path": format!("f{index}.rs"),
                 "chunks": [
-                    { "startLine": 1, "endLine": 5, "source": "small" },
-                    { "startLine": 6, "endLine": 12, "source": "larger source" }
+                    { "startLine": 1, "endLine": 5, "source": "a\nb\nc\nd\ne" },
+                    { "startLine": 6, "endLine": 12, "source": "f\ng\nh\ni\nj\nk\nlarger" }
                 ]
             })
         })
@@ -126,6 +126,18 @@ fn caps_ranges_by_retaining_the_largest_spans() {
     );
 }
 
+fn tool_result(payload: serde_json::Value) -> ToolResult {
+    ToolResult {
+        content: vec![ToolContent {
+            content_type: "text".into(),
+            text: String::new(),
+        }],
+        structured_content: Some(payload),
+        meta: None,
+        is_error: None,
+    }
+}
+
 #[test]
 fn records_node_file_views_so_other_tools_can_dedup() {
     let root = tempfile::tempdir().unwrap();
@@ -134,23 +146,75 @@ fn records_node_file_views_so_other_tools_can_dedup() {
     let payload = json!({
         "kind": "file",
         "path": "a.rs",
-        "sourceChunks": [{ "startLine": 1, "endLine": 2, "source": "fn a() {}\nfn b() {}" }],
+        "startLine": 1,
+        "endLine": 2,
+        "source": "fn a() {}\nfn b() {}",
     });
-    state.record(
-        root.path(),
-        &ToolResult {
-            content: vec![ToolContent {
-                content_type: "text".into(),
-                text: String::new(),
-            }],
-            structured_content: Some(payload),
-            meta: None,
-            is_error: None,
-        },
-    );
+    state.record(root.path(), &tool_result(payload));
     let view = state.view_for(root.path());
     let fingerprint = file_fingerprint(root.path(), "a.rs").expect("fingerprint");
     let served = served_ranges(&view, "a.rs", &fingerprint);
     assert_eq!(served.len(), 1);
     assert_eq!((served[0].start, served[0].end), (1, 2));
+    assert!(range_already_sent(&view, root.path(), "a.rs", 1, 2));
+    assert!(!range_already_sent(&view, root.path(), "a.rs", 1, 3));
+}
+
+#[test]
+fn records_node_symbol_code_at_its_lines() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("a.rs"),
+        "use x;\nfn a() {\n    1\n}\nfn b() {}\n",
+    )
+    .unwrap();
+    let mut state = ExploreSessionState::default();
+    let payload = json!({
+        "kind": "node",
+        "matchCount": 2,
+        "matches": [
+            { "name": "a", "kind": "function", "file": "a.rs", "line": 2, "endLine": 4,
+              "code": "fn a() {\n    1\n}" },
+            { "name": "b", "kind": "function", "file": "a.rs", "line": 5, "endLine": 5 }
+        ],
+    });
+    state.record(root.path(), &tool_result(payload));
+    let view = state.view_for(root.path());
+    assert!(range_already_sent(&view, root.path(), "a.rs", 2, 4));
+    assert!(!range_already_sent(&view, root.path(), "a.rs", 5, 5));
+}
+
+/// A node call that carried no source must not evict one that did from the
+/// bounded view.
+#[test]
+fn node_calls_without_source_are_not_recorded() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("a.rs"), "fn a() {}\n").unwrap();
+    let mut state = ExploreSessionState::default();
+    state.record(
+        root.path(),
+        &tool_result(json!({ "kind": "file", "path": "a.rs", "symbolCount": 1 })),
+    );
+    assert_eq!(state.view_for(root.path()).call_count, 0);
+}
+
+/// Source some later pass shortened no longer spans the lines it claims, so
+/// it must not be recorded as delivered.
+#[test]
+fn shortened_source_is_not_recorded_as_sent() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("a.rs"), "one\ntwo\nthree\n").unwrap();
+    let mut state = ExploreSessionState::default();
+    state.record(
+        root.path(),
+        &tool_result(json!({
+            "kind": "file",
+            "path": "a.rs",
+            "startLine": 1,
+            "endLine": 3,
+            "source": "one... [truncated]",
+        })),
+    );
+    let view = state.view_for(root.path());
+    assert!(!range_already_sent(&view, root.path(), "a.rs", 1, 1));
 }

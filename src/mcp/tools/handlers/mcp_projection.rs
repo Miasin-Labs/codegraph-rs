@@ -53,31 +53,63 @@ fn mcp_projection_uses_existing_structured_content_as_canonical_json() {
     println!("mcp_projection parsed fixture: {}", projected.text());
 }
 
+/// A tool without an output schema has no structured payload to mirror: its
+/// own text goes out verbatim, not escaped inside a JSON envelope.
 #[test]
-fn mcp_projection_synthesizes_structured_content_for_text_only_success() {
+fn mcp_projection_passes_text_only_results_through() {
     // Given
     let original = ToolResult {
         content: vec![ToolContent {
             content_type: "text".into(),
-            text: "plain human result".into(),
+            text: "## Callers of run (1 found)\n\n- main (function) - src/main.rs:3".into(),
         }],
         structured_content: None,
         meta: None,
         is_error: None,
     };
-    let expected = serde_json::json!({
-        "schemaVersion": 1,
-        "kind": "text",
-        "text": "plain human result",
-    });
 
     // When
     let projected = original.clone().into_mcp_projection().unwrap();
 
     // Then
-    assert_matches_structured_content(&projected, &expected);
+    assert_eq!(projected.content.len(), 1);
+    assert_eq!(projected.text(), original.text());
+    assert!(projected.structured_content.is_none());
     assert_eq!(projected.is_error, None);
-    assert_eq!(original.text(), "plain human result");
+}
+
+/// Text-only output is bounded by the default MCP output budget even when
+/// `CODEGRAPH_MAX_OUTPUT_CHARS` is unset, and says it was cut.
+#[test]
+fn mcp_projection_bounds_text_only_results_by_default() {
+    if std::env::var_os("CODEGRAPH_MAX_OUTPUT_CHARS").is_some() {
+        return;
+    }
+    let line = format!("- {} (function) - src/lib.rs:1\n", "x".repeat(60));
+    let original = ToolResult {
+        content: vec![ToolContent {
+            content_type: "text".into(),
+            text: line.repeat(2_000),
+        }],
+        structured_content: None,
+        meta: None,
+        is_error: None,
+    };
+
+    let projected = original.into_mcp_projection().unwrap();
+
+    let budget = crate::mcp::tools::format::mcp_output_budget();
+    assert!(
+        projected.text().len() <= budget,
+        "{} > {budget}",
+        projected.text().len()
+    );
+    assert!(projected.text().ends_with("... (output truncated)"));
+    // Cut on a line boundary, so no row is half-sent.
+    let body = projected
+        .text()
+        .trim_end_matches("\n\n... (output truncated)");
+    assert!(body.lines().all(|row| row.ends_with("src/lib.rs:1")));
 }
 
 #[test]

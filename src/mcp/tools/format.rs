@@ -13,8 +13,11 @@ pub use budget::{ExploreOutputBudget, get_explore_budget, get_explore_output_bud
 pub(in crate::mcp::tools) use budget::{
     adaptive_explore_enabled,
     explore_line_numbers_enabled,
+    json_len,
+    mcp_output_budget,
     now_ms,
     output_char_cap,
+    rows_within_budget,
 };
 pub(in crate::mcp::tools) use kinds::{
     is_callable_kind,
@@ -44,6 +47,7 @@ pub(in crate::mcp::tools) use regexes::{
     TOKEN_SPLIT_RE,
     TYPE_TOKEN_RE,
 };
+pub(in crate::mcp::tools) use results::truncate_text;
 pub use stale::{format_stale_banner, format_stale_footer};
 pub(in crate::mcp::tools) use symbols::{
     display_symbol,

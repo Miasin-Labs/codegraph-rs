@@ -1,16 +1,10 @@
 //! Administrative tool schemas.
 
-use serde_json::{Map, Value};
+use serde_json::Map;
 
 use super::super::output::{files_output_schema, status_output_schema};
 use super::super::schema::{InputSchema, ToolDefinition};
-use super::schema_builder::{
-    project_path_property,
-    prop,
-    prop_default,
-    prop_enum_default,
-    read_only_annotations,
-};
+use super::schema_builder::{project_path_property, prop, read_only_annotations};
 
 pub(in crate::mcp::tools::registry) fn push_status_tool(out: &mut Vec<ToolDefinition>) {
     // codegraph_status
@@ -51,33 +45,29 @@ pub(in crate::mcp::tools::registry) fn push_files_tool(out: &mut Vec<ToolDefinit
             ),
         );
         props.insert(
-            "format".into(),
-            prop_enum_default(
-                "string",
-                "Output format: \"tree\" (hierarchical, default), \"flat\" (simple list), \"grouped\" (by language)",
-                &["tree", "flat", "grouped"],
-                Value::from("tree"),
-            ),
-        );
-        props.insert(
-            "includeMetadata".into(),
-            prop_default(
-                "boolean",
-                "Include file metadata like language and symbol count (default: true)",
-                Value::from(true),
-            ),
-        );
-        props.insert(
             "maxDepth".into(),
             prop(
                 "number",
-                "Maximum directory depth to show (default: unlimited)",
+                "Directory levels to list below `path` (1 = its direct entries). Deeper \
+                 directories are collapsed to their file counts. Default: the deepest level \
+                 that fits one reply.",
+            ),
+        );
+        props.insert(
+            "cursor".into(),
+            prop(
+                "string",
+                "Next page of a listing: the `nextCursor` a previous call returned, passed with \
+                 the same `path` and `pattern`.",
             ),
         );
         props.insert("projectPath".into(), project_path_property());
         out.push(ToolDefinition {
             name: "codegraph_files".into(),
-            description: "Indexed file tree with language + symbol counts. Faster than Glob for project layout.".into(),
+            description: "Indexed files grouped by directory, with symbol counts per file and \
+                language totals. Faster than Glob for project layout; narrow with `path`, \
+                `pattern`, or `maxDepth`, and page with `cursor`."
+                .into(),
             input_schema: InputSchema {
                 schema_type: "object".into(),
                 properties: props,

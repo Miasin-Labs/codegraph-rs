@@ -209,7 +209,11 @@ pub(in crate::mcp::tools::registry) fn push_node_tool(out: &mut Vec<ToolDefiniti
         );
         props.insert(
             "offset".into(),
-            prop("number", "File mode: 1-based line to start reading from."),
+            prop(
+                "number",
+                "File mode: 1-based line to start reading from. Past the end of the file, its \
+                 last lines are returned (and `requestedOffset` says so).",
+            ),
         );
         props.insert(
             "limit".into(),

@@ -7,8 +7,13 @@ use rmcp::{ErrorData as McpError, RoleServer};
 use serde_json::Value;
 
 use super::CodeGraphService;
-use super::wire::{convert_result, progress_channel, run_blocking};
+use super::wire::{progress_channel, project_result, run_blocking, to_rmcp_result};
 use crate::mcp::explore_session::{SESSION_ARG, dedup_enabled};
+
+/// Tools whose results carry file source. They read the per-connection
+/// session ledger (so lines this conversation already holds are not sent
+/// again) and record what they sent into it.
+const LEDGER_TOOLS: &[&str] = &["codegraph_explore", "codegraph_node"];
 
 impl CodeGraphService {
     pub(super) async fn execute_tool(
@@ -40,12 +45,15 @@ impl CodeGraphService {
         };
         let name = request.name.into_owned();
         let mut arguments = Value::Object(request.arguments.unwrap_or_default());
+        // Explores are serialized per connection; other ledger tools run
+        // concurrently (parallel calls in one turn each see the ledger as it
+        // stood, which can only cost a duplicate, never a false `alreadySent`).
         let _explore_guard = if name == "codegraph_explore" {
             Some(self.inner.explore_gate.lock().await)
         } else {
             None
         };
-        let project_root = if name == "codegraph_explore" {
+        let project_root = if LEDGER_TOOLS.contains(&name.as_str()) {
             let requested = arguments
                 .get("projectPath")
                 .and_then(Value::as_str)
@@ -78,23 +86,28 @@ impl CodeGraphService {
             }
         }
         let engine = self.inner.engine.clone();
+        let call_cancelled = Arc::clone(&cancelled);
         let result = run_blocking(move || {
-            engine.execute_with_context(&name, arguments, progress, Some(cancelled))
+            engine.execute_with_context(&name, arguments, progress, Some(call_cancelled))
         })
         .await;
         cancel_task.abort();
         if let Some(task) = progress_task {
             let _ = task.await;
         }
-        let result = result?;
+        // Record exactly what goes on the wire, and nothing from a call the
+        // client cancelled (its response is never read).
+        let projected = project_result(result?)?;
         if let Some(root) = project_root.as_deref() {
-            self.inner
-                .explore_session
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .record(std::path::Path::new(root), &result);
+            if !cancelled.load(Ordering::SeqCst) {
+                self.inner
+                    .explore_session
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .record(std::path::Path::new(root), &projected);
+            }
         }
-        let result = convert_result(result)?;
+        let result = to_rmcp_result(projected)?;
         let (_, changed) = self.refresh_tools().await?;
         if changed {
             let _ = context.peer.notify_tool_list_changed().await;

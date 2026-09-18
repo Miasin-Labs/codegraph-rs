@@ -8,6 +8,7 @@
 use serde_json::{Map, Value, json};
 
 use super::super::context::ToolHandler;
+use super::super::format::{json_len, mcp_output_budget, rows_within_budget};
 use super::super::schema::ToolResult;
 use crate::error::Result;
 
@@ -34,14 +35,16 @@ impl ToolHandler {
         let paths: Vec<String> = paths.into_iter().take(MAX_PROJECTS).collect();
         let mut sections = Vec::new();
         let mut results = Vec::new();
-        let mut queries: Option<Value> = None;
-        let mut query = String::new();
-        let mut limit = Value::Null;
+        let mut failed = Vec::new();
+        let mut truncated = false;
+        // A batch name is unmatched only if no project matched it.
+        let mut unmatched: Option<Vec<Value>> = None;
 
         for path in &paths {
             let path_value = Value::String(path.clone());
             if let Err(error) = self.validate_optional_path(Some(&path_value), "projectPaths") {
                 sections.push(format!("## {path}\n\n{}", error_text(&error)));
+                failed.push(json!({ "project": path, "message": error_text(&error) }));
                 continue;
             }
             let mut single = args.clone();
@@ -51,6 +54,7 @@ impl ToolHandler {
                 Ok(result) => result,
                 Err(error) => {
                     sections.push(format!("## {path}\n\n_search failed: {error}_"));
+                    failed.push(json!({ "project": path, "message": error.to_string() }));
                     continue;
                 }
             };
@@ -59,13 +63,18 @@ impl ToolHandler {
                 continue;
             };
             if payload.get("kind").and_then(Value::as_str) != Some("search") {
+                failed.push(json!({ "project": path, "message": error_text(&result) }));
                 continue;
             }
-            query = payload["query"].as_str().unwrap_or_default().to_string();
-            limit = payload["limit"].clone();
-            if queries.is_none() {
-                queries = payload.get("queries").cloned();
-            }
+            truncated |= payload["truncated"].as_bool().unwrap_or(false);
+            let names = payload["unmatched"].as_array().cloned().unwrap_or_default();
+            unmatched = Some(match unmatched {
+                None => names,
+                Some(previous) => previous
+                    .into_iter()
+                    .filter(|name| names.contains(name))
+                    .collect(),
+            });
             for hit in payload["results"].as_array().into_iter().flatten() {
                 let mut hit = hit.clone();
                 hit["project"] = Value::String(path.clone());
@@ -73,24 +82,25 @@ impl ToolHandler {
             }
         }
 
-        let mut payload = json!({
-            "schemaVersion": 1,
-            "kind": "search",
-            "query": query,
-            "projects": paths,
-            "limit": if limit.is_null() { Value::from(10) } else { limit },
-            "total": results.len(),
-            "results": results,
-        });
-        if let Some(queries) = queries {
-            payload["queries"] = queries;
+        let mut payload = json!({ "schemaVersion": 2, "kind": "search", "results": [] });
+        let unmatched = unmatched.unwrap_or_default();
+        if !unmatched.is_empty() {
+            payload["unmatched"] = Value::Array(unmatched);
         }
-        if let Some(kind) = args
-            .get("kind")
-            .and_then(Value::as_str)
-            .filter(|k| !k.is_empty())
-        {
-            payload["filterKind"] = Value::String(kind.to_string());
+        if !failed.is_empty() {
+            payload["failedProjects"] = Value::Array(failed);
+        }
+        payload["truncated"] = Value::Bool(true);
+        let keep = rows_within_budget(
+            mcp_output_budget(),
+            json_len(&payload),
+            results.iter().map(json_len),
+        );
+        truncated |= keep < results.len();
+        results.truncate(keep);
+        payload["results"] = Value::Array(results);
+        if let (false, Some(object)) = (truncated, payload.as_object_mut()) {
+            object.remove("truncated");
         }
         let text = self.truncate_output(&sections.join("\n\n"));
         self.structured_result(&text, &payload)

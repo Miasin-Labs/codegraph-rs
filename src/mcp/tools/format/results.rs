@@ -5,24 +5,17 @@ use serde_json::{Value, json};
 
 use super::super::context::ToolHandler;
 use super::super::schema::{ToolContent, ToolError, ToolResult};
-use super::{floor_char_boundary, output_char_cap};
+use super::{floor_char_boundary, mcp_output_budget, output_char_cap};
 use crate::error::Result;
 
 impl ToolHandler {
+    /// Truncate human-readable text to the opt-in `CODEGRAPH_MAX_OUTPUT_CHARS`
+    /// (the CLI prints this text; the MCP wire bound is applied at egress).
     pub(in crate::mcp::tools) fn truncate_output(&self, text: &str) -> String {
         let Some(cap) = output_char_cap() else {
             return text.to_string();
         };
-        if text.len() <= cap {
-            return text.to_string();
-        }
-        let truncated = &text[..floor_char_boundary(text, cap)];
-        let last_newline = truncated.rfind('\n');
-        let cut_point = match last_newline {
-            Some(pos) if (pos as f64) > cap as f64 * 0.8 => pos,
-            _ => truncated.len(),
-        };
-        format!("{}\n\n... (output truncated)", &truncated[..cut_point])
+        truncate_text(text, cap)
     }
 
     // =========================================================================
@@ -106,10 +99,29 @@ impl ToolHandler {
     }
 }
 
-pub(in crate::mcp::tools) fn cap_structured_content(mut value: Value) -> Value {
-    let Some(cap) = output_char_cap() else {
-        return value;
+const TRUNCATION_SENTINEL: &str = "\n\n... (output truncated)";
+
+/// Cut `text` to at most `cap` bytes, preferring a line boundary near the end,
+/// and say so. The sentinel is counted inside `cap`.
+pub(in crate::mcp::tools) fn truncate_text(text: &str, cap: usize) -> String {
+    if text.len() <= cap {
+        return text.to_string();
+    }
+    let keep = cap.saturating_sub(TRUNCATION_SENTINEL.len());
+    let truncated = &text[..floor_char_boundary(text, keep)];
+    let cut_point = match truncated.rfind('\n') {
+        Some(pos) if (pos as f64) > keep as f64 * 0.8 => pos,
+        _ => truncated.len(),
     };
+    format!("{}{TRUNCATION_SENTINEL}", &truncated[..cut_point])
+}
+
+/// Last-resort bound on a structured payload. Tools shape their own payloads
+/// to [`mcp_output_budget`] first (whole rows, whole lines, with `truncated`
+/// flags); this generic pass only catches what a tool failed to bound, by
+/// shortening strings and arrays in place, so it never breaks the schema.
+pub(in crate::mcp::tools) fn cap_structured_content(mut value: Value) -> Value {
+    let cap = mcp_output_budget();
     if serde_json::to_string(&value)
         .map(|serialized| serialized.len())
         .unwrap_or(0)

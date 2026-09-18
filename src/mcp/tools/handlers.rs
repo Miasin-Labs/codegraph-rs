@@ -197,6 +197,76 @@ mod tests {
             status["outputSchema"]["oneOf"][1]["properties"]["kind"]["const"],
             "error"
         );
+
+        // Search rows (schema v2) are flat symbol rows: what a follow-up
+        // `codegraph_node {symbol, file, line}` takes, no internal id/score.
+        let search = serde_json::to_value(&defs[0]).unwrap();
+        let hit = &search["outputSchema"]["oneOf"][0]["properties"]["results"]["items"];
+        assert_eq!(hit["additionalProperties"], false);
+        for field in [
+            "name",
+            "kind",
+            "container",
+            "file",
+            "line",
+            "endLine",
+            "signature",
+        ] {
+            assert!(
+                hit["properties"].get(field).is_some(),
+                "search row lacks {field}"
+            );
+        }
+        for dropped in [
+            "node",
+            "id",
+            "qualifiedName",
+            "language",
+            "score",
+            "highlights",
+        ] {
+            assert!(
+                hit["properties"].get(dropped).is_none(),
+                "search row has {dropped}"
+            );
+        }
+
+        // files: a paged, depth-cut listing; the human-rendering knobs are
+        // not part of the MCP surface.
+        let files = serde_json::to_value(&defs[7]).unwrap();
+        let input = &files["inputSchema"]["properties"];
+        for field in ["path", "pattern", "maxDepth", "cursor", "projectPath"] {
+            assert!(input.get(field).is_some(), "files input lacks {field}");
+        }
+        assert!(input.get("format").is_none() && input.get("includeMetadata").is_none());
+        let listing = &files["outputSchema"]["oneOf"][0]["properties"];
+        for field in [
+            "total",
+            "maxDepth",
+            "autoDepth",
+            "dirs",
+            "truncated",
+            "nextCursor",
+        ] {
+            assert!(listing.get(field).is_some(), "files output lacks {field}");
+        }
+
+        // node: file-view windows are flat (`startLine`/`endLine`/`source`).
+        let node = serde_json::to_value(&defs[4]).unwrap();
+        let file_view = &node["outputSchema"]["oneOf"][1]["properties"];
+        for field in [
+            "source",
+            "startLine",
+            "endLine",
+            "alreadySent",
+            "requestedOffset",
+        ] {
+            assert!(
+                file_view.get(field).is_some(),
+                "node file view lacks {field}"
+            );
+        }
+        assert!(file_view.get("sourceChunks").is_none());
     }
 
     #[test]

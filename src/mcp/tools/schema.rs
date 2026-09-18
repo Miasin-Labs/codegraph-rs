@@ -1,7 +1,9 @@
 //! MCP tool and result wire schema.
 
 use serde::Serialize;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
+
+use super::format::{mcp_output_budget, truncate_text};
 
 /// MCP Tool definition. Serializes to the same JSON shape as the TS
 /// `ToolDefinition` (camelCase `inputSchema`, ordered properties).
@@ -113,10 +115,18 @@ impl ToolResult {
         self.content.first().map(|c| c.text.as_str()).unwrap_or("")
     }
 
-    /// Converts this result into the MCP structured-content compatibility shape.
+    /// Converts this result into what goes on the MCP wire.
+    ///
+    /// A tool with an output schema returns `structuredContent`, and its one
+    /// text block is that payload serialized as compact JSON — what the spec
+    /// asks for, and the only copy most hosts show the model. The payload is
+    /// already shaped to the output budget by the tool, so the text is bounded
+    /// too. A tool without an output schema has no structured payload: its own
+    /// text goes out as-is (never wrapped in a JSON envelope, which would only
+    /// escape it), cut to the output budget.
     ///
     /// # Errors
-    /// Returns an error if the canonical structured value cannot be serialized.
+    /// Returns an error if the structured value cannot be serialized.
     pub fn into_mcp_projection(self) -> serde_json::Result<Self> {
         let Self {
             content,
@@ -124,21 +134,24 @@ impl ToolResult {
             meta,
             is_error,
         } = self;
-        let structured_content = structured_content.unwrap_or_else(|| {
-            json!({
-                "schemaVersion": 1,
-                "kind": "text",
-                "text": content.first().map_or("", |item| item.text.as_str()),
-            })
-        });
-        let text = serde_json::to_string(&structured_content)?;
+        let text = match &structured_content {
+            Some(structured) => serde_json::to_string(structured)?,
+            None => truncate_text(
+                &content
+                    .iter()
+                    .map(|item| item.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                mcp_output_budget(),
+            ),
+        };
 
         Ok(Self {
             content: vec![ToolContent {
                 content_type: "text".into(),
                 text,
             }],
-            structured_content: Some(structured_content),
+            structured_content,
             meta,
             is_error,
         })

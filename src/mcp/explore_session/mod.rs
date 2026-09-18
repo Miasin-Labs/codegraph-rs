@@ -83,17 +83,26 @@ impl ExploreSessionState {
             })
     }
 
+    /// Record the source a delivered result carried. Pass the result as it
+    /// went on the wire (after the MCP projection), so the ledger never holds
+    /// lines the client did not receive.
     pub(crate) fn record(&mut self, project_root: &Path, result: &ToolResult) {
         let Some(payload) = result.structured_content.as_ref() else {
             return;
         };
-        // Every tool that emits source participates: `explore` (many files) and
-        // the `node` file view (one file, paged). Agents re-fetch the same
-        // ranges constantly, so the ledger has to span tools, not just explore.
-        if !matches!(
-            payload.get("kind").and_then(Value::as_str),
-            Some("explore") | Some("file")
-        ) {
+        // Every tool that emits source participates: `explore` (many files),
+        // the `node` file view (one file, paged), and `node` symbol reads
+        // (a definition's lines). Agents re-fetch the same ranges constantly,
+        // so the ledger has to span tools, not just explore.
+        let kind = payload.get("kind").and_then(Value::as_str);
+        if !matches!(kind, Some("explore") | Some("file") | Some("node")) {
+            return;
+        }
+        let files = emissions(project_root, payload);
+        // A node call that sent no source (an outline, a back-reference, a
+        // miss) holds nothing to dedup against; don't let it push a call
+        // that did out of the bounded view.
+        if files.is_empty() && kind != Some("explore") {
             return;
         }
         let key = project_key(project_root);
@@ -114,7 +123,7 @@ impl ExploreSessionState {
         project.response_bytes = project.response_bytes.saturating_add(response_bytes);
         project.calls.push(CallRecord {
             index: project.call_count,
-            files: emissions(project_root, payload),
+            files,
             response_bytes,
         });
         if project.calls.len() > MAX_CALLS {
@@ -145,73 +154,112 @@ pub(crate) fn file_fingerprint(root: &Path, relative: &str) -> Option<String> {
     Some(format!("{}:{}", bytes.len(), &sha256_hex(&bytes)[..16]))
 }
 
-/// The `node` file view emits one file as `path` + `sourceChunks`.
-fn file_view_emission(root: &Path, payload: &Value) -> Option<FileEmission> {
-    let path = payload["path"].as_str()?.to_string();
-    let chunks = payload["sourceChunks"].as_array()?;
-    let ranges = chunks
+/// Whether `path`'s lines `start..=end` went out earlier in this session
+/// and the file is byte-identical on disk since.
+pub(crate) fn range_already_sent(
+    prior: &ProjectState,
+    root: &Path,
+    path: &str,
+    start: usize,
+    end: usize,
+) -> bool {
+    let Some(fingerprint) = file_fingerprint(root, path) else {
+        return false;
+    };
+    served_ranges(prior, path, &fingerprint)
         .iter()
-        .filter_map(|chunk| {
-            Some(LineRange {
-                start: usize::try_from(chunk["startLine"].as_u64()?).ok()?,
-                end: usize::try_from(chunk["endLine"].as_u64()?).ok()?,
-            })
-        })
+        .any(|range| range.start <= start && range.end >= end)
+}
+
+/// The line range a `source` string really covers when it claims to start at
+/// `start` and end at `end`. `None` when the text does not span exactly those
+/// lines — a string some later pass shortened must not be recorded as sent.
+fn verbatim_range(start: u64, end: u64, source: &str) -> Option<LineRange> {
+    let start = usize::try_from(start).ok()?;
+    let end = usize::try_from(end).ok()?;
+    let lines = source.split('\n').count();
+    (start >= 1 && end >= start && end - start + 1 == lines).then_some(LineRange { start, end })
+}
+
+/// Line ranges of one file gathered from `(start, end, source)` triples.
+fn emission(root: &Path, path: &str, spans: &[(u64, u64, &str)]) -> Option<FileEmission> {
+    let ranges = spans
+        .iter()
+        .filter_map(|(start, end, source)| verbatim_range(*start, *end, source))
         .collect();
     let (ranges, _) = coalesce(ranges);
     if ranges.is_empty() {
         return None;
     }
-    let bytes = chunks
-        .iter()
-        .filter_map(|chunk| chunk["source"].as_str())
-        .map(str::len)
-        .sum();
     Some(FileEmission {
-        fingerprint: file_fingerprint(root, &path),
-        path,
+        fingerprint: file_fingerprint(root, path),
+        path: path.to_string(),
         ranges,
-        bytes,
+        bytes: spans.iter().map(|(_, _, source)| source.len()).sum(),
     })
 }
 
-fn emissions(root: &Path, payload: &Value) -> Vec<FileEmission> {
-    if payload.get("kind").and_then(Value::as_str) == Some("file") {
-        return file_view_emission(root, payload).into_iter().collect();
+/// The `node` file view emits one window of one file.
+fn file_view_emission(root: &Path, payload: &Value) -> Option<FileEmission> {
+    let span = (
+        payload["startLine"].as_u64()?,
+        payload["endLine"].as_u64()?,
+        payload["source"].as_str()?,
+    );
+    emission(root, payload["path"].as_str()?, &[span])
+}
+
+/// `node` symbol reads emit each match's `code`, which starts at
+/// `codeStartLine` when present and at the symbol's `line` otherwise.
+fn symbol_emissions(root: &Path, payload: &Value) -> Vec<FileEmission> {
+    let mut by_file: Vec<(&str, Vec<(u64, u64, &str)>)> = Vec::new();
+    for detail in payload["matches"].as_array().into_iter().flatten() {
+        let (Some(file), Some(code)) = (detail["file"].as_str(), detail["code"].as_str()) else {
+            continue;
+        };
+        let Some(start) = detail["codeStartLine"]
+            .as_u64()
+            .or_else(|| detail["line"].as_u64())
+        else {
+            continue;
+        };
+        let end = start + code.split('\n').count() as u64 - 1;
+        match by_file.iter_mut().find(|(path, _)| *path == file) {
+            Some((_, spans)) => spans.push((start, end, code)),
+            None => by_file.push((file, vec![(start, end, code)])),
+        }
     }
-    let mut files = payload["sourceFiles"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|file| {
-            let path = file["path"].as_str()?.to_string();
-            let ranges = file["chunks"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|chunk| {
-                    Some(LineRange {
-                        start: usize::try_from(chunk["startLine"].as_u64()?).ok()?,
-                        end: usize::try_from(chunk["endLine"].as_u64()?).ok()?,
+    by_file
+        .iter()
+        .filter_map(|(path, spans)| emission(root, path, spans))
+        .collect()
+}
+
+fn emissions(root: &Path, payload: &Value) -> Vec<FileEmission> {
+    let mut files = match payload.get("kind").and_then(Value::as_str) {
+        Some("file") => file_view_emission(root, payload).into_iter().collect(),
+        Some("node") => symbol_emissions(root, payload),
+        _ => payload["sourceFiles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|file| {
+                let spans = file["chunks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|chunk| {
+                        Some((
+                            chunk["startLine"].as_u64()?,
+                            chunk["endLine"].as_u64()?,
+                            chunk["source"].as_str()?,
+                        ))
                     })
-                })
-                .collect();
-            let (ranges, _) = coalesce(ranges);
-            let bytes = file["chunks"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|chunk| chunk["source"].as_str())
-                .map(str::len)
-                .sum();
-            Some(FileEmission {
-                fingerprint: file_fingerprint(root, &path),
-                path,
-                ranges,
-                bytes,
+                    .collect::<Vec<_>>();
+                emission(root, file["path"].as_str()?, &spans)
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>(),
+    };
     files.sort_by_key(|file| std::cmp::Reverse(file.bytes));
     files.truncate(MAX_FILES);
     files
