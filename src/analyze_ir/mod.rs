@@ -1455,4 +1455,140 @@ mod tests {
         assert!(dataflow_lang_id(Language::Java).is_none());
         assert!(ir_lang_id(Language::Cpp).is_none());
     }
+
+    /// One branchy function per CFG-covered language, parsed with the host
+    /// grammar (several have no grammar in the analysis crate).
+    const CFG_LANGUAGE_FIXTURES: &[(Language, &str)] = &[
+        (
+            Language::Rust,
+            "fn f(x: i32) -> i32 {\n    if x > 0 { return 1; } else { return g(x)?; }\n}\n",
+        ),
+        (
+            Language::Typescript,
+            "function f(x: number): number {\n  if (x) { return 1; } else { throw new Error(); }\n}\n",
+        ),
+        (
+            Language::Tsx,
+            "function f(x: number) {\n  switch (x) { case 1: return 1; default: break; }\n  return 0;\n}\n",
+        ),
+        (
+            Language::Javascript,
+            "function f(x) {\n  try { g(); } catch (e) { return 1; } finally { h(); }\n  return 0;\n}\n",
+        ),
+        (
+            Language::Jsx,
+            "function f(n) {\n  outer: for (let i = 0; i < n; i++) { for (;;) { break outer; } }\n}\n",
+        ),
+        (
+            Language::Arkts,
+            "function f(x: number): number {\n  if (x > 0) {\n    return 1;\n  }\n  return 0;\n}\n",
+        ),
+        (
+            Language::Python,
+            "def f(x):\n    if x:\n        return 1\n    elif x > 2:\n        return 2\n    else:\n        raise E()\n",
+        ),
+        (
+            Language::Go,
+            "package p\n\nfunc f(x int) int {\n\tswitch x {\n\tcase 1:\n\t\tfallthrough\n\tdefault:\n\t\treturn 2\n\t}\n}\n",
+        ),
+        (
+            Language::Java,
+            "class C {\n    int f(int x) {\n        while (x > 0) { if (x == 3) break; x--; }\n        return x;\n    }\n}\n",
+        ),
+        (
+            Language::C,
+            "int f(int x) {\n    switch (x) {\n        case 1: return 1;\n    }\n    return 0;\n}\n",
+        ),
+        (
+            Language::Cpp,
+            "int f(int x) {\n    try { if (x) throw 1; } catch (int e) { return e; }\n    return 0;\n}\n",
+        ),
+        (
+            Language::Php,
+            "<?php\nfunction f($x) {\n    if ($x) { return 1; } elseif ($x > 2) { return 2; }\n    return 3;\n}\n",
+        ),
+        (
+            Language::R,
+            "f <- function(x) {\n  for (i in 1:3) {\n    if (i == 2) next\n    if (i == 3) break\n  }\n  if (x > 0) {\n    1\n  } else {\n    2\n  }\n}\n",
+        ),
+        (
+            Language::Solidity,
+            "contract C {\n  function f(uint x) public returns (uint) {\n    if (x > 0) {\n      return 1;\n    } else {\n      revert(\"no\");\n    }\n  }\n}\n",
+        ),
+        (
+            Language::Vyper,
+            "@external\ndef f(x: uint256) -> uint256:\n    if x > 0:\n        return 1\n    return 2\n",
+        ),
+        (
+            Language::Move,
+            "module 0x1::m {\n    fun f(x: u64): u64 {\n        if (x > 0) { return 1 };\n        while (x < 10) { x = x + 1; };\n        abort 1\n    }\n}\n",
+        ),
+        (
+            Language::Cairo,
+            "fn f(x: felt252) -> felt252 {\n    if x == 0 {\n        return 1;\n    }\n    loop {\n        break;\n    };\n    2\n}\n",
+        ),
+        (
+            Language::Sway,
+            "fn f(x: u64) -> u64 {\n    if x > 0 {\n        return 1;\n    }\n    2\n}\n",
+        ),
+        (
+            Language::Fe,
+            "fn f(x: u256) -> u256 {\n    if x > 0 {\n        return 1\n    } else {\n        return 2\n    }\n}\n",
+        ),
+        (Language::Nix, "{ f = x: if x then 1 else 2; }\n"),
+        // CFML tag files hand script bodies to the CFScript grammar as
+        // injected content, and CFQuery is SQL: neither grammar has a
+        // function node of its own, so only CFScript appears here.
+        (
+            Language::Cfscript,
+            "component {\n  function f(x) {\n    if (x) { return 1; } else { throw(\"no\"); }\n  }\n}\n",
+        ),
+        (
+            Language::Erlang,
+            "-module(m).\nf(X) ->\n    case X of\n        1 -> one;\n        _ -> other\n    end.\n",
+        ),
+    ];
+
+    // Every CFG-covered language yields structurally valid graphs
+    // (`FunctionCfg::validate`) for every function in its fixture.
+    #[test]
+    fn cfg_validates_for_every_covered_language() {
+        for &(language, source) in CFG_LANGUAGE_FIXTURES {
+            let lang_id = cfg_lang_id(language).expect("cfg-covered");
+            let rules = CfgRules::for_language(lang_id).expect("cfg rules");
+            let tree = create_parser(language)
+                .expect("host grammar")
+                .parse(source, None)
+                .expect("parse");
+            let mut functions = Vec::new();
+            let mut stack = vec![tree.root_node()];
+            while let Some(node) = stack.pop() {
+                if rules.function_nodes.contains(&node.kind()) {
+                    functions.push(node);
+                }
+                let mut cursor = node.walk();
+                stack.extend(node.named_children(&mut cursor));
+            }
+            assert!(
+                !functions.is_empty(),
+                "{language:?}: fixture has no function"
+            );
+            for function in functions {
+                let cfg = build_cfg(function, source.as_bytes(), lang_id).expect("cfg");
+                if let Err(violation) = cfg.validate() {
+                    panic!("{language:?}: {violation}\n{}", cfg.format_summary());
+                }
+                // The fixture's control construct was recognised, not
+                // swallowed by an opaque statement wrapper.
+                assert!(
+                    cfg.blocks.iter().any(|b| matches!(
+                        b.kind,
+                        CfgBlockKind::Branch | CfgBlockKind::Loop | CfgBlockKind::Exception
+                    )),
+                    "{language:?}: no control construct\n{}",
+                    cfg.format_summary()
+                );
+            }
+        }
+    }
 }
