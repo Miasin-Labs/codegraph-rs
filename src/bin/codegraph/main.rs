@@ -106,6 +106,7 @@ use codegraph_analysis::nodes::NodeId as ANodeId;
 mod analyze;
 mod cli;
 mod context;
+mod deps;
 mod files;
 mod graph;
 mod history;
@@ -118,8 +119,9 @@ mod serve;
 mod tool_commands;
 
 use analyze::{bridge_project_with_options, cmd_analyze, print_json};
-use cli::{AnalyzeCommands, Cli, Commands, HistoryCommands, ProjectsCommands};
+use cli::{AnalyzeCommands, Cli, Commands, DepsCommands, HistoryCommands, ProjectsCommands};
 use context::cmd_context;
+use deps::cmd_deps;
 use files::cmd_files;
 use graph::{CallDirection, cmd_affected, cmd_call_graph, cmd_impact, is_exact_symbol_match};
 use history::cmd_history;
@@ -209,6 +211,7 @@ fn record_command_telemetry(command: &Commands) {
         Commands::Analyze { .. } => "analyze",
         Commands::History { .. } => "history",
         Commands::Projects { .. } => "projects",
+        Commands::Deps { .. } => "deps",
         Commands::Upgrade { .. } => "upgrade",
         Commands::PromptHook => "prompt-hook",
         Commands::Version => "version",
@@ -405,6 +408,7 @@ pub(crate) async fn main() {
         Commands::Analyze { command } => cmd_analyze(command),
         Commands::History { command } => cmd_history(command),
         Commands::Projects { command, json } => projects::cmd_projects(command, json),
+        Commands::Deps { command } => cmd_deps(command).await,
         Commands::Telemetry { action } => cmd_telemetry(action.as_deref()),
         Commands::Upgrade {
             version,

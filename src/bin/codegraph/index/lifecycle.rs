@@ -84,6 +84,7 @@ pub(crate) async fn cmd_init(path_arg: Option<&str>, force: bool, verbose: bool)
         clack_outro("Done");
         cg.close();
         super::super::projects::register_after_write(&project_path, false);
+        let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
         Ok::<(), String>(())
     };
 
@@ -209,6 +210,7 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
             }
             cg.close();
             super::super::projects::register_after_write(&project_path, true);
+            let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
             return Ok(());
         }
 
@@ -237,6 +239,7 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
         clack_outro("Done");
         cg.close();
         super::super::projects::register_after_write(&project_path, false);
+        let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
         Ok::<(), String>(())
     };
 
@@ -274,6 +277,7 @@ pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
                 .map_err(|e| e.to_string())?;
             cg.close();
             super::super::projects::register_after_write(&project_path, true);
+            let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
             return Ok(());
         }
 
@@ -334,6 +338,7 @@ pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
         clack_outro("Done");
         cg.close();
         super::super::projects::register_after_write(&project_path, false);
+        let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
         Ok::<(), String>(())
     };
 

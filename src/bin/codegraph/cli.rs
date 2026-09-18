@@ -1,10 +1,12 @@
 use super::{Parser, Subcommand};
 
 mod analyze;
+mod deps;
 mod history;
 mod projects;
 
 pub(crate) use analyze::AnalyzeCommands;
+pub(crate) use deps::DepsCommands;
 pub(crate) use history::HistoryCommands;
 pub(crate) use projects::ProjectsCommands;
 
@@ -338,6 +340,12 @@ pub(crate) enum Commands {
         /// Output as JSON
         #[arg(short = 'j', long, global = true)]
         json: bool,
+    },
+    /// Shared dependency graphs: one shard per dependency version, reused
+    /// by every project that pins it (list, status, record, build, gc, show)
+    Deps {
+        #[command(subcommand)]
+        command: DepsCommands,
     },
     /// Show or change anonymous usage telemetry (status, on, off)
     Telemetry {

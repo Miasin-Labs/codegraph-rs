@@ -206,6 +206,36 @@ cargo test --workspace
 
 ## Notable subsystems
 
+- **Dependency graphs** (`src/deps/`, `codegraph deps list|status|record|build|gc|show`):
+  one read-only codegraph *shard* per dependency **version**, shared by every
+  project pinning it, under `codegraph_home()/deps/<crates|npm|go>/<name>-<version>/`
+  (`codegraph.db` + `meta.json`; git sources key as `<ver>+git.<rev12>`, Go
+  paths case-escaped `!x`, `/`→`+`). Other passes may drop per-package *files*
+  beside the shard dirs (`deps/crates/<name>-<ver>.api`) — never delete or
+  rewrite them; `gc` only removes directories holding a `meta.json`. Pipeline:
+  `lockfile/` (Cargo.lock, package-lock v1–3, pnpm 5/6/9, bun.lock, yarn,
+  go.mod[+go.sum]) → `locate/` (`$CARGO_HOME` registry/git checkouts, project
+  `vendor/`, `node_modules` only when the installed version matches,
+  `$GOMODCACHE`; never the network; not found = `unavailable`, not an error;
+  path deps are recorded as `path` for the atlas, never built) → `scope.rs`
+  (library sources only; file/source-byte budgets, then time and DB-size
+  budgets enforced during extraction → `partial`, never a failure; generated
+  bindings like windows-sys stop at ~64 MiB) → `shard/` (built through
+  `CodeGraph::init_detached` + `index_file_list`: DB and lock live in the
+  shard, the source tree is only read; built in a `.tmp-` sibling, VACUUMed to
+  one rollback-journal file, renamed into place; one `flock` per shard;
+  rebuilt lazily when `EXTRACTION_VERSION`/schema/source fingerprint change).
+  `ShardHandle`/`deps::shard_for` open `mode=ro&immutable=1` and must never
+  create a file. `deps/registry.db` (0600, WAL, `PRAGMA user_version`) keys
+  projects by **canonical checkout root** (the atlas's key). The only trigger
+  is the `index`/`init`/`sync` CLI commands: `deps::trigger::after_project_indexed`
+  records the lockfiles (skipped when their fingerprint is unchanged; a
+  project without lockfiles writes nothing) and, if shards are pending, spawns
+  ONE detached `codegraph deps build --background` (global builder lock,
+  budget `CODEGRAPH_DEPS_BUDGET_MS`, default 5 min; it drains every
+  project's queue). Never from MCP or the prompt hook.
+  `CODEGRAPH_NO_BACKGROUND_SYNC=1` stops the spawn, `CODEGRAPH_DEPS=0`
+  the whole hook.
 - **Concurrency lint** (`analysis/src/concurrency.rs`, per-language rules in
   `concurrency_rules.rs`): flags lossy best-effort sends. Library-only since
   the vuln engine (its sole CLI surface) was deleted.

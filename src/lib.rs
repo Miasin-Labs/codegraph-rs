@@ -14,6 +14,7 @@ pub mod atlas;
 pub mod context;
 pub mod context_analysis;
 pub mod db;
+pub mod deps;
 pub mod diagnostics;
 pub mod directory;
 pub mod error;

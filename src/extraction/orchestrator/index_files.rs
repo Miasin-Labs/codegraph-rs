@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tokio_util::sync::CancellationToken;
 
 use super::parse::{
@@ -15,6 +17,7 @@ use super::progress::{FileStats, IndexResult, now_ms};
 use crate::error::{CodeGraphError, Result, log_warn};
 use crate::extraction::grammars::{
     detect_language_with_overrides,
+    init_grammars,
     is_file_level_only_language,
     is_language_supported,
 };
@@ -24,6 +27,37 @@ use crate::utils::validate_path_within_root;
 impl<'a> ExtractionOrchestrator<'a> {
     /// Index specific files.
     pub async fn index_files(&self, file_paths: &[String]) -> Result<IndexResult> {
+        let framework_names = self.ensure_detected_frameworks(None);
+        self.index_batches(file_paths, &framework_names, None).await
+    }
+
+    /// Index an explicit file list as a complete build of the root: the
+    /// list replaces the directory scan (frameworks are detected from it,
+    /// nothing else under the root is read), and `signal` stops the run
+    /// between batches. Files stored before the stop stay stored;
+    /// `files_discovered` is the whole list, so an early stop reads as a
+    /// partial index.
+    pub async fn index_file_list(
+        &self,
+        file_paths: &[String],
+        signal: Option<&AtomicBool>,
+    ) -> Result<IndexResult> {
+        init_grammars();
+        self.reset_detected_frameworks();
+        let framework_names = self.ensure_detected_frameworks(Some(file_paths));
+        let mut result = self
+            .index_batches(file_paths, &framework_names, signal)
+            .await?;
+        result.files_discovered = Some(file_paths.len());
+        Ok(result)
+    }
+
+    async fn index_batches(
+        &self,
+        file_paths: &[String],
+        framework_names: &[String],
+        signal: Option<&AtomicBool>,
+    ) -> Result<IndexResult> {
         let start_time = now_ms();
         let mut errors: Vec<ExtractionError> = Vec::new();
         let mut files_indexed = 0usize;
@@ -32,13 +66,15 @@ impl<'a> ExtractionOrchestrator<'a> {
         let mut total_nodes = 0usize;
         let mut total_edges = 0usize;
 
-        let framework_names = self.ensure_detected_frameworks(None);
         let cancellation = CancellationToken::new();
         for batch in file_paths.chunks(FILE_IO_BATCH_SIZE) {
+            if signal.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                break;
+            }
             let items = parse_batch(
                 &self.root_dir,
                 batch,
-                &framework_names,
+                framework_names,
                 &self.project_config,
                 &cancellation,
             )

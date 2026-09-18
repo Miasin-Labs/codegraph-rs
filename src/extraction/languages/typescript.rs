@@ -2,17 +2,30 @@
 //!
 //! Ported from `src/extraction/languages/typescript.ts`.
 
-use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
+use crate::extraction::tree_sitter_helpers::{
+    get_child_by_field,
+    get_node_text,
+    get_preceding_docstring,
+};
 use crate::extraction::tree_sitter_types::{
     ClassMemberKind,
+    ExtractorContext,
     ImportInfo,
     ImportOutcome,
     LanguageExtractor,
+    NodeExtra,
     SyntaxNode,
 };
-use crate::types::Visibility;
+use crate::types::{NodeKind, Visibility};
 
 pub struct TypescriptExtractor;
+
+/// A TypeScript declaration file (`.d.ts`, `.d.mts`, `.d.cts`).
+fn is_declaration_file(path: &str) -> bool {
+    [".d.ts", ".d.mts", ".d.cts"]
+        .iter()
+        .any(|ext| path.ends_with(ext))
+}
 
 /// TypeScript/ArkTS class fields are callable methods only when their value is
 /// an arrow/function expression (or a HOF wrapping one). Plain fields are
@@ -104,6 +117,30 @@ impl LanguageExtractor for TypescriptExtractor {
 
     fn classify_method_node(&self, node: SyntaxNode<'_>, _source: &str) -> ClassMemberKind {
         classify_ts_class_member(node)
+    }
+
+    /// Ambient function declarations (`export declare function f(): T;`,
+    /// functions inside `declare module`/`namespace` blocks) are all a
+    /// declaration file says about a function — its API. In a `.ts` source
+    /// the same `function_signature` node is an overload whose
+    /// implementation follows, so it becomes a node only in `.d.ts` files.
+    fn visit_node(&self, node: SyntaxNode<'_>, ctx: &mut dyn ExtractorContext) -> bool {
+        if node.kind() != "function_signature" || !is_declaration_file(ctx.file_path()) {
+            return false;
+        }
+        let Some(name_node) = get_child_by_field(node, "name") else {
+            return false;
+        };
+        let name = get_node_text(name_node, ctx.source()).to_string();
+        let extra = NodeExtra {
+            docstring: get_preceding_docstring(node, ctx.source()),
+            signature: self.get_signature(node, ctx.source()),
+            return_type: self.get_return_type(node, ctx.source()),
+            is_exported: self.is_exported(node, ctx.source()),
+            ..NodeExtra::default()
+        };
+        ctx.create_node(NodeKind::Function, &name, node, extra);
+        true
     }
 
     fn resolve_body<'t>(&self, node: SyntaxNode<'t>, body_field: &str) -> Option<SyntaxNode<'t>> {
@@ -351,5 +388,54 @@ mod tests {
             .filter(|n| n.kind == NodeKind::Property)
             .count();
         assert_eq!(property_count, 1, "expected 1 interface property");
+    }
+
+    #[test]
+    fn declaration_files_index_ambient_function_signatures() {
+        let source = "export declare function connect(url: string): Client;\n\
+                      declare function globalHelper(): void;\n\
+                      declare module \"plugin\" {\n  export function register(name: string): boolean;\n}\n";
+        let functions = |path: &str| {
+            TreeSitterExtractor::new(
+                path,
+                source,
+                Some(Language::Typescript),
+                Some(&TypescriptExtractor),
+            )
+            .extract()
+            .nodes
+            .into_iter()
+            .filter(|n| n.kind == NodeKind::Function)
+            .collect::<Vec<_>>()
+        };
+        let declared = functions("types/index.d.ts");
+        let names: Vec<&str> = declared.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["connect", "globalHelper", "register"]);
+        let connect = &declared[0];
+        assert_eq!(connect.is_exported, Some(true));
+        assert_eq!(connect.return_type.as_deref(), Some("Client"));
+        assert_eq!(connect.signature.as_deref(), Some("(url: string): Client"));
+        assert_eq!(declared[1].is_exported, Some(false));
+
+        // In a source file the same syntax is an overload signature: the
+        // implementation is the function.
+        let overloads =
+            "export function f(a: string): string;\nexport function f(a: any) { return a; }\n";
+        let nodes = TreeSitterExtractor::new(
+            "src/f.ts",
+            overloads,
+            Some(Language::Typescript),
+            Some(&TypescriptExtractor),
+        )
+        .extract()
+        .nodes;
+        assert_eq!(
+            nodes
+                .iter()
+                .filter(|n| n.kind == NodeKind::Function)
+                .count(),
+            1
+        );
+        assert!(functions("src/decl.ts").is_empty());
     }
 }

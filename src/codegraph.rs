@@ -362,6 +362,16 @@ impl CodeGraph {
         queries: Rc<QueryBuilder>,
         project_root: PathBuf,
     ) -> Result<CodeGraph> {
+        let lock_path = get_codegraph_dir(&project_root).join("codegraph.lock");
+        Self::build_with_lock(db, queries, project_root, lock_path)
+    }
+
+    fn build_with_lock(
+        db: DatabaseConnection,
+        queries: Rc<QueryBuilder>,
+        project_root: PathBuf,
+        lock_path: PathBuf,
+    ) -> Result<CodeGraph> {
         let resolver = create_resolver(
             project_root.to_string_lossy().to_string(),
             QueryBuilder::new(db.get_db()?),
@@ -373,7 +383,7 @@ impl CodeGraph {
             Rc::clone(&queries),
             GraphTraverser::new(Rc::clone(&queries)),
         );
-        let file_lock = FileLock::new(get_codegraph_dir(&project_root).join("codegraph.lock"));
+        let file_lock = FileLock::new(lock_path);
         Ok(CodeGraph {
             db: RefCell::new(db),
             queries,
@@ -537,6 +547,45 @@ impl CodeGraph {
         Self::build(db, queries, resolved_root)
     }
 
+    /// Create an empty *detached* index: a graph of the tree at
+    /// `source_root` whose database and write lock live in `data_dir`
+    /// instead of `<source_root>/.codegraph/`. For source trees that must
+    /// never be written into — shared dependency sources such as
+    /// `~/.cargo/registry/src` or a project's `node_modules` — the tree is
+    /// only ever read, and node file paths stay relative to `source_root`.
+    /// Fails when `data_dir` already holds an index.
+    pub fn init_detached(
+        source_root: impl AsRef<Path>,
+        data_dir: impl AsRef<Path>,
+    ) -> Result<CodeGraph> {
+        let source_root = resolve_root(source_root.as_ref());
+        let data_dir = resolve_root(data_dir.as_ref());
+        let db_path = data_dir.join(crate::db::DATABASE_FILENAME);
+        if db_path.exists() {
+            return Err(CodeGraphError::other(format!(
+                "A detached index already exists in {}",
+                data_dir.display()
+            )));
+        }
+        std::fs::create_dir_all(&data_dir)?;
+        let db = DatabaseConnection::initialize(&db_path)?;
+        let queries = Rc::new(QueryBuilder::new(db.get_db()?));
+        Self::build_with_lock(db, queries, source_root, data_dir.join("codegraph.lock"))
+    }
+
+    /// Open a detached index made by [`Self::init_detached`] for writing.
+    pub fn open_detached(
+        source_root: impl AsRef<Path>,
+        data_dir: impl AsRef<Path>,
+    ) -> Result<CodeGraph> {
+        init_grammars();
+        let source_root = resolve_root(source_root.as_ref());
+        let data_dir = resolve_root(data_dir.as_ref());
+        let db = DatabaseConnection::open(data_dir.join(crate::db::DATABASE_FILENAME))?;
+        let queries = Rc::new(QueryBuilder::new(db.get_db()?));
+        Self::build_with_lock(db, queries, source_root, data_dir.join("codegraph.lock"))
+    }
+
     /// Check if a directory has been initialized as a CodeGraph project.
     pub fn is_initialized(project_root: impl AsRef<Path>) -> bool {
         is_initialized(&resolve_root(project_root.as_ref()))
@@ -675,7 +724,7 @@ impl CodeGraph {
     async fn index_all_locked(&self, options: &IndexOptions<'_>) -> Result<IndexResult> {
         let before = self.queries.get_node_and_edge_count()?;
         let orchestrator = self.orchestrator();
-        let mut result = orchestrator
+        let result = orchestrator
             .index_all(options.on_progress, options.signal, options.verbose)
             .await?;
         let reconcile_removed = if result.success {
@@ -684,7 +733,61 @@ impl CodeGraph {
             0
         };
         let touched = result.success && (result.files_indexed > 0 || reconcile_removed > 0);
+        self.finish_full_index(result, touched, before, options)
+            .await
+    }
 
+    /// Index exactly `files` (paths relative to the project root) as a full
+    /// build, in place of the directory scan [`Self::index_all`] runs: the
+    /// caller decides what belongs in the graph — e.g. a dependency's
+    /// library sources, without its tests or generated bindings. Extraction
+    /// stops between batches once `options.signal` is set; what was stored
+    /// is still resolved, and the index state reads `partial`.
+    pub async fn index_file_list(
+        &self,
+        files: &[String],
+        options: &IndexOptions<'_>,
+    ) -> Result<IndexResult> {
+        let _guard = self.lock_index_mutex().await;
+        if self.file_lock.borrow_mut().acquire().is_err() {
+            return Ok(lock_failure_index_result());
+        }
+        let _ = self
+            .queries
+            .set_metadata("index_state", IndexState::Indexing.as_str());
+        let mut result = async {
+            let before = self.queries.get_node_and_edge_count()?;
+            let result = self
+                .orchestrator()
+                .index_file_list(files, options.signal)
+                .await?;
+            let touched = result.success && result.files_indexed > 0;
+            self.finish_full_index(result, touched, before, options)
+                .await
+        }
+        .await;
+        match result.as_mut() {
+            Ok(index_result) => self.finalize_full_index_metadata(index_result),
+            Err(_) => {
+                let _ = self
+                    .queries
+                    .set_metadata("index_state", IndexState::Failed.as_str());
+            }
+        }
+        self.file_lock.borrow_mut().release();
+        result
+    }
+
+    /// The whole-graph passes after a full extraction: framework
+    /// re-detection, post-extract finalization, reference resolution,
+    /// maintenance, and true node/edge totals.
+    async fn finish_full_index(
+        &self,
+        mut result: IndexResult,
+        touched: bool,
+        before: crate::db::NodeEdgeCount,
+        options: &IndexOptions<'_>,
+    ) -> Result<IndexResult> {
         // Re-detect frameworks now that the index is populated. The resolver
         // is constructed with createResolver() before any files exist, so
         // framework resolvers whose detect() consults the indexed file list
