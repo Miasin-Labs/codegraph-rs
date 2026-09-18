@@ -156,6 +156,15 @@ cargo test --workspace
   `COMMON_STD_METHOD_NAMES` (`name_matcher/std_methods.rs`) stays unresolved:
   every same-named project symbol is a guess. Unrelated edges there were the
   largest source of wrong call edges (9,041 on this repo).
+- **Rust call syntax decides what a call can run** (`name_matcher/rust_call.rs`):
+  a bare `f()` targets a function, tuple struct, const/static or enum variant,
+  never a method or field; a name bound locally (param, `let`, closure, match
+  arm) shadows project items; `Ok/Err/Some/None/drop/size_of…` stay std unless
+  the file defines or imports a project item of that name. Untyped and dropped
+  receivers are checked against `STD_METHOD_NAMES` (1,842 names generated from
+  rust-src by `tests/std_method_names.rs`; regenerate with
+  `CODEGRAPH_REGENERATE_STD_METHODS=1 cargo test --test std_method_names -- --ignored`
+  after a toolchain bump).
 - **Rust `recv.m()` resolves on the receiver's inferred type, `Type::m()` only
   on a project type named `Type`** (`name_matcher/rust_method.rs`, inference
   in `name_matcher/receiver/rust/`). A type the project doesn't define runs no
