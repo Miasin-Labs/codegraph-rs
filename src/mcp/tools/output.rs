@@ -456,6 +456,7 @@ pub(in crate::mcp::tools) fn search_output_schema() -> Value {
             "kind": { "const": "search" },
             "query": { "type": "string" },
             "queries": { "type": "array", "items": { "type": "string" } },
+            "projects": { "type": "array", "items": { "type": "string" } },
             "filterKind": { "type": "string" },
             "limit": { "type": "integer" },
             "total": { "type": "integer" },
@@ -713,7 +714,8 @@ fn search_hit_schema() -> Value {
             "node": node_summary_schema(),
             "score": { "type": "number" },
             "highlights": { "type": "array", "items": { "type": "string" } },
-            "matchedQuery": { "type": "string" }
+            "matchedQuery": { "type": "string" },
+            "project": { "type": "string" }
         },
         "required": ["node", "score"]
     })

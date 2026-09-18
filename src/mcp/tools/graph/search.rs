@@ -39,6 +39,9 @@ impl ToolHandler {
         &self,
         args: &Map<String, Value>,
     ) -> Result<ToolResult> {
+        if let Some(paths) = super::search_projects::project_paths(args) {
+            return self.handle_search_projects(args, paths);
+        }
         if let Some(queries) = batch_queries(args) {
             return self.handle_search_batch(args, queries);
         }

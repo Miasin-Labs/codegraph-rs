@@ -10,6 +10,7 @@ mod node_batch;
 mod paths;
 mod relevance;
 mod search;
+mod search_projects;
 mod symbols;
 mod synthesis;
 mod test_reach;

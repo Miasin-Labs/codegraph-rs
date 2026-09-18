@@ -99,3 +99,47 @@ async fn node_reads_several_symbols_in_one_call() {
     let text = result.text();
     assert!(text.contains("## `parseToken`") && text.contains("## `AuthService`"), "{text}");
 }
+
+/// One search spans several indexed projects; every hit names its project.
+#[tokio::test(flavor = "current_thread")]
+async fn search_spans_several_projects_in_one_call() {
+    let _env = env_read().await;
+    let first = TempDir::new().unwrap();
+    let second = TempDir::new().unwrap();
+    write(
+        &first.path().join("src/a.ts"),
+        "export function sharedHelper() { return 1; }\n",
+    );
+    write(
+        &second.path().join("src/b.ts"),
+        "export function sharedHelper() { return 2; }\nexport function onlyInSecond() {}\n",
+    );
+    for dir in [&first, &second] {
+        let cg = CodeGraph::init_sync(dir.path()).unwrap();
+        cg.index_all(&IndexOptions::default()).await.unwrap();
+        cg.close();
+    }
+    let handler = ToolHandler::new(Some(Rc::new(CodeGraph::open_sync(first.path()).unwrap())));
+
+    let first_path = first.path().to_string_lossy().to_string();
+    let second_path = second.path().to_string_lossy().to_string();
+    let result = handler.execute(
+        "codegraph_search",
+        &json!({ "query": "sharedHelper", "projectPaths": [first_path, second_path] }),
+    );
+    assert_ne!(result.is_error, Some(true), "search errored: {}", result.text());
+    let payload = result.structured_content.as_ref().expect("structured search");
+    assert!(
+        schema_matches(&tool_output_schema("codegraph_search"), payload),
+        "multi-project payload failed advertised schema: {payload}"
+    );
+    let projects: Vec<&str> = payload["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|hit| hit["project"].as_str())
+        .collect();
+    assert!(projects.contains(&first_path.as_str()), "{payload}");
+    assert!(projects.contains(&second_path.as_str()), "{payload}");
+    assert_eq!(payload["projects"].as_array().unwrap().len(), 2);
+}

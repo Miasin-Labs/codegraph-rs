@@ -54,6 +54,13 @@ pub(in crate::mcp::tools::registry) fn push_search_tool(out: &mut Vec<ToolDefini
             prop_default("number", "Maximum results (default: 10)", Value::from(10)),
         );
         props.insert("projectPath".into(), project_path_property());
+        props.insert(
+            "projectPaths".into(),
+            prop_array(
+                "Search several indexed projects in ONE call (up to 8 paths). Every hit is tagged \
+                 with its `project`. Use instead of repeating the call once per projectPath.",
+            ),
+        );
         out.push(ToolDefinition {
             name: "codegraph_search".into(),
             description: "Quick symbol search by name. Returns locations only (no code). Use codegraph_explore instead to get the actual source / understand an area in one call.".into(),

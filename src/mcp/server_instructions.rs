@@ -56,6 +56,8 @@ Ten core tools are available by default:
 
 Batch lookups: `codegraph_search` and `codegraph_node` take a `symbols` array
 for several names in one call — use it instead of a grep alternation `a|b|c`.
+`codegraph_search` also takes `projectPaths` to search several indexed projects
+at once, each hit tagged with its `project`.
 Re-reading a range already sent this session returns `alreadySent` instead of
 the source again.
 
