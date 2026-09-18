@@ -9,6 +9,7 @@ mod handlers;
 mod output;
 mod registry;
 mod schema;
+mod text;
 
 pub use context::{CallContext, ProgressEmitter, ToolHandler};
 pub use format::{

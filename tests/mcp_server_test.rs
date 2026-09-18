@@ -728,8 +728,9 @@ async fn daemon_proxy_drains_responses_after_client_stdin_closes() {
         message["id"] == 1
     });
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 11);
+    assert_eq!(tools.len(), 12);
     assert!(tools.iter().any(|tool| tool["name"] == "codegraph_explore"));
+    assert!(tools.iter().any(|tool| tool["name"] == "codegraph_grep"));
 }
 
 // =============================================================================

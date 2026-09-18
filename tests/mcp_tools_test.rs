@@ -15,3 +15,4 @@ include!("mcp_tools_test/generated.rs");
 include!("mcp_tools_test/batch.rs");
 include!("mcp_tools_test/insight.rs");
 include!("mcp_tools_test/diagnostics.rs");
+include!("mcp_tools_test/grep.rs");

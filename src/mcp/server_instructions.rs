@@ -41,10 +41,11 @@ calls; a grep/read exploration is dozens.
 
 ## Available tools
 
-Eleven core tools are available by default:
+Twelve core tools are available by default:
 
 - **`codegraph_explore`** — Primary context tool: natural-language question or symbol/file names → verbatim source + call paths + dependencies (Read-equivalent)
 - **`codegraph_search`** — Quick symbol lookup: name → locations/kinds/signatures (no source)
+- **`codegraph_grep`** — Text search over the indexed files: regex or literal → hits grouped by file, each on its enclosing symbol (use it instead of shell grep/rg)
 - **`codegraph_node`** — Get one symbol's definition: name → source/signature/location
 - **`codegraph_callers`** — Find who calls a symbol: name → list of callers
 - **`codegraph_callees`** — Find what a symbol calls: name → list of callees  
@@ -59,6 +60,14 @@ Batch lookups: `codegraph_search` and `codegraph_node` take a `symbols` array
 for several names in one call — use it instead of a grep alternation `a|b|c`.
 `codegraph_search` also takes `projectPaths` to search several indexed projects
 at once, each hit tagged with its `project`.
+
+Text that is not a symbol name — a log or error message, a string literal, part
+of a name, a regex, a TODO — goes to `codegraph_grep`, not shell grep/rg: it
+searches the indexed files as they are on disk now (one file, a directory, or
+a glob), returns the first `N: text` hits per file under the symbol each sits
+in with the rest counted, takes `after`/`before` for context and `mode`
+`count`/`files` for `-c`/`-l`, and leaves out hits already sent this session.
+Symbol names still go to `codegraph_search`.
 Re-reading a range already sent this session returns `alreadySent` instead of
 the source again.
 
@@ -72,7 +81,7 @@ environment variable — see project documentation.
 ## Anti-patterns
 
 - **Trust codegraph's results — don't re-verify them with grep.** They come from a full AST parse; re-checking with grep is slower, less accurate, and wastes context.
-- **Don't grep or Read first** to find or understand indexed code — ONE `codegraph_explore` returns the relevant symbols' source together in a single round-trip. Reach for raw `Read`/`Grep` only to confirm a specific detail codegraph didn't cover, or for what codegraph doesn't index (configs, docs).
+- **Don't grep or Read first** to find or understand indexed code — ONE `codegraph_explore` returns the relevant symbols' source together in a single round-trip. When you do need a text search in indexed code, use `codegraph_grep` rather than shell grep/rg. Reach for raw `Read`/`Grep` only to confirm a specific detail codegraph didn't cover, or for files codegraph doesn't index.
 - **Don't reconstruct a flow by hand** — name the endpoints in one `codegraph_explore` and it surfaces the path between them, dynamic-dispatch hops included.
 - **After editing, check the result's notices.** When something may make a result differ from the code on disk, the result says so: a JSON result carries a `notices` array (`{kind, message, files?, filesOmitted?}`, right after `kind`), and a plain-text result starts with one "⚠️ …" line per notice. No notices means none apply.
   - `stale_index` — the listed `files` changed after the last index sync (just edited and pending re-index, or drifted on disk — most common on `projectPath` projects, which have no live watcher). Codegraph never serves a possibly-mis-sliced body from such a file: any source it shows for one is the full CURRENT content (trust it as a Read); otherwise Read that file, and treat its line numbers and edges here as possibly shifted. Every file not listed is in sync, so still trust codegraph for the rest (`filesOmitted` counts changed files the list left out).
@@ -130,6 +139,7 @@ mod tests {
             "history",
             "tests",
             "diagnostics",
+            "grep",
         ] {
             assert!(
                 SERVER_INSTRUCTIONS.contains(&format!("**`codegraph_{tool}`**")),

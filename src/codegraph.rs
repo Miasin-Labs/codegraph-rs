@@ -82,6 +82,7 @@ use crate::types::{
     FileRecord,
     FindRelevantContextOptions,
     GraphStats,
+    Language,
     Node,
     NodeKind,
     NodeRef,
@@ -1382,6 +1383,12 @@ impl CodeGraph {
     /// Get all tracked files.
     pub fn get_files(&self) -> Result<Vec<FileRecord>> {
         self.queries.get_all_files()
+    }
+
+    /// Path and language of the tracked files at or under `prefix` (all of
+    /// them for an empty prefix), in path order.
+    pub fn get_file_languages_under(&self, prefix: &str) -> Result<Vec<(String, Language)>> {
+        self.queries.get_file_languages_under(prefix)
     }
 
     /// Build a generated-file predicate over a bounded candidate path set.

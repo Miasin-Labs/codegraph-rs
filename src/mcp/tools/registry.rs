@@ -8,6 +8,7 @@ mod insight;
 mod lookup;
 mod navigation;
 mod schema_builder;
+mod text;
 
 pub use catalog::tools;
 pub use filters::get_static_tools;

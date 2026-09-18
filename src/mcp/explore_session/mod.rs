@@ -7,6 +7,11 @@ use serde_json::Value;
 use crate::mcp::tools::ToolResult;
 use crate::utils::sha256_hex;
 
+mod grep;
+#[cfg(test)]
+pub(crate) use grep::GrepSentFile;
+pub(crate) use grep::{GREP_SESSION_ARG, GrepSent};
+
 pub(crate) const SESSION_ARG: &str = "_cgExploreSession";
 const MAX_PROJECTS: usize = 4;
 const MAX_CALLS: usize = 8;
@@ -61,6 +66,9 @@ pub(crate) struct ProjectState {
 #[derive(Default)]
 pub(crate) struct ExploreSessionState {
     projects: VecDeque<ProjectState>,
+    /// `codegraph_grep` hits sent per project, kept out of `projects` (see
+    /// [`grep`]), least recently used first.
+    grep: VecDeque<(PathBuf, GrepSent)>,
 }
 
 impl ExploreSessionState {
@@ -83,6 +91,33 @@ impl ExploreSessionState {
             })
     }
 
+    /// The grep hits this session already received for `project_root`.
+    pub(crate) fn grep_view_for(&self, project_root: &Path) -> GrepSent {
+        let key = project_key(project_root);
+        self.grep
+            .iter()
+            .find(|(root, _)| *root == key)
+            .map(|(_, sent)| sent.clone())
+            .unwrap_or_default()
+    }
+
+    fn record_grep(&mut self, project_root: &Path, payload: &Value) {
+        let key = project_key(project_root);
+        let mut sent = match self.grep.iter().position(|(root, _)| *root == key) {
+            Some(index) => self
+                .grep
+                .remove(index)
+                .map(|(_, sent)| sent)
+                .unwrap_or_default(),
+            None => GrepSent::default(),
+        };
+        sent.record(project_root, payload);
+        self.grep.push_back((key, sent));
+        while self.grep.len() > MAX_PROJECTS {
+            self.grep.pop_front();
+        }
+    }
+
     /// Record the source a delivered result carried. Pass the result as it
     /// went on the wire (after the MCP projection), so the ledger never holds
     /// lines the client did not receive.
@@ -95,6 +130,10 @@ impl ExploreSessionState {
         // (a definition's lines). Agents re-fetch the same ranges constantly,
         // so the ledger has to span tools, not just explore.
         let kind = payload.get("kind").and_then(Value::as_str);
+        if kind == Some("grep") {
+            self.record_grep(project_root, payload);
+            return;
+        }
         if !matches!(kind, Some("explore") | Some("file") | Some("node")) {
             return;
         }
@@ -151,7 +190,12 @@ pub(crate) fn served_ranges(prior: &ProjectState, path: &str, fingerprint: &str)
 
 pub(crate) fn file_fingerprint(root: &Path, relative: &str) -> Option<String> {
     let bytes = std::fs::read(root.join(relative)).ok()?;
-    Some(format!("{}:{}", bytes.len(), &sha256_hex(&bytes)[..16]))
+    Some(content_fingerprint(&bytes))
+}
+
+/// The fingerprint [`file_fingerprint`] gives a file with these contents.
+pub(crate) fn content_fingerprint(bytes: &[u8]) -> String {
+    format!("{}:{}", bytes.len(), &sha256_hex(bytes)[..16])
 }
 
 /// Whether `path`'s lines `start..=end` went out earlier in this session

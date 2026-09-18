@@ -17,6 +17,7 @@ const DEFAULT_MCP_TOOLS: &[&str] = &[
     "history",
     "tests",
     "diagnostics",
+    "grep",
 ];
 
 pub(in crate::mcp::tools) fn short_tool_name(name: &str) -> &str {

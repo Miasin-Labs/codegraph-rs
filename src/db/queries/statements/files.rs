@@ -4,7 +4,7 @@ use super::rows::{file_from_row, placeholders};
 use super::{QueryBuilder, SQLITE_PARAM_CHUNK_SIZE};
 use crate::error::Result;
 use crate::extraction::{GeneratedFilePredicate, GenerationStatus};
-use crate::types::FileRecord;
+use crate::types::{FileRecord, Language};
 
 impl QueryBuilder {
     // =========================================================================
@@ -142,6 +142,38 @@ impl QueryBuilder {
             Some(row) => Ok(Some(file_from_row(row)?)),
             None => Ok(None),
         }
+    }
+
+    /// Path and language of every tracked file at or under `prefix` (every
+    /// file when it is empty), in path order: a range scan on the primary
+    /// key that reads two columns, for callers that only need to know which
+    /// files exist (the text search walks 70K-file indexes with it).
+    pub fn get_file_languages_under(&self, prefix: &str) -> Result<Vec<(String, Language)>> {
+        let row = |row: &rusqlite::Row<'_>| {
+            let language: String = row.get(1)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                language.parse().unwrap_or(Language::Unknown),
+            ))
+        };
+        let conn = self.db.conn();
+        if prefix.is_empty() {
+            let mut stmt = conn.prepare_cached("SELECT path, language FROM files ORDER BY path")?;
+            let rows = stmt.query_map([], row)?;
+            return rows.map(|r| r.map_err(Into::into)).collect();
+        }
+        // `prefix/` <= path < `prefix0` is exactly the paths under the
+        // directory ('0' is the byte after '/').
+        let mut stmt = conn.prepare_cached(
+            "SELECT path, language FROM files
+             WHERE path = ?1 OR (path >= ?2 AND path < ?3)
+             ORDER BY path",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![prefix, format!("{prefix}/"), format!("{prefix}0")],
+            row,
+        )?;
+        rows.map(|r| r.map_err(Into::into)).collect()
     }
 
     /// Get all tracked files.

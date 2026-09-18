@@ -208,7 +208,7 @@ fn explore_evidence(response: &Value) -> HashSet<(String, u64, u64, String)> {
 }
 
 /// The default tool surface, in catalog order.
-const DEFAULT_TOOLS: [&str; 11] = [
+const DEFAULT_TOOLS: [&str; 12] = [
     "codegraph_search",
     "codegraph_callers",
     "codegraph_callees",
@@ -220,6 +220,7 @@ const DEFAULT_TOOLS: [&str; 11] = [
     "codegraph_history",
     "codegraph_tests",
     "codegraph_diagnostics",
+    "codegraph_grep",
 ];
 
 /// The annotation set a tool must carry (rmcp ToolAnnotations camelCase):
@@ -986,4 +987,96 @@ async fn pre_cancelled_context_short_circuits_tool_execution() {
     // "no project" error — NOT the cancellation marker).
     let res2 = handler.execute("codegraph_search", &json!({ "query": "anything" }));
     assert!(!res2.content[0].text.contains("Request cancelled"));
+}
+
+// =============================================================================
+// codegraph_grep and the per-connection session ledger
+// =============================================================================
+
+fn call_structured(server: &mut ServerProc, id: u64, name: &str, arguments: Value) -> Value {
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": { "name": name, "arguments": arguments }
+    }));
+    let response = wait_for_message(server, Duration::from_secs(20), |message| {
+        message["id"] == id
+    });
+    response["result"]["structuredContent"].clone()
+}
+
+/// Line numbers of a grep file row's `N: text` hit lines.
+fn hit_lines(file: &Value) -> Vec<u64> {
+    file["hits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|group| group["lines"].as_array().unwrap().clone())
+        .map(|line| {
+            let line = line.as_str().unwrap().to_string();
+            line.split_once(':').unwrap().0.parse().unwrap()
+        })
+        .collect()
+}
+
+/// `codegraph_grep` joins the session ledger: repeating a search leaves out
+/// the hits it already sent (listing their lines) and shows the next ones,
+/// lines a `node` read sent verbatim count too, and grep's one-line
+/// excerpts never make `node` treat those lines as already sent.
+#[tokio::test(flavor = "current_thread")]
+async fn grep_leaves_out_hits_the_session_already_received() {
+    let _guard = env_read().await;
+    let project = TempDir::new().unwrap();
+    let src = project.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let mut source =
+        String::from("export function audit(): string[] {\n  const out: string[] = [];\n");
+    for step in 0..6 {
+        source.push_str(&format!("  out.push('AUDIT_EVENT step {step}');\n"));
+    }
+    source.push_str("  return out;\n}\n");
+    std::fs::write(src.join("audit.ts"), &source).unwrap();
+    init_project(project.path()).await;
+    let mut server = spawn_server(project.path(), &["--no-watch"], true);
+    server.send(&initialize_msg(
+        Some(project.path()),
+        "2025-11-25",
+        json!({}),
+    ));
+    wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["id"] == 0
+    });
+    let search = json!({ "pattern": "AUDIT_EVENT", "maxPerFile": 2 });
+
+    let first = call_structured(&mut server, 1, "codegraph_grep", search.clone());
+    let file = &first["files"][0];
+    assert_eq!(file["count"], 6, "{first}");
+    assert_eq!(hit_lines(file), [3, 4]);
+    assert_eq!(file["hits"][0]["symbol"], "audit");
+    assert!(file.get("alreadySent").is_none());
+
+    let second = call_structured(&mut server, 2, "codegraph_grep", search.clone());
+    let file = &second["files"][0];
+    assert_eq!(hit_lines(file), [5, 6], "{second}");
+    assert_eq!(file["alreadySent"], json!([3, 4]));
+
+    // Grep's excerpts are not source: node still sends lines 3-4 in full.
+    let view = call_structured(
+        &mut server,
+        3,
+        "codegraph_node",
+        json!({ "file": "src/audit.ts", "offset": 3, "limit": 6 }),
+    );
+    assert!(view["source"].is_string(), "{view}");
+    assert!(view.get("alreadySent").is_none(), "{view}");
+
+    // Everything is now in the session: a third search sends no hit text.
+    let third = call_structured(&mut server, 4, "codegraph_grep", search);
+    let file = &third["files"][0];
+    assert!(hit_lines(file).is_empty(), "{third}");
+    assert_eq!(file["alreadySent"], json!([3, 4, 5, 6, 7, 8]));
+    assert_eq!(file["count"], 6);
+    assert!(
+        file.get("more").is_none(),
+        "the listed lines are all of them"
+    );
 }

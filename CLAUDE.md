@@ -51,23 +51,44 @@ cargo test --workspace
 
 - **MCP tools are extensible.** The old "frozen at 8 for TS wire parity" rule is
   **RETIRED (2026-06)** — the Rust server is the source of truth now, not a TS
-  mirror. **11 tools by default** (`DEFAULT_MCP_TOOLS` in
+  mirror. **12 tools by default** (`DEFAULT_MCP_TOOLS` in
   `registry/filters.rs`: `search, callers, callees, impact, node, explore,
-  status, files, history, tests, diagnostics`), listed on every project
+  status, files, history, tests, diagnostics, grep`), listed on every project
   regardless of size — there is no small-repo gating. `arch, xref, paths` are
   opt-in through the `CODEGRAPH_MCP_TOOLS` allowlist (comma-separated short
-  names), for 14 in all. `diagnostics` (`src/diagnostics/`) is the one tool
+  names), for 15 in all. `diagnostics` (`src/diagnostics/`) is the one tool
   that is not read-only: it runs `cargo check|clippy --offline` or the
   project's own `node_modules/.bin/tsc`, detached with output under
   `.codegraph/diagnostics/`, waits at most `wait` seconds, and a later call
-  picks up a run still going — never an unbounded block. Keep `server_instructions.rs` naming exactly the default set. The
+  picks up a run still going — never an unbounded block. `grep`
+  (`src/mcp/tools/text/`) is text search over the *indexed* files read fresh
+  from disk (so the indexer's ignore rules hold): Rust/ripgrep regex syntax
+  (grep's `\|` also alternates), `-i`/`-w`/`-F`, file/dir/glob scope, and
+  `mode` lines|count|files (`-c`/`-l`). Files are ranked (code > tests > docs
+  > generated; comment and `mod tests` lines last); hits go out the way
+  agents read them — `N: text` lines grouped under their innermost indexed
+  symbol, optional `before`/`after` context as verbatim `N- text` (snapping to
+  a definition at most twice the window) — with the file's `count` and
+  `more` for what was left out; config values (YAML/TOML/properties) are
+  withheld (bare `N`). It is bounded by a 3s deadline
+  (`CODEGRAPH_GREP_DEADLINE_MS`) and a 2 GiB byte budget
+  (`CODEGRAPH_GREP_MAX_BYTES`); a search that runs out returns `incomplete`
+  with a `nextCursor` that resumes at the first unsearched file (candidates
+  are path-ordered, so a page is always a searched prefix; a page past the
+  40-row cap re-searches the same range — with 4x the deadline, since it
+  already finished once — to rank it identically). Keep `server_instructions.rs` naming exactly the default set. The
   surface is shaped by mined agent behaviour (627k tool calls, 2026-09):
   `search`/`node` take a `symbols` batch (agents otherwise grep `a|b|c`),
   `search` takes `projectPaths` for several indexes in one call, and every
   tool that emits source (`LEDGER_TOOLS` in `service/execution.rs`: explore,
   node — file view AND symbol `code`) gets the per-connection ledger
   (`explore_session`) injected and records into it, so a re-read of
-  unchanged lines returns `alreadySent`. The service records the result
+  unchanged lines returns `alreadySent`. `grep` is a ledger tool too, but
+  its one-line (possibly clipped) hits are recorded apart
+  (`explore_session/grep.rs`, injected as `_cgGrepSession`): explore's
+  allocation treats any recorded range as the file being held, so grep must
+  never write into the source ranges. It reads both and lists hits the
+  session holds as `alreadySent` line numbers. The service records the result
   *after* the MCP projection (what actually went out), never a cancelled
   call's. A new source-emitting tool must join `LEDGER_TOOLS`, honour the
   ledger, and be understood by `explore_session::emissions`. Every structured

@@ -82,6 +82,7 @@ impl ToolHandler {
             "codegraph_history" => self.handle_history(args),
             "codegraph_tests" => self.handle_tests(args),
             "codegraph_diagnostics" => self.handle_diagnostics(args),
+            "codegraph_grep" => self.handle_grep(args),
             "codegraph_arch" => self.handle_arch(args),
             "codegraph_xref" => self.handle_xref(args),
             "codegraph_paths" => self.handle_paths(args),

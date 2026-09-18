@@ -8,12 +8,14 @@ use serde_json::Value;
 
 use super::CodeGraphService;
 use super::wire::{progress_channel, project_result, run_blocking, to_rmcp_result};
-use crate::mcp::explore_session::{SESSION_ARG, dedup_enabled};
+use crate::mcp::explore_session::{GREP_SESSION_ARG, SESSION_ARG, dedup_enabled};
 
 /// Tools whose results carry file source. They read the per-connection
 /// session ledger (so lines this conversation already holds are not sent
-/// again) and record what they sent into it.
-const LEDGER_TOOLS: &[&str] = &["codegraph_explore", "codegraph_node"];
+/// again) and record what they sent into it. `grep` sends single-line
+/// excerpts, which it records apart from the source ranges (see
+/// `explore_session::grep`).
+const LEDGER_TOOLS: &[&str] = &["codegraph_explore", "codegraph_node", "codegraph_grep"];
 
 impl CodeGraphService {
     pub(super) async fn execute_tool(
@@ -71,17 +73,31 @@ impl CodeGraphService {
             if let Some(root) = project_root.as_deref() {
                 if let Value::Object(args) = &mut arguments {
                     args.remove(SESSION_ARG);
-                    let view = self
-                        .inner
-                        .explore_session
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .view_for(std::path::Path::new(root));
+                    args.remove(GREP_SESSION_ARG);
+                    let (view, grep_view) = {
+                        let session = self
+                            .inner
+                            .explore_session
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        let root = std::path::Path::new(root);
+                        let grep_view =
+                            (name == "codegraph_grep").then(|| session.grep_view_for(root));
+                        (session.view_for(root), grep_view)
+                    };
                     args.insert(
                         SESSION_ARG.to_string(),
                         serde_json::to_value(view)
                             .map_err(|error| McpError::internal_error(error.to_string(), None))?,
                     );
+                    if let Some(grep_view) = grep_view {
+                        args.insert(
+                            GREP_SESSION_ARG.to_string(),
+                            serde_json::to_value(grep_view).map_err(|error| {
+                                McpError::internal_error(error.to_string(), None)
+                            })?,
+                        );
+                    }
                 }
             }
         }
