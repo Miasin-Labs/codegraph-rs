@@ -1,0 +1,37 @@
+flowchart LR
+  I1["what is in this directory?"]:::intent
+  I2["where is the file named / ending in X?"]:::intent
+  C1["ls [-la] #lt;dir#gt; (45.8% of discovery; -la 39.6%, bare 49.1%)"]:::cmd
+  C2["find #lt;dir#gt; -name '*.ext' -type f (27.7%; -name '*.ext' 40.0%, exact 19.4%, '*substr*' 17.3%)"]:::cmd
+  C3["glob tool '**/*substr*', 'dir/**/*.ext', '**/Name.ext' (24.3%)"]:::cmd
+  PP["#124; head -N (find 15.8%, ls 14.3% of chains; N = 20, 10, 30); #124; grep name filter; #124; wc -l"]:::post
+  O1["bare names (24.2%)"]:::out
+  O2["absolute paths (18.3%) / relative (6.4%)"]:::out
+  O3["tool list 'Found N files' + paths (16.2%)"]:::out
+  O4["ls -l long listing (13.2%)"]:::out
+  O5["empty (13.3%)"]:::out
+  SAT["head saturated in 52.6% of head-limited finds"]:::post
+  N1["after saturation: find again 36.0%, read 25.2%, search 20.2%"]:::next
+  CG["codegraph_files {path, pattern(glob), maxDepth, cursor}: JSON dirs -#gt; {file: symbolCount}; no sizes / line counts, not a flat path list"]:::cg
+  I1 --> C1
+  I2 --> C2
+  I2 --> C3
+  C1 --> O1
+  C1 --> O4
+  C2 --> O2
+  C3 --> O3
+  C2 --> PP
+  C1 --> PP
+  PP --> SAT
+  SAT --> N1
+  C2 --> O5
+  C3 --> O5
+  I1 -.->|"overlap"| CG
+
+  classDef intent fill:#eef2fb,stroke:#3a5a9a,color:#111
+  classDef cmd fill:#f3eefb,stroke:#6a3a9a,color:#111
+  classDef out fill:#e8f4f6,stroke:#2a6f7f,color:#111
+  classDef post fill:#fff6d9,stroke:#9a7b12,color:#111
+  classDef next fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef cg fill:#fbeee6,stroke:#a8501e,color:#111
+  classDef gap fill:#fbe3e1,stroke:#b3261e,color:#111

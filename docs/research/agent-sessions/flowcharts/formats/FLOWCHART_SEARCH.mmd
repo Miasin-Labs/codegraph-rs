@@ -1,0 +1,46 @@
+flowchart LR
+  I1["symbol lookup: identifier / alternation / definition hunt (56.1% of patterns)"]:::intent
+  I2["text / regex / mixed alternation (43.7% of patterns)"]:::intent
+  C1["grep -n / -rn [--include=*.ext]  (grep 58.8% of searches; -n 64.9%, -r 28.4%, --include 14.2%, -A 13.4%)"]:::cmd
+  C2["rg -n [-g glob]  (9.8%; -n 79.0%)"]:::cmd
+  C3["opencode grep tool {pattern, include, path}  (31.1%)"]:::cmd
+  P["pattern: 59.1% alternations (2-4 alternatives typical); scope: one file 58.6%, one dir 20.7%"]:::cmd
+  O1["line:text, single file (13.9%)"]:::out
+  O2["opencode grouped: path header + 'N: text' (24.0%)"]:::out
+  O3["path:line:text (6.7%)"]:::out
+  O4["sections of a compound command (27.0%)"]:::out
+  O5["empty (12.2%)"]:::out
+  PP["#124; head -N on 58.6% of shell greps (N = 20, 10, 30); #124; grep / grep -v filter 8.6%; 2#gt;/dev/null on 16.0% of shell greps"]:::post
+  SAT["head saturated in 29.9% of head-limited searches"]:::post
+  N1["next: search again (44.4%) - 6,179 re-requests within 3 calls: pattern edited 55.8%, identical 19.9%, rescoped 10.6%"]:::next
+  N2["next: read (34.6%) - window holds the hit 75.9%: 9 lines above, 26 below (p50), 80-line window"]:::next
+  CG["codegraph: search{symbols} = definitions only (JSON, no line text); codegraph_grep (in progress) for text"]:::cg
+  I1 --> C1
+  I1 --> C3
+  I2 --> C2
+  I2 --> C1
+  C1 --> P
+  C2 --> P
+  C3 --> P
+  P --> O1
+  P --> O2
+  P --> O3
+  P --> O4
+  P --> O5
+  O1 --> PP
+  O3 --> PP
+  PP --> SAT
+  SAT --> N1
+  O1 --> N2
+  O2 --> N2
+  O3 --> N2
+  O5 --> N1
+  I1 -.->|"overlap"| CG
+
+  classDef intent fill:#eef2fb,stroke:#3a5a9a,color:#111
+  classDef cmd fill:#f3eefb,stroke:#6a3a9a,color:#111
+  classDef out fill:#e8f4f6,stroke:#2a6f7f,color:#111
+  classDef post fill:#fff6d9,stroke:#9a7b12,color:#111
+  classDef next fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef cg fill:#fbeee6,stroke:#a8501e,color:#111
+  classDef gap fill:#fbe3e1,stroke:#b3261e,color:#111

@@ -1,0 +1,31 @@
+flowchart LR
+  I1["did it compile / do tests pass?"]:::intent
+  C1["cargo test -p pkg filter (35.5%), check (12.1%), clippy (10.4%), fmt (9.9%), bun/npm/pytest"]:::cmd
+  R1["2#gt;#amp;1 on 92.6% of redirected runs; cd dir #amp;#amp; 23.3%; -p pkg 43.4%"]:::cmd
+  PP1["#124; tail -N (21.0%; N = 5, 20, 3, 30)"]:::post
+  PP2["#124; grep -E 'error#124;warning#124;test result' [#124; head] (15.0%)"]:::post
+  PP3["unfiltered (54.3%)"]:::post
+  O1["filtered output: p50 6 lines, p90 39"]:::out
+  O2["unfiltered output: p50 7 lines, p90 144, p99 896"]:::out
+  N1["re-run with a different filter when the tail cut the error (consumption study: 886 identical re-runs, 87% after a self-filtered run)"]:::next
+  CG["codegraph_diagnostics: cargo check / clippy / tsc grouped by file with enclosing symbol"]:::cg
+  GAP["missing: test-run digest {passed, failed, first failure file:line + message}"]:::gap
+  I1 --> C1
+  C1 --> R1
+  R1 --> PP1
+  R1 --> PP2
+  R1 --> PP3
+  PP1 --> O1
+  PP2 --> O1
+  PP3 --> O2
+  O1 --> N1
+  C1 -.->|"check/clippy only"| CG
+  CG -.-> GAP
+
+  classDef intent fill:#eef2fb,stroke:#3a5a9a,color:#111
+  classDef cmd fill:#f3eefb,stroke:#6a3a9a,color:#111
+  classDef out fill:#e8f4f6,stroke:#2a6f7f,color:#111
+  classDef post fill:#fff6d9,stroke:#9a7b12,color:#111
+  classDef next fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef cg fill:#fbeee6,stroke:#a8501e,color:#111
+  classDef gap fill:#fbe3e1,stroke:#b3261e,color:#111

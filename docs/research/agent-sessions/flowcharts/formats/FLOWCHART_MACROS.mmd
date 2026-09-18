@@ -1,0 +1,33 @@
+flowchart TD
+  A["shell commands: 263,702; compound (2+ statements): 40.5% (Claude Code 70.8%, opencode 33.1%)"]:::intent
+  B1["cd dir #amp;#amp; ... (42.1% of compound)"]:::cmd
+  B2["echo '=== label ===' between sections (30.1%)"]:::cmd
+  B3["2+ greps in one call (8.8%)"]:::cmd
+  B4["grep + sed -n window (6.8%)"]:::cmd
+  B5["2+ file windows (6.8%)"]:::cmd
+  B6["build #124; filter (15.8%)"]:::cmd
+  B7["for f in ...; do echo header; read; done (4.1%)"]:::cmd
+  T["top navigation shapes: CD #amp;#amp; SEARCH#124;head 7.2%; CD #amp;#amp; READ:sed-n 4.8%; CD #amp;#amp; SEARCH 4.0%; SEARCH#124;head x2  +SEP 1.5%; FIND:ls #124;#124; ECHO 0.9%; CD ; READ:sed-n 0.8%"]:::out
+  O["output = labelled sections concatenated (p50 1106 B, p90 4797 B)"]:::out
+  CG["codegraph: symbols[] batch on search/node only - no mixed batch, no section headers"]:::gap
+  A --> B1
+  A --> B2
+  A --> B3
+  A --> B4
+  A --> B5
+  A --> B6
+  A --> B7
+  B2 --> T
+  B3 --> T
+  B4 --> T
+  B5 --> T
+  T --> O
+  O -.-> CG
+
+  classDef intent fill:#eef2fb,stroke:#3a5a9a,color:#111
+  classDef cmd fill:#f3eefb,stroke:#6a3a9a,color:#111
+  classDef out fill:#e8f4f6,stroke:#2a6f7f,color:#111
+  classDef post fill:#fff6d9,stroke:#9a7b12,color:#111
+  classDef next fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef cg fill:#fbeee6,stroke:#a8501e,color:#111
+  classDef gap fill:#fbe3e1,stroke:#b3261e,color:#111

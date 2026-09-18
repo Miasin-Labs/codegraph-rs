@@ -4,6 +4,9 @@ Research, 2026-09-17. Goal: tooling that genuinely saves coding agents tokens
 and time, grounded in what agents on this machine actually did — not in what we
 assume they need.
 
+- **Formats:** [FORMATS.md](FORMATS.md) — the commands agents write, what
+  comes back, the output formats they invent for themselves, and what codegraph
+  returns today.
 - **Diagrams:** [FLOWCHART.md](FLOWCHART.md) (the recurring patterns, rendered
   inline), [FLOWCHART.mmd](FLOWCHART.mmd) (the core loop),
   [TARGET.mmd](TARGET.mmd) (request → minimal answer → codegraph status), and
@@ -25,6 +28,7 @@ assume they need.
 | **consumption** | how much of each tool's output is ever used; what is the minimal sufficient answer? | 228,742 calls with outputs, 2,420 sessions |
 | **replay** | can codegraph answer the same episodes, cheaper, with the same files? | 168 episodes, 15 projects, 12 models |
 | **timeline** | how does behaviour change over time; how much is re-discovered across sessions? | 767,820 calls, 2026-02-14 → 09-18 |
+| **formats** | what shapes do agents write, get back, and build for themselves? | 263,702 parsed shell commands, 58k self-written Python/bash programs, 177k outputs |
 | **failures** | where do agents go wrong, and could structure have prevented it? | 240 hand-labelled corrections from a 40k flagged corpus; build/edit error signals from 630k tool results |
 
 ## Findings
@@ -81,7 +85,14 @@ assume they need.
    Build logs show the same class at scale: 1,792 builds failed on a symbol
    that doesn't exist (E0425/E0599/E0432/E0433/TS2339) and 528 edits failed
    because the file had changed underneath.
-8. **The harness mattered more than any codegraph release.** Graph usage
+8. **Models rebuild the same output format by hand.** Their own navigation
+   code prints numbered lines (`{n}: {text}` is the top skeleton), `=== label
+   ===` sections and `label: count` lines; every harness read tool numbers
+   lines. Codegraph sends source as one JSON-escaped string with a start line,
+   so edits take 90% of their anchor text from plain reads and 3.2% from
+   codegraph. 59% of search patterns are alternations, 58.6% of greps target
+   one file, 58.6% end in `| head -N` — and 30% of those are silently cut.
+9. **The harness mattered more than any codegraph release.** Graph usage
    tracked which agent app was in use (opencode/JFC with codegraph wired vs
    prime-agent without it, Claude Code grepping through Bash), not feature
    landings.
@@ -100,7 +111,9 @@ assume they need.
 | 8 | Reach: upgrade old-schema indexes in the background; index reference clones on demand | 4,165 sessions unreplayable; 42% of navigation outside the root | gap |
 | 9 | Precision of edges agents rely on (callers of non-callables → xref; enum type refs; receiver-typed Rust methods) | `callers` found 7/36 referencing files | receiver-typed Rust methods shipped (1,452 guessed std-method edges → 0; name-similarity `Type::m` 1,459 → 0; partial qualified matches need a name boundary); non-callables → xref and enum type refs still a gap |
 | 10 | Dependency-API lookup (the pinned version's signatures) and a stale-edit guard (fingerprint check before an edit is built on a read) | 5 + 4 of 83 labelled failures; 1,792 unknown-symbol builds; 528 stale edits | gap |
-| 11 | Big-repo latency: stream or return partial results within a deadline | explore 41–92 s on the two largest indexes (3.9–4.5 GB); 46 historical timeouts | gap |
+| 11 | Source as numbered lines (`N⇥text`, Read-compatible) in what the model reads; hit-anchored windows (enclosing symbol, else hit−9…hit+26); one output format family; labelled multi-probe batches | formats study: numbered lines are the models' own top format; 27% of reads come back unnumbered; 3.2% of edit anchors come from codegraph | gap |
+| 12 | Test-run digest (counts + failures with `file:line` and a short snippet) | `cargo test` is 36% of build calls; passing runs are 89% noise | gap |
+| 13 | Big-repo latency: stream or return partial results within a deadline | explore 41–92 s on the two largest indexes (3.9–4.5 GB); 46 historical timeouts | gap |
 
 ## Caveats
 

@@ -1,0 +1,35 @@
+flowchart LR
+  I1["understand code around a hit / a symbol"]:::intent
+  I2["check a file before editing"]:::intent
+  C1["Read tool {offset, limit}: offset+limit 56.0%, whole file 30.6% (opencode); limit round x10 87%"]:::cmd
+  C2["sed -n 'a,bp' f (20,159 calls; start on x0/x1 62%)"]:::cmd
+  C3["cat f / head -N / tail -N / wc -l probe / awk 'NR#gt;=a' / cat -n"]:::cmd
+  O1["'N: text' wrapped in #lt;path#gt;#lt;content#gt; (opencode read, 57.6%)"]:::out
+  O2["raw lines, no numbers (sed/cat/head, 27.4%)"]:::out
+  O3["'N#92;ttext' Claude Read / cat -n (5.8%) + 'N │ text' rtk (1.2%)"]:::out
+  SZ["size p50/p90 lines: Read 95/402, sed -n 78/194, cat 27/284"]:::post
+  N1["next read of same file within 4 calls: none 68.1%, jump down 13.9%, jump up 6.6%, page forward 5.9%"]:::next
+  CG["codegraph_node {file, offset, limit}: JSON with one escaped 'source' string + startLine; alreadySent ledger"]:::cg
+  GAP["wanted: per-line numbers, symbol-snapped window, 'N more lines' trailer"]:::gap
+  I1 --> C1
+  I1 --> C2
+  I2 --> C1
+  I2 --> C3
+  C1 --> O1
+  C1 --> O3
+  C2 --> O2
+  C3 --> O2
+  C3 --> O3
+  O1 --> SZ
+  O2 --> SZ
+  SZ --> N1
+  C1 -.->|"overlap"| CG
+  CG -.-> GAP
+
+  classDef intent fill:#eef2fb,stroke:#3a5a9a,color:#111
+  classDef cmd fill:#f3eefb,stroke:#6a3a9a,color:#111
+  classDef out fill:#e8f4f6,stroke:#2a6f7f,color:#111
+  classDef post fill:#fff6d9,stroke:#9a7b12,color:#111
+  classDef next fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef cg fill:#fbeee6,stroke:#a8501e,color:#111
+  classDef gap fill:#fbe3e1,stroke:#b3261e,color:#111

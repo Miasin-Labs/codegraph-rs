@@ -1,0 +1,35 @@
+flowchart LR
+  I["prime-agent Python cells: 45,575; navigation 18,279 (40.1%)"]:::intent
+  K1["read file text: read_text/open 53.5%, splitlines 15.6%"]:::cmd
+  K2["shell out: bash()/sh()/shr() 45.5% -#gt; grep 17.3%, rg 9.8%, sed -n 8.8%"]:::cmd
+  K3["search in Python: re 8.2%, str.find 8.9%, rglob/os.walk 6.6%"]:::cmd
+  F1["print(text[a:b]) slice dumps (26.7% of nav cells; [a:b] = 20.6% of print slices)"]:::out
+  F2["print(h.output) shell passthrough (22.8%)"]:::out
+  F3["'=== label ===' headers (10.1%) and 'Label:' lines (6.5%)"]:::out
+  F4["numbered lines '{n}: {text}' (top f-string skeleton, 516x)"]:::out
+  F5["'w: {count}' / 'w: {v}' key-value counts (11.9%)"]:::out
+  OUT["what prints (line share): raw source 27.1%, prose 23.5%, numbered 11.3%, key: value 9.5%, table 5.3%, file:line 3.2%"]:::post
+  CG["codegraph gives JSON objects; the model builds numbered text, labelled sections and counts"]:::gap
+  I --> K1
+  I --> K2
+  I --> K3
+  K1 --> F1
+  K1 --> F4
+  K2 --> F2
+  K3 --> F4
+  K3 --> F5
+  K1 --> F3
+  F1 --> OUT
+  F2 --> OUT
+  F3 --> OUT
+  F4 --> OUT
+  F5 --> OUT
+  OUT -.-> CG
+
+  classDef intent fill:#eef2fb,stroke:#3a5a9a,color:#111
+  classDef cmd fill:#f3eefb,stroke:#6a3a9a,color:#111
+  classDef out fill:#e8f4f6,stroke:#2a6f7f,color:#111
+  classDef post fill:#fff6d9,stroke:#9a7b12,color:#111
+  classDef next fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef cg fill:#fbeee6,stroke:#a8501e,color:#111
+  classDef gap fill:#fbe3e1,stroke:#b3261e,color:#111

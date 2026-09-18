@@ -1,0 +1,32 @@
+flowchart LR
+  subgraph WANT["what the model asks for / writes for itself"]
+  W1["numbered lines 'N: text' (self-authored top skeleton; every harness read tool numbers lines)"]:::next
+  W2["occurrences as path:line:text, one file (58.6% of greps) or one dir, capped by head -20/-10/-30"]:::next
+  W3["context around a hit: ~9 lines above, ~26 below"]:::next
+  W4["labelled sections: '=== label ===' / 'Label:' between probes"]:::next
+  W5["counts first: 'w: {count}', grep -c, wc -l"]:::next
+  W6["flat path lists (find/ls/glob)"]:::next
+  end
+  subgraph GET["what comes back today"]
+  G1["shell: raw sed/cat lines with no numbers (27.4% of reads)"]:::out
+  G2["empty greps 12.2%; head-limited greps saturated 29.9%"]:::out
+  G3["codegraph node/explore: JSON, 'source' as one escaped string + startLine"]:::cg
+  G4["codegraph search: definitions only (name, kind, file, line, signature)"]:::cg
+  G5["codegraph callers/impact/tests: markdown lists; files: dir -#gt; symbolCount JSON"]:::cg
+  end
+  W1 -->|"no inline numbers"| G3
+  W1 -->|"sed -n drops them"| G1
+  W2 -->|"no usage lines, no scope"| G4
+  W3 -->|"no hit-anchored window"| G3
+  W4 -->|"no mixed batch"| G5
+  W5 -->|"no count mode"| G4
+  W6 -->|"symbol counts, not paths/sizes"| G5
+  W2 -->|"re-query"| G2
+
+  classDef intent fill:#eef2fb,stroke:#3a5a9a,color:#111
+  classDef cmd fill:#f3eefb,stroke:#6a3a9a,color:#111
+  classDef out fill:#e8f4f6,stroke:#2a6f7f,color:#111
+  classDef post fill:#fff6d9,stroke:#9a7b12,color:#111
+  classDef next fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef cg fill:#fbeee6,stroke:#a8501e,color:#111
+  classDef gap fill:#fbe3e1,stroke:#b3261e,color:#111
