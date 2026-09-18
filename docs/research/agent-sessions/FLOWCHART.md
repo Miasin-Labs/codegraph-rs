@@ -160,8 +160,8 @@ flowchart LR
   classDef shipped fill:#e3f4e1,stroke:#2f7d32,color:#111
   classDef flight fill:#fff6d9,stroke:#9a7b12,color:#111
   classDef gap fill:#fbe3e1,stroke:#b3261e,color:#111
-  class T1,T3,T4,T6,T7,T8 shipped
-  class T2,T5,T9,T10 gap
+  class T1,T3,T4,T6,T7,T8,T9 shipped
+  class T2,T5,T10 gap
 ```
 
 ## 7. Where agents go wrong
