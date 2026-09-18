@@ -14,7 +14,7 @@
 //! `Self` becomes the enclosing impl type of the referencing method.
 
 use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
-use crate::types::{Language, Node};
+use crate::types::{EdgeKind, Language, Node, NodeKind};
 
 /// Where a file sits: which crate, and the module path inside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,9 +201,20 @@ fn resolve_module_path(
     }
     let (&item, prefix) = rest.split_last()?;
     let candidates = context.get_nodes_by_name(item);
+    // Namespace filter: a call targets a value, so modules, imports, and file
+    // nodes sharing the name are not candidates (they made `crate::…::tools`
+    // look ambiguous next to the `tools` fn).
+    let calls = reference.reference_kind == EdgeKind::Calls;
     let rust: Vec<&Node> = candidates
         .iter()
         .filter(|node| node.language == Language::Rust)
+        .filter(|node| {
+            !calls
+                || !matches!(
+                    node.kind,
+                    NodeKind::Module | NodeKind::Import | NodeKind::File
+                )
+        })
         .collect();
     if rust.is_empty() {
         return None;

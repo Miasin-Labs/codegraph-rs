@@ -247,3 +247,44 @@ fn super_inside_an_inline_test_module_reaches_the_file_module() {
         "prod"
     );
 }
+
+#[test]
+fn calls_ignore_modules_and_imports_that_share_the_name() {
+    // `crate::mcp::tools::tools` next to a `tools` module and a `use` of it.
+    let ctx = Fixture::new(vec![
+        func("caller", "run", "run", "src/mcp/service.rs"),
+        node(
+            "tools-mod",
+            NodeKind::Module,
+            "tools",
+            "tools",
+            "src/mcp/mod.rs",
+            Language::Rust,
+            1,
+            1,
+        ),
+        node(
+            "tools-use",
+            NodeKind::Import,
+            "tools",
+            "tools",
+            "src/mcp/tools/registry.rs",
+            Language::Rust,
+            1,
+            1,
+        ),
+        func(
+            "tools-fn",
+            "tools",
+            "tools",
+            "src/mcp/tools/registry/catalog.rs",
+        ),
+    ]);
+    let r = rust_ref("caller", "crate::mcp::tools::tools", "src/mcp/service.rs");
+    assert_eq!(
+        match_reference(&r, &ctx)
+            .expect("resolves to the fn")
+            .target_node_id,
+        "tools-fn"
+    );
+}

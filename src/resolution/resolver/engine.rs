@@ -6,7 +6,7 @@ use crate::resolution::types::{FrameworkResolver, ResolutionContext, ResolvedRef
 #[cfg(not(feature = "gpu"))]
 use crate::resolution::types::{ResolutionResult, ResolutionStats};
 use crate::resolution::{alias_binding, name_matcher};
-use crate::types::{EdgeKind, Language, Node};
+use crate::types::{EdgeKind, Language, Node, NodeKind};
 
 pub(super) trait ResolutionPolicy {
     fn is_built_in_or_external(&self, reference: &UnresolvedRef) -> bool;
@@ -46,6 +46,18 @@ where
     let Some(target) = context.get_node_by_id(&resolved.target_node_id) else {
         return Some(resolved);
     };
+    // A Rust call names a value (fn, method, constructor), never a module,
+    // import, or file — rustc resolves calls in the value namespace only.
+    // Without this, calls to local closures (`let probe = |s| …; probe(x)`)
+    // landed on unrelated modules that happened to share the name.
+    if reference.language == Language::Rust
+        && matches!(
+            target.kind,
+            NodeKind::Module | NodeKind::Import | NodeKind::File
+        )
+    {
+        return None;
+    }
 
     let member_name = reference
         .reference_name
