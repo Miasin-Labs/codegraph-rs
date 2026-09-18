@@ -46,6 +46,18 @@ impl ReferenceResolver {
                     "resolvedBy".to_string(),
                     serde_json::Value::String(resolved_ref.resolved_by.as_str().to_string()),
                 );
+                // Keep the reference as written when it was qualified
+                // (`FileLock::new`, `self.save`). If the target file is
+                // re-extracted, this edge is turned back into an unresolved
+                // reference; restoring the bare target name (`new`) made it
+                // re-resolve to whichever `new` ranked first.
+                let written = &resolved_ref.original.reference_name;
+                if written.contains("::") || written.contains('.') {
+                    metadata.insert(
+                        "referenceName".to_string(),
+                        serde_json::Value::String(written.clone()),
+                    );
+                }
 
                 Edge {
                     source: resolved_ref.original.from_node_id.clone(),

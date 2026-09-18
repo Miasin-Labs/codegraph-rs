@@ -15,6 +15,72 @@ pub(super) fn reference_kind_for_removed_target(edge_kind: EdgeKind) -> Option<E
     }
 }
 
+/// The name a restored reference is written under: the reference as it was
+/// originally written when the resolver kept it (`FileLock::new`), else the
+/// target's bare name. Re-resolving `FileLock::new` as `new` lands on an
+/// arbitrary same-named function.
+fn restored_reference_name(edge: &crate::types::Edge, target: &Node) -> String {
+    edge.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("referenceName"))
+        .and_then(|value| value.as_str())
+        .filter(|name| !name.is_empty())
+        .map_or_else(|| target.name.clone(), str::to_string)
+}
+
+/// Names that [`restore_unresolved_refs_for_removed_targets`] will write for
+/// these nodes. Sync re-resolves unresolved references by exact name, so it
+/// must know qualified restored names (`FileLock::new`), not just the bare
+/// node names, or those references are restored and then never retried.
+pub(super) fn restored_reference_names(
+    queries: &QueryBuilder,
+    removed_file_path: &str,
+    removed_nodes: &[Node],
+) -> Result<Vec<String>> {
+    let target_ids: Vec<String> = removed_nodes.iter().map(|n| n.id.clone()).collect();
+    if target_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let incoming = queries.get_incoming_edges_for_targets(&target_ids, None)?;
+    let target_by_id: HashMap<&str, &Node> = removed_nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect();
+    let source_ids: Vec<String> = incoming.iter().map(|edge| edge.source.clone()).collect();
+    let source_by_id = queries.get_nodes_by_ids(&source_ids)?;
+    let mut seen = HashSet::new();
+    let mut names = Vec::new();
+    for edge in &incoming {
+        if reference_kind_for_removed_target(edge.kind).is_none() {
+            continue;
+        }
+        let from_elsewhere = source_by_id
+            .get(&edge.source)
+            .is_some_and(|source| source.file_path != removed_file_path);
+        let Some(target) = target_by_id.get(edge.target.as_str()) else {
+            continue;
+        };
+        if from_elsewhere {
+            let name = restored_reference_name(edge, target);
+            if seen.insert(name.clone()) {
+                names.push(name);
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// The original reference's metadata (receiver hints and the like), which
+/// resolution copies onto the edge, minus the resolver's own bookkeeping.
+/// Restoring without it can leave a reference unresolvable the second time.
+fn reference_metadata(edge: &crate::types::Edge) -> Option<crate::types::Metadata> {
+    let mut metadata = edge.metadata.clone()?;
+    for key in ["confidence", "resolvedBy", "referenceName"] {
+        metadata.remove(key);
+    }
+    (!metadata.is_empty()).then_some(metadata)
+}
+
 pub(super) fn restore_unresolved_refs_for_removed_targets(
     queries: &QueryBuilder,
     removed_file_path: &str,
@@ -65,16 +131,17 @@ pub(super) fn restore_unresolved_refs_for_removed_targets(
         if !seen.insert(key) {
             continue;
         }
+        let reference_name = restored_reference_name(&edge, target);
         refs.push(UnresolvedReference {
             from_node_id: source.id.clone(),
-            reference_name: target.name.clone(),
+            reference_name,
             reference_kind,
             line,
             column,
             file_path: Some(source.file_path.clone()),
             language: Some(source.language),
             candidates: None,
-            metadata: None,
+            metadata: reference_metadata(&edge),
         });
     }
 

@@ -15,7 +15,7 @@ use super::progress::{
     emit,
     now_ms,
 };
-use super::reconcile::restore_unresolved_refs_for_removed_targets;
+use super::reconcile::{restore_unresolved_refs_for_removed_targets, restored_reference_names};
 use super::scan::scan_directory_with_config;
 use super::store::hash_content;
 use crate::db::QueryBuilder;
@@ -187,6 +187,11 @@ impl<'a> ExtractionOrchestrator<'a> {
                     changed_node_names.push(node.name.clone());
                 }
             }
+            for name in restored_reference_names(self.queries, file_path, &removed_nodes)? {
+                if changed_seen.insert(name.clone()) {
+                    changed_node_names.push(name);
+                }
+            }
             restore_unresolved_refs_for_removed_targets(self.queries, file_path, &removed_nodes)?;
             self.queries.delete_file(file_path)?;
         }
@@ -218,7 +223,15 @@ impl<'a> ExtractionOrchestrator<'a> {
         let mut before_files = HashMap::with_capacity(total);
         for file_path in &files_to_index {
             before_files.insert(file_path.clone(), self.queries.get_file_by_path(file_path)?);
-            for node in self.queries.get_nodes_by_file(file_path)? {
+            let existing_nodes = self.queries.get_nodes_by_file(file_path)?;
+            // Inbound references restored when this file is replaced must be
+            // retried under the names they are restored as.
+            for name in restored_reference_names(self.queries, file_path, &existing_nodes)? {
+                if changed_seen.insert(name.clone()) {
+                    changed_node_names.push(name);
+                }
+            }
+            for node in existing_nodes {
                 if changed_seen.insert(node.name.clone()) {
                     changed_node_names.push(node.name);
                 }
