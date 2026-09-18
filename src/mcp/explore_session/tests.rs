@@ -125,3 +125,32 @@ fn caps_ranges_by_retaining_the_largest_spans() {
             .any(|range| range.start == (MAX_RANGES + 4) * 100 + 1)
     );
 }
+
+#[test]
+fn records_node_file_views_so_other_tools_can_dedup() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("a.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    let mut state = ExploreSessionState::default();
+    let payload = json!({
+        "kind": "file",
+        "path": "a.rs",
+        "sourceChunks": [{ "startLine": 1, "endLine": 2, "source": "fn a() {}\nfn b() {}" }],
+    });
+    state.record(
+        root.path(),
+        &ToolResult {
+            content: vec![ToolContent {
+                content_type: "text".into(),
+                text: String::new(),
+            }],
+            structured_content: Some(payload),
+            meta: None,
+            is_error: None,
+        },
+    );
+    let view = state.view_for(root.path());
+    let fingerprint = file_fingerprint(root.path(), "a.rs").expect("fingerprint");
+    let served = served_ranges(&view, "a.rs", &fingerprint);
+    assert_eq!(served.len(), 1);
+    assert_eq!((served[0].start, served[0].end), (1, 2));
+}

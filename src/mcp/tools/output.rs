@@ -160,11 +160,26 @@ pub(in crate::mcp::tools) struct NodeFileMetadataOutput {
     pub dependents_omitted: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::mcp::tools) struct NodeFileRangeOutput {
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::mcp::tools) enum NodeFileContent {
     Source {
         chunks: Vec<NodeFileSourceChunkOutput>,
         source_truncated: bool,
+        total_lines: usize,
+        offset: usize,
+        limit: usize,
+    },
+    /// The requested window was already sent in this session and the file is
+    /// unchanged on disk, so the source is replaced by a back-reference.
+    AlreadySent {
+        ranges: Vec<NodeFileRangeOutput>,
         total_lines: usize,
         offset: usize,
         limit: usize,
@@ -188,6 +203,8 @@ pub(in crate::mcp::tools) struct NodeFileOutput {
     source_chunks: Vec<NodeFileSourceChunkOutput>,
     source_truncated: bool,
     values_withheld: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    already_sent: Vec<NodeFileRangeOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     total_lines: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -198,6 +215,7 @@ pub(in crate::mcp::tools) struct NodeFileOutput {
 
 impl NodeFileOutput {
     pub fn new(metadata: NodeFileMetadataOutput, content: NodeFileContent) -> Self {
+        let mut already_sent = Vec::new();
         let (source_chunks, source_truncated, values_withheld, total_lines, offset, limit) =
             match content {
                 NodeFileContent::Source {
@@ -214,6 +232,22 @@ impl NodeFileOutput {
                     Some(offset),
                     Some(limit),
                 ),
+                NodeFileContent::AlreadySent {
+                    ranges,
+                    total_lines,
+                    offset,
+                    limit,
+                } => {
+                    already_sent = ranges;
+                    (
+                        Vec::new(),
+                        false,
+                        false,
+                        Some(total_lines),
+                        Some(offset),
+                        Some(limit),
+                    )
+                }
                 NodeFileContent::SymbolsOnly => (Vec::new(), false, false, None, None, None),
                 NodeFileContent::ValuesWithheld => (Vec::new(), false, true, None, None, None),
             };
@@ -230,6 +264,7 @@ impl NodeFileOutput {
             source_chunks,
             source_truncated,
             values_withheld,
+            already_sent,
             total_lines,
             offset,
             limit,
@@ -436,11 +471,24 @@ fn node_file_output_schema() -> Value {
             "sourceChunks": { "type": "array", "items": node_file_source_chunk_schema() },
             "sourceTruncated": { "type": "boolean" },
             "valuesWithheld": { "type": "boolean" },
+            "alreadySent": { "type": "array", "items": node_file_range_schema() },
             "totalLines": { "type": "integer" },
             "offset": { "type": "integer" },
             "limit": { "type": "integer" }
         },
         "required": ["schemaVersion", "kind", "path", "language", "symbolCount", "symbols", "symbolsTruncated", "dependents", "dependentsOmitted", "sourceChunks", "sourceTruncated", "valuesWithheld"]
+    })
+}
+
+fn node_file_range_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "startLine": { "type": "integer" },
+            "endLine": { "type": "integer" }
+        },
+        "required": ["startLine", "endLine"]
     })
 }
 

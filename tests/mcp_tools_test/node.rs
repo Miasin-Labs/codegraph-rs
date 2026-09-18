@@ -236,3 +236,70 @@ async fn node_file_mode_symbols_only_payload_validates_against_advertised_schema
     assert_eq!(structured["valuesWithheld"], false);
     assert_eq!(structured["sourceTruncated"], false);
 }
+
+/// A second read of a range the session already holds must come back as a
+/// back-reference, not as the same source again.
+#[tokio::test(flavor = "current_thread")]
+async fn node_file_mode_skips_source_already_sent_this_session() {
+    let _env = env_read().await;
+    let schema = node_output_schema();
+    let dir = TempDir::new().unwrap();
+    let body = (0..60)
+        .map(|index| format!("export const value{index} = {index};"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    write(&dir.path().join("src/small.ts"), &body);
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    let handler = ToolHandler::new(Some(Rc::new(cg)));
+
+    let first = handler.execute("codegraph_node", &json!({ "file": "src/small.ts" }));
+    let first_payload = first.structured_content.as_ref().expect("first payload");
+    let start = first_payload["sourceChunks"][0]["startLine"].as_u64().unwrap();
+    let end = first_payload["sourceChunks"][0]["endLine"].as_u64().unwrap();
+    assert!(end >= start);
+
+    // The service injects this ledger on every call; build the same shape here.
+    let bytes = std::fs::read(dir.path().join("src/small.ts")).unwrap();
+    let fingerprint = format!(
+        "{}:{}",
+        bytes.len(),
+        &codegraph::utils::sha256_hex(&bytes)[..16]
+    );
+    let session = json!({
+        "projectRoot": dir.path().to_string_lossy(),
+        "callCount": 1,
+        "responseBytes": 1024,
+        "calls": [{
+            "index": 1,
+            "responseBytes": 1024,
+            "files": [{
+                "path": "src/small.ts",
+                "ranges": [{ "start": start, "end": end }],
+                "bytes": body.len(),
+                "fingerprint": fingerprint,
+            }],
+        }],
+    });
+
+    let second = handler.execute(
+        "codegraph_node",
+        &json!({ "file": "src/small.ts", "_cgExploreSession": session }),
+    );
+    assert_ne!(second.is_error, Some(true), "node errored: {}", second.text());
+    let payload = second.structured_content.as_ref().expect("second payload");
+    assert!(
+        schema_matches(&schema, payload),
+        "back-reference payload failed advertised schema: {payload}"
+    );
+    assert_eq!(payload["sourceChunks"].as_array().unwrap().len(), 0);
+    assert_eq!(payload["alreadySent"][0]["startLine"], start);
+    assert_eq!(payload["alreadySent"][0]["endLine"], end);
+    assert!(
+        second.text().contains("already sent"),
+        "no back-reference notice: {}",
+        second.text()
+    );
+    // Symbols still ride along, so the reply stays useful.
+    assert!(payload["symbolCount"].as_u64().unwrap() > 0);
+}

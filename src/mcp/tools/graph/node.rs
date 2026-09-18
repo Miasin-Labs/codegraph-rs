@@ -13,6 +13,7 @@ use super::super::output::{
     NodeFileContent,
     NodeFileMetadataOutput,
     NodeFileOutput,
+    NodeFileRangeOutput,
     NodeFileSourceChunkOutput,
     NodeFileSymbolOutput,
     NodeOutput,
@@ -62,7 +63,22 @@ impl ToolHandler {
 
         if symbol_raw.is_empty() {
             if let Some(file) = file_hint.as_deref() {
-                return self.handle_file_view(&cg, file, offset, limit, symbols_only);
+                let prior = args
+                    .get(crate::mcp::explore_session::SESSION_ARG)
+                    .and_then(|value| {
+                        serde_json::from_value::<crate::mcp::explore_session::ProjectState>(
+                            value.clone(),
+                        )
+                        .ok()
+                    });
+                return self.handle_file_view(
+                    &cg,
+                    file,
+                    offset,
+                    limit,
+                    symbols_only,
+                    prior.as_ref(),
+                );
             }
         }
 
@@ -271,6 +287,7 @@ impl ToolHandler {
         offset: Option<usize>,
         limit: Option<usize>,
         symbols_only: bool,
+        prior: Option<&crate::mcp::explore_session::ProjectState>,
     ) -> Result<ToolResult> {
         fn normalize(path: &str) -> String {
             path.replace('\\', "/")
@@ -515,6 +532,41 @@ impl ToolHandler {
         }
         let shown_end = start + numbered.len();
         let complete = offset == 1 && shown_end >= total;
+
+        // Already sent, byte-identical, in this session: send the ledger entry
+        // instead of the source. Symbols and dependents still ride along, so the
+        // reply stays useful without repeating the file.
+        if let Some(prior) = prior {
+            if let Some(fingerprint) =
+                crate::mcp::explore_session::file_fingerprint(cg.get_project_root(), file_path)
+            {
+                let served =
+                    crate::mcp::explore_session::served_ranges(prior, file_path, &fingerprint);
+                if served
+                    .iter()
+                    .any(|range| range.start <= offset && range.end >= shown_end)
+                {
+                    let text = format!(
+                        "**{file_path}** - lines {offset}-{shown_end} of {total} were already sent \
+                         earlier in this conversation and the file is unchanged on disk; the source \
+                         is not repeated.\n\nPass a different `offset`/`limit` for unseen lines, or \
+                         `codegraph_node <symbol>` for one symbol in full.",
+                    );
+                    return file_result(
+                        &text,
+                        NodeFileContent::AlreadySent {
+                            ranges: vec![NodeFileRangeOutput {
+                                start_line: offset,
+                                end_line: shown_end,
+                            }],
+                            total_lines: total,
+                            offset,
+                            limit: max_lines,
+                        },
+                    );
+                }
+            }
+        }
         let mut out = vec![header, String::new()];
         out.extend(numbered);
         if !complete {

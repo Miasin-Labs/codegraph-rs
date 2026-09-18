@@ -87,7 +87,13 @@ impl ExploreSessionState {
         let Some(payload) = result.structured_content.as_ref() else {
             return;
         };
-        if payload.get("kind").and_then(Value::as_str) != Some("explore") {
+        // Every tool that emits source participates: `explore` (many files) and
+        // the `node` file view (one file, paged). Agents re-fetch the same
+        // ranges constantly, so the ledger has to span tools, not just explore.
+        if !matches!(
+            payload.get("kind").and_then(Value::as_str),
+            Some("explore") | Some("file")
+        ) {
             return;
         }
         let key = project_key(project_root);
@@ -139,7 +145,40 @@ pub(crate) fn file_fingerprint(root: &Path, relative: &str) -> Option<String> {
     Some(format!("{}:{}", bytes.len(), &sha256_hex(&bytes)[..16]))
 }
 
+/// The `node` file view emits one file as `path` + `sourceChunks`.
+fn file_view_emission(root: &Path, payload: &Value) -> Option<FileEmission> {
+    let path = payload["path"].as_str()?.to_string();
+    let chunks = payload["sourceChunks"].as_array()?;
+    let ranges = chunks
+        .iter()
+        .filter_map(|chunk| {
+            Some(LineRange {
+                start: usize::try_from(chunk["startLine"].as_u64()?).ok()?,
+                end: usize::try_from(chunk["endLine"].as_u64()?).ok()?,
+            })
+        })
+        .collect();
+    let (ranges, _) = coalesce(ranges);
+    if ranges.is_empty() {
+        return None;
+    }
+    let bytes = chunks
+        .iter()
+        .filter_map(|chunk| chunk["source"].as_str())
+        .map(str::len)
+        .sum();
+    Some(FileEmission {
+        fingerprint: file_fingerprint(root, &path),
+        path,
+        ranges,
+        bytes,
+    })
+}
+
 fn emissions(root: &Path, payload: &Value) -> Vec<FileEmission> {
+    if payload.get("kind").and_then(Value::as_str) == Some("file") {
+        return file_view_emission(root, payload).into_iter().collect();
+    }
     let mut files = payload["sourceFiles"]
         .as_array()
         .into_iter()
