@@ -114,6 +114,16 @@ cargo test --workspace
   `COMMON_STD_METHOD_NAMES` (`name_matcher/std_methods.rs`) stays unresolved:
   every same-named project symbol is a guess. Unrelated edges there were the
   largest source of wrong call edges (9,041 on this repo).
+- **Rust `recv.m()` resolves on the receiver's inferred type, `Type::m()` only
+  on a project type named `Type`** (`name_matcher/rust_method.rs`, inference
+  in `name_matcher/receiver/rust/`). A type the project doesn't define runs no
+  project method, and a common std method name is never guessed; only
+  project-specific names a project type lacks reach the old name-similarity
+  fallbacks. Don't reintroduce word-overlap guessing for Rust.
+- **Analysis IR: `IrFunction.params` excludes the receiver and a method call's
+  `args` exclude its receiver** (both live in `receiver` fields). Points-to
+  binds a call op to a `Calls` edge target only when exactly one same-named
+  target fits (`points_to/binding.rs`); ambiguity binds nothing.
 - **SQLite schema is versioned** (`src/db/schema.sql` + `src/db/migrations.rs`,
   currently through v9). A schema change must bump `schema_versions`, add an
   idempotent migration, treat new columns as nullable (backfill on re-index),
