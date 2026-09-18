@@ -147,6 +147,7 @@ fn spawn_server(cwd: &Path, args: &[&str], no_daemon: bool) -> ServerProc {
         .env_remove("CODEGRAPH_NO_WATCH")
         .env_remove("CODEGRAPH_FORCE_WATCH")
         .env_remove("CODEGRAPH_NO_DAEMON")
+        .env_remove("CODEGRAPH_NO_BACKGROUND_SYNC")
         .env_remove("CODEGRAPH_DAEMON_INTERNAL")
         .env_remove("CODEGRAPH_MCP_TOOLS")
         .env_remove("CODEGRAPH_MCP_DEBUG")
@@ -1558,4 +1559,75 @@ async fn rejects_a_sensitive_windows_project_path_via_the_mcp_handler() {
             .contains("sensitive system directory")
     );
     cg.close();
+}
+
+/// A projectPath index on an older schema must not be migrated inside the
+/// request (that is what timed out in the mined sessions): the call answers at
+/// once, a background sync upgrades the index, and a retry is served from it.
+#[tokio::test(flavor = "current_thread")]
+async fn project_path_on_an_outdated_index_upgrades_in_the_background() {
+    let _guard = env_read().await;
+    let root = TempDir::new().unwrap();
+    let other = TempDir::new().unwrap();
+    init_project(root.path()).await;
+    std::fs::create_dir_all(other.path().join("src")).unwrap();
+    std::fs::write(
+        other.path().join("src/lib.ts"),
+        "export function onlyInOtherProject() { return 1; }\n",
+    )
+    .unwrap();
+    init_project(other.path()).await;
+    let other_db = other.path().join(".codegraph/codegraph.db");
+    rusqlite::Connection::open(&other_db)
+        .unwrap()
+        .execute_batch("UPDATE schema_versions SET version = 8 WHERE version = 9;")
+        .unwrap();
+    let schema_v9 = || -> i64 {
+        rusqlite::Connection::open(&other_db)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_versions WHERE version = 9",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+
+    let mut server = spawn_server(root.path(), &["--no-watch"], true);
+    server.send(&initialize_msg(Some(root.path()), "2025-11-25", json!({})));
+    wait_for_message(&server, Duration::from_secs(10), |m| m["id"] == 0);
+
+    let call = |id: u64| {
+        json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": { "name": "codegraph_search", "arguments": {
+                "query": "onlyInOtherProject",
+                "projectPath": other.path().to_string_lossy(),
+            }}
+        })
+    };
+    server.send(&call(1));
+    let first = wait_for_message(&server, Duration::from_secs(20), |m| m["id"] == 1);
+    assert!(
+        first
+            .to_string()
+            .contains("being upgraded in the background"),
+        "outdated projectPath was not deferred: {first}"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while schema_v9() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "background sync never upgraded the index"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    server.send(&call(2));
+    let second = wait_for_message(&server, Duration::from_secs(20), |m| m["id"] == 2);
+    assert!(
+        second.to_string().contains("onlyInOtherProject"),
+        "retry was not served from the upgraded index: {second}"
+    );
 }

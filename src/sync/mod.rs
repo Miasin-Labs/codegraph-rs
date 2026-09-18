@@ -12,6 +12,7 @@
 //! - Content hashing for change detection (in extraction module)
 //! - Incremental reindexing (in extraction module)
 
+pub mod background;
 pub mod git_hooks;
 pub mod watch_policy;
 pub mod watcher;

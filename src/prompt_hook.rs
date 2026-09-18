@@ -7,7 +7,6 @@
 use std::collections::HashSet;
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
@@ -18,11 +17,8 @@ use walkdir::{DirEntry, WalkDir};
 
 use crate::codegraph::{CodeGraph, SegmentVocabState, is_initialized};
 use crate::db::{database_schema_is_current, get_database_path};
-use crate::directory::get_codegraph_dir;
-use crate::mcp::server::daemon_opt_out_set;
 use crate::mcp::tools::ToolHandler;
 use crate::telemetry::Telemetry;
-use crate::utils::FileLock;
 
 const MAX_INPUT_BYTES: u64 = 1_048_576;
 const MAX_INJECTION_BYTES: usize = 16_000;
@@ -409,44 +405,12 @@ fn plan_frontload(cwd: &Path, prompt: &str) -> FrontloadPlan {
     }
 }
 
-/// Run `codegraph sync` for `root` detached from this hook, so schema
-/// migrations and vocabulary rebuilds of any size run to completion instead of
-/// dying at the hook timeout. Skipped while another process holds the project
-/// lock (that writer does the same work) and under `CODEGRAPH_NO_DAEMON`, which
-/// already opts out of the daemon whose startup catch-up this stands in for.
+/// Hand migrations and vocabulary rebuilds to a detached `codegraph sync` so
+/// they run to completion instead of dying at the hook timeout.
 fn spawn_background_sync(root: &Path) {
-    if daemon_opt_out_set()
-        || FileLock::new(get_codegraph_dir(root).join("codegraph.lock"))
-            .live_holder()
-            .is_some()
+    if crate::sync::background::spawn_background_sync(root)
+        == crate::sync::background::BackgroundSync::Started
     {
-        return;
-    }
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let mut command = Command::new(exe);
-    command
-        .arg("sync")
-        .arg("--quiet")
-        .arg(root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    // A separate process group survives the harness killing the hook's group.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    }
-    if command.spawn().is_ok() {
         gate("background-sync");
     }
 }

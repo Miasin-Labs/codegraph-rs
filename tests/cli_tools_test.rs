@@ -150,10 +150,11 @@ fn run_prompt_hook(root: &Path, registry: &Path, prompt: &str, background: bool)
         .env("CODEGRAPH_DAEMON_REGISTRY_DIR", registry)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped());
+    command.env("CODEGRAPH_NO_DAEMON", "1");
     if background {
-        command.env_remove("CODEGRAPH_NO_DAEMON");
+        command.env_remove("CODEGRAPH_NO_BACKGROUND_SYNC");
     } else {
-        command.env("CODEGRAPH_NO_DAEMON", "1");
+        command.env("CODEGRAPH_NO_BACKGROUND_SYNC", "1");
     }
     let output = command
         .spawn()

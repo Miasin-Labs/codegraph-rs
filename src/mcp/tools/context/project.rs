@@ -83,6 +83,24 @@ impl ToolHandler {
             return Ok(cg);
         }
 
+        // Opening an outdated index migrates it inline, which on a large
+        // project outlasts the client's request timeout (25 of 31 first-call
+        // timeouts in the mined sessions were projectPath cold opens). Hand
+        // the upgrade to a background sync and answer now; only migrate
+        // inline when no background process can take it.
+        if !crate::db::database_schema_is_current(&crate::db::get_database_path(&resolved_root)) {
+            let upgrade = crate::sync::background::spawn_background_sync(&resolved_root);
+            if upgrade.in_progress() {
+                return Err(CodeGraphError::other(format!(
+                    "The index for {} is on an older schema and is being upgraded in the \
+                     background so this call does not time out. Retry this call in a minute \
+                     (a very large index can take a few minutes); meanwhile use your \
+                     built-in tools for that project.",
+                    resolved_root.display()
+                )));
+            }
+        }
+
         // Open and cache under both paths
         let cg = Rc::new(CodeGraph::open_sync(&resolved_root)?);
         self.project_cache
