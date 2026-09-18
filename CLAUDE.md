@@ -56,7 +56,8 @@ cargo test --workspace
   status, files, history, tests, diagnostics, grep`), listed on every project
   regardless of size — there is no small-repo gating. `arch, xref, paths` are
   opt-in through the `CODEGRAPH_MCP_TOOLS` allowlist (comma-separated short
-  names), for 15 in all. `diagnostics` (`src/diagnostics/`) is the one tool
+  names), as is `recall` (cross-session memory, opt-in until measured), for 16
+  in all. `diagnostics` (`src/diagnostics/`) is the one tool
   that is not read-only: it runs `cargo check|clippy --offline` or the
   project's own `node_modules/.bin/tsc`, detached with output under
   `.codegraph/diagnostics/`, waits at most `wait` seconds, and a later call
@@ -198,10 +199,21 @@ cargo test --workspace
 - **Tool-history flywheel** (`src/history/`): a separate, global, redacted
   SQLite DB of agent tool usage (`~/.codegraph/history.db`, created 0600;
   `codegraph history ingest|show`) — never the per-project graph schema.
-  Source adapters (`history/sources/`, JFC logs today) emit one `RawToolCall`
+  Source adapters (`history/sources/`: JFC logs, Claude Code transcripts,
+  opencode's DB opened `mode=ro` via its session/time index; prime-agent not
+  yet) emit one `RawToolCall`
   per *native call id*; `ToolEvent::from_raw` is the only way to build a row
   and redacts every string (`history/redact.rs`) before deriving anything
   from it. Rows are keyed on a hash of the native id (`call_key` UNIQUE +
   `INSERT OR IGNORE`), so re-ingesting is a no-op; the schema is versioned by
   `PRAGMA user_version` (`history/schema.rs`). `show` opens read-only and
-  must never create state.
+  must never create state. On top of the call log sits a **cross-session
+  memory** (schema v3: repos → sessions → episodes → file touches, identifier
+  lookups, build/test/commit outcomes, co-edits): it stores only repo-relative
+  paths, masked command templates, error codes and index-known identifiers
+  (others as hashes) — never prompts, outputs or file contents. It is read by
+  `codegraph history recall`, the opt-in `codegraph_recall` tool (≤2 KB,
+  250 ms interrupt) and a ≤1 KB digest the prompt hook adds on a session's
+  first prompt. Ingest is always a detached, budgeted `codegraph history
+  ingest --incremental` (single-writer lock); the hook and MCP only ever read.
+  `CODEGRAPH_HISTORY=0` turns the digest and background ingest off.
