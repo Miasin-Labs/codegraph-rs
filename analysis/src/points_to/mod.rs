@@ -56,9 +56,17 @@
 //! # Interprocedural mode
 //!
 //! [`analyze_interprocedural`] propagates caller argument pts-sets into
-//! callee parameters (and callee return values back to caller call-site
-//! destinations) across `Calls` edges, re-solving a function whenever its
-//! seeds grow, until nothing grows.
+//! callee receivers and parameters (and callee return values back to caller
+//! call-site destinations) across `Calls` edges, re-solving a function
+//! whenever its seeds grow, until nothing grows.
+//!
+//! A `Calls` edge does not say which call op it came from, so each call op
+//! is bound to one edge target by its callee text ([`bind_call_sites`]):
+//! the last path/member segment must be the target's name, and the
+//! qualifier (`Foo::new`, `Self::g`, `self.m`, `pkg.F`) decides between
+//! same-named targets. Method-call syntax passes its receiver operand to
+//! the callee's receiver; a path call (`Foo::m(obj, x)`) passes it as the
+//! first argument.
 //!
 //! # Limitations
 //!
@@ -66,18 +74,27 @@
 //! - Access paths are k-limited: a cell [`MAX_FIELD_DEPTH`] fields deep
 //!   summarises every longer path below it, which keeps the universe finite
 //!   on cyclic structures (`node = node.next`).
+//! - A call op that fits several same-named edge targets equally well
+//!   binds to none of them (and one naming no edge target carries nothing).
+//! - Field stores a callee makes through its receiver or a parameter stay in
+//!   the callee's table: `obj.set(x); y = obj.get()` does not link `y` to
+//!   `x` in the caller.
 //! - Each function's solve may add at most [`FACT_BUDGET`] facts. Real code
 //!   stays far below it; on adversarial input the solve stops early and
 //!   clears [`PointsToTable::converged`] rather than truncating silently.
 
+mod binding;
+mod call_text;
+mod evidence;
 mod interprocedural;
 mod solver;
+mod target;
 mod worklist;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub use interprocedural::analyze_interprocedural;
+pub use interprocedural::{CallBinding, analyze_interprocedural, bind_call_sites};
 use solver::FunctionSolver;
 
 use crate::ir::{IrFunction, Operand, Var};

@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
+mod calls;
+
 use super::*;
 use crate::edges::{EdgeData, EdgeKind};
 use crate::graph::CodeGraph;
@@ -23,6 +25,7 @@ fn alloc(dst: &str) -> IrOp {
     IrOp::Call {
         dst: Some(Var::new(dst)),
         callee: "new".into(),
+        receiver: None,
         args: vec![],
     }
 }
@@ -363,12 +366,18 @@ fn mk_span() -> Span {
 }
 
 fn mk_node_data(name: &str) -> NodeData {
+    mk_function_node("test.rs", name)
+}
+
+/// A `Function` node in `file` named by the last `::` segment of `qualified`.
+fn mk_function_node(file: &str, qualified: &str) -> NodeData {
+    let name = qualified.rsplit("::").next().unwrap_or(qualified);
     NodeData {
-        id: NodeId::new("test.rs", name, NodeKind::Function),
+        id: NodeId::new(file, qualified, NodeKind::Function),
         kind: NodeKind::Function,
         name: name.to_string(),
-        qualified_name: name.to_string(),
-        file_path: PathBuf::from("test.rs"),
+        qualified_name: qualified.to_string(),
+        file_path: PathBuf::from(file),
         span: mk_span(),
         visibility: Visibility::Private,
         metadata: HashMap::new(),
@@ -412,6 +421,7 @@ fn call(dst: Option<&str>, callee: &str, args: &[&str]) -> IrOp {
     IrOp::Call {
         dst: dst.map(Var::new),
         callee: callee.into(),
+        receiver: None,
         args: args.iter().map(|a| Operand::var(*a)).collect(),
     }
 }

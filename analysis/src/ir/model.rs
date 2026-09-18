@@ -14,6 +14,8 @@ use std::collections::HashMap;
 
 use tree_sitter::Node;
 
+use super::{call, signature};
+
 // ─── Core types ──────────────────────────────────────────────────────────────
 
 /// A named variable in the source (a `let` binding, a parameter, etc.).
@@ -104,9 +106,15 @@ pub enum IrOp {
         rhs: Operand,
     },
     /// `dst = callee(args...)` (dst is None for statement-position calls).
+    ///
+    /// `callee` is the callee expression's source text (`f`, `Foo::new`,
+    /// `self.items.push`, `pkg.Func`). A call written in method-call syntax
+    /// (`recv.m(args)`) carries the value of `recv` in `receiver`; it is
+    /// never repeated in `args`, which hold only the parenthesised arguments.
     Call {
         dst: Option<Var>,
         callee: String,
+        receiver: Option<Operand>,
         args: Vec<Operand>,
     },
     /// `dst = base.field`
@@ -135,9 +143,15 @@ pub enum IrOp {
 
 /// A lowered function: parameters + a flat instruction list, plus an index
 /// from [`Label`] to its position in `body` for O(1) jump resolution.
+///
+/// `receiver` is the implicit object parameter of a method — Rust `self`,
+/// Python's first parameter of an instance/class method, TypeScript `this`,
+/// a Go receiver — kept out of `params` so `params[i]` is the parameter the
+/// `i`-th parenthesised argument binds to.
 #[derive(Debug, Clone, Default)]
 pub struct IrFunction {
     pub name: String,
+    pub receiver: Option<Var>,
     pub params: Vec<Var>,
     pub body: Vec<IrOp>,
     pub labels: HashMap<Label, usize>,
@@ -147,6 +161,7 @@ impl IrFunction {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            receiver: None,
             params: Vec::new(),
             body: Vec::new(),
             labels: HashMap::new(),
@@ -307,7 +322,7 @@ impl RustIrLowering {
         next_temp: &mut usize,
     ) -> Operand {
         match node.kind() {
-            "identifier" => Operand::var(Self::text(node, source)),
+            "identifier" | "self" => Operand::var(Self::text(node, source)),
             "integer_literal" | "float_literal" | "string_literal" | "char_literal"
             | "boolean_literal" => Operand::constant(Self::text(node, source)),
             "call_expression" => Self::lower_call(node, source, func, next_label, next_temp),
@@ -320,6 +335,17 @@ impl RustIrLowering {
             "block" => {
                 Self::lower_block(node, source, func, next_label, next_temp);
                 Operand::Const(String::from("()"))
+            }
+            // `&x`, `&mut x`, `(x)` and `x?` denote (or unwrap) the value of
+            // `x`; points-to treats them as `x`, so `f(&x)` passes `x`.
+            "reference_expression" | "parenthesized_expression" | "try_expression" => {
+                let inner = node
+                    .child_by_field_name("value")
+                    .or_else(|| node.named_child(0));
+                match inner {
+                    Some(inner) => Self::lower_expr(inner, source, func, next_label, next_temp),
+                    None => Operand::Const(Self::text(node, source).to_string()),
+                }
             }
             _ => {
                 // Unknown expression shape: surface the raw text as a constant
@@ -336,16 +362,21 @@ impl RustIrLowering {
         next_label: &mut u32,
         next_temp: &mut usize,
     ) -> Operand {
-        let callee = node
-            .child_by_field_name("function")
+        let function = node.child_by_field_name("function");
+        let callee = function
             .map(|n| Self::text(n, source).to_string())
             .unwrap_or_default();
+        let receiver = function
+            .and_then(call::method_receiver)
+            .map(|recv| Self::lower_expr(recv, source, func, next_label, next_temp));
 
         let mut args = Vec::new();
         if let Some(arg_list) = node.child_by_field_name("arguments") {
             let mut cursor = arg_list.walk();
             for arg in arg_list.named_children(&mut cursor) {
-                args.push(Self::lower_expr(arg, source, func, next_label, next_temp));
+                if !call::is_comment(arg) {
+                    args.push(Self::lower_expr(arg, source, func, next_label, next_temp));
+                }
             }
         }
 
@@ -353,6 +384,7 @@ impl RustIrLowering {
         func.push(IrOp::Call {
             dst: Some(dst_var.clone()),
             callee,
+            receiver,
             args,
         });
         Operand::Var(dst_var)
@@ -561,6 +593,7 @@ impl RustIrLowering {
         func.push(IrOp::Call {
             dst: Some(Var::new(pat_name)),
             callee: "<iter::next>".into(),
+            receiver: None,
             args: Vec::new(),
         });
         func.push(IrOp::Branch {
@@ -595,19 +628,9 @@ impl IrLowering for RustIrLowering {
             .unwrap_or_else(|| "<anon>".to_string());
 
         let mut func = IrFunction::new(name);
-
-        // Parameters
-        if let Some(param_list) = node.child_by_field_name("parameters") {
-            let mut cursor = param_list.walk();
-            for param in param_list.named_children(&mut cursor) {
-                // A `parameter` node has a `pattern` field holding the binding.
-                let pat = param.child_by_field_name("pattern").unwrap_or(param);
-                let raw = Self::text(pat, source).trim();
-                if !raw.is_empty() {
-                    func.params.push(Var::new(raw));
-                }
-            }
-        }
+        let sig = signature::rust(node, source);
+        func.receiver = sig.receiver;
+        func.params = sig.params;
 
         let mut next_label: u32 = 0;
         let mut next_temp: usize = 0;
@@ -732,21 +755,27 @@ impl PythonIrLowering {
                 Operand::constant(Self::text(node, source))
             }
             "call" => {
-                let callee = node
-                    .child_by_field_name("function")
+                let function = node.child_by_field_name("function");
+                let callee = function
                     .map(|n| Self::text(n, source).to_string())
                     .unwrap_or_default();
+                let receiver = function
+                    .and_then(call::method_receiver)
+                    .map(|recv| Self::lower_expr(recv, source, func, nl, nt));
                 let mut args = Vec::new();
                 if let Some(al) = node.child_by_field_name("arguments") {
                     let mut c = al.walk();
                     for a in al.named_children(&mut c) {
-                        args.push(Self::lower_expr(a, source, func, nl, nt));
+                        if !call::is_comment(a) {
+                            args.push(Self::lower_expr(a, source, func, nl, nt));
+                        }
                     }
                 }
                 let dst = Var::new(format!("__t{}", Self::fresh_temp(nt)));
                 func.push(IrOp::Call {
                     dst: Some(dst.clone()),
                     callee,
+                    receiver,
                     args,
                 });
                 Operand::Var(dst)
@@ -856,6 +885,7 @@ impl PythonIrLowering {
         func.push(IrOp::Call {
             dst: Some(Var::new(pat)),
             callee: "<iter::next>".into(),
+            receiver: None,
             args: Vec::new(),
         });
         func.push(IrOp::Branch {
@@ -888,15 +918,9 @@ impl IrLowering for PythonIrLowering {
             .map(|n| Self::text(n, source).to_string())
             .unwrap_or_else(|| "<anon>".into());
         let mut func = IrFunction::new(name);
-        if let Some(params) = node.child_by_field_name("parameters") {
-            let mut cursor = params.walk();
-            for param in params.named_children(&mut cursor) {
-                let raw = Self::text(param, source).trim();
-                if !raw.is_empty() && raw != "self" {
-                    func.params.push(Var::new(raw));
-                }
-            }
-        }
+        let sig = signature::python(node, source);
+        func.receiver = sig.receiver;
+        func.params = sig.params;
         let (mut nl, mut nt) = (0u32, 0usize);
         if let Some(body) = node.child_by_field_name("body") {
             Self::lower_block(body, source, &mut func, &mut nl, &mut nt);
@@ -1006,28 +1030,34 @@ impl TypeScriptIrLowering {
         nt: &mut usize,
     ) -> Operand {
         match node.kind() {
-            "identifier" | "shorthand_property_identifier" => {
+            "identifier" | "shorthand_property_identifier" | "this" => {
                 Operand::var(Self::text(node, source))
             }
             "number" | "string" | "template_string" | "true" | "false" | "null" | "undefined" => {
                 Operand::constant(Self::text(node, source))
             }
             "call_expression" => {
-                let callee = node
-                    .child_by_field_name("function")
+                let function = node.child_by_field_name("function");
+                let callee = function
                     .map(|n| Self::text(n, source).to_string())
                     .unwrap_or_default();
+                let receiver = function
+                    .and_then(call::method_receiver)
+                    .map(|recv| Self::lower_expr(recv, source, func, nl, nt));
                 let mut args = Vec::new();
                 if let Some(al) = node.child_by_field_name("arguments") {
                     let mut c = al.walk();
                     for a in al.named_children(&mut c) {
-                        args.push(Self::lower_expr(a, source, func, nl, nt));
+                        if !call::is_comment(a) {
+                            args.push(Self::lower_expr(a, source, func, nl, nt));
+                        }
                     }
                 }
                 let dst = Var::new(format!("__t{}", Self::fresh_temp(nt)));
                 func.push(IrOp::Call {
                     dst: Some(dst.clone()),
                     callee,
+                    receiver,
                     args,
                 });
                 Operand::Var(dst)
@@ -1192,6 +1222,7 @@ impl TypeScriptIrLowering {
         func.push(IrOp::Call {
             dst: Some(Var::new(pat)),
             callee: "<iter::next>".into(),
+            receiver: None,
             args: Vec::new(),
         });
         func.push(IrOp::Branch {
@@ -1231,26 +1262,9 @@ impl IrLowering for TypeScriptIrLowering {
             .map(|n| Self::text(n, source).to_string())
             .unwrap_or_else(|| "<anon>".into());
         let mut func = IrFunction::new(name);
-        let params_node = node
-            .child_by_field_name("parameters")
-            .or_else(|| node.child_by_field_name("parameter"));
-        if let Some(params) = params_node {
-            if params.kind() == "formal_parameters" {
-                let mut cursor = params.walk();
-                for param in params.named_children(&mut cursor) {
-                    let raw = Self::text(param, source).trim();
-                    if !raw.is_empty() {
-                        let binding = raw.split(':').next().unwrap_or(raw).trim();
-                        func.params.push(Var::new(binding));
-                    }
-                }
-            } else {
-                let raw = Self::text(params, source).trim();
-                if !raw.is_empty() {
-                    func.params.push(Var::new(raw));
-                }
-            }
-        }
+        let sig = signature::typescript(node, source);
+        func.receiver = sig.receiver;
+        func.params = sig.params;
         let (mut nl, mut nt) = (0u32, 0usize);
         if let Some(body) = node.child_by_field_name("body") {
             if body.kind() == "statement_block" {
@@ -1517,21 +1531,27 @@ impl GoIrLowering {
         nl: &mut u32,
         nt: &mut usize,
     ) -> Operand {
-        let callee = node
-            .child_by_field_name("function")
+        let function = node.child_by_field_name("function");
+        let callee = function
             .map(|n| Self::text(n, source).to_string())
             .unwrap_or_default();
+        let receiver = function
+            .and_then(call::method_receiver)
+            .map(|recv| Self::lower_expr(recv, source, func, nl, nt));
         let mut args = Vec::new();
         if let Some(al) = node.child_by_field_name("arguments") {
             let mut c = al.walk();
             for a in al.named_children(&mut c) {
-                args.push(Self::lower_expr(a, source, func, nl, nt));
+                if !call::is_comment(a) {
+                    args.push(Self::lower_expr(a, source, func, nl, nt));
+                }
             }
         }
         let dst = Var::new(format!("__t{}", Self::fresh_temp(nt)));
         func.push(IrOp::Call {
             dst: Some(dst.clone()),
             callee,
+            receiver,
             args,
         });
         Operand::Var(dst)
@@ -1607,20 +1627,9 @@ impl IrLowering for GoIrLowering {
             .map(|n| Self::text(n, source).to_string())
             .unwrap_or_else(|| "<anon>".into());
         let mut func = IrFunction::new(name);
-        if let Some(params) = node.child_by_field_name("parameters") {
-            let mut cursor = params.walk();
-            for param in params.named_children(&mut cursor) {
-                if param.kind() == "parameter_declaration" {
-                    let binding = param
-                        .child_by_field_name("name")
-                        .map(|n| Self::text(n, source).trim().to_string())
-                        .unwrap_or_default();
-                    if !binding.is_empty() {
-                        func.params.push(Var::new(binding));
-                    }
-                }
-            }
-        }
+        let sig = signature::go(node, source);
+        func.receiver = sig.receiver;
+        func.params = sig.params;
         let (mut nl, mut nt) = (0u32, 0usize);
         if let Some(body) = node.child_by_field_name("body") {
             Self::lower_block(body, source, &mut func, &mut nl, &mut nt);

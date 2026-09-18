@@ -530,11 +530,13 @@ mod tests {
         main_ir.push(IrOp::Call {
             dst: Some(Var::new("tmp")),
             callee: "source".into(),
+            receiver: None,
             args: vec![],
         });
         main_ir.push(IrOp::Call {
             dst: None,
             callee: "sink".into(),
+            receiver: None,
             args: vec![Operand::Var(Var::new("tmp"))],
         });
 
@@ -577,11 +579,13 @@ mod tests {
         main_ir.push(IrOp::Call {
             dst: Some(Var::new("tmp")),
             callee: "source".into(),
+            receiver: None,
             args: vec![],
         });
         main_ir.push(IrOp::Call {
             dst: None,
             callee: "sink".into(),
+            receiver: None,
             args: vec![Operand::Var(Var::new("tmp"))],
         });
 
@@ -641,6 +645,7 @@ mod tests {
         main_ir.push(IrOp::Call {
             dst: None,
             callee: "sink".into(),
+            receiver: None,
             args: vec![],
         });
         let mut sink_ir = IrFunction::new("sink");
@@ -659,6 +664,7 @@ mod tests {
         main_ir.push(IrOp::Call {
             dst: None,
             callee: "sink".into(),
+            receiver: None,
             args: vec![],
         });
         let mut sink_ir = IrFunction::new("sink");

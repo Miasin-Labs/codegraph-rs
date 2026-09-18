@@ -107,8 +107,9 @@ pub(super) struct FunctionSolver<'ir> {
 }
 
 impl<'ir> FunctionSolver<'ir> {
-    /// A solver with each parameter pointing to its own [`AbstractLocation::Param`]
-    /// and every op pending. `budget` caps the facts it may add.
+    /// A solver with the receiver and each parameter pointing to its own
+    /// [`AbstractLocation::Param`] and every op pending. `budget` caps the
+    /// facts it may add.
     pub(super) fn new(owner: NodeId, ir: &'ir IrFunction, budget: usize) -> Self {
         let mut solver = Self {
             index: UseIndex::build(ir),
@@ -121,7 +122,7 @@ impl<'ir> FunctionSolver<'ir> {
             owner,
             ir,
         };
-        for param in &ir.params {
+        for param in ir.receiver.iter().chain(&ir.params) {
             let loc = AbstractLocation::param(solver.owner.clone(), param.as_str());
             solver.add_to_var(param, [loc]);
         }
