@@ -74,8 +74,11 @@ environment variable — see project documentation.
 - **Trust codegraph's results — don't re-verify them with grep.** They come from a full AST parse; re-checking with grep is slower, less accurate, and wastes context.
 - **Don't grep or Read first** to find or understand indexed code — ONE `codegraph_explore` returns the relevant symbols' source together in a single round-trip. Reach for raw `Read`/`Grep` only to confirm a specific detail codegraph didn't cover, or for what codegraph doesn't index (configs, docs).
 - **Don't reconstruct a flow by hand** — name the endpoints in one `codegraph_explore` and it surfaces the path between them, dynamic-dispatch hops included.
-- **After editing, check the staleness banner.** When a tool response starts with "⚠️ Some files referenced below were edited since the last index sync…", the listed files are pending re-index — Read those specific files for accurate content. Every file NOT in that banner is fresh, so still trust codegraph. A different, rarer banner — "⚠️ CodeGraph auto-sync is DISABLED…" — means live watching stopped entirely (the whole index is frozen, not just a few files); until it's resolved, Read files directly to confirm anything that may have changed.
-- **A file flagged "⚠ changed on disk after the last index sync" drifted from its index** (most common on projects queried via `projectPath`, which have no live watcher). Codegraph never serves a possibly-mis-sliced body from such a file — it either shows the file's full CURRENT source (trust it as a Read) or omits the source with this flag. When the source was omitted, Read that specific file; line numbers referencing it elsewhere in the response may be shifted until that project's next sync. All unflagged files remain trustworthy.
+- **After editing, check the result's notices.** When something may make a result differ from the code on disk, the result says so: a JSON result carries a `notices` array (`{kind, message, files?, filesOmitted?}`, right after `kind`), and a plain-text result starts with one "⚠️ …" line per notice. No notices means none apply.
+  - `stale_index` — the listed `files` changed after the last index sync (just edited and pending re-index, or drifted on disk — most common on `projectPath` projects, which have no live watcher). Codegraph never serves a possibly-mis-sliced body from such a file: any source it shows for one is the full CURRENT content (trust it as a Read); otherwise Read that file, and treat its line numbers and edges here as possibly shifted. Every file not listed is in sync, so still trust codegraph for the rest (`filesOmitted` counts changed files the list left out).
+  - `auto_sync_disabled` — live watching stopped entirely: the whole index is frozen, not just a few files. Until it's resolved, Read files directly to confirm anything that may have changed.
+  - `worktree_mismatch` — the index belongs to a different git worktree (often another branch): symbols changed only in yours are missing.
+  - `stale_extraction` — the index was built by an older extractor, so symbols and call edges may be missing or wrong until the user runs `codegraph index`; mention it rather than treating an empty callers/impact answer as proof.
 
 - **"Already sent earlier in this conversation" is a pointer, not a gap.** When a result says so (or carries `alreadySent`) instead of source, an earlier `codegraph_explore` or `codegraph_node` in THIS conversation already returned those exact lines and the file has not changed since — so the copy already in your context is current and exact. Scroll back to it; don't re-fetch it and don't Read the file. The bytes it freed went into source you have not seen yet, elsewhere in the same response.
 
@@ -135,5 +138,18 @@ mod tests {
         }
         assert!(SERVER_INSTRUCTIONS.contains("Advanced tools (arch, xref, paths)"));
         assert!(SERVER_INSTRUCTIONS_NO_ROOT_INDEX.contains("pass projectPath"));
+    }
+
+    /// Agents are told what each notice means, under the name it arrives with.
+    #[test]
+    fn instructions_explain_every_notice_kind() {
+        assert!(SERVER_INSTRUCTIONS.contains("a `notices` array"));
+        for kind in crate::mcp::tools::NoticeKind::ALL {
+            assert!(
+                SERVER_INSTRUCTIONS.contains(&format!("`{}` —", kind.as_str())),
+                "notice kind {} is unexplained",
+                kind.as_str()
+            );
+        }
     }
 }

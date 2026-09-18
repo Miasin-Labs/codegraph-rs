@@ -5,10 +5,14 @@ use std::rc::Rc;
 use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
-use super::super::context::notices::auto_sync_disabled_notice;
+use super::super::context::notices::{
+    auto_sync_disabled_notice,
+    stale_extraction_notice,
+    worktree_notice,
+};
 use super::super::format::{now_ms, resolve_path};
 use super::super::output::{PendingSyncOutput, StatusOutput};
-use super::super::schema::{ToolNotice, ToolResult};
+use super::super::schema::ToolResult;
 use crate::error::Result;
 use crate::sync::worktree::worktree_mismatch_warning;
 
@@ -41,7 +45,8 @@ impl ToolHandler {
             ));
             lines.push(String::new());
         }
-        if cg.is_index_stale().unwrap_or(false) {
+        let stale_extraction = cg.is_index_stale().unwrap_or(false);
+        if stale_extraction {
             lines.push(
                 "Notice: this index was built by an older extractor. Unchanged files keep \
                  its output (missing or wrong edges) until the user runs `codegraph index`."
@@ -137,16 +142,13 @@ impl ToolHandler {
         );
         let mut result = self.structured_result(&lines.join("\n"), &output)?;
         if let Some(m) = mismatch {
-            result = result.with_notice(ToolNotice {
-                kind: "worktree_mismatch".into(),
-                severity: "warning".into(),
-                message: worktree_mismatch_warning(&m),
-                files: Vec::new(),
-                data: Some(serde_json::to_value(m)?),
-            });
+            result = result.with_notice(worktree_notice(&m));
         }
         if let Some(reason) = auto_sync_disabled_reason {
             result = result.with_notice(auto_sync_disabled_notice(reason));
+        }
+        if stale_extraction {
+            result = result.with_notice(stale_extraction_notice());
         }
         Ok(result)
     }

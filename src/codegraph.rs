@@ -1149,14 +1149,19 @@ impl CodeGraph {
     }
 
     /// Whether an existing graph predates the current extraction semantics.
+    ///
+    /// MCP tools ask this on every call, so a current stamp answers from the
+    /// metadata alone; only an unstamped or older index pays for the scan of
+    /// `files` that tells an empty index apart.
     pub fn is_index_stale(&self) -> Result<bool> {
-        if self.get_last_indexed_at()?.is_none() {
-            return Ok(false);
-        }
-        Ok(self
+        let current = self
             .get_index_build_info()?
             .extraction_version
-            .is_none_or(|version| version < EXTRACTION_VERSION))
+            .is_some_and(|version| version >= EXTRACTION_VERSION);
+        if current {
+            return Ok(false);
+        }
+        Ok(self.get_last_indexed_at()?.is_some())
     }
 
     /// Extract nodes and edges from source code (without storing).

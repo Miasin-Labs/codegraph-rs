@@ -269,6 +269,42 @@ mod tests {
         assert!(file_view.get("sourceChunks").is_none());
     }
 
+    /// The projection adds `notices` to any successful structured payload,
+    /// and the schemas forbid undeclared fields, so every success branch has
+    /// to declare it — or a client that validates rejects exactly the results
+    /// that warn it.
+    #[test]
+    fn every_structured_output_schema_declares_notices() {
+        let mut checked = 0;
+        for tool in tools() {
+            let Some(schema) = tool.output_schema else {
+                continue;
+            };
+            for branch in schema["oneOf"].as_array().expect("oneOf branches") {
+                let kind = &branch["properties"]["kind"]["const"];
+                if kind == "error" {
+                    continue;
+                }
+                assert_eq!(branch["additionalProperties"], false);
+                let notices = &branch["properties"]["notices"];
+                assert_eq!(
+                    notices["items"]["properties"]["kind"]["enum"],
+                    serde_json::json!([
+                        "worktree_mismatch",
+                        "auto_sync_disabled",
+                        "stale_extraction",
+                        "stale_index"
+                    ]),
+                    "{} ({kind}) does not declare notices",
+                    tool.name
+                );
+                checked += 1;
+            }
+        }
+        // search, node (symbol + file view), files, status, explore.
+        assert_eq!(checked, 6);
+    }
+
     #[test]
     fn tool_result_json_omits_is_error_on_success() {
         let ok = ToolResult {

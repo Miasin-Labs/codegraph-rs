@@ -138,6 +138,16 @@ impl Drop for ServerProc {
 /// The CODEGRAPH_*/test-runtime env vars are pinned so parallel in-process
 /// env-mutating tests can't leak into the child.
 fn spawn_server(cwd: &Path, args: &[&str], no_daemon: bool) -> ServerProc {
+    spawn_server_with_env(cwd, args, no_daemon, &[])
+}
+
+/// [`spawn_server`] with extra env vars set on the child.
+fn spawn_server_with_env(
+    cwd: &Path,
+    args: &[&str],
+    no_daemon: bool,
+    env: &[(&str, &str)],
+) -> ServerProc {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_codegraph-mcp-server"));
     cmd.args(args)
         .current_dir(cwd)
@@ -162,6 +172,7 @@ fn spawn_server(cwd: &Path, args: &[&str], no_daemon: bool) -> ServerProc {
     } else {
         cmd.env("CODEGRAPH_DAEMON_IDLE_TIMEOUT_MS", "500");
     }
+    cmd.envs(env.iter().copied());
     let mut child = cmd.spawn().expect("spawn codegraph-mcp-server");
 
     let events: Arc<Mutex<Vec<StreamEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1121,10 +1132,14 @@ async fn watcher_policy_disabled_is_visible_on_reads_and_status() {
         let search = engine
             .get_tool_handler()
             .execute("codegraph_search", &json!({ "query": "alpha" }));
+        let wire = search.clone().into_mcp_projection().unwrap();
+        let payload = wire.structured_content.as_ref().unwrap();
+        assert_eq!(payload["notices"][0]["kind"], "auto_sync_disabled");
         assert!(
-            search
-                .text()
-                .starts_with("⚠️ CodeGraph auto-sync is DISABLED")
+            payload["notices"][0]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("CodeGraph auto-sync is DISABLED (CODEGRAPH_NO_WATCH=1 is set)")
         );
         let notice = &search.meta.as_ref().unwrap().notices[0];
         assert_eq!(notice.kind, "auto_sync_disabled");
@@ -1158,19 +1173,305 @@ async fn watcher_setup_failure_state_is_visible_on_every_successful_read() {
     for (tool, args) in [
         ("codegraph_search", json!({ "query": "alphaOnly" })),
         ("codegraph_files", json!({})),
+        ("codegraph_callers", json!({ "symbol": "alphaOnly" })),
     ] {
         let result = handler.execute(tool, &args);
         assert_ne!(result.is_error, Some(true), "{}", result.text());
-        assert!(
-            result
-                .text()
-                .starts_with("⚠️ CodeGraph auto-sync is DISABLED")
-        );
+        // The human text (what the CLI prints) is left alone …
+        assert!(!result.text().contains("auto-sync"), "{}", result.text());
         assert_eq!(
             result.meta.as_ref().unwrap().notices[0].kind,
             "auto_sync_disabled"
         );
+        // … and what goes on the wire leads with the warning.
+        let wire = result.into_mcp_projection().unwrap();
+        match wire.structured_content.as_ref() {
+            Some(payload) => assert_eq!(payload["notices"][0]["kind"], "auto_sync_disabled"),
+            None => assert!(
+                wire.text()
+                    .starts_with("⚠️ CodeGraph auto-sync is DISABLED (watcher setup failed"),
+                "{}",
+                wire.text()
+            ),
+        }
     }
+}
+
+// =============================================================================
+// Notices reach the model over the real server — in the payload of a
+// structured tool (so in `structuredContent` AND the JSON text), as leading
+// `⚠️` lines of a text tool — not only in `_meta`, which hosts rarely show.
+// =============================================================================
+
+/// Two files, `beta.ts` calling into `alpha.ts`, fully indexed (so the index
+/// carries the current extraction stamp).
+async fn notices_fixture() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("alpha.ts"),
+        "export function alphaOnly() {\n  return 1;\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("beta.ts"),
+        "import { alphaOnly } from './alpha';\n\nexport function betaCaller() {\n  return alphaOnly();\n}\n",
+    )
+    .unwrap();
+    let cg = CodeGraph::init_sync(tmp.path()).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    cg.close();
+    tmp
+}
+
+fn start_session(project: &Path, args: &[&str], env: &[(&str, &str)]) -> ServerProc {
+    let mut server = spawn_server_with_env(project, args, true, env);
+    server.send(&initialize_msg(Some(project), "2025-11-25", json!({})));
+    wait_for_message(&server, Duration::from_secs(5), |message| {
+        message["id"] == 0 && message.get("result").is_some()
+    });
+    server
+}
+
+/// One `tools/call` over stdio; returns its `result`.
+fn call_tool(server: &mut ServerProc, id: u64, name: &str, arguments: Value) -> Value {
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": { "name": name, "arguments": arguments }
+    }));
+    let response = wait_for_message(server, Duration::from_secs(20), |message| {
+        message["id"] == id
+    });
+    let result = response["result"].clone();
+    assert!(result.is_object(), "{name}: {response}");
+    assert_ne!(result["isError"], true, "{name}: {result}");
+    result
+}
+
+/// The notices a structured result shows the model. The JSON text is the
+/// payload itself, so what a text-only host sees carries them too.
+fn payload_notices(result: &Value) -> Vec<Value> {
+    let structured = result.get("structuredContent").expect("structuredContent");
+    let text = result["content"][0]["text"].as_str().expect("text content");
+    assert_eq!(text, serde_json::to_string(structured).unwrap());
+    structured
+        .get("notices")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn notice_kinds(notices: &[Value]) -> Vec<&str> {
+    notices
+        .iter()
+        .map(|notice| notice["kind"].as_str().unwrap())
+        .collect()
+}
+
+fn text_of(result: &Value) -> &str {
+    assert!(result.get("structuredContent").is_none(), "{result}");
+    result["content"][0]["text"].as_str().expect("text content")
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_stale_file_reaches_the_model_on_search_node_explore_and_callers() {
+    let _guard = env_read().await;
+    let project = notices_fixture().await;
+    // A long debounce keeps the edit pending while the test reads.
+    let mut server = start_session(
+        project.path(),
+        &[],
+        &[("CODEGRAPH_WATCH_DEBOUNCE_MS", "60000")],
+    );
+
+    // A normal result is not padded with an empty warning.
+    let clean = call_tool(
+        &mut server,
+        1,
+        "codegraph_search",
+        json!({ "query": "alphaOnly" }),
+    );
+    assert!(payload_notices(&clean).is_empty(), "{clean}");
+    assert!(clean.get("_meta").is_none(), "{clean}");
+
+    // Edit alpha.ts until the live watcher reports it pending sync.
+    let alpha = project.path().join("src/alpha.ts");
+    let mut id = 100;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        std::fs::write(
+            &alpha,
+            format!("export function alphaOnly() {{\n  return {id};\n}}\n"),
+        )
+        .unwrap();
+        let status = call_tool(&mut server, id, "codegraph_status", json!({}));
+        let pending = &status["structuredContent"]["pendingSync"];
+        if pending
+            .as_array()
+            .is_some_and(|files| files.iter().any(|file| file["path"] == "src/alpha.ts"))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the watcher never reported the edit: {status}"
+        );
+        id += 1;
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    for (name, arguments) in [
+        ("codegraph_search", json!({ "query": "alphaOnly" })),
+        (
+            "codegraph_node",
+            json!({ "symbol": "alphaOnly", "includeCode": true }),
+        ),
+        ("codegraph_explore", json!({ "query": "alphaOnly" })),
+    ] {
+        id += 1;
+        let result = call_tool(&mut server, id, name, arguments);
+        let notices = payload_notices(&result);
+        assert_eq!(notice_kinds(&notices), ["stale_index"], "{name}: {result}");
+        // One compact entry: the path once, however many checks flagged it.
+        assert_eq!(notices[0]["files"], json!(["src/alpha.ts"]), "{name}");
+        assert!(
+            notices[0]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("These files changed after the last index sync"),
+            "{name}: {result}"
+        );
+        // Hosts that read `_meta` still get the full detail.
+        assert_eq!(result["_meta"]["notices"][0]["kind"], "stale_index");
+        assert!(result["_meta"]["notices"][0]["files"][0]["ageMs"].is_number());
+    }
+
+    // A text tool leads with the same warning.
+    id += 1;
+    let callers = call_tool(
+        &mut server,
+        id,
+        "codegraph_callers",
+        json!({ "symbol": "alphaOnly" }),
+    );
+    let text = text_of(&callers);
+    let (banner, body) = text.split_once("\n\n").expect("banner, then the result");
+    assert!(
+        banner.starts_with("⚠️ These files changed after the last index sync"),
+        "{text}"
+    );
+    assert!(banner.ends_with(" Files: src/alpha.ts"), "{text}");
+    assert!(body.contains("alphaOnly"), "{text}");
+    assert_eq!(callers["_meta"]["notices"][0]["kind"], "stale_index");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn disabled_auto_sync_and_drifted_files_reach_the_model_on_every_tool() {
+    let _guard = env_read().await;
+    let project = notices_fixture().await;
+    let mut server = start_session(project.path(), &["--no-watch"], &[]);
+    let frozen = "CodeGraph auto-sync is DISABLED (CODEGRAPH_NO_WATCH=1 is set)";
+
+    for (id, name, arguments) in [
+        (1, "codegraph_search", json!({ "query": "alphaOnly" })),
+        (2, "codegraph_files", json!({})),
+        (3, "codegraph_status", json!({})),
+        (
+            4,
+            "codegraph_node",
+            json!({ "symbol": "alphaOnly", "includeCode": true }),
+        ),
+    ] {
+        let result = call_tool(&mut server, id, name, arguments);
+        let notices = payload_notices(&result);
+        assert_eq!(
+            notice_kinds(&notices),
+            ["auto_sync_disabled"],
+            "{name}: {result}"
+        );
+        assert!(
+            notices[0]["message"].as_str().unwrap().starts_with(frozen),
+            "{name}: {result}"
+        );
+    }
+
+    let callers = call_tool(
+        &mut server,
+        5,
+        "codegraph_callers",
+        json!({ "symbol": "alphaOnly" }),
+    );
+    assert!(
+        text_of(&callers).starts_with(&format!("⚠️ {frozen}")),
+        "{callers}"
+    );
+
+    // With no watcher, only a tool that re-reads the file can tell it
+    // drifted from the index; its payload names the file. (Explore first:
+    // once a call has sent the current file, explore points back to that
+    // copy instead of reading it again.)
+    std::fs::write(
+        project.path().join("src/alpha.ts"),
+        "// moved down a line\nexport function alphaOnly() {\n  return 2;\n}\n",
+    )
+    .unwrap();
+    for (id, name, arguments) in [
+        (6, "codegraph_explore", json!({ "query": "alphaOnly" })),
+        (
+            7,
+            "codegraph_node",
+            json!({ "symbol": "alphaOnly", "includeCode": true }),
+        ),
+    ] {
+        let result = call_tool(&mut server, id, name, arguments);
+        let notices = payload_notices(&result);
+        assert_eq!(
+            notice_kinds(&notices),
+            ["auto_sync_disabled", "stale_index"],
+            "{name}: {result}"
+        );
+        assert_eq!(notices[1]["files"], json!(["src/alpha.ts"]), "{name}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_index_from_an_older_extractor_is_flagged_on_every_tool() {
+    let _guard = env_read().await;
+    let project = notices_fixture().await;
+    rusqlite::Connection::open(codegraph::db::get_database_path(project.path()))
+        .unwrap()
+        .execute_batch(
+            "UPDATE project_metadata SET value = '1' \
+             WHERE key = 'indexed_with_extraction_version';",
+        )
+        .unwrap();
+    let mut server = start_session(project.path(), &[], &[]);
+    let old = "This index was built by an older version of the extractor";
+
+    for (id, name, arguments) in [
+        (1, "codegraph_search", json!({ "query": "alphaOnly" })),
+        (2, "codegraph_status", json!({})),
+    ] {
+        let result = call_tool(&mut server, id, name, arguments);
+        let notices = payload_notices(&result);
+        assert_eq!(
+            notice_kinds(&notices),
+            ["stale_extraction"],
+            "{name}: {result}"
+        );
+        assert!(notices[0]["message"].as_str().unwrap().starts_with(old));
+    }
+    let callers = call_tool(
+        &mut server,
+        3,
+        "codegraph_callers",
+        json!({ "symbol": "alphaOnly" }),
+    );
+    assert!(
+        text_of(&callers).starts_with(&format!("⚠️ {old}")),
+        "{callers}"
+    );
 }
 
 // =============================================================================

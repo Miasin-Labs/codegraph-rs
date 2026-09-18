@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use super::format::{mcp_output_budget, truncate_text};
+use super::output::{attach_notices, notice_banner, notice_outputs};
 
 /// MCP Tool definition. Serializes to the same JSON shape as the TS
 /// `ToolDefinition` (camelCase `inputSchema`, ordered properties).
@@ -72,10 +73,51 @@ pub struct ToolResultMeta {
     pub notices: Vec<ToolNotice>,
 }
 
+/// What a notice warns about: a reason the result may not match the code on
+/// disk. Serialized `snake_case`, in `_meta.notices` and in the payload's
+/// `notices` (see [`ToolResult::into_mcp_projection`]). Declared in the order
+/// the payload lists them: whole-index conditions before per-file ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeKind {
+    /// The index belongs to a different git worktree than the one in use.
+    WorktreeMismatch,
+    /// Live file watching stopped, so the whole index is frozen.
+    AutoSyncDisabled,
+    /// The index was built by an older extractor; edges may be missing.
+    StaleExtraction,
+    /// The listed files changed after the last index sync.
+    StaleIndex,
+}
+
+impl NoticeKind {
+    pub const ALL: [NoticeKind; 4] = [
+        NoticeKind::WorktreeMismatch,
+        NoticeKind::AutoSyncDisabled,
+        NoticeKind::StaleExtraction,
+        NoticeKind::StaleIndex,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NoticeKind::WorktreeMismatch => "worktree_mismatch",
+            NoticeKind::AutoSyncDisabled => "auto_sync_disabled",
+            NoticeKind::StaleExtraction => "stale_extraction",
+            NoticeKind::StaleIndex => "stale_index",
+        }
+    }
+}
+
+impl PartialEq<&str> for NoticeKind {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolNotice {
-    pub kind: String,
+    pub kind: NoticeKind,
     pub severity: String,
     pub message: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -125,6 +167,14 @@ impl ToolResult {
     /// text goes out as-is (never wrapped in a JSON envelope, which would only
     /// escape it), cut to the output budget.
     ///
+    /// Notices (files changed since the last sync, a frozen index, a foreign
+    /// worktree, an old extractor) reach the model either way: a structured
+    /// payload carries them as `notices`, next to `kind`, so they are in
+    /// `structuredContent` and in the JSON text; a text result starts with one
+    /// `⚠️` line per notice. Hosts rarely show `_meta` to the model, so
+    /// `_meta.notices` (kept, in full detail) is never the only copy. A result
+    /// without notices goes out unchanged.
+    ///
     /// # Errors
     /// Returns an error if the structured value cannot be serialized.
     pub fn into_mcp_projection(self) -> serde_json::Result<Self> {
@@ -134,16 +184,28 @@ impl ToolResult {
             meta,
             is_error,
         } = self;
-        let text = match &structured_content {
-            Some(structured) => serde_json::to_string(structured)?,
-            None => truncate_text(
-                &content
+        let notices = match &meta {
+            Some(meta) if is_error != Some(true) => notice_outputs(&meta.notices),
+            _ => Vec::new(),
+        };
+        let (structured_content, text) = match structured_content {
+            Some(mut structured) => {
+                attach_notices(&mut structured, &notices)?;
+                let text = serde_json::to_string(&structured)?;
+                (Some(structured), text)
+            }
+            None => {
+                let body = content
                     .iter()
                     .map(|item| item.text.as_str())
                     .collect::<Vec<_>>()
-                    .join("\n"),
-                mcp_output_budget(),
-            ),
+                    .join("\n");
+                let text = match notice_banner(&notices) {
+                    Some(banner) => format!("{banner}\n\n{body}"),
+                    None => body,
+                };
+                (None, truncate_text(&text, mcp_output_budget()))
+            }
         };
 
         Ok(Self {

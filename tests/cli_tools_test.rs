@@ -409,6 +409,10 @@ async fn stale_extractor_index_is_reported_and_rebuilt() {
         text.contains("older extractor"),
         "stale index not reported: {text}"
     );
+    // MCP results carry a stale_extraction notice; the CLI's human text does
+    // not (compared with the same lookup after the rebuild, below).
+    let node_on_stale = run_cli(&root, &registry, &["node", "parse_token"]);
+    assert!(node_on_stale.status.success());
 
     let index = run_cli(&root, &registry, &["index"]);
     assert!(
@@ -430,4 +434,8 @@ async fn stale_extractor_index_is_reported_and_rebuilt() {
         String::from_utf8_lossy(&after.stderr)
     );
     assert!(after_text.contains("up to date"), "{after_text}");
+
+    let node_on_current = run_cli(&root, &registry, &["node", "parse_token"]);
+    assert!(stdout(&node_on_current).contains("parse_token"));
+    assert_eq!(stdout(&node_on_stale), stdout(&node_on_current));
 }

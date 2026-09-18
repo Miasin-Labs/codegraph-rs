@@ -19,4 +19,11 @@ pub use format::{
     get_explore_output_budget,
 };
 pub use registry::{get_static_tools, tools};
-pub use schema::{InputSchema, ToolAnnotations, ToolContent, ToolDefinition, ToolResult};
+pub use schema::{
+    InputSchema,
+    NoticeKind,
+    ToolAnnotations,
+    ToolContent,
+    ToolDefinition,
+    ToolResult,
+};

@@ -3,6 +3,10 @@
 //! `ToolResult::into_mcp_projection`), so fields that repeat the request or
 //! each other are left out, and every payload is bounded by the MCP output
 //! budget with an explicit `truncated` flag rather than silently cut.
+//!
+//! Every success schema also declares `notices` (see [`notices`]): the
+//! projection adds it to a payload only when something makes the result
+//! suspect, so a normal result never carries it.
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -10,7 +14,10 @@ use serde_json::{Map, Value, json};
 use super::format::{json_len, rows_within_budget};
 use crate::types::{GraphStats, SearchResult};
 
+mod notices;
 mod rows;
+use notices::notices_schema;
+pub(in crate::mcp::tools) use notices::{attach_notices, notice_banner, notice_outputs};
 pub(in crate::mcp::tools) use rows::{SymbolRef, SymbolRow};
 use rows::{symbol_ref_schema, symbol_row_properties, symbol_row_required};
 
@@ -500,6 +507,7 @@ pub(in crate::mcp::tools) fn search_output_schema() -> Value {
         "properties": {
             "schemaVersion": { "type": "integer" },
             "kind": { "const": "search" },
+            "notices": notices_schema(),
             "results": { "type": "array", "items": {
                 "type": "object",
                 "additionalProperties": false,
@@ -557,6 +565,7 @@ fn node_symbol_output_schema() -> Value {
         "properties": {
             "schemaVersion": { "type": "integer" },
             "kind": { "const": "node" },
+            "notices": notices_schema(),
             "matchCount": { "type": "integer" },
             "truncated": { "type": "boolean" },
             "matches": { "type": "array", "items": {
@@ -577,6 +586,7 @@ fn node_file_output_schema() -> Value {
         "properties": {
             "schemaVersion": { "type": "integer" },
             "kind": { "const": "file" },
+            "notices": notices_schema(),
             "path": { "type": "string" },
             "symbolCount": { "type": "integer" },
             "totalLines": { "type": "integer" },
@@ -605,6 +615,7 @@ pub(in crate::mcp::tools) fn files_output_schema() -> Value {
         "properties": {
             "schemaVersion": { "type": "integer" },
             "kind": { "const": "files" },
+            "notices": notices_schema(),
             "total": { "type": "integer" },
             "maxDepth": { "type": "integer" },
             "autoDepth": { "type": "boolean" },
@@ -633,6 +644,7 @@ pub(in crate::mcp::tools) fn status_output_schema() -> Value {
         "properties": {
             "schemaVersion": { "type": "integer" },
             "kind": { "const": "status" },
+            "notices": notices_schema(),
             "filesIndexed": { "type": "integer" },
             "totalNodes": { "type": "integer" },
             "totalEdges": { "type": "integer" },
@@ -663,6 +675,7 @@ pub(in crate::mcp::tools) fn explore_output_schema() -> Value {
         "properties": {
             "schemaVersion": { "type": "integer" },
             "kind": { "const": "explore" },
+            "notices": notices_schema(),
             "query": { "type": "string" },
             "totalSymbols": { "type": "integer" },
             "totalFiles": { "type": "integer" },
@@ -863,7 +876,7 @@ fn omission_schema() -> Value {
         "additionalProperties": false,
         "properties": {
             "path": { "type": "string" },
-            "reason": { "enum": ["max_files", "budget", "unavailable", "no_source"] },
+            "reason": { "enum": ["max_files", "budget", "unavailable", "no_source", "stale_index"] },
             "symbols": { "type": "array", "items": { "type": "string" } }
         },
         "required": ["path", "reason", "symbols"]

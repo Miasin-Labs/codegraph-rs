@@ -1,4 +1,11 @@
-use crate::mcp::tools::schema::{ToolContent, ToolNotice, ToolResult, ToolResultMeta};
+use crate::mcp::tools::schema::{
+    NoticeKind,
+    ToolContent,
+    ToolNotice,
+    ToolNoticeFile,
+    ToolResult,
+    ToolResultMeta,
+};
 
 fn assert_matches_structured_content(projected: &ToolResult, expected: &serde_json::Value) {
     assert_eq!(projected.content.len(), 1);
@@ -139,37 +146,223 @@ fn mcp_projection_preserves_structured_error_and_is_error() {
     assert_eq!(original.text(), "index unavailable");
 }
 
+fn notice(kind: NoticeKind, message: &str, files: &[&str]) -> ToolNotice {
+    ToolNotice {
+        kind,
+        severity: "warning".into(),
+        message: message.into(),
+        files: files
+            .iter()
+            .map(|path| ToolNoticeFile {
+                path: (*path).to_string(),
+                age_ms: 5,
+                status: "pending sync".into(),
+            })
+            .collect(),
+        data: Some(serde_json::json!({"pending": files.len()})),
+    }
+}
+
+fn with_notices(result: ToolResult, notices: Vec<ToolNotice>) -> ToolResult {
+    ToolResult {
+        meta: Some(ToolResultMeta { notices }),
+        ..result
+    }
+}
+
+fn structured(payload: serde_json::Value) -> ToolResult {
+    ToolResult {
+        content: vec![ToolContent {
+            content_type: "text".into(),
+            text: "human-readable report".into(),
+        }],
+        structured_content: Some(payload),
+        meta: None,
+        is_error: None,
+    }
+}
+
+fn text_only(text: &str) -> ToolResult {
+    ToolResult {
+        content: vec![ToolContent {
+            content_type: "text".into(),
+            text: text.into(),
+        }],
+        structured_content: None,
+        meta: None,
+        is_error: None,
+    }
+}
+
 #[test]
 fn mcp_projection_preserves_meta_notices() {
     // Given
-    let structured = serde_json::json!({"schemaVersion": 1, "kind": "status"});
-    let original = ToolResult {
-        content: vec![ToolContent {
-            content_type: "text".into(),
-            text: "status report".into(),
-        }],
-        structured_content: Some(structured.clone()),
-        meta: Some(ToolResultMeta {
-            notices: vec![ToolNotice {
-                kind: "stale_index".into(),
-                severity: "warning".into(),
-                message: "Index has pending files".into(),
-                files: Vec::new(),
-                data: Some(serde_json::json!({"pending": 2})),
-            }],
-        }),
-        is_error: None,
-    };
+    let original = with_notices(
+        structured(serde_json::json!({"schemaVersion": 1, "kind": "status"})),
+        vec![notice(
+            NoticeKind::StaleIndex,
+            "Index has pending files",
+            &["src/a.ts"],
+        )],
+    );
     let expected_meta = serde_json::to_value(&original.meta).unwrap();
 
     // When
     let projected = original.clone().into_mcp_projection().unwrap();
 
-    // Then
-    assert_matches_structured_content(&projected, &structured);
+    // Then: `_meta` keeps every notice in full detail, and the payload the
+    // model reads carries it too.
     assert_eq!(
         serde_json::to_value(&projected.meta).unwrap(),
         expected_meta
     );
-    assert_eq!(original.text(), "status report");
+    assert_matches_structured_content(
+        &projected,
+        &serde_json::json!({
+            "schemaVersion": 1,
+            "kind": "status",
+            "notices": [{
+                "kind": "stale_index",
+                "message": "Index has pending files",
+                "files": ["src/a.ts"],
+            }],
+        }),
+    );
+    assert_eq!(original.text(), "human-readable report");
+}
+
+/// Hosts show the model `content` text or `structuredContent`, rarely
+/// `_meta`, so a structured payload carries its notices itself: in front of
+/// the results, one entry per kind, whole-index kinds first.
+#[test]
+fn mcp_projection_puts_notices_in_the_structured_payload_before_the_results() {
+    let original = with_notices(
+        structured(serde_json::json!({
+            "schemaVersion": 2,
+            "kind": "node",
+            "matchCount": 1,
+            "matches": [{"name": "run", "file": "src/a.ts"}],
+        })),
+        vec![
+            notice(NoticeKind::StaleIndex, "stale", &["src/a.ts"]),
+            notice(NoticeKind::AutoSyncDisabled, "frozen", &[]),
+            notice(
+                NoticeKind::StaleIndex,
+                "stale again",
+                &["src/b.ts", "src/a.ts"],
+            ),
+        ],
+    );
+
+    let projected = original.into_mcp_projection().unwrap();
+
+    let payload = projected.structured_content.clone().unwrap();
+    let keys: Vec<&str> = payload
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        ["schemaVersion", "kind", "notices", "matchCount", "matches"]
+    );
+    assert_eq!(
+        payload["notices"],
+        serde_json::json!([
+            {"kind": "auto_sync_disabled", "message": "frozen"},
+            {"kind": "stale_index", "message": "stale", "files": ["src/a.ts", "src/b.ts"]},
+        ])
+    );
+    assert_matches_structured_content(&projected, &payload);
+}
+
+/// However many files are pending (a branch switch can leave thousands),
+/// the notice lists a few and counts the rest.
+#[test]
+fn mcp_projection_bounds_the_files_a_notice_lists() {
+    let paths: Vec<String> = (0..25).map(|i| format!("src/file{i}.ts")).collect();
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let original = with_notices(
+        structured(serde_json::json!({"schemaVersion": 2, "kind": "search", "results": []})),
+        vec![notice(NoticeKind::StaleIndex, "stale", &refs)],
+    );
+
+    let projected = original.into_mcp_projection().unwrap();
+
+    let entry = &projected.structured_content.unwrap()["notices"][0];
+    assert_eq!(entry["files"].as_array().unwrap().len(), 10);
+    assert_eq!(entry["files"][0], "src/file0.ts");
+    assert_eq!(entry["filesOmitted"], 15);
+}
+
+/// A text result has no payload to carry notices, so it leads with them.
+#[test]
+fn mcp_projection_leads_a_text_result_with_its_notices() {
+    let original = with_notices(
+        text_only("## Callers of run (1 found)\n\n- main (function) - src/main.rs:3"),
+        vec![
+            notice(
+                NoticeKind::StaleIndex,
+                "Changed since the sync.",
+                &["src/main.rs"],
+            ),
+            notice(NoticeKind::AutoSyncDisabled, "Auto-sync is off.", &[]),
+        ],
+    );
+
+    let projected = original.into_mcp_projection().unwrap();
+
+    assert!(projected.structured_content.is_none());
+    assert_eq!(
+        projected.text(),
+        "⚠️ Auto-sync is off.\n⚠️ Changed since the sync. Files: src/main.rs\n\n\
+         ## Callers of run (1 found)\n\n- main (function) - src/main.rs:3"
+    );
+    assert_eq!(projected.meta.unwrap().notices.len(), 2);
+}
+
+#[test]
+fn mcp_projection_counts_omitted_files_in_a_text_banner() {
+    let paths: Vec<String> = (0..12).map(|i| format!("f{i}.rs")).collect();
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let original = with_notices(
+        text_only("body"),
+        vec![notice(NoticeKind::StaleIndex, "Stale.", &refs)],
+    );
+
+    let projected = original.into_mcp_projection().unwrap();
+
+    let banner = projected.text().lines().next().unwrap();
+    assert!(
+        banner.starts_with("⚠️ Stale. Files: f0.rs, f1.rs,"),
+        "{banner}"
+    );
+    assert!(banner.ends_with("f9.rs (+2 more)"), "{banner}");
+}
+
+/// An error is not a result to distrust; it carries no notices.
+#[test]
+fn mcp_projection_never_attaches_notices_to_an_error() {
+    let original = with_notices(
+        ToolResult {
+            is_error: Some(true),
+            ..structured(serde_json::json!({
+                "schemaVersion": 1,
+                "kind": "error",
+                "error": {"code": "tool_error", "message": "boom"},
+            }))
+        },
+        vec![notice(NoticeKind::AutoSyncDisabled, "frozen", &[])],
+    );
+
+    let projected = original.into_mcp_projection().unwrap();
+
+    assert!(
+        projected
+            .structured_content
+            .unwrap()
+            .get("notices")
+            .is_none()
+    );
 }

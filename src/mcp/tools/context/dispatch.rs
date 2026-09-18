@@ -71,8 +71,8 @@ impl ToolHandler {
             "codegraph_explore" => self.handle_explore(args),
             "codegraph_node" => self.handle_node(args),
             "codegraph_status" => {
-                // status embeds the pending-files list as a first-class section,
-                // so skip the auto-banner wrappers.
+                // status reports pending files and auto-sync first-class and
+                // attaches its own notices, so skip the wrappers.
                 return match self.handle_status(args) {
                     Ok(r) => r,
                     Err(e) => self.error_result(&format!("Tool execution failed: {e}")),
@@ -91,8 +91,12 @@ impl ToolHandler {
             Ok(r) => r,
             Err(e) => return self.error_result(&format!("Tool execution failed: {e}")),
         };
-        let with_worktree = self.with_worktree_notice(result, project_path.as_deref());
-        let with_auto_sync = self.with_auto_sync_notice(with_worktree);
-        self.with_staleness_notice(with_auto_sync, project_path.as_deref())
+        // Every reason the result may not match the code on disk, recorded
+        // as notices; the MCP projection shows them to the model.
+        let project_path = project_path.as_deref();
+        let result = self.with_worktree_notice(result, project_path);
+        let result = self.with_auto_sync_notice(result);
+        let result = self.with_staleness_notice(result, project_path);
+        self.with_extraction_notice(result, project_path)
     }
 }

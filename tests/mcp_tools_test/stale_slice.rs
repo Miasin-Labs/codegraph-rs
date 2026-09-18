@@ -192,6 +192,62 @@ async fn explore_serves_full_current_source_for_a_small_drifted_file() {
     assert_eq!(result.meta.as_ref().unwrap().notices[0].kind, "stale_index");
 }
 
+/// The output schemas forbid undeclared fields, so a payload that carries
+/// notices — or explore's `stale_index` omission — must still validate, or a
+/// validating client rejects exactly the results that warn it.
+#[tokio::test(flavor = "current_thread")]
+async fn payloads_with_notices_validate_against_their_output_schemas() {
+    let _env = env_read().await;
+    let (fixture, _default, handler) = stale_slice_fixture().await;
+    handler.set_auto_sync_disabled("watcher setup failed: permission denied");
+    let path = fixture.path().join("src/big.ts");
+    write(
+        &path,
+        &(stale_prelude() + &fs::read_to_string(&path).unwrap()),
+    );
+    let project = fixture.path();
+
+    for (tool, args) in [
+        (
+            "codegraph_search",
+            json!({ "query": "orchestrate", "projectPath": project }),
+        ),
+        (
+            "codegraph_node",
+            json!({ "symbol": "orchestrate", "includeCode": true, "projectPath": project }),
+        ),
+        (
+            "codegraph_node",
+            json!({ "symbols": ["orchestrate", "smallTarget"], "includeCode": true, "projectPath": project }),
+        ),
+        (
+            "codegraph_node",
+            json!({ "file": "src/small.ts", "projectPath": project }),
+        ),
+        ("codegraph_files", json!({ "projectPath": project })),
+        ("codegraph_status", json!({ "projectPath": project })),
+        (
+            "codegraph_explore",
+            json!({ "query": "orchestrate handler3", "projectPath": project }),
+        ),
+    ] {
+        let wire = handler.execute(tool, &args).into_mcp_projection().unwrap();
+        let payload = wire.structured_content.as_ref().expect("structured");
+        assert_eq!(
+            payload["notices"][0]["kind"], "auto_sync_disabled",
+            "{tool}: {payload}"
+        );
+        assert!(
+            schema_matches(&tool_output_schema(tool), payload),
+            "{tool} payload failed its advertised outputSchema: {payload}"
+        );
+        if tool == "codegraph_explore" || args.get("symbol").is_some() {
+            assert_eq!(payload["notices"][1]["kind"], "stale_index", "{payload}");
+            assert_eq!(payload["notices"][1]["files"], json!(["src/big.ts"]));
+        }
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn identical_rewrite_does_not_trip_the_stale_slice_guard() {
     let _env = env_read().await;

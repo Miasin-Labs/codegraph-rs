@@ -78,7 +78,12 @@ cargo test --workspace
   as compact JSON (the spec's SHOULD; hosts show the model the text, so the
   payload IS the token cost — keep it free of request echoes, ids, and
   derivable fields; rows are `output::SymbolRow`/`SymbolRef`). A tool without
-  one sends its own text as-is (no JSON envelope). Every result is bounded by
+  one sends its own text as-is (no JSON envelope). Hosts rarely show `_meta`,
+  so the projection also puts `_meta.notices` (stale files, auto-sync off,
+  worktree mismatch, old extractor — `NoticeKind`) where the model reads: a
+  `notices` array right after `kind` in the payload (every success schema
+  declares it — `output/notices.rs`), or leading `⚠️` lines of a text result.
+  Handlers only record notices, so the CLI's text never changes. Every result is bounded by
   `format::mcp_output_budget()` (24K chars default; `CODEGRAPH_MAX_OUTPUT_CHARS`
   overrides, `0` = unbounded): tools shape their own payloads first — whole
   rows/lines with a `truncated` flag, `files` pages with `nextCursor` — and
