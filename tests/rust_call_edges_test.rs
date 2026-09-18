@@ -124,3 +124,64 @@ async fn chained_std_calls_do_not_resolve_to_same_named_project_methods() {
         "project-unique chained call should resolve: {edges:?}"
     );
 }
+
+/// `chars.next()` and `map.get(k)` run std methods, and `HashMap::new()`
+/// names a std type: none of them lands on a same-named project method.
+/// A receiver whose type the code spells (`let graph = Graph::new()`)
+/// resolves on that type.
+#[tokio::test(flavor = "current_thread")]
+async fn identifier_receivers_resolve_on_their_inferred_type() {
+    let (_dir, edges) = index_crate(&[
+        ("src/lib.rs", "mod frontier;\nmod graph;\nmod walk;\n"),
+        (
+            "src/frontier.rs",
+            "pub struct FrontierIter(u32);\n\
+             impl Iterator for FrontierIter {\n\
+             \x20   type Item = u32;\n\
+             \x20   fn next(&mut self) -> Option<u32> { None }\n\
+             }\n",
+        ),
+        (
+            "src/graph.rs",
+            "pub struct Graph;\n\
+             impl Graph {\n\
+             \x20   pub fn new() -> Self { Graph }\n\
+             \x20   pub fn get(&self, id: u32) -> Option<u32> { Some(id) }\n\
+             }\n\
+             pub struct OrderedNodeMap;\n\
+             impl OrderedNodeMap {\n\
+             \x20   pub fn new() -> Self { OrderedNodeMap }\n\
+             }\n",
+        ),
+        (
+            "src/walk.rs",
+            "use std::collections::HashMap;\n\
+             use crate::graph::Graph;\n\
+             pub fn walk(text: &str) -> usize {\n\
+             \x20   let mut chars = text.chars();\n\
+             \x20   let first = chars.next();\n\
+             \x20   let graph = Graph::new();\n\
+             \x20   let near = graph.get(1);\n\
+             \x20   let map: HashMap<u32, u32> = HashMap::new();\n\
+             \x20   let far = map.get(&1).copied();\n\
+             \x20   [first, near, far].len()\n\
+             }\n",
+        ),
+    ])
+    .await;
+    for wrong in ["walk -> FrontierIter::next", "walk -> OrderedNodeMap::new"] {
+        assert!(
+            !edges.iter().any(|edge| edge == wrong),
+            "std call resolved to a project method ({wrong}): {edges:?}"
+        );
+    }
+    assert!(
+        edges.iter().any(|edge| edge == "walk -> Graph::new"),
+        "missing walk -> Graph::new: {edges:?}"
+    );
+    let graph_gets = edges
+        .iter()
+        .filter(|edge| *edge == "walk -> Graph::get")
+        .count();
+    assert_eq!(graph_gets, 1, "only `graph.get` runs Graph::get: {edges:?}");
+}

@@ -113,15 +113,18 @@ pub(super) const COMMON_STD_METHOD_NAMES: &[&str] = &[
     "zip",
 ];
 
+/// `name` is one of [`COMMON_STD_METHOD_NAMES`].
+pub(super) fn is_common_std_method_name(name: &str) -> bool {
+    COMMON_STD_METHOD_NAMES.binary_search(&name).is_ok()
+}
+
 /// A Rust call to a common std method whose receiver was dropped: its target
 /// is a method on a type name matching cannot see.
 pub(super) fn is_receiverless_std_method_call(reference: &UnresolvedRef) -> bool {
     reference.language == Language::Rust
         && reference.reference_kind == EdgeKind::Calls
         && receiver_was_dropped(reference.metadata.as_ref())
-        && COMMON_STD_METHOD_NAMES
-            .binary_search(&reference.reference_name.as_str())
-            .is_ok()
+        && is_common_std_method_name(&reference.reference_name)
 }
 
 #[cfg(test)]

@@ -34,6 +34,11 @@ pub use use_tree::{
 use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
 use crate::types::{Language, Node};
 
+/// The crate a `.rs` file belongs to (see [`layout::module_location`]).
+pub(in crate::resolution::name_matcher) fn crate_key(file_path: &str) -> String {
+    module_location(file_path).crate_key
+}
+
 /// Split a path, dropping generic arguments (`Vec::<u8>::new` -> `Vec::new`).
 fn segments(path: &str) -> Vec<&str> {
     path.split("::")

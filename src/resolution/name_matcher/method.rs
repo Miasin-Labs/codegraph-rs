@@ -7,6 +7,7 @@ use super::receiver::{
     match_go_field_chain_call,
     resolve_method_on_type,
 };
+use super::rust_method;
 use super::support::{
     capitalize_first,
     colon_call_re,
@@ -141,7 +142,18 @@ pub fn match_method_call_hinted(
         }
     };
 
-    if inferable_receiver {
+    // Rust: resolve on the receiver's or path's type, and never guess a
+    // std-named method onto another type (see `rust_method`).
+    if reference.language == Language::Rust {
+        let decided = if is_dot_match {
+            rust_method::match_instance_call(object_or_class, method_name, reference, context)
+        } else {
+            rust_method::match_type_path_call(object_or_class, method_name, reference, context)
+        };
+        if let Some(decided) = decided {
+            return decided;
+        }
+    } else if inferable_receiver {
         let inferred_type = if reference.language == Language::Cpp && is_dot_match {
             infer_cpp_receiver_type(object_or_class, reference, context)
         } else {

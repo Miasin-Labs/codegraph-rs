@@ -180,13 +180,28 @@ fn parse_workspace_members(cargo_toml: &str) -> Vec<String> {
 }
 
 fn parse_package_name(cargo_toml: &str) -> Option<String> {
+    parse_section_name(cargo_toml, "package")
+}
+
+/// The `name = "…"` of a manifest section (`[package]`, `[lib]`).
+fn parse_section_name(cargo_toml: &str, section: &str) -> Option<String> {
     static NAME_RE: std::sync::LazyLock<Regex> =
         std::sync::LazyLock::new(|| Regex::new(r#"name\s*=\s*["']([^"'\n]+)["']"#).unwrap());
-    let package_section = get_section(cargo_toml, "package")?;
+    let body = get_section(cargo_toml, section)?;
     NAME_RE
-        .captures(&package_section)
+        .captures(&body)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string())
+}
+
+/// The crate names the root manifest's own package answers to in `use`
+/// paths: its `[package]` name and its `[lib]` name, underscored.
+pub fn get_root_package_crate_names(root_cargo_toml: &str) -> Vec<String> {
+    ["package", "lib"]
+        .into_iter()
+        .filter_map(|section| parse_section_name(root_cargo_toml, section))
+        .map(|name| name.replace('-', "_"))
+        .collect()
 }
 
 fn add_crate_alias(map: &mut HashMap<String, String>, crate_name: &str, member_path: &str) {

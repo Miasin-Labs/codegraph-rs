@@ -16,6 +16,7 @@ mod method;
 mod qualified;
 mod razor;
 mod receiver;
+mod rust_method;
 mod rust_path;
 mod std_methods;
 mod support;

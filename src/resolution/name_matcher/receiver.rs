@@ -2,6 +2,7 @@ mod cpp;
 mod go;
 mod jvm;
 mod local;
+mod rust;
 mod typed;
 
 pub(super) use cpp::infer_cpp_receiver_type;
@@ -11,4 +12,5 @@ pub(super) use go::match_go_field_chain_call;
 pub(super) use jvm::infer_java_field_receiver_type;
 pub(super) use local::infer_local_receiver_type;
 pub(crate) use local::infer_receiver_type_from_declaration;
+pub(super) use rust::{RustType, infer_rust_receiver_type, resolve_type};
 pub(crate) use typed::resolve_method_on_type;

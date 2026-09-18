@@ -41,12 +41,7 @@ fn build_local_receiver_type_patterns(language: Language, receiver: &str) -> Vec
             p(format!(r"\b{r}\b\s*=\s*([A-Z][0-9A-Za-z_.]*)\s*\(")),
             p(format!(r"\b{r}\b\s*:\s*([A-Z][0-9A-Za-z_.]*)")),
         ],
-        "rust" => vec![
-            p(format!(
-                r"\blet\s+(?:mut\s+)?{r}\b(?:\s*:[^=]+)?=\s*&?(?:mut\s+)?([A-Z][0-9A-Za-z_]*)"
-            )),
-            p(format!(r"\b{r}\s*:\s*&?(?:mut\s+)?([A-Z][0-9A-Za-z_]*)")),
-        ],
+        // Rust receivers are inferred by `super::rust`, from parsed bindings.
         "go" => vec![
             p(format!(r"\b{r}\b\s*:=\s*&?([A-Za-z_][0-9A-Za-z_.]*)\s*\{{")),
             p(format!(r"\bvar\s+{r}\s+\*?([A-Za-z_][0-9A-Za-z_.]*)")),
