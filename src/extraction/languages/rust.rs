@@ -36,6 +36,9 @@
 //! recorded; the generated items are not.
 
 mod macro_calls;
+mod receiver_text;
+
+pub(crate) use receiver_text::receiver_text;
 
 use super::named_children;
 use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
@@ -915,6 +918,42 @@ fn caller() {
             .partition(|reference| crate::types::receiver_was_dropped(reference.metadata.as_ref()));
         assert_eq!(sorted_names(&dropped), ["any", "clone", "len", "next"]);
         assert_eq!(sorted_names(&kept), ["run", "v.iter", "v.iter", "v.len"]);
+    }
+
+    /// A dropped receiver is recorded as compact text, parsed or inside a
+    /// macro's tokens, so resolution can type the chain link by link.
+    #[test]
+    fn dropped_receivers_are_recorded_as_compact_text() {
+        let source = "fn caller(&self) {\n    self.cache\n        .borrow_mut() // hot\n        .clear();\n    Rule::new(a, b).neg();\n    assert!(self.map.lock().unwrap().get(k).is_some());\n    x[0].len();\n}\n";
+        let result = TreeSitterExtractor::new(
+            "src/lib.rs",
+            source,
+            Some(Language::Rust),
+            Some(&RustExtractor),
+        )
+        .extract();
+        let receivers: Vec<String> = result
+            .unresolved_references
+            .iter()
+            .filter(|reference| reference.reference_kind == EdgeKind::Calls)
+            .filter_map(|reference| {
+                let receiver = crate::types::dropped_receiver_text(reference.metadata.as_ref())?;
+                Some(format!("{}: {receiver}", reference.reference_name))
+            })
+            .collect();
+        for expected in [
+            "clear: self.cache.borrow_mut()",
+            "neg: Rule::new(..)",
+            "get: self.map.lock().unwrap()",
+            "is_some: self.map.lock().unwrap().get(..)",
+            "unwrap: self.map.lock()",
+            "len: x[..]",
+        ] {
+            assert!(
+                receivers.iter().any(|receiver| receiver == expected),
+                "missing {expected}: {receivers:?}"
+            );
+        }
     }
 
     fn sorted_names<'r>(references: &[&'r UnresolvedReference]) -> Vec<&'r str> {

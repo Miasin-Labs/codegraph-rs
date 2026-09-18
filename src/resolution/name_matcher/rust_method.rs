@@ -12,7 +12,9 @@
 //!   project method, and a common std method name (`next`, `get`, `iter`)
 //!   is not guessed at when no project method was found. When no type is
 //!   found, no method name std defines anywhere (`into_inner`, `parent`) is
-//!   guessed at either.
+//!   guessed at either, and one a direct dependency defines (tree-sitter's
+//!   `walk`) only onto a type the calling file names
+//!   ([`match_dependency_method`]).
 //! - `Type::m(..)` names its type, so the target is `Type::m` or nothing: a
 //!   type the project does not define (`HashMap`, `process`, a generic `T`)
 //!   resolves to nothing, and a project type resolves on itself, after type
@@ -22,6 +24,7 @@
 //! (a trait's provided method, a `Deref` target's method) still reaches the
 //! fallbacks.
 
+use super::dependency_names::match_dependency_method;
 use super::receiver::{RustType, infer_rust_receiver_type, resolve_type};
 use super::std_methods::{is_common_std_method_name, is_std_method_name};
 use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
@@ -35,7 +38,10 @@ pub(super) fn match_instance_call(
     context: &dyn ResolutionContext,
 ) -> Option<Option<ResolvedRef>> {
     let Some(ty) = infer_rust_receiver_type(receiver, reference, context) else {
-        return is_std_method_name(method).then_some(None);
+        if is_std_method_name(method) {
+            return Some(None);
+        }
+        return match_dependency_method(method, reference, context);
     };
     decide_on_type(
         &ty,

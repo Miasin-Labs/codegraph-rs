@@ -152,10 +152,13 @@ cargo test --workspace
   check a change against real corpora, not just fixtures (it held on 119k
   functions across 10 languages, 2026-09).
 - **Rust method calls on a non-identifier receiver carry `receiverDropped`**
-  (`v.iter().next()` reaches resolution as bare `next`). One whose name is in
-  `COMMON_STD_METHOD_NAMES` (`name_matcher/std_methods.rs`) stays unresolved:
-  every same-named project symbol is a guess. Unrelated edges there were the
-  largest source of wrong call edges (9,041 on this repo).
+  (`v.iter().next()` reaches resolution as bare `next`) **and the receiver as
+  compact text** in `receiver` metadata (`extraction/languages/rust/
+  receiver_text.rs`, also for macro-token calls: whitespace/comments gone, a
+  method call's args `()`/`(..)`, ≤200 bytes or not recorded; changing it
+  bumps `EXTRACTION_VERSION`). Resolution types that chain link by link
+  (`infer_rust_chain_type`) instead of re-reading the file; a chain it
+  cannot type falls back to the name rules below.
 - **Rust call syntax decides what a call can run** (`name_matcher/rust_call.rs`):
   a bare `f()` targets a function, tuple struct, const/static or enum variant,
   never a method or field; a name bound locally (param, `let`, closure, match
@@ -164,17 +167,55 @@ cargo test --workspace
   rules gate bare-named references (`match_rust_reference`): an `impl`/derive/
   supertrait target must be a trait, an enum variant needs a `use`, and the
   prelude types (`String`, `Vec`, `Option`, `Result`, `Box`) are std's unless
-  imported. Untyped and dropped
-  receivers are checked against `STD_METHOD_NAMES` (1,842 names generated from
-  rust-src by `tests/std_method_names.rs`; regenerate with
+  imported. An untyped or dropped receiver whose method std defines anywhere
+  (`STD_METHOD_NAMES`, 1,842 names generated from rust-src by
+  `tests/std_method_names.rs`; regenerate with
   `CODEGRAPH_REGENERATE_STD_METHODS=1 cargo test --test std_method_names -- --ignored`
-  after a toolchain bump).
+  after a toolchain bump) stays unresolved. One whose method a direct
+  dependency defines (`ResolutionContext::is_rust_dependency_method`) may only
+  land on a project method whose owning type the calling file names
+  (`name_matcher/dependency_names.rs`; `recv.m()` needs exactly one such
+  method): `node.walk()` in a file that never names `ModuleLocation` stays
+  unresolved, `tile.window()` next to `Tile` still resolves.
 - **Rust `recv.m()` resolves on the receiver's inferred type, `Type::m()` only
   on a project type named `Type`** (`name_matcher/rust_method.rs`, inference
   in `name_matcher/receiver/rust/`). A type the project doesn't define runs no
   project method, and a common std method name is never guessed; only
   project-specific names a project type lacks reach the old name-similarity
-  fallbacks. Don't reintroduce word-overlap guessing for Rust.
+  fallbacks. Don't reintroduce word-overlap guessing for Rust. Types flow
+  through chains (`links.rs`): the head is `self`, a local/param/static, a
+  `Type::assoc(..)`/free-fn call (indexed signature return type), then each
+  field's declared type, each project method's return type (`Self` = the
+  owner), and what std wrappers/containers/iterators hand out
+  (`adaptors.rs`: `RefCell::borrow_mut`, `Mutex::lock` → `LockResult<T>`
+  opened by `unwrap/expect/?` or run through for parking_lot, `Option`/
+  `Result` adaptors, `Vec::get/first/pop`, `HashMap::get/values/entry`,
+  `iter().find/next`). Locals bound by `let (a, b) =`, `for x in`, a closure
+  param of an iterator/`Option` combinator (`closures.rs`), a tuple-variant
+  pattern (`variants.rs`), or `self.0` of a tuple struct are typed the same
+  way. The first unknown or external link ends the chain — never guess the
+  rest — and a generic parameter (`T`, `Self::Item`) is unknown, not a type.
+  Inference runs per reference, so anything it reads per file must be
+  cached: `use` leaves and fn-local `use` leaves come from the contexts'
+  per-file caches (`get_rust_use_leaves`, `get_rust_fn_local_uses`), line
+  boundaries from `line_index.rs`; a per-reference whole-file scan there
+  once doubled resolution CPU.
+- **Dependency method names** (`src/resolution/rust_deps/`): `Cargo.lock`'s
+  direct deps (plus crates they `pub use`, 2 hops: `clap` → `clap_builder`)
+  are found vendored or in `$CARGO_HOME/registry/src/*` and `git/checkouts`
+  (never fetched), and their public `self` methods read with
+  tree-sitter-rust (bounded: 4k files / 32 MiB per crate, 20 s per run,
+  `CODEGRAPH_RUST_DEPS_BUDGET_MS`). One versioned text artifact per crate
+  version, shared by every project in `~/.codegraph/deps/crates/` (dir 0700,
+  files 0600, temp+rename; `CODEGRAPH_DEPS_DIR` moves the root); vendored
+  sources go to the project's `.codegraph/deps/`. Artifacts are built only
+  when `IndexOptions::dependency_scan` is set (CLI `init/index/sync`), never
+  by the MCP catch-up sync or the hook; resolution only reads them. Bump the
+  scanner version in `rust_deps/store.rs` whenever `scan.rs` changes what it
+  records. `CODEGRAPH_RUST_DEPS=0` turns it all off; a missing lockfile,
+  source, or artifact is today's behaviour. Other passes may keep
+  per-package *directories* (`<name>-<version>/`) in the same `crates/` dir;
+  this pass only reads and writes its `.api` files and leaves the rest alone.
 - **Analysis IR: `IrFunction.params` excludes the receiver and a method call's
   `args` exclude its receiver** (both live in `receiver` fields). Points-to
   binds a call op to a `Calls` edge target only when exactly one same-named

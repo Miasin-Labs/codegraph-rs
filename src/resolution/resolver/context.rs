@@ -12,7 +12,8 @@ use std::sync::{Arc, LazyLock};
 use super::cache::resolve_cache_limit;
 use crate::db::QueryBuilder;
 use crate::resolution::lru_cache::LRUCache;
-use crate::resolution::name_matcher::RustUse;
+use crate::resolution::name_matcher::{RustUse, UseLeaf};
+use crate::resolution::rust_deps::RustDependencyApi;
 use crate::resolution::types::{
     AliasMap,
     GoModule,
@@ -34,6 +35,7 @@ pub struct ResolverContext {
     pub(super) import_mapping_cache: RefCell<LRUCache<String, Vec<ImportMapping>>>,
     pub(super) re_export_cache: RefCell<LRUCache<String, Vec<ReExport>>>,
     pub(super) rust_use_cache: RefCell<LRUCache<String, Arc<[RustUse]>>>,
+    pub(super) rust_fn_use_cache: RefCell<LRUCache<String, Arc<[UseLeaf]>>>,
     pub(super) name_cache: RefCell<LRUCache<String, Vec<Node>>>,
     pub(super) lower_name_cache: RefCell<LRUCache<String, Vec<Node>>>,
     pub(super) qualified_name_cache: RefCell<LRUCache<String, Vec<Node>>>,
@@ -44,6 +46,7 @@ pub struct ResolverContext {
     pub(super) project_aliases: OnceCell<Option<AliasMap>>,
     pub(super) go_module: OnceCell<Option<GoModule>>,
     pub(super) workspace_packages: OnceCell<Option<WorkspacePackages>>,
+    pub(super) rust_dependency_api: RefCell<Option<Option<RustDependencyApi>>>,
 }
 
 /// JS/TS/ArkTS source files that use ES module import syntax.
@@ -97,6 +100,7 @@ impl ResolverContext {
             import_mapping_cache: RefCell::new(LRUCache::new(limit)),
             re_export_cache: RefCell::new(LRUCache::new(limit)),
             rust_use_cache: RefCell::new(LRUCache::new(limit)),
+            rust_fn_use_cache: RefCell::new(LRUCache::new(limit)),
             name_cache: RefCell::new(LRUCache::new(limit)),
             lower_name_cache: RefCell::new(LRUCache::new(limit)),
             qualified_name_cache: RefCell::new(LRUCache::new(limit)),
@@ -107,6 +111,7 @@ impl ResolverContext {
             project_aliases: OnceCell::new(),
             go_module: OnceCell::new(),
             workspace_packages: OnceCell::new(),
+            rust_dependency_api: RefCell::new(None),
         }
     }
 
@@ -116,12 +121,14 @@ impl ResolverContext {
         self.import_mapping_cache.borrow_mut().clear();
         self.re_export_cache.borrow_mut().clear();
         self.rust_use_cache.borrow_mut().clear();
+        self.rust_fn_use_cache.borrow_mut().clear();
         self.name_cache.borrow_mut().clear();
         self.lower_name_cache.borrow_mut().clear();
         self.qualified_name_cache.borrow_mut().clear();
         *self.known_names.borrow_mut() = None;
         *self.known_files.borrow_mut() = None;
         *self.files_list.borrow_mut() = None;
+        *self.rust_dependency_api.borrow_mut() = None;
         self.caches_warmed.set(false);
     }
 
@@ -203,7 +210,15 @@ impl ResolutionContext for ResolverContext {
         self.cached_rust_use_leaves(file_path)
     }
 
+    fn get_rust_fn_local_uses(&self, file_path: &str) -> Arc<[UseLeaf]> {
+        self.cached_rust_fn_local_uses(file_path)
+    }
+
     fn get_cpp_include_dirs(&self) -> Vec<String> {
         self.cpp_include_dirs()
+    }
+
+    fn is_rust_dependency_method(&self, name: &str) -> bool {
+        self.rust_dependency_method(name)
     }
 }

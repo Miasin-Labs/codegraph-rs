@@ -28,6 +28,7 @@ pub use use_tree::{
     UseLeaf,
     UseVisibility,
     parse_use_leaves,
+    rust_fn_local_uses,
     rust_use_leaves,
 };
 

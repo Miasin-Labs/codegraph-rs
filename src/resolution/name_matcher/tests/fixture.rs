@@ -7,6 +7,8 @@ pub(super) struct Fixture {
     nodes: Vec<Node>,
     pub(super) files: HashMap<String, String>,
     pub(super) imports: Vec<ImportMapping>,
+    /// Method names the project's dependencies define.
+    pub(super) dependency_methods: Vec<String>,
 }
 
 impl Fixture {
@@ -15,6 +17,7 @@ impl Fixture {
             nodes,
             files: HashMap::new(),
             imports: Vec::new(),
+            dependency_methods: Vec::new(),
         }
     }
 }
@@ -72,6 +75,9 @@ impl ResolutionContext for Fixture {
     }
     fn get_node_by_id(&self, id: &str) -> Option<Node> {
         self.nodes.iter().find(|n| n.id == id).cloned()
+    }
+    fn is_rust_dependency_method(&self, name: &str) -> bool {
+        self.dependency_methods.iter().any(|method| method == name)
     }
 }
 

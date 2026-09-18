@@ -620,9 +620,28 @@ pub type Metadata = serde_json::Map<String, serde_json::Value>;
 /// onto the edge like any other reference metadata.
 pub const RECEIVER_DROPPED: &str = "receiverDropped";
 
+/// Reference metadata key holding the dropped receiver as written, compacted
+/// (`self.cache.borrow_mut()`, `Rule::new(..)`; see
+/// `extraction::languages::rust::receiver_text`), so resolution can follow
+/// the chain's types without re-reading the source.
+pub const RECEIVER_TEXT: &str = "receiver";
+
 /// Metadata marking a reference's receiver as dropped.
 pub fn receiver_dropped_metadata() -> Metadata {
     Metadata::from_iter([(RECEIVER_DROPPED.to_string(), serde_json::Value::Bool(true))])
+}
+
+/// Metadata marking a reference's receiver as dropped, with the receiver's
+/// compacted text when it could be written down.
+pub fn dropped_receiver_metadata(receiver: Option<String>) -> Metadata {
+    let mut metadata = receiver_dropped_metadata();
+    if let Some(receiver) = receiver {
+        metadata.insert(
+            RECEIVER_TEXT.to_string(),
+            serde_json::Value::String(receiver),
+        );
+    }
+    metadata
 }
 
 /// Whether `metadata` marks the reference's receiver as dropped.
@@ -631,6 +650,14 @@ pub fn receiver_was_dropped(metadata: Option<&Metadata>) -> bool {
         .and_then(|metadata| metadata.get(RECEIVER_DROPPED))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+/// The dropped receiver's compacted text, when extraction recorded it.
+pub fn dropped_receiver_text(metadata: Option<&Metadata>) -> Option<&str> {
+    metadata
+        .filter(|metadata| receiver_was_dropped(Some(metadata)))
+        .and_then(|metadata| metadata.get(RECEIVER_TEXT))
+        .and_then(serde_json::Value::as_str)
 }
 
 /// An edge representing a relationship between two nodes.

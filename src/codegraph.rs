@@ -149,6 +149,13 @@ pub struct IndexOptions<'a> {
     pub signal: Option<&'a AtomicBool>,
     /// Enable verbose logging (worker lifecycle, memory, timeouts)
     pub verbose: bool,
+    /// Before resolving, build the dependency API artifacts the project's
+    /// `Cargo.lock` calls for and the machine lacks (public method names
+    /// read from local crate sources, bounded in time;
+    /// [`crate::resolution::rust_deps`]). The CLI's `init`/`index`/`sync`
+    /// set it; time-boxed callers (the MCP catch-up sync) leave it off and
+    /// resolve with whatever artifacts exist.
+    pub dependency_scan: bool,
 }
 
 /// Completeness of the most recent full-index run.
@@ -721,6 +728,23 @@ impl CodeGraph {
             .set_metadata("index_state", IndexState::Complete.as_str());
     }
 
+    /// Build missing dependency API artifacts when the caller allows it
+    /// ([`IndexOptions::dependency_scan`]); resolution reads them.
+    fn prepare_dependency_api(&self, options: &IndexOptions<'_>) {
+        if !options.dependency_scan {
+            return;
+        }
+        let report = crate::resolution::rust_deps::prepare(&self.project_root);
+        if options.verbose {
+            if let Some(report) = report {
+                eprintln!(
+                    "dependency API: {} crates ({} cached, {} built, {} not on this machine, {} deferred)",
+                    report.crates, report.cached, report.built, report.missing, report.deferred
+                );
+            }
+        }
+    }
+
     async fn index_all_locked(&self, options: &IndexOptions<'_>) -> Result<IndexResult> {
         let before = self.queries.get_node_and_edge_count()?;
         let orchestrator = self.orchestrator();
@@ -796,6 +820,7 @@ impl CodeGraph {
         // and silently drop themselves. Re-initializing here gives them a
         // chance to see the actual project before resolution runs.
         if touched {
+            self.prepare_dependency_api(options);
             self.resolver.initialize();
             // Cross-file finalization (e.g. NestJS RouterModule prefixes). Runs
             // before resolution so updated names show up in subsequent reads.
@@ -931,6 +956,7 @@ impl CodeGraph {
 
         if touched {
             orchestrator.reset_detected_frameworks();
+            self.prepare_dependency_api(options);
             self.resolver.initialize();
         }
 

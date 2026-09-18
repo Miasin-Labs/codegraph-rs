@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::resolution::name_matcher::{RustUse, rust_use_leaves};
+use crate::resolution::name_matcher::{RustUse, UseLeaf, rust_fn_local_uses, rust_use_leaves};
 use crate::types::{EdgeKind, Language, Metadata, Node, NodeKind};
 
 // =============================================================================
@@ -359,6 +359,15 @@ pub trait ResolutionContext {
     fn get_rust_use_leaves(&self, file_path: &str) -> Arc<[RustUse]> {
         rust_use_leaves(&self.get_nodes_in_file(file_path)).into()
     }
+    /// Rust `use` leaves declared inside fn bodies of a file, read from its
+    /// source ([`rust_fn_local_uses`]). Receiver inference asks for them on
+    /// every type path it resolves, so the production contexts cache this
+    /// per file like [`Self::get_rust_use_leaves`].
+    fn get_rust_fn_local_uses(&self, file_path: &str) -> Arc<[UseLeaf]> {
+        self.read_file_arc(file_path)
+            .map(|source| rust_fn_local_uses(&source).into())
+            .unwrap_or_else(|| Arc::from(Vec::new()))
+    }
     /// List immediate subdirectories of `relative_path` (relative to the
     /// project root). Returns an empty vec when the path doesn't exist
     /// or isn't a directory. Used by framework resolvers that need to
@@ -374,6 +383,14 @@ pub trait ResolutionContext {
     /// relative resolution fails. Defaulted so existing callers compile.
     fn get_cpp_include_dirs(&self) -> Vec<String> {
         Vec::new()
+    }
+    /// A direct Rust dependency of the project defines a public method
+    /// `name` ([`crate::resolution::rust_deps`]): a call of it on a
+    /// receiver of unknown type is not resolved by name alone. The
+    /// production contexts read the artifacts indexing built; the default
+    /// knows no dependency, which is the behaviour without them.
+    fn is_rust_dependency_method(&self, _name: &str) -> bool {
+        false
     }
 }
 

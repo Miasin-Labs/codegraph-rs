@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::{ImportCacheKey, SnapshotContext};
 use crate::error::log_debug;
 use crate::resolution::import_resolver::{extract_import_mappings, extract_re_exports};
-use crate::resolution::name_matcher::{RustUse, rust_use_leaves};
+use crate::resolution::name_matcher::{RustUse, UseLeaf, rust_fn_local_uses, rust_use_leaves};
 use crate::resolution::resolver::context::is_js_family_path;
 use crate::resolution::types::{
     AliasMap,
@@ -206,6 +206,27 @@ impl ResolutionContext for SnapshotContext {
         leaves
     }
 
+    fn get_rust_fn_local_uses(&self, file_path: &str) -> Arc<[UseLeaf]> {
+        {
+            let cache = self
+                .rust_fn_use_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(cached) = cache.get(file_path) {
+                return Arc::clone(cached);
+            }
+        }
+        let leaves: Arc<[UseLeaf]> = self
+            .read_file_arc(file_path)
+            .map(|source| rust_fn_local_uses(&source).into())
+            .unwrap_or_else(|| Arc::from(Vec::new()));
+        self.rust_fn_use_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(file_path.to_string(), Arc::clone(&leaves));
+        leaves
+    }
+
     fn list_directories(&self, relative_path: &str) -> Vec<String> {
         let target: PathBuf = if relative_path == "." || relative_path.is_empty() {
             PathBuf::from(&self.project_root)
@@ -238,5 +259,11 @@ impl ResolutionContext for SnapshotContext {
 
     fn get_cpp_include_dirs(&self) -> Vec<String> {
         self.cpp_include_dirs.clone()
+    }
+
+    fn is_rust_dependency_method(&self, name: &str) -> bool {
+        self.rust_dependency_api
+            .as_ref()
+            .is_some_and(|api| api.has_method(name))
     }
 }

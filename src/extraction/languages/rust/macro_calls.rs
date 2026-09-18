@@ -11,7 +11,8 @@
 //! - `a::b::c(…)` → `a::b::c`
 //! - `recv.m(…)` → `recv.m` when `recv` is a plain identifier, bare `m` when
 //!   it is `self` or any longer expression (`a.b().m()`, `x[0].m()`); the
-//!   longer ones are marked as having dropped their receiver
+//!   longer ones are marked as having dropped their receiver, and record it
+//!   the way a parsed call's is recorded when the tokens allow
 //!
 //! Attributes (`#[derive(Debug)]`), nested `macro_rules!` definitions, the
 //! pattern half of `matches!`, `$`-prefixed metavariables, and item
@@ -19,6 +20,7 @@
 
 use std::ops::Range;
 
+use super::receiver_text::MAX_RECEIVER_BYTES;
 use crate::extraction::tree_sitter_helpers::get_node_text;
 use crate::extraction::tree_sitter_types::{SyntaxNode, TokenCall};
 
@@ -194,6 +196,51 @@ fn method_call(
         Some(receiver) if !longer_receiver && receiver.kind() == "self" => {
             TokenCall::at(method_name.to_string(), receiver)
         }
-        _ => TokenCall::at(method_name.to_string(), method).with_dropped_receiver(),
+        _ => TokenCall::at(method_name.to_string(), method)
+            .with_dropped_receiver(token_receiver(tokens, dot, source)),
     }
+}
+
+/// The receiver ending before the `.` at `dot`, written the way
+/// [`receiver_text`](super::receiver_text::receiver_text) writes a parsed
+/// one (`self.items`, `a.b()`, `Rule::new(..)`, `x[..]?`), or `None` when
+/// the tokens spell something else (a parenthesized expression, a
+/// turbofish, a metavariable).
+fn token_receiver(tokens: &[SyntaxNode<'_>], dot: usize, source: &str) -> Option<String> {
+    // Pieces in reverse, walking left from the `.`.
+    let mut pieces: Vec<String> = Vec::new();
+    let mut index = dot.checked_sub(1)?;
+    loop {
+        let token = tokens[index];
+        match token.kind() {
+            "token_tree" if opens_with(token, "[") => pieces.push("[..]".into()),
+            "token_tree" if opens_with(token, "(") => {
+                // Only a call's arguments: `f(..)`, `a.m(..)`.
+                let callee = before(tokens, index)?;
+                if !matches!(callee, "identifier" | "self") {
+                    return None;
+                }
+                let empty = token.named_child_count() == 0 && token.child_count() <= 2;
+                pieces.push(if empty { "()" } else { "(..)" }.into());
+            }
+            "?" => pieces.push("?".into()),
+            "identifier" | "self" | "super" | "crate" | "integer_literal" | "await" => {
+                pieces.push(get_node_text(token, source).to_string());
+                match before(tokens, index) {
+                    Some(joint @ ("." | "::")) => {
+                        pieces.push(joint.to_string());
+                        index = index.checked_sub(2)?;
+                        continue;
+                    }
+                    Some("$") => return None,
+                    _ => break,
+                }
+            }
+            _ => return None,
+        }
+        index = index.checked_sub(1)?;
+    }
+    pieces.reverse();
+    let text = pieces.concat();
+    (text.len() <= MAX_RECEIVER_BYTES).then_some(text)
 }

@@ -336,3 +336,186 @@ async fn self_field_receivers_resolve_on_their_declared_type() {
         "the facade does not call itself: {edges:?}"
     );
 }
+
+/// A chained receiver is typed link by link: an associated fn's return
+/// type, a method's, a field's, and what `RefCell::borrow_mut` and
+/// `Mutex::lock().unwrap()` hand out. Std method names (`neg`, `as_u64`,
+/// `clear`) resolve on the project type the chain reaches, and a
+/// project-specific name lands on that type rather than a nearer namesake.
+#[tokio::test(flavor = "current_thread")]
+async fn chained_receivers_resolve_on_the_type_each_link_returns() {
+    let (_dir, edges) = index_crate(&[
+        ("src/lib.rs", "mod cache;\nmod rule;\nmod use_site;\n"),
+        (
+            "src/rule.rs",
+            "pub struct Rule(u8);\n\
+             impl Rule {\n\
+             \x20   pub fn new(a: u8, b: u8) -> Self { Rule(a + b) }\n\
+             \x20   pub fn neg(self) -> Rule { Rule(0) }\n\
+             }\n\
+             pub struct Digest(u64);\n\
+             impl Digest {\n\
+             \x20   pub fn as_u64(&self) -> u64 { self.0 }\n\
+             }\n\
+             pub struct Hasher;\n\
+             impl Hasher {\n\
+             \x20   pub fn finish(&self) -> Digest { Digest(0) }\n\
+             }\n\
+             pub struct TreeExtractor;\n\
+             impl TreeExtractor {\n\
+             \x20   pub fn new(path: &str) -> Self { TreeExtractor }\n\
+             \x20   pub fn extract(&self) -> u8 { 0 }\n\
+             }\n",
+        ),
+        (
+            "src/cache.rs",
+            "pub struct Cache;\n\
+             impl Cache {\n\
+             \x20   pub fn clear(&mut self) {}\n\
+             }\n\
+             pub struct Registry;\n\
+             impl Registry {\n\
+             \x20   pub fn lookup_entry(&self, key: &str) -> Option<u8> { None }\n\
+             }\n",
+        ),
+        (
+            "src/use_site.rs",
+            "use std::cell::RefCell;\n\
+             use std::sync::{Arc, Mutex};\n\
+             use crate::cache::{Cache, Registry};\n\
+             use crate::rule::{Hasher, Rule, TreeExtractor};\n\
+             pub struct Negation;\n\
+             impl Negation {\n\
+             \x20   pub fn neg(self) -> Negation { Negation }\n\
+             }\n\
+             pub struct Count;\n\
+             impl Count {\n\
+             \x20   pub fn as_u64(&self) -> u64 { 0 }\n\
+             }\n\
+             pub struct OtherRegistry;\n\
+             impl OtherRegistry {\n\
+             \x20   pub fn lookup_entry(&self, key: &str) -> Option<u8> { None }\n\
+             }\n\
+             pub struct AstroExtractor;\n\
+             impl AstroExtractor {\n\
+             \x20   pub fn extract(&self) -> u8 { 1 }\n\
+             }\n\
+             pub struct Holder {\n\
+             \x20   cache: RefCell<Cache>,\n\
+             \x20   map: Arc<Mutex<Registry>>,\n\
+             }\n\
+             impl Holder {\n\
+             \x20   pub fn run(&self, x: Hasher) {\n\
+             \x20       Rule::new(1, 2).neg();\n\
+             \x20       x.finish().as_u64();\n\
+             \x20       self.cache.borrow_mut().clear();\n\
+             \x20       self.map.lock().unwrap().lookup_entry(\"k\");\n\
+             \x20       TreeExtractor::new(\"a.rs\").extract();\n\
+             \x20   }\n\
+             }\n",
+        ),
+    ])
+    .await;
+    for expected in [
+        "Holder::run -> Rule::neg",
+        "Holder::run -> Digest::as_u64",
+        "Holder::run -> Cache::clear",
+        "Holder::run -> Registry::lookup_entry",
+        "Holder::run -> TreeExtractor::extract",
+    ] {
+        assert!(
+            edges.iter().any(|edge| edge == expected),
+            "missing {expected}: {edges:?}"
+        );
+    }
+    for guessed in [
+        "Holder::run -> Negation::neg",
+        "Holder::run -> Count::as_u64",
+        "Holder::run -> OtherRegistry::lookup_entry",
+        "Holder::run -> AstroExtractor::extract",
+    ] {
+        assert!(
+            !edges.iter().any(|edge| edge == guessed),
+            "name-guessed {guessed}: {edges:?}"
+        );
+    }
+}
+
+/// A method a direct dependency defines (read from its vendored source,
+/// which `Cargo.lock` pins) is not guessed onto a same-named project method
+/// of a type the calling file never names when the receiver's type is
+/// unknown; a project-specific name still is. The dependency's names are
+/// kept in the project's `.codegraph/deps/`.
+#[tokio::test(flavor = "current_thread")]
+async fn dependency_method_names_are_not_resolved_by_name_alone() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let files = [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\ntreelike = \"0.2\"\n",
+        ),
+        (
+            "Cargo.lock",
+            "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\n \"treelike\",\n]\n\n[[package]]\nname = \"treelike\"\nversion = \"0.2.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+        ),
+        (
+            "vendor/treelike/Cargo.toml",
+            "[package]\nname = \"treelike\"\nversion = \"0.2.0\"\n",
+        ),
+        (
+            "vendor/treelike/src/lib.rs",
+            "pub struct Node;\n\
+             pub fn parse(text: &str) -> Node { Node }\n\
+             impl Node {\n\
+             \x20   pub fn walk(&self) {}\n\
+             \x20   pub fn child(&self, index: usize) -> Node { Node }\n\
+             }\n",
+        ),
+        ("src/lib.rs", "mod graph;\nmod visit;\n"),
+        (
+            "src/graph.rs",
+            "pub struct Graph;\n\
+             impl Graph {\n\
+             \x20   pub fn walk(&self) {}\n\
+             \x20   pub fn render_graph(&self) {}\n\
+             }\n",
+        ),
+        (
+            "src/visit.rs",
+            "pub fn visit() {\n\
+             \x20   let node = treelike::parse(\"x\");\n\
+             \x20   node.walk();\n\
+             \x20   treelike::parse(\"y\").child(0).walk();\n\
+             \x20   node.render_graph();\n\
+             }\n",
+        ),
+    ];
+    for (path, content) in files {
+        write(&dir.path().join(path), content);
+    }
+    let cg = CodeGraph::init_sync(dir.path()).unwrap();
+    cg.index_all(&IndexOptions {
+        dependency_scan: true,
+        ..IndexOptions::default()
+    })
+    .await
+    .unwrap();
+    cg.close();
+    let edges = call_edges(dir.path());
+    assert!(
+        !edges.iter().any(|edge| edge == "visit -> Graph::walk"),
+        "a dependency's `walk` was guessed onto the project's: {edges:?}"
+    );
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge == "visit -> Graph::render_graph"),
+        "a project-specific name still resolves by name: {edges:?}"
+    );
+    assert!(
+        dir.path()
+            .join(".codegraph/deps/treelike-0.2.0.api")
+            .is_file(),
+        "the vendored crate's artifact stays with the project"
+    );
+}

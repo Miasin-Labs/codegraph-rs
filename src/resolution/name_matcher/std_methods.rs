@@ -10,7 +10,12 @@
 //! `.parent()` on `ModuleLocation::parent`). Such a call stays unresolved.
 //! Project-specific names (`.get_outgoing_edges()`) keep resolving as before.
 //!
-//! Two lists back this:
+//! A method a direct dependency of the project defines (`node.walk()`,
+//! `value.as_object()`; names from the crate sources `Cargo.lock` pins,
+//! through [`ResolutionContext::is_rust_dependency_method`]) is held to the
+//! project types the calling file names (`dependency_names`).
+//!
+//! Two std lists back this:
 //!
 //! - [`STD_METHOD_NAMES`], generated from the toolchain's library source
 //!   (`tests/std_method_names.rs` regenerates it), for receivers of unknown
@@ -21,7 +26,7 @@
 //!   a rarer name there still reaches the remaining strategies.
 
 use super::std_method_names::STD_METHOD_NAMES;
-use crate::resolution::types::UnresolvedRef;
+use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::{EdgeKind, Language, receiver_was_dropped};
 
 /// Method names std and its core traits define across many types (iterators,
@@ -137,10 +142,24 @@ pub(super) fn is_std_method_name(name: &str) -> bool {
 /// A Rust call to a std method name whose receiver was dropped: its target
 /// is a method on a type name matching cannot see.
 pub(super) fn is_receiverless_std_method_call(reference: &UnresolvedRef) -> bool {
+    is_dropped_receiver_call(reference) && is_std_method_name(&reference.reference_name)
+}
+
+/// A Rust call whose receiver was dropped to a method a direct dependency
+/// of the project defines (`crate::resolution::rust_deps`): its target may
+/// be on a type name matching cannot see.
+pub(super) fn is_receiverless_dependency_method_call(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+) -> bool {
+    is_dropped_receiver_call(reference)
+        && context.is_rust_dependency_method(&reference.reference_name)
+}
+
+fn is_dropped_receiver_call(reference: &UnresolvedRef) -> bool {
     reference.language == Language::Rust
         && reference.reference_kind == EdgeKind::Calls
         && receiver_was_dropped(reference.metadata.as_ref())
-        && is_std_method_name(&reference.reference_name)
 }
 
 #[cfg(test)]

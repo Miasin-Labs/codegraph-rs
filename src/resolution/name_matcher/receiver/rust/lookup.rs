@@ -3,19 +3,18 @@
 //! definitions a file means.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::bindings::assignment;
 use super::crates::project_crate_dir;
 use super::types::{Named, named_type, signature_return};
 use crate::resolution::name_matcher::rust_path::crate_key;
-use crate::resolution::name_matcher::{UseBinding, UseLeaf, parse_use_leaves, rust_use_leaves};
+use crate::resolution::name_matcher::{UseBinding, UseLeaf};
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::{Language, Node, NodeKind};
 
 /// How many `use`/alias hops a type path is followed through.
 const MAX_HOPS: u8 = 6;
-/// How many lines one `use` declaration may span.
-const MAX_USE_LINES: usize = 20;
 
 /// A type a Rust file names, pinned down as far as the file allows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,9 +303,9 @@ fn resolve_path(path: &str, file: &str, context: &dyn ResolutionContext) -> Reso
 
 /// The modules `file` glob-imports: `use crate::fixture::*` -> `fixture`.
 fn glob_modules(file: &str, context: &dyn ResolutionContext) -> Vec<String> {
-    let nodes = context.get_nodes_in_file(file);
-    rust_use_leaves(&nodes)
-        .into_iter()
+    context
+        .get_rust_use_leaves(file)
+        .iter()
         .filter(|found| found.leaf.binding == UseBinding::Glob)
         .filter_map(|found| found.leaf.path.last().cloned())
         .filter(|module| !matches!(module.as_str(), "crate" | "self" | "super"))
@@ -316,50 +315,29 @@ fn glob_modules(file: &str, context: &dyn ResolutionContext) -> Vec<String> {
 /// The full path a `use` in `file` binds `name` to (`use a::b as name`).
 fn use_path(name: &str, file: &str, context: &dyn ResolutionContext) -> Option<Vec<String>> {
     let binding = UseBinding::Name(name.to_string());
-    let nodes = context.get_nodes_in_file(file);
-    let declared = rust_use_leaves(&nodes)
-        .into_iter()
-        .map(|found| found.leaf)
-        .find(|leaf| leaf.binding == binding);
+    let declared = context
+        .get_rust_use_leaves(file)
+        .iter()
+        .map(|found| &found.leaf)
+        .find(|leaf| leaf.binding == binding)
+        .cloned();
     declared
         .or_else(|| {
-            fn_local_uses(file, name, context)
-                .into_iter()
+            fn_local_uses(file, context)
+                .iter()
                 .find(|leaf| leaf.binding == binding)
+                .cloned()
         })
         .map(|leaf| leaf.path)
 }
 
 /// `use` declarations written inside fn bodies, which the index keeps no
-/// Import node for; only those whose text mentions `name` are parsed.
+/// Import node for.
 pub(in crate::resolution::name_matcher) fn fn_local_uses(
     file: &str,
-    name: &str,
     context: &dyn ResolutionContext,
-) -> Vec<UseLeaf> {
-    let Some(source) = context.read_file_arc(file) else {
-        return Vec::new();
-    };
-    let lines: Vec<&str> = source.lines().collect();
-    let mut leaves = Vec::new();
-    for (index, line) in lines.iter().enumerate() {
-        let trimmed = line.trim_start();
-        if trimmed.len() == line.len() || !trimmed.starts_with("use ") {
-            continue;
-        }
-        let mut declaration = (*line).to_string();
-        for next in lines.iter().skip(index + 1).take(MAX_USE_LINES) {
-            if declaration.contains(';') {
-                break;
-            }
-            declaration.push(' ');
-            declaration.push_str(next);
-        }
-        if declaration.contains(name) {
-            leaves.extend(parse_use_leaves(&declaration));
-        }
-    }
-    leaves
+) -> Arc<[UseLeaf]> {
+    context.get_rust_fn_local_uses(file)
 }
 
 /// `root` is a module of `file`'s crate (a 2018-edition relative path).

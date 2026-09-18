@@ -2,7 +2,7 @@ use super::context::find_named_child;
 use super::extractor::TreeSitterExtractor;
 use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
 use crate::extraction::tree_sitter_types::SyntaxNode;
-use crate::types::{EdgeKind, Language, Metadata, UnresolvedReference, receiver_dropped_metadata};
+use crate::types::{EdgeKind, Language, Metadata, UnresolvedReference, dropped_receiver_metadata};
 
 /// Tree-sitter node kinds that represent constructor invocations
 /// (`new Foo()` and friends). Used by extract_instantiation to emit
@@ -43,7 +43,8 @@ impl<'a> TreeSitterExtractor<'a> {
 
     /// Rust: a method call on anything but a plain identifier or `self`
     /// (`v.iter().next()`, `self.map.get(k)`, `x[0].len()`) is named by its
-    /// bare method, and resolution must know the receiver was dropped.
+    /// bare method, and resolution must know the receiver was dropped (and
+    /// gets it back as compact text, to follow the chain's types).
     fn drops_rust_receiver(&self, receiver: Option<SyntaxNode<'_>>) -> bool {
         self.language == Language::Rust
             && receiver.is_some_and(|receiver| receiver.kind() != "self")
@@ -556,8 +557,15 @@ impl<'a> TreeSitterExtractor<'a> {
                                 }
                             }
                             _ => {
-                                if self.drops_rust_receiver(receiver) {
-                                    metadata = Some(receiver_dropped_metadata());
+                                if let Some(receiver) =
+                                    receiver.filter(|_| self.drops_rust_receiver(receiver))
+                                {
+                                    metadata = Some(dropped_receiver_metadata(
+                                        crate::extraction::languages::rust::receiver_text(
+                                            receiver,
+                                            self.source,
+                                        ),
+                                    ));
                                 }
                                 callee_name = method_name;
                             }

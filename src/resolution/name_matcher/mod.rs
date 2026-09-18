@@ -9,6 +9,7 @@
 
 mod arkui;
 mod chains;
+mod dependency_names;
 mod exact;
 mod file;
 mod fuzzy;
@@ -47,6 +48,7 @@ pub use rust_path::{
     UseVisibility,
     match_rust_path,
     parse_use_leaves,
+    rust_fn_local_uses,
     rust_use_leaves,
 };
 

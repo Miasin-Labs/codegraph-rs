@@ -1,12 +1,14 @@
-//! Rust initializer expressions, read far enough to know where their type
-//! comes from.
+//! Rust initializer expressions and recorded receivers, read far enough to
+//! know where their type comes from.
 //!
-//! An initializer is one head expression followed by postfix operations.
-//! The head either spells a type (`Foo { .. }`, `Foo(..)`, `"text"`), calls
-//! something whose signature does (`Foo::new(..)`, `build(..)`), or copies
-//! another local. Of the postfix operations only those with a known effect
-//! on the type are followed (`?`, `.unwrap()`, `.clone()`, `.await`, ...);
-//! anything else (`.iter()`, `+ 1`) makes the type unknown.
+//! An expression is one head followed by postfix operations. The head
+//! either spells a type (`Foo { .. }`, `Foo(..)`, `"text"`), calls something
+//! whose signature does (`Foo::new(..)`, `build(..)`), is `self`, or copies
+//! another local. The postfix operations are the links of a chain: `?` and
+//! `.unwrap()` unwrap, `.clone()` and `.await` keep the type, `.to_string()`,
+//! `.collect::<T>()` and `as T` spell it, and any other method call, field,
+//! or index is left for the caller to follow on the type it has reached.
+//! Anything else (`+ 1`, a range) makes the type unknown.
 
 use super::types::{
     SLICE,
@@ -14,6 +16,7 @@ use super::types::{
     is_ident_byte,
     matching_close,
     matching_paren,
+    split_top_level,
     starts_uppercase,
 };
 
@@ -26,23 +29,37 @@ pub(super) enum Head<'a> {
     Call { path: Vec<&'a str>, args: &'a str },
     /// Another local, moved, copied, or borrowed.
     Local(&'a str),
+    /// `self`.
+    SelfValue,
+    /// `(inner)`.
+    Paren(&'a str),
 }
 
-/// A postfix operation that changes the type in a known way.
+/// A postfix operation: one link of a chain.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Tail {
+pub(super) enum Tail<'a> {
     /// `?`, `.unwrap()`, `.expect(..)`: `Result<T, _>`/`Option<T>` to `T`.
     Unwrap,
     /// `.clone()`, `.to_owned()`, `.await`: the type is kept.
     Same,
     /// `.to_string()`, `.collect::<T>()`, `as T`: the type is spelled.
     Spelled(String),
+    /// Any other method call, with its turbofish; `no_args` for `m()`.
+    Method {
+        name: &'a str,
+        turbofish: Option<&'a str>,
+        no_args: bool,
+    },
+    /// `.field` or `.0`.
+    Field(&'a str),
+    /// `[index]`.
+    Index,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Initializer<'a> {
     pub(super) head: Head<'a>,
-    pub(super) tails: Vec<Tail>,
+    pub(super) tails: Vec<Tail<'a>>,
 }
 
 const KEYWORDS: &[&str] = &[
@@ -112,14 +129,28 @@ fn matching_string(text: &str, start: usize) -> Option<usize> {
     None
 }
 
+/// The elements of `text` when it is one tuple expression `(a, b, ..)`.
+pub(super) fn tuple_expression(text: &str) -> Option<Vec<&str>> {
+    let text = text.trim();
+    if !text.starts_with('(') || matching_paren(text)? != text.len() - 1 {
+        return None;
+    }
+    let elements = split_top_level(&text[1..text.len() - 1], b',');
+    (elements.len() > 1).then_some(elements)
+}
+
 /// Read `text` (one expression, without the trailing `;`).
 pub(super) fn parse_initializer(text: &str) -> Option<Initializer<'_>> {
-    let text = text.trim();
-    let text = text
+    let mut text = text.trim();
+    // A borrow or deref of the whole expression runs the same methods.
+    while let Some(rest) = text
         .strip_prefix("&mut ")
         .or_else(|| text.strip_prefix('&'))
-        .unwrap_or(text);
-    let (head, rest) = head(text.trim_start())?;
+        .or_else(|| text.strip_prefix('*'))
+    {
+        text = rest.trim_start();
+    }
+    let (head, rest) = head(text)?;
     Some(Initializer {
         head,
         tails: tails(rest)?,
@@ -140,6 +171,10 @@ fn head(text: &str) -> Option<(Head<'_>, &str)> {
         b'[' => {
             let close = matching_paren(text)?;
             Some((named(SLICE), &text[close + 1..]))
+        }
+        b'(' => {
+            let close = matching_paren(text)?;
+            Some((Head::Paren(&text[1..close]), &text[close + 1..]))
         }
         b'0'..=b'9' => {
             let digits = |from: usize| {
@@ -210,12 +245,16 @@ fn literal_type<'a>(path: &[&'a str]) -> Option<&'a str> {
 /// A path used as a value: a local, a unit struct, or a unit variant.
 fn path_value<'a>(path: &[&'a str]) -> Option<Head<'a>> {
     let last = *path.last()?;
+    if path == ["self"] {
+        return Some(Head::SelfValue);
+    }
     if !starts_uppercase(last) {
         return (path.len() == 1).then_some(Head::Local(last));
     }
     if last.len() > 1 && !last.bytes().any(|byte| byte.is_ascii_lowercase()) {
-        // `CONST` or `Type::CONST`: the constant's type is not written here.
-        return None;
+        // A file-level `STATIC` is looked up like a local; the type of
+        // `Type::CONST` is not written here.
+        return (path.len() == 1).then_some(Head::Local(last));
     }
     if path == ["None"] {
         return Some(named("Option"));
@@ -254,9 +293,9 @@ fn path(text: &str) -> Option<(Vec<&str>, &str)> {
     }
 }
 
-/// The postfix operations after the head, or `None` when one of them has
-/// an effect on the type this module does not follow.
-fn tails(mut rest: &str) -> Option<Vec<Tail>> {
+/// The postfix operations after the head, or `None` when the text goes on
+/// with something that is not one (`+ 1`, `..`).
+fn tails(mut rest: &str) -> Option<Vec<Tail<'_>>> {
     let mut tails = Vec::new();
     loop {
         rest = rest.trim_start();
@@ -272,47 +311,65 @@ fn tails(mut rest: &str) -> Option<Vec<Tail>> {
             tails.push(Tail::Spelled(after.trim().to_string()));
             return Some(tails);
         }
-        let after = rest.strip_prefix('.')?.trim_start();
-        if let Some(after) = after.strip_prefix("await") {
-            if !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
-                tails.push(Tail::Same);
-                rest = after;
-                continue;
-            }
+        if rest.starts_with('[') {
+            let close = matching_paren(rest)?;
+            tails.push(Tail::Index);
+            rest = &rest[close + 1..];
+            continue;
         }
-        let (method, turbofish, after) = method_call(after)?;
-        tails.push(match method {
-            "unwrap" | "expect" | "unwrap_or_default" | "unwrap_or_else" | "unwrap_or" => {
+        let after = rest.strip_prefix('.')?.trim_start();
+        let end = after
+            .bytes()
+            .position(|byte| !is_ident_byte(byte))
+            .unwrap_or(after.len());
+        // `a..b` is a range, not a link.
+        let name = Some(&after[..end]).filter(|name| !name.is_empty())?;
+        let next = after[end..].trim_start();
+        if name == "await" {
+            tails.push(Tail::Same);
+            rest = next;
+            continue;
+        }
+        if !next.starts_with('(') && !next.starts_with("::") {
+            tails.push(Tail::Field(name));
+            rest = next;
+            continue;
+        }
+        let (turbofish, no_args, after) = call_suffix(next)?;
+        tails.push(match (name, turbofish) {
+            ("unwrap" | "expect" | "unwrap_or_default" | "unwrap_or_else" | "unwrap_or", _) => {
                 Tail::Unwrap
             }
-            "clone" | "to_owned" => Tail::Same,
-            "to_string" => Tail::Spelled("String".into()),
-            "collect" => Tail::Spelled(turbofish?.to_string()),
-            _ => return None,
+            ("clone" | "to_owned", _) => Tail::Same,
+            ("to_string", _) => Tail::Spelled("String".into()),
+            ("collect", Some(spelled)) => Tail::Spelled(spelled.to_string()),
+            _ => Tail::Method {
+                name,
+                turbofish,
+                no_args,
+            },
         });
         rest = after;
     }
 }
 
-/// `name[::<T>](args)` -> (`name`, `T`, what follows the call).
-fn method_call(text: &str) -> Option<(&str, Option<&str>, &str)> {
-    let end = text
-        .bytes()
-        .position(|byte| !is_ident_byte(byte))
-        .unwrap_or(text.len());
-    let name = &text[..end];
-    let mut rest = &text[end..];
+/// `[::<T>](args)` after a method name -> (`T`, whether `args` is empty,
+/// what follows the call).
+fn call_suffix(text: &str) -> Option<(Option<&str>, bool, &str)> {
+    let mut rest = text;
     let mut turbofish = None;
     if let Some(generics) = rest.strip_prefix("::") {
+        let generics = generics.trim_start();
         let close = matching_close(generics)?;
         turbofish = Some(&generics[1..close]);
-        rest = &generics[close + 1..];
+        rest = generics[close + 1..].trim_start();
     }
     if !rest.starts_with('(') {
         return None;
     }
     let close = matching_paren(rest)?;
-    Some((name, turbofish, &rest[close + 1..]))
+    let no_args = rest[1..close].trim().is_empty();
+    Some((turbofish, no_args, &rest[close + 1..]))
 }
 
 #[cfg(test)]
@@ -347,7 +404,8 @@ mod tests {
         assert_eq!(head("&mut other"), Some(Head::Local("other")));
         assert_eq!(head("vec![1, 2]"), Some(Head::Named("Vec".into())));
         assert_eq!(head("\"text\""), Some(Head::Named("str".into())));
-        assert_eq!(head("MAX_DEPTH"), None);
+        assert_eq!(head("MAX_DEPTH"), Some(Head::Local("MAX_DEPTH")));
+        assert_eq!(head("Limits::MAX"), None);
         assert_eq!(head("match x { _ => 1 }"), None);
         assert_eq!(head("a + b"), None);
     }
@@ -358,10 +416,69 @@ mod tests {
         assert_eq!(init.tails, [Tail::Unwrap, Tail::Same]);
         let init = parse_initializer("load().await.expect(\"loaded\")").unwrap();
         assert_eq!(init.tails, [Tail::Same, Tail::Unwrap]);
-        let init = parse_initializer("names.iter().collect::<Vec<_>>()");
-        assert_eq!(init, None);
+        let init = parse_initializer("names.iter().collect::<Vec<_>>()").unwrap();
+        assert_eq!(
+            init.tails,
+            [
+                Tail::Method {
+                    name: "iter",
+                    turbofish: None,
+                    no_args: true
+                },
+                Tail::Spelled("Vec<_>".into())
+            ]
+        );
         let init = parse_initializer("raw.collect::<HashSet<u32>>()").unwrap();
         assert_eq!(init.tails, [Tail::Spelled("HashSet<u32>".into())]);
+        assert_eq!(parse_initializer("a + 1"), None);
+        assert_eq!(parse_initializer("a..b"), None);
+    }
+
+    /// Recorded receivers: `self`, fields, indexes, and method calls with
+    /// elided arguments are links a caller follows.
+    #[test]
+    fn reads_chain_links() {
+        let init = parse_initializer("self.map.lock().unwrap().get(..)[..].0").unwrap();
+        assert_eq!(init.head, Head::SelfValue);
+        assert_eq!(
+            init.tails,
+            [
+                Tail::Field("map"),
+                Tail::Method {
+                    name: "lock",
+                    turbofish: None,
+                    no_args: true
+                },
+                Tail::Unwrap,
+                Tail::Method {
+                    name: "get",
+                    turbofish: None,
+                    no_args: false
+                },
+                Tail::Index,
+                Tail::Field("0"),
+            ]
+        );
+        let init = parse_initializer("(&mut *guard).tick()").unwrap();
+        assert_eq!(init.head, Head::Paren("&mut *guard"));
+        let init = parse_initializer("Rule::new(..).neg(..)").unwrap();
+        assert_eq!(
+            init.head,
+            Head::Call {
+                path: vec!["Rule", "new"],
+                args: ".."
+            }
+        );
+    }
+
+    #[test]
+    fn reads_tuple_expressions() {
+        assert_eq!(
+            super::tuple_expression(" (self.context, f(a, b)) "),
+            Some(vec!["self.context", "f(a, b)"])
+        );
+        assert_eq!(super::tuple_expression("(a)"), None);
+        assert_eq!(super::tuple_expression("(a, b).0"), None);
     }
 
     #[test]

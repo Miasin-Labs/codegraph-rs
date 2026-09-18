@@ -10,8 +10,9 @@ use crate::db::QueryBuilder;
 use crate::error::Result;
 use crate::resolution::go_module::load_go_module;
 use crate::resolution::import_resolver::load_cpp_include_dirs;
-use crate::resolution::name_matcher::RustUse;
+use crate::resolution::name_matcher::{RustUse, UseLeaf};
 use crate::resolution::path_aliases::load_project_aliases;
+use crate::resolution::rust_deps::{self, RustDependencyApi};
 use crate::resolution::types::{AliasMap, GoModule, ImportMapping, ReExport, WorkspacePackages};
 use crate::resolution::workspace_packages::load_workspace_packages;
 use crate::types::{Language, Node, NodeKind};
@@ -82,10 +83,12 @@ pub(super) struct SnapshotContext {
     go_module: Option<GoModule>,
     workspace_packages: Option<WorkspacePackages>,
     cpp_include_dirs: Vec<String>,
+    rust_dependency_api: Option<RustDependencyApi>,
     file_cache: Mutex<HashMap<String, Option<Arc<str>>>>,
     import_mapping_cache: Mutex<HashMap<ImportCacheKey, Vec<ImportMapping>>>,
     re_export_cache: Mutex<HashMap<ImportCacheKey, Vec<ReExport>>>,
     rust_use_cache: Mutex<HashMap<String, Arc<[RustUse]>>>,
+    rust_fn_use_cache: Mutex<HashMap<String, Arc<[UseLeaf]>>>,
 }
 
 impl ResolverSnapshot {
@@ -167,10 +170,12 @@ impl SnapshotContext {
             go_module: load_go_module(project_root),
             workspace_packages: load_workspace_packages(project_root),
             cpp_include_dirs: load_cpp_include_dirs(project_root),
+            rust_dependency_api: rust_deps::load(std::path::Path::new(project_root)),
             file_cache: Mutex::new(HashMap::new()),
             import_mapping_cache: Mutex::new(HashMap::new()),
             re_export_cache: Mutex::new(HashMap::new()),
             rust_use_cache: Mutex::new(HashMap::new()),
+            rust_fn_use_cache: Mutex::new(HashMap::new()),
         })
     }
 

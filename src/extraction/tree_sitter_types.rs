@@ -26,7 +26,7 @@ use crate::types::{
     NodeKind,
     UnresolvedReference,
     Visibility,
-    receiver_dropped_metadata,
+    dropped_receiver_metadata,
 };
 
 /// Alias matching the TS sources' `SyntaxNode` import from web-tree-sitter.
@@ -152,6 +152,9 @@ pub struct TokenCall {
     /// `self`, so `name` is the bare method (see
     /// [`RECEIVER_DROPPED`](crate::types::RECEIVER_DROPPED)).
     pub receiver_dropped: bool,
+    /// The dropped receiver's compacted text, when it could be written down
+    /// (see [`RECEIVER_TEXT`](crate::types::RECEIVER_TEXT)).
+    pub receiver: Option<String>,
 }
 
 impl TokenCall {
@@ -163,13 +166,16 @@ impl TokenCall {
             line: start.row as u32 + 1,
             column: start.column as u32,
             receiver_dropped: false,
+            receiver: None,
         }
     }
 
-    /// The same call, marked as having dropped its receiver.
-    pub fn with_dropped_receiver(self) -> Self {
+    /// The same call, marked as having dropped its receiver, which reads
+    /// `receiver` when it could be written down.
+    pub fn with_dropped_receiver(self, receiver: Option<String>) -> Self {
         TokenCall {
             receiver_dropped: true,
+            receiver,
             ..self
         }
     }
@@ -185,7 +191,9 @@ impl TokenCall {
             file_path: None,
             language: None,
             candidates: None,
-            metadata: self.receiver_dropped.then(receiver_dropped_metadata),
+            metadata: self
+                .receiver_dropped
+                .then(|| dropped_receiver_metadata(self.receiver)),
         }
     }
 }

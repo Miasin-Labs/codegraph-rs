@@ -15,21 +15,39 @@
 //! into scope (`use Kind::*`, `use Kind::{Leaf}`).
 //!
 //! A method call on a dropped receiver resolves on the receiver's type when
-//! the receiver is `self.field` (the field's declared type), and otherwise
-//! stays unresolved when std defines a method of its name (see
-//! [`is_receiverless_std_method_call`]).
+//! the chain extraction recorded can be typed link by link (`self.field`,
+//! `Type::new(..).build()`, `self.cache.borrow_mut()`; see
+//! [`infer_rust_chain_type`]), and otherwise stays unresolved when std
+//! defines a method of its name (see [`is_receiverless_std_method_call`]);
+//! one a direct dependency defines reaches only a method of a type the file
+//! names (see `dependency_names`).
 //!
 //! The same scope rules gate bare-named references ([`match_rust_reference`]):
 //! an `impl`/derive/supertrait target must be a trait, and an enum variant is
 //! reachable unqualified only through a `use`.
 
+use super::dependency_names::FileText;
 use super::exact::pick_exact;
-use super::receiver::{file_is_module, fn_local_uses, is_local_at_call, self_field_receiver_type};
+use super::receiver::{
+    RustType,
+    file_is_module,
+    fn_local_uses,
+    infer_rust_chain_type,
+    is_local_at_call,
+    self_field_receiver_type,
+};
 use super::rust_method::match_typed_call;
-use super::std_methods::is_receiverless_std_method_call;
+use super::std_methods::{is_receiverless_dependency_method_call, is_receiverless_std_method_call};
 use super::{UseBinding, UseLeaf};
 use crate::resolution::types::{ResolutionContext, ResolvedRef, UnresolvedRef};
-use crate::types::{EdgeKind, Language, Node, NodeKind, receiver_was_dropped};
+use crate::types::{
+    EdgeKind,
+    Language,
+    Node,
+    NodeKind,
+    dropped_receiver_text,
+    receiver_was_dropped,
+};
 
 /// Values the std prelude brings into every module that a bare call can
 /// run: the `Option`/`Result` variants and the prelude fns.
@@ -61,9 +79,18 @@ pub(super) fn match_rust_call(
 ) -> Option<Option<ResolvedRef>> {
     let syntax = Syntax::of(reference, context)?;
     if syntax == Syntax::DroppedReceiver {
-        // `self.graph.get(x)`: the field's declared type decides, as for a
-        // typed local.
-        let typed = self_field_receiver_type(reference, context)
+        // No project method has the name: nothing to type the chain for.
+        let named = context.get_nodes_by_name(&reference.reference_name);
+        if !named
+            .iter()
+            .any(|node| node.language == Language::Rust && node.kind == NodeKind::Method)
+        {
+            return Some(None);
+        }
+        // `self.graph.get(x)`, `self.cache.borrow_mut().clear()`: the
+        // receiver's type, followed link by link, decides as for a typed
+        // local.
+        let typed = dropped_receiver_type(reference, context)
             .and_then(|ty| match_typed_call(&ty, &reference.reference_name, reference, context));
         if let Some(decided) = typed {
             return Some(decided);
@@ -72,11 +99,17 @@ pub(super) fn match_rust_call(
     if is_receiverless_std_method_call(reference) {
         return Some(None);
     }
+    // A dependency's method name reaches only types the file names.
+    let file = is_receiverless_dependency_method_call(reference, context)
+        .then(|| FileText::read(reference, context));
     let mut scope = FileScope::new(reference, context);
     let candidates: Vec<Node> = context
         .get_nodes_by_name(&reference.reference_name)
         .into_iter()
-        .filter(|node| syntax.admits(node, &mut scope))
+        .filter(|node| {
+            syntax.admits(node, &mut scope)
+                && file.as_ref().is_none_or(|file| file.names_owner_of(node))
+        })
         .collect();
     if candidates.is_empty() || syntax.names_local(reference, context) {
         return Some(None);
@@ -95,8 +128,22 @@ pub(crate) fn rust_call_admits(
         return true;
     };
     !is_receiverless_std_method_call(reference)
+        && (!is_receiverless_dependency_method_call(reference, context)
+            || FileText::read(reference, context).names_owner_of(target))
         && syntax.admits(target, &mut FileScope::new(reference, context))
         && !syntax.names_local(reference, context)
+}
+
+/// The type of the receiver a Rust method call dropped: its recorded text
+/// followed link by link, else (no text recorded) a `self.field` read from
+/// the call site.
+fn dropped_receiver_type(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+) -> Option<RustType> {
+    dropped_receiver_text(reference.metadata.as_ref())
+        .and_then(|receiver| infer_rust_chain_type(receiver, reference, context))
+        .or_else(|| self_field_receiver_type(reference, context))
 }
 
 /// Decide a bare-named Rust reference whose role limits its target: an
@@ -299,7 +346,7 @@ impl<'a> FileScope<'a> {
                 .iter()
                 .map(|found| found.leaf.clone())
                 .collect();
-            leaves.extend(fn_local_uses(file, "", self.context));
+            leaves.extend(fn_local_uses(file, self.context).iter().cloned());
             leaves.retain(|leaf| {
                 leaf.path
                     .first()

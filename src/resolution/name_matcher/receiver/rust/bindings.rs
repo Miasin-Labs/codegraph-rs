@@ -26,6 +26,31 @@ pub(super) enum Binding<'a> {
     /// `let Some(x) = …`, `if let Ok(x) = …`: the initializer's type with
     /// `Option`/`Result` unwrapped. `init` is as for [`Binding::Let`].
     Unwrapped { init: usize },
+    /// `let (a, x) = …` or `let (a, x): (A, X) = …`: element `position` of
+    /// the tuple the annotation or initializer has. `init` is as for
+    /// [`Binding::Let`].
+    Tuple {
+        annotation: Option<&'a str>,
+        init: usize,
+        position: usize,
+    },
+    /// `for x in …` (or `for (i, x) in …`, element `position` of the
+    /// item): an item of the iterable starting at byte `init`.
+    Item {
+        init: usize,
+        position: Option<usize>,
+    },
+    /// Field `position` of the tuple variant `variant` (`Backend::Tty(tty)
+    /// =>`, `if let Kind::Leaf(x) = …`): the type its declaration writes.
+    Variant { variant: &'a str, position: usize },
+    /// Untyped parameter `param` of the closure whose `|` is at byte `open`
+    /// (`|x|`, or element `position` of `|(k, x)|`): what the method the
+    /// closure is passed to hands it.
+    Param {
+        open: usize,
+        param: usize,
+        position: Option<usize>,
+    },
     /// `|x: T|`.
     Typed(Cow<'a, str>),
     /// A binding whose type the line does not spell.
@@ -57,8 +82,21 @@ pub(super) fn nearest_binding<'a>(
         }
     };
     for (position, params) in closure_params(line, next_lines) {
-        if let Some(binding) = closure_binding(params, name) {
-            consider(position, binding);
+        match closure_binding(params, name) {
+            Some(Binding::Param {
+                param,
+                position: element,
+                ..
+            }) => consider(
+                position,
+                Binding::Param {
+                    open: position,
+                    param,
+                    position: element,
+                },
+            ),
+            Some(binding) => consider(position, binding),
+            None => {}
         }
     }
     if word_positions(line, name).next().is_some() {
@@ -70,13 +108,18 @@ pub(super) fn nearest_binding<'a>(
             }
         }
         for position in word_positions(line, "for") {
-            if for_binds(&line[position + 3..], name) {
-                consider(position, Binding::Opaque);
+            if let Some(binding) = for_binding(line, position + 3, name) {
+                consider(position, binding);
             }
         }
         if let Some((arrow, pattern)) = arm_pattern(line) {
             if binds(pattern, name) {
-                consider(arrow, Binding::Opaque);
+                let pattern = pattern.trim().trim_start_matches('|').trim_start();
+                let binding = variant_position(pattern, name).map_or(
+                    Binding::Opaque,
+                    |(variant, position)| Binding::Variant { variant, position },
+                );
+                consider(arrow, binding);
             }
         }
     }
@@ -128,10 +171,56 @@ fn let_binding<'a>(line: &'a str, keyword_end: usize, name: &str) -> Option<Bind
             .and_then(|inner| inner.strip_suffix(')'))
             .is_some_and(|inner| strip_binding_mode(inner) == name)
     });
+    if !unwrapped {
+        if let Some((variant, position)) = variant_position(pattern, name) {
+            return Some(Binding::Variant { variant, position });
+        }
+    }
     match init {
         Some(init) if unwrapped && annotation.is_none() => Some(Binding::Unwrapped { init }),
-        _ => binds(pattern, name).then_some(Binding::Opaque),
+        Some(init) => match tuple_position(pattern, name) {
+            Some(position) => Some(Binding::Tuple {
+                annotation: annotation.filter(|text| !text.is_empty()),
+                init,
+                position,
+            }),
+            None => binds(pattern, name).then_some(Binding::Opaque),
+        },
+        None => binds(pattern, name).then_some(Binding::Opaque),
     }
+}
+
+/// The tuple-variant pattern `Kind::Leaf(a, name)` (or `Leaf(name)`)
+/// binding `name` as a plain field: the variant's path and the field's
+/// position. `Some(..)`/`Ok(..)` and alternatives (`A(x) | B(x)`) are not.
+fn variant_position<'a>(pattern: &'a str, name: &str) -> Option<(&'a str, usize)> {
+    let pattern = pattern.split(" if ").next()?.trim();
+    let open = pattern.find('(')?;
+    let (path, fields) = (pattern[..open].trim(), &pattern[open..]);
+    let last = path.rsplit("::").next()?;
+    let is_path = path.split("::").all(|segment| {
+        !segment.is_empty()
+            && segment
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    });
+    if !is_path
+        || !last.starts_with(|c: char| c.is_ascii_uppercase())
+        || matches!(path, "Some" | "Ok" | "Err")
+    {
+        return None;
+    }
+    let inner = fields.strip_prefix('(')?.strip_suffix(')')?;
+    let position = tuple_position(&format!("({inner})"), name)?;
+    Some((path, position))
+}
+
+/// Where `name` is bound in the flat tuple pattern `(a, mut name, _)`.
+fn tuple_position(pattern: &str, name: &str) -> Option<usize> {
+    let inner = pattern.strip_prefix('(')?.strip_suffix(')')?;
+    split_top_level(inner, b',')
+        .iter()
+        .position(|element| strip_binding_mode(element) == name)
 }
 
 /// `mut x`, `ref x`, `ref mut x` -> `x`.
@@ -156,14 +245,34 @@ pub(super) fn assignment(text: &str) -> Option<usize> {
     })
 }
 
-/// `for <pattern> in` binds `name`.
-fn for_binds(after_for: &str, name: &str) -> bool {
+/// `for <pattern> in <iterable>` binding `name`, the `for` keyword ending at
+/// `keyword_end`: an item of the iterable when the pattern is `name` or a
+/// flat tuple holding it (`for (i, name) in …`), else opaque.
+fn for_binding<'a>(line: &'a str, keyword_end: usize, name: &str) -> Option<Binding<'a>> {
+    let after_for = &line[keyword_end..];
     if !after_for.starts_with(char::is_whitespace) {
-        return false;
+        return None;
     }
-    word_positions(after_for, "in")
-        .next()
-        .is_some_and(|end| binds(&after_for[..end], name))
+    let end = word_positions(after_for, "in").next()?;
+    let pattern = &after_for[..end];
+    if !binds(pattern, name) {
+        return None;
+    }
+    let init = keyword_end + end + 2;
+    let pattern = strip_binding_mode(pattern);
+    if pattern == name {
+        return Some(Binding::Item {
+            init,
+            position: None,
+        });
+    }
+    Some(match tuple_position(pattern, name) {
+        Some(position) => Binding::Item {
+            init,
+            position: Some(position),
+        },
+        None => Binding::Opaque,
+    })
 }
 
 /// The parameter lists of closures opened on this line, with their offsets.
@@ -223,26 +332,49 @@ fn closure_binding<'a>(params: Cow<'a, str>, name: &str) -> Option<Binding<'a>> 
         Cow::Borrowed(params) => param_binding(params, name),
         Cow::Owned(params) => param_binding(&params, name).map(|binding| match binding {
             Binding::Typed(annotation) => Binding::Typed(Cow::Owned(annotation.into_owned())),
+            Binding::Param {
+                open,
+                param,
+                position,
+            } => Binding::Param {
+                open,
+                param,
+                position,
+            },
             _ => Binding::Opaque,
         }),
     }
 }
 
-/// The binding of `name` in one closure's parameter list.
+/// The binding of `name` in one closure's parameter list; an untyped one
+/// is [`Binding::Param`] with `open` left for the caller to fill in.
 fn param_binding<'a>(params: &'a str, name: &str) -> Option<Binding<'a>> {
-    split_top_level(params, b',').into_iter().find_map(|param| {
-        let (pattern, annotation) = match type_colon(param) {
-            Some(colon) => (&param[..colon], Some(param[colon + 1..].trim())),
-            None => (param, None),
-        };
-        let pattern = strip_binding_mode(pattern.trim().trim_start_matches('&'));
-        if pattern == name {
-            return Some(annotation.map_or(Binding::Opaque, |annotation| {
-                Binding::Typed(Cow::Borrowed(annotation))
-            }));
-        }
-        binds(pattern, name).then_some(Binding::Opaque)
-    })
+    split_top_level(params, b',')
+        .into_iter()
+        .enumerate()
+        .find_map(|(index, param)| {
+            let (pattern, annotation) = match type_colon(param) {
+                Some(colon) => (&param[..colon], Some(param[colon + 1..].trim())),
+                None => (param, None),
+            };
+            let pattern = strip_binding_mode(pattern.trim().trim_start_matches('&'));
+            let untyped = |position| Binding::Param {
+                open: 0,
+                param: index,
+                position,
+            };
+            if pattern == name {
+                return Some(annotation.map_or(untyped(None), |annotation| {
+                    Binding::Typed(Cow::Borrowed(annotation))
+                }));
+            }
+            if annotation.is_none() {
+                if let Some(position) = tuple_position(pattern, name) {
+                    return Some(untyped(Some(position)));
+                }
+            }
+            binds(pattern, name).then_some(Binding::Opaque)
+        })
 }
 
 /// The pattern of a match arm written on this line (`Some(x) if … =>`),
@@ -306,7 +438,26 @@ mod tests {
             })
         );
         assert_eq!(binding("const fn x() -> u8 {", "x"), None);
-        assert_eq!(binding("let (a, x) = pair;", "x"), Some(Binding::Opaque));
+        assert_eq!(
+            binding("let (a, mut x) = pair;", "x"),
+            Some(Binding::Tuple {
+                annotation: None,
+                init: 16,
+                position: 1
+            })
+        );
+        assert_eq!(
+            binding("let (a, x): (A, X) = pair;", "x"),
+            Some(Binding::Tuple {
+                annotation: Some("(A, X)"),
+                init: 20,
+                position: 1
+            })
+        );
+        assert_eq!(
+            binding("let (a, (b, x)) = pair;", "x"),
+            Some(Binding::Opaque)
+        );
         assert_eq!(binding("let y = x.len();", "x"), None);
     }
 
@@ -330,6 +481,20 @@ mod tests {
     fn reads_pattern_bindings() {
         assert_eq!(
             binding("for (i, x) in xs.iter() {", "x"),
+            Some(Binding::Item {
+                init: 13,
+                position: Some(1)
+            })
+        );
+        assert_eq!(
+            binding("    for x in &self.nodes {", "x"),
+            Some(Binding::Item {
+                init: 12,
+                position: None
+            })
+        );
+        assert_eq!(
+            binding("for Pair(a, x) in xs {", "x"),
             Some(Binding::Opaque)
         );
         assert_eq!(binding("impl Tr for X {", "X"), None);
@@ -339,7 +504,19 @@ mod tests {
         );
         assert_eq!(
             binding("xs.iter().map(|x| x.len())", "x"),
-            Some(Binding::Opaque)
+            Some(Binding::Param {
+                open: 14,
+                param: 0,
+                position: None
+            })
+        );
+        assert_eq!(
+            binding("m.iter().max_by(|(ka, a), (kb, b)| a.cmp(b))", "kb"),
+            Some(Binding::Param {
+                open: 16,
+                param: 1,
+                position: Some(0)
+            })
         );
         assert_eq!(binding("if a || x.is_empty() || b {", "x"), None);
         assert_eq!(
@@ -347,6 +524,27 @@ mod tests {
             Some(Binding::Opaque)
         );
         assert_eq!(binding("    Kind::A if x.ok() => 1,", "x"), None);
+        assert_eq!(
+            binding(
+                "    Backend::Headless(headless) => headless.render(),",
+                "headless"
+            ),
+            Some(Binding::Variant {
+                variant: "Backend::Headless",
+                position: 0
+            })
+        );
+        assert_eq!(
+            binding("if let Kind::Pair(a, ref x) = value {", "x"),
+            Some(Binding::Variant {
+                variant: "Kind::Pair",
+                position: 1
+            })
+        );
+        assert_eq!(
+            binding("    A(x) | B(x) => x.len(),", "x"),
+            Some(Binding::Opaque)
+        );
         assert_eq!(binding("    Foo { x: v } => v,", "x"), None);
     }
 

@@ -8,8 +8,8 @@
 //!   (smart pointers such as `Box<Foo>` and `Arc<Foo>` deref to `Foo`);
 //! - an initializer that spells the type (`Foo { .. }`, `Foo(..)`,
 //!   `Kind::Leaf`, a literal) or calls something whose signature does
-//!   (`Foo::new(..)`, `Foo::open(p)?`, `load_graph()`), optionally followed
-//!   by `?`, `.unwrap()`, `.clone()`, `.await`, and the like;
+//!   (`Foo::new(..)`, `Foo::open(p)?`, `load_graph()`), followed by links
+//!   whose types are known (see below);
 //! - `let Some(x) = …` / `if let Ok(x) = …` over such an initializer;
 //! - another local it copies or borrows (`let y = &x;`).
 //!
@@ -17,30 +17,46 @@
 //! `Some(x) =>`, `let x = a.iter();`) shadows every earlier one, so it ends
 //! the search with no answer rather than reading past it.
 //!
+//! A chained receiver (`self.cache.borrow_mut().clear()`), which reaches
+//! resolution as its recorded text ([`infer_rust_chain_type`]), is typed
+//! the same way: its head is `self`, a local, or a call, and each link after
+//! it is followed on the type reached so far ([`links`]) — a field's
+//! declared type, a project method's declared return type, or what a std
+//! wrapper or container hands out ([`adaptors`]). The first link whose type
+//! is not known ends the chain with no answer: the rest is never guessed.
+//!
 //! Type names are resolved the way the file's `use` declarations and the
 //! project's type aliases say ([`lookup`]): `use tree_sitter::Node` makes
 //! `Node` an external type even when the project defines its own `Node`.
 
+mod adaptors;
 mod bindings;
+mod calls;
+mod closures;
 mod crates;
 mod expr;
 mod fields;
+mod items;
+mod line_index;
+mod links;
 mod locals;
 mod lookup;
 mod types;
+mod variants;
 
 use bindings::{Binding, binding_in_line};
-use expr::{Head, Tail, parse_initializer, scrutinee_end, statement_end};
+use expr::{Head, Tail, parse_initializer, scrutinee_end, statement_end, tuple_expression};
 pub(in crate::resolution::name_matcher) use fields::self_field_receiver_type;
+use locals::caller_fn;
 pub(in crate::resolution::name_matcher) use locals::is_local_at_call;
+use lookup::resolve_named;
 pub(in crate::resolution::name_matcher) use lookup::{
     RustType,
     file_is_module,
     fn_local_uses,
     resolve_type,
 };
-use lookup::{assoc_fn_return, free_fn_return, resolve_named};
-use types::{is_deref_wrapper, named_type, signature_params, starts_uppercase, unwrapped};
+use types::{named_type, signature_params, unwrapped};
 
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::{Language, Node, NodeKind};
@@ -51,33 +67,46 @@ const MAX_DEPTH: u8 = 4;
 const MAX_STATEMENT_LINES: usize = 40;
 const MAX_LINE_BYTES: usize = 10_000;
 
-/// Std traits called as `Trait::f(..)`: the type is whatever `Self` is.
-const STD_TRAITS: &[&str] = &[
-    "Clone",
-    "Default",
-    "From",
-    "FromIterator",
-    "FromStr",
-    "Into",
-    "TryFrom",
-    "TryInto",
-];
-
 /// The type of the Rust local `receiver` at `reference`'s call site.
 pub(in crate::resolution::name_matcher) fn infer_rust_receiver_type(
     receiver: &str,
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
 ) -> Option<RustType> {
+    with_inference(reference, context, |inference, site| {
+        let value = inference.local_value(receiver, site.line, site.column, 0)?;
+        inference.resolve_link(value)
+    })
+}
+
+/// The type of the receiver a method call at `reference` dropped, from the
+/// text extraction recorded for it (`self.cache.borrow_mut()`,
+/// `Rule::new(..)`): the head's type, then each link's, as far as every
+/// link is known. `None` when some link's type is not.
+pub(in crate::resolution::name_matcher) fn infer_rust_chain_type(
+    receiver: &str,
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+) -> Option<RustType> {
+    with_inference(reference, context, |inference, site| {
+        let value = inference.expression_value(receiver, site, 0)?;
+        inference.resolve_link(value)
+    })
+}
+
+/// Run `infer` with the inference state for `reference`'s call site, and
+/// the site itself (only the text before the call counts).
+fn with_inference<T>(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+    infer: impl FnOnce(&Inference<'_>, Site) -> Option<T>,
+) -> Option<T> {
     let source = context.read_file_arc(&reference.file_path)?;
-    let lines: Vec<&str> = source
-        .split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
-        .collect();
+    let lines = line_index::lines(&source);
     let call_line = (reference.line as usize)
         .saturating_sub(1)
         .min(lines.len().checked_sub(1)?);
-    let scope = enclosing_fn(reference, context);
+    let scope = caller_fn(reference, context);
     let owner = scope
         .as_ref()
         .and_then(method_owner)
@@ -93,9 +122,29 @@ pub(in crate::resolution::name_matcher) fn infer_rust_receiver_type(
         signature: scope.as_ref().and_then(|node| node.signature.as_deref()),
         owner,
     };
-    let column = Some(reference.column as usize);
-    let value = inference.local_value(receiver, Some(call_line), column, 0)?;
-    inference.resolve(value)
+    let site = Site {
+        line: Some(call_line),
+        column: Some(reference.column as usize),
+    };
+    infer(&inference, site)
+}
+
+/// Where an expression is written: the locals it names are the ones bound
+/// at or above `line`, before byte `column` of it when set.
+#[derive(Debug, Clone, Copy)]
+struct Site {
+    line: Option<usize>,
+    column: Option<usize>,
+}
+
+impl Site {
+    /// An initializer on line `index`, whose locals were bound above it.
+    fn before(index: usize) -> Site {
+        Site {
+            line: index.checked_sub(1),
+            column: None,
+        }
+    }
 }
 
 /// The innermost Rust fn or method whose lines contain the reference.
@@ -122,6 +171,7 @@ fn method_owner(node: &Node) -> Option<&str> {
 }
 
 /// A type on its way through an initializer's postfix operations.
+#[derive(Debug, Clone)]
 enum Value {
     /// A type as written in `file`, where `Self` is `self_ty`.
     Written {
@@ -255,6 +305,56 @@ impl Inference<'_> {
                         _ => self.let_value(annotation, init, index, depth),
                     }
                 }
+                Some(Binding::Tuple {
+                    annotation,
+                    init,
+                    position,
+                }) => {
+                    if on_call_line && statement_end(&line[init..]).is_none() {
+                        continue;
+                    }
+                    // `let (a, b) = (x, y);` binds `b` to `y`.
+                    let element = annotation
+                        .is_none()
+                        .then(|| self.statement(index, init))
+                        .flatten()
+                        .and_then(|text| {
+                            tuple_expression(&text)?
+                                .get(position)
+                                .map(|element| element.to_string())
+                        });
+                    match element {
+                        Some(element) => {
+                            self.expression_value(&element, Site::before(index), depth)
+                        }
+                        None => self
+                            .let_value(annotation, Some(init), index, depth)
+                            .and_then(|value| self.tuple_element(value, position)),
+                    }
+                }
+                Some(Binding::Param {
+                    open,
+                    param,
+                    position,
+                }) => self.closure_param_value(index, open, param, position, depth),
+                Some(Binding::Variant { variant, position }) => {
+                    self.variant_field(variant, position)
+                }
+                Some(Binding::Item { init, position }) => {
+                    let iterable = &line[init..];
+                    let end = scrutinee_end(iterable);
+                    // `for x in x.children() {`: the call is in the iterable.
+                    if on_call_line && end == iterable.len() {
+                        continue;
+                    }
+                    let item = self
+                        .expression_value(&iterable[..end], Site::before(index), depth)
+                        .and_then(|value| self.iterated_value(value));
+                    match position {
+                        Some(position) => item.and_then(|item| self.tuple_element(item, position)),
+                        None => item,
+                    }
+                }
                 Some(Binding::Unwrapped { init }) => {
                     let scrutinee = &line[init..];
                     let end = scrutinee_end(scrutinee);
@@ -262,7 +362,7 @@ impl Inference<'_> {
                     if on_call_line && end == scrutinee.len() {
                         continue;
                     }
-                    self.expression_value(&scrutinee[..end], index, depth)
+                    self.expression_value(&scrutinee[..end], Site::before(index), depth)
                         .and_then(|value| self.unwrap(value))
                 }
             };
@@ -282,7 +382,7 @@ impl Inference<'_> {
             return Some(self.here(annotation));
         }
         let text = self.statement(index, init?)?;
-        self.expression_value(&text, index, depth)
+        self.expression_value(&text, Site::before(index), depth)
     }
 
     /// The type of `let name;` from its first assignment `name = …;` after
@@ -301,7 +401,7 @@ impl Inference<'_> {
                 .strip_prefix('=')
                 .filter(|init| !init.starts_with('='))?;
             let text = self.statement(assigned, line.len() - init.len())?;
-            self.expression_value(&text, assigned, depth)
+            self.expression_value(&text, Site::before(assigned), depth)
         })
     }
 
@@ -311,36 +411,6 @@ impl Inference<'_> {
             .into_iter()
             .find(|(pattern, _)| *pattern == name)
             .map(|(_, written)| written)
-    }
-
-    /// A file-level `static`/`const` (`RE.is_match(..)`), or a project unit
-    /// struct used as a value (`MyResolver.detect(..)`).
-    fn item_value(&self, name: &str) -> Option<Value> {
-        if !starts_uppercase(name) {
-            return None;
-        }
-        if !name.bytes().any(|byte| byte.is_ascii_lowercase()) {
-            return self.lines.iter().find_map(|line| {
-                if line.len() > MAX_LINE_BYTES {
-                    return None;
-                }
-                match binding_in_line(line, &[], name) {
-                    Some(Binding::Let {
-                        annotation: Some(annotation),
-                        ..
-                    }) => Some(self.here(annotation)),
-                    _ => None,
-                }
-            });
-        }
-        let ty = resolve_type(
-            name,
-            &self.reference.file_path,
-            self.reference,
-            self.context,
-        );
-        ty.is_project_type(self.context)
-            .then_some(Value::Resolved(ty))
     }
 
     /// The statement text from byte `offset` of line `index` to its `;`.
@@ -358,96 +428,42 @@ impl Inference<'_> {
         Some(text)
     }
 
-    /// The type of the expression `text`, written on line `index`.
-    fn expression_value(&self, text: &str, index: usize, depth: u8) -> Option<Value> {
+    /// The type of the expression `text`, written at `site`: its head's
+    /// type followed through each link (see [`links`]).
+    fn expression_value(&self, text: &str, site: Site, depth: u8) -> Option<Value> {
+        if depth > MAX_DEPTH {
+            return None;
+        }
         let initializer = parse_initializer(text)?;
-        let mut value = match initializer.head {
-            Head::Named(name) => self.here(name),
-            Head::Call { path, args } => self.call_value(&path, args, index, depth)?,
-            Head::Local(local) => self.local_value(local, index.checked_sub(1), None, depth + 1)?,
+        // A spelled link (`.collect::<T>()`, `as T`) fixes the type,
+        // whatever the links before it were.
+        let spelled = initializer
+            .tails
+            .iter()
+            .rposition(|tail| matches!(tail, Tail::Spelled(_)));
+        let (mut value, tails) = match spelled.map(|at| (&initializer.tails[at], at)) {
+            Some((Tail::Spelled(text), at)) => {
+                (self.here(text.clone()), &initializer.tails[at + 1..])
+            }
+            _ => (
+                self.head_value(initializer.head, site, depth)?,
+                &initializer.tails[..],
+            ),
         };
-        for tail in initializer.tails {
-            value = match tail {
-                Tail::Same => value,
-                Tail::Unwrap => self.unwrap(value)?,
-                Tail::Spelled(text) => self.here(text),
-            };
+        for tail in tails {
+            value = self.link_value(value, tail)?;
         }
         Some(value)
     }
 
-    /// The type a call of `path` returns.
-    fn call_value(&self, path: &[&str], args: &str, index: usize, depth: u8) -> Option<Value> {
-        let (&callee, qualifier) = path.split_last()?;
-        let Some(&owner) = qualifier.last() else {
-            return match callee {
-                "Some" => Some(Value::Resolved(RustType::external("Option"))),
-                "Ok" | "Err" => Some(Value::Resolved(RustType::external("Result"))),
-                _ if starts_uppercase(callee) => Some(self.here(callee)),
-                _ => self.free_fn_value(callee),
-            };
-        };
-        if starts_uppercase(callee) {
-            // A tuple struct or tuple variant: `Kind::Leaf(..)`, `m::Id(..)`.
-            let named = if starts_uppercase(owner) {
-                qualifier
-            } else {
-                path
-            };
-            return Some(self.here(named.join("::")));
+    fn head_value(&self, head: Head<'_>, site: Site, depth: u8) -> Option<Value> {
+        match head {
+            Head::Named(name) => Some(self.here(name)),
+            Head::Call { path, args } => self.call_value(&path, args, site, depth),
+            Head::Local(local) => self.local_value(local, site.line, site.column, depth + 1),
+            Head::SelfValue => self.owner.clone().map(Value::Resolved),
+            Head::Paren(inner) => self.expression_value(inner, site, depth + 1),
         }
-        if !starts_uppercase(owner) {
-            return self.free_fn_value(&path.join("::"));
-        }
-        let owner_ty = match owner {
-            "Self" => self.owner.clone()?,
-            _ => resolve_type(
-                &qualifier.join("::"),
-                &self.reference.file_path,
-                self.reference,
-                self.context,
-            ),
-        };
-        if !owner_ty.is_project_type(self.context) {
-            if is_deref_wrapper(&owner_ty.name) {
-                // `Arc::new(Graph::new())` derefs to what it wraps.
-                return matches!(callee, "new" | "from" | "clone" | "pin")
-                    .then(|| self.expression_value(args, index, depth + 1))
-                    .flatten();
-            }
-            if STD_TRAITS.contains(&owner_ty.name.as_str()) {
-                return None;
-            }
-            // An external type's associated fn: the type itself (`HashMap::new`).
-            return Some(Value::Resolved(owner_ty));
-        }
-        if let Some((text, file)) = assoc_fn_return(&owner_ty, callee, self.reference, self.context)
-        {
-            return Some(Value::Written {
-                text,
-                self_ty: Some(owner_ty),
-                file,
-            });
-        }
-        // Trait constructors a derive or blanket impl may supply.
-        match callee {
-            "default" | "clone" | "from" => Some(Value::Resolved(owner_ty)),
-            "try_from" | "from_str" => Some(Value::Written {
-                text: "Result<Self>".to_string(),
-                self_ty: Some(owner_ty),
-                file: self.reference.file_path.clone(),
-            }),
-            _ => None,
-        }
-    }
-
-    fn free_fn_value(&self, path: &str) -> Option<Value> {
-        let (text, file) = free_fn_return(path, self.reference, self.context)?;
-        Some(Value::Written {
-            text,
-            self_ty: None,
-            file,
-        })
     }
 }
 

@@ -18,6 +18,7 @@ pub mod lru_cache;
 pub mod name_matcher;
 pub mod path_aliases;
 pub mod resolver;
+pub mod rust_deps;
 pub mod strip_comments;
 pub mod swift_objc_bridge;
 pub mod types;

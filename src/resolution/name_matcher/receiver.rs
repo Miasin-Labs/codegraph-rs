@@ -16,6 +16,7 @@ pub(super) use rust::{
     RustType,
     file_is_module,
     fn_local_uses,
+    infer_rust_chain_type,
     infer_rust_receiver_type,
     is_local_at_call,
     resolve_type,

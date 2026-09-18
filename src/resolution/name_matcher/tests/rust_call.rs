@@ -7,13 +7,13 @@ use super::{Fixture, make_ref, match_reference, node};
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::{EdgeKind, Language, Node, NodeKind, receiver_dropped_metadata};
 
-const FILE: &str = "src/run.rs";
+pub(super) const FILE: &str = "src/run.rs";
 
-fn id(kind: NodeKind, qualified: &str, file: &str) -> String {
+pub(super) fn id(kind: NodeKind, qualified: &str, file: &str) -> String {
     format!("{}:{file}:{qualified}", kind.as_str())
 }
 
-fn rust_node(kind: NodeKind, qualified: &str, file: &str, line: u32) -> Node {
+pub(super) fn rust_node(kind: NodeKind, qualified: &str, file: &str, line: u32) -> Node {
     let name = qualified.rsplit("::").next().unwrap_or(qualified);
     node(
         &id(kind, qualified, file),
@@ -68,7 +68,7 @@ fn project() -> Vec<Node> {
 /// The project plus `source` as [`FILE`], whose fns are read from their
 /// `fn` lines: each runs to the line before the next top-level item, and
 /// one inside an `impl` block is a method of it.
-fn project_with(source: &str, extra: Vec<Node>) -> Fixture {
+pub(super) fn project_with(source: &str, extra: Vec<Node>) -> Fixture {
     let lines: Vec<&str> = source.lines().collect();
     let mut nodes = project();
     let mut owner: Option<&str> = None;
@@ -129,7 +129,7 @@ fn self_call(fixture: &Fixture, source: &str, marker: &str, name: &str) -> Unres
     at_call(fixture, source, marker, name, "self.")
 }
 
-fn at_call(
+pub(super) fn at_call(
     fixture: &Fixture,
     source: &str,
     marker: &str,
@@ -161,7 +161,7 @@ fn at_call(
     }
 }
 
-fn target(fixture: &Fixture, reference: &UnresolvedRef) -> Option<String> {
+pub(super) fn target(fixture: &Fixture, reference: &UnresolvedRef) -> Option<String> {
     match_reference(reference, fixture).map(|resolved| resolved.target_node_id)
 }
 

@@ -52,7 +52,7 @@ fn strip_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
 }
 
 /// Drop leading references, lifetimes, and `mut`/`dyn`/`impl`.
-fn strip_type_prefixes(mut text: &str) -> &str {
+pub(super) fn strip_type_prefixes(mut text: &str) -> &str {
     loop {
         text = text.trim_start();
         if let Some(rest) = text.strip_prefix('&') {
@@ -146,7 +146,7 @@ pub(super) fn split_top_level(text: &str, separator: u8) -> Vec<&str> {
 
 /// `a::b::Foo<X, Y>` -> (`a::b::Foo`, [`X`, `Y`]). The path ends at the first
 /// byte that cannot continue it (`<`, whitespace, `+`, `(`, ...).
-fn split_path(text: &str) -> (&str, Vec<&str>) {
+pub(super) fn split_path(text: &str) -> (&str, Vec<&str>) {
     let bytes = text.as_bytes();
     let mut end = 0;
     while end < bytes.len() {
@@ -204,14 +204,41 @@ pub(super) fn named_type(written: &str) -> Option<Named<'_>> {
 }
 
 /// The outer type of `written` when it is `Result<T, ..>` or `Option<T>`
-/// (under any path, `io::Result<T>` included): `T` as written.
+/// (under any path, `io::Result<T>` included), or the `LockResult<T>` a
+/// `lock()` returns: `T` as written.
 pub(super) fn unwrapped(written: &str) -> Option<&str> {
-    let text = strip_type_prefixes(written);
+    let text = peeled(written);
     let (path, args) = split_path(text);
     let last = path.rsplit("::").next()?;
-    matches!(last, "Result" | "Option")
-        .then(|| args.first().copied())
+    matches!(last, "Result" | "Option" | "LockResult" | "TryLockResult")
+        .then(|| type_args(&args).first().copied())
         .flatten()
+}
+
+/// `written` without references and the smart pointers that deref to what
+/// they wrap, generic arguments kept: `&Arc<RefCell<Graph>>` is
+/// `RefCell<Graph>`.
+pub(super) fn peeled(written: &str) -> &str {
+    let mut text = strip_type_prefixes(written);
+    loop {
+        let (path, args) = split_path(text);
+        let last = path.rsplit("::").next().unwrap_or_default();
+        let inner = is_deref_wrapper(last)
+            .then(|| type_args(&args).first().copied())
+            .flatten();
+        match inner {
+            Some(inner) => text = strip_type_prefixes(inner),
+            None => return text,
+        }
+    }
+}
+
+/// The type arguments among `args`, lifetimes dropped.
+pub(super) fn type_args<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    args.iter()
+        .copied()
+        .filter(|arg| !arg.starts_with('\''))
+        .collect()
 }
 
 /// The parameters `(a: A, mut b: &B)` of a signature as (pattern, type).

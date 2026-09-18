@@ -64,6 +64,33 @@ pub struct RustUse {
     pub leaf: UseLeaf,
 }
 
+/// How many lines one fn-local `use` declaration may span.
+const MAX_USE_LINES: usize = 20;
+
+/// The use leaves of the `use` declarations written inside fn bodies of
+/// `source` (indented `use` lines), which the index keeps no Import node
+/// for.
+pub fn rust_fn_local_uses(source: &str) -> Vec<UseLeaf> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut leaves = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.len() == line.len() || !trimmed.starts_with("use ") {
+            continue;
+        }
+        let mut declaration = (*line).to_string();
+        for next in lines.iter().skip(index + 1).take(MAX_USE_LINES) {
+            if declaration.contains(';') {
+                break;
+            }
+            declaration.push(' ');
+            declaration.push_str(next);
+        }
+        leaves.extend(parse_use_leaves(&declaration));
+    }
+    leaves
+}
+
 /// Every use leaf declared by a file's Rust Import nodes.
 pub fn rust_use_leaves<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Vec<RustUse> {
     nodes

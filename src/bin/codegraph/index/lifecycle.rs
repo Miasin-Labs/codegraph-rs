@@ -202,7 +202,10 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
                 cg.clear().map_err(|e| e.to_string())?;
             }
             let result = cg
-                .index_all(&IndexOptions::default())
+                .index_all(&IndexOptions {
+                    dependency_scan: true,
+                    ..IndexOptions::default()
+                })
                 .await
                 .map_err(|e| e.to_string())?;
             if !result.success {
@@ -272,9 +275,12 @@ pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
             CodeGraph::open(&project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
 
         if quiet {
-            cg.sync(&IndexOptions::default())
-                .await
-                .map_err(|e| e.to_string())?;
+            cg.sync(&IndexOptions {
+                dependency_scan: true,
+                ..IndexOptions::default()
+            })
+            .await
+            .map_err(|e| e.to_string())?;
             cg.close();
             super::super::projects::register_after_write(&project_path, true);
             let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
@@ -300,6 +306,7 @@ pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
                 on_progress: Some(cb_ref),
                 signal: None,
                 verbose: false,
+                dependency_scan: true,
             })
             .await
         };
