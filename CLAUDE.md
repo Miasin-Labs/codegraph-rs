@@ -103,6 +103,17 @@ cargo test --workspace
   id: `cfg_rules.rs`, `dataflow_rules.rs`, `concurrency_rules.rs`
   (`for_language(lang)`). Add a language by extending these, not by branching in
   the walkers.
+- **Every CFG must pass `FunctionCfg::validate()`** (`analysis/src/cfg/validate.rs`):
+  blocks 0/1 are ENTRY/EXIT, no dangling edges, every dead-end block ends in a
+  jump, and EXIT is reachable whenever the function can terminate. `build_cfg`
+  `debug_assert`s it, so a builder change that breaks it panics debug builds —
+  check a change against real corpora, not just fixtures (it held on 119k
+  functions across 10 languages, 2026-09).
+- **Rust method calls on a non-identifier receiver carry `receiverDropped`**
+  (`v.iter().next()` reaches resolution as bare `next`). One whose name is in
+  `COMMON_STD_METHOD_NAMES` (`name_matcher/std_methods.rs`) stays unresolved:
+  every same-named project symbol is a guess. Unrelated edges there were the
+  largest source of wrong call edges (9,041 on this repo).
 - **SQLite schema is versioned** (`src/db/schema.sql` + `src/db/migrations.rs`,
   currently through v9). A schema change must bump `schema_versions`, add an
   idempotent migration, treat new columns as nullable (backfill on re-index),
