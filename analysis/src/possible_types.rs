@@ -18,7 +18,10 @@
 //!    - A's possible return types flow into B's possible input types.
 //!    - B's possible input types may include trait types; expand those to
 //!      implementors as in step 1.
-//!    - Repeat until no set grows (or `MAX_ROUNDS` reached).
+//!    - Repeat until no set grows. A worklist re-runs only the call edges
+//!      whose endpoint's return set grew; sets only grow within a finite
+//!      universe of type names, so this reaches the least fixpoint with no
+//!      round cap (the old 8-round cap stopped a 20-deep chain part-way).
 //!
 //! 3. **Annotation phase** — write results into `NodeData.metadata`:
 //!    - `possible_input_types` — JSON array of type names
@@ -33,16 +36,12 @@
 //! - The analysis is sound but imprecise: it over-approximates (includes
 //!   types that *could* flow in, even if no execution path actually does).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use crate::edges::EdgeKind;
 use crate::graph::CodeGraph;
 use crate::nodes::{NodeId, NodeKind};
 use crate::pass::{GraphFlag, Pass, PassError};
-
-/// Maximum fixed-point iteration rounds. 8 is generous for most
-/// call graphs — cycles stabilize within 2-3 rounds.
-const MAX_ROUNDS: usize = 8;
 
 /// Per-function type-set accumulator.
 #[derive(Debug, Default, Clone)]
@@ -67,55 +66,36 @@ pub fn propagate_possible_types(graph: &mut CodeGraph) -> (usize, usize, usize) 
         .map(|n| n.id.clone())
         .collect();
 
-    let mut type_sets: HashMap<NodeId, TypeSets> = HashMap::new();
-
-    for fn_id in &function_ids {
-        let mut sets = TypeSets::default();
-        seed_from_uses_type(graph, fn_id, &trait_impls, &mut sets);
-        type_sets.insert(fn_id.clone(), sets);
-    }
+    let mut sets: Vec<TypeSets> = function_ids
+        .iter()
+        .map(|fn_id| {
+            let mut sets = TypeSets::default();
+            seed_from_uses_type(graph, fn_id, &trait_impls, &mut sets);
+            sets
+        })
+        .collect();
 
     // Phase 2: Fixed-point propagation over Calls edges.
-    let call_edges = collect_call_edges(graph);
-
-    for _round in 0..MAX_ROUNDS {
-        let mut changed = false;
-
-        for (caller_id, callee_id) in &call_edges {
-            // Caller's return types flow into callee's inputs.
-            let caller_returns: BTreeSet<String> = type_sets
-                .get(caller_id)
-                .map(|s| s.returns.clone())
-                .unwrap_or_default();
-
-            if let Some(callee_sets) = type_sets.get_mut(callee_id) {
-                let before = callee_sets.inputs.len();
-                callee_sets.inputs.extend(caller_returns);
-                // Expand any trait types to their implementors.
-                let new_impls = expand_traits(&callee_sets.inputs, &trait_impls);
-                callee_sets.inputs.extend(new_impls);
-                if callee_sets.inputs.len() > before {
-                    changed = true;
-                }
-            }
-
-            // A caller that calls B gets B's return types as possible returns.
-            let callee_returns: BTreeSet<String> = type_sets
-                .get(callee_id)
-                .map(|s| s.returns.clone())
-                .unwrap_or_default();
-
-            if let Some(caller_sets) = type_sets.get_mut(caller_id) {
-                let before = caller_sets.returns.len();
-                caller_sets.returns.extend(callee_returns);
-                if caller_sets.returns.len() > before {
-                    changed = true;
-                }
-            }
+    let call_edges = CallEdges::build(&function_ids, collect_call_edges(graph));
+    let mut pending = Worklist::all(call_edges.pairs.len());
+    while let Some(edge) = pending.pop() {
+        let (caller, callee) = call_edges.pairs[edge];
+        // The caller's return types flow into the callee's inputs, trait
+        // types expanded to their implementors. Nothing reads inputs, so
+        // their growth queues no further work.
+        let caller_returns = sets[caller].returns.clone();
+        for type_name in caller_returns {
+            add_with_implementors(&mut sets[callee].inputs, type_name, &trait_impls);
         }
-
-        if !changed {
-            break;
+        // A caller that calls B gets B's return types as possible returns;
+        // when that set grows, every edge reading it runs again.
+        let callee_returns = sets[callee].returns.clone();
+        let before = sets[caller].returns.len();
+        sets[caller].returns.extend(callee_returns);
+        if sets[caller].returns.len() > before {
+            for &next in call_edges.touching(caller) {
+                pending.push(next);
+            }
         }
     }
 
@@ -124,7 +104,7 @@ pub fn propagate_possible_types(graph: &mut CodeGraph) -> (usize, usize, usize) 
     let mut total_returns = 0usize;
     let mut annotated = 0usize;
 
-    for (fn_id, sets) in &type_sets {
+    for (fn_id, sets) in function_ids.iter().zip(&sets) {
         let inputs: Vec<&str> = sets.inputs.iter().map(|s| s.as_str()).collect();
         let returns: Vec<&str> = sets.returns.iter().map(|s| s.as_str()).collect();
 
@@ -289,23 +269,92 @@ fn collect_call_edges_csr(graph: &CodeGraph) -> Vec<(NodeId, NodeId)> {
     edges
 }
 
-/// Given a set of type names, find any that are trait names and return
-/// their implementors (not already in the set).
-fn expand_traits(
-    types: &BTreeSet<String>,
-    trait_impls: &HashMap<String, BTreeSet<String>>,
-) -> Vec<String> {
-    let mut expansion = Vec::new();
-    for type_name in types {
-        if let Some(implementors) = trait_impls.get(type_name.as_str()) {
-            for imp in implementors {
-                if !types.contains(imp) {
-                    expansion.push(imp.clone());
-                }
+/// `Calls` edges between analysed functions, as indices into the function
+/// list, with each function's incident edges.
+struct CallEdges {
+    pairs: Vec<(usize, usize)>,
+    /// Edge indices where the function is the caller or the callee — the
+    /// edges that read its return set.
+    incident: Vec<Vec<usize>>,
+}
+
+impl CallEdges {
+    /// Edges whose callee is not an analysed function carry nothing (it has
+    /// no type sets), so they are dropped.
+    fn build(function_ids: &[NodeId], edges: Vec<(NodeId, NodeId)>) -> Self {
+        let position: HashMap<&NodeId, usize> = function_ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id, index))
+            .collect();
+        let mut pairs = Vec::new();
+        let mut incident = vec![Vec::new(); function_ids.len()];
+        for (caller, callee) in &edges {
+            let (Some(&caller), Some(&callee)) = (position.get(caller), position.get(callee))
+            else {
+                continue;
+            };
+            let edge = pairs.len();
+            pairs.push((caller, callee));
+            incident[caller].push(edge);
+            if callee != caller {
+                incident[callee].push(edge);
             }
         }
+        Self { pairs, incident }
     }
-    expansion
+
+    fn touching(&self, function: usize) -> &[usize] {
+        &self.incident[function]
+    }
+}
+
+/// FIFO of pending edge indices that holds each index at most once.
+struct Worklist {
+    queue: VecDeque<usize>,
+    queued: Vec<bool>,
+}
+
+impl Worklist {
+    fn all(len: usize) -> Self {
+        Self {
+            queue: (0..len).collect(),
+            queued: vec![true; len],
+        }
+    }
+
+    fn push(&mut self, index: usize) {
+        if !std::mem::replace(&mut self.queued[index], true) {
+            self.queue.push_back(index);
+        }
+    }
+
+    fn pop(&mut self) -> Option<usize> {
+        let index = self.queue.pop_front()?;
+        self.queued[index] = false;
+        Some(index)
+    }
+}
+
+/// Insert `type_name` and, transitively, the implementors of any trait
+/// among the inserted names.
+fn add_with_implementors(
+    types: &mut BTreeSet<String>,
+    type_name: String,
+    trait_impls: &HashMap<String, BTreeSet<String>>,
+) {
+    let mut stack = vec![type_name];
+    while let Some(name) = stack.pop() {
+        if let Some(implementors) = trait_impls.get(name.as_str()) {
+            stack.extend(
+                implementors
+                    .iter()
+                    .filter(|imp| !types.contains(*imp))
+                    .cloned(),
+            );
+        }
+        types.insert(name);
+    }
 }
 
 /// [`Pass`] implementation for possible-types propagation.
@@ -508,9 +557,83 @@ mod tests {
             .add_edge(&b_id, &a_id, edge_data(EdgeKind::Calls))
             .unwrap();
 
-        // Should not infinite-loop — MAX_ROUNDS caps it.
+        // Terminates: sets only grow, and each edge re-runs only on growth.
         let (annotated, _, _) = propagate_possible_types(&mut graph);
         assert_eq!(annotated, 2);
+    }
+
+    fn return_types(graph: &CodeGraph, id: &NodeId) -> Vec<String> {
+        graph
+            .get_node(id)
+            .unwrap()
+            .metadata
+            .get("possible_return_types")
+            .map(|json| serde_json::from_str(json).unwrap())
+            .unwrap_or_default()
+    }
+
+    /// Returns flow one call edge up per step, so a type used at the bottom
+    /// of a 20-deep chain must reach the top — the old 8-round cap stopped
+    /// it part-way, whatever the edge order.
+    #[test]
+    fn long_call_chain_reaches_the_fixpoint_boundary() {
+        for reversed in [false, true] {
+            let mut graph = CodeGraph::new();
+            let ids: Vec<NodeId> = (0..20)
+                .map(|i| graph.add_node(mk_node(&format!("f{i}"), NodeKind::Function)))
+                .collect();
+            let t_id = graph.add_node(mk_node("Deep", NodeKind::Struct));
+            graph
+                .add_edge(&ids[19], &t_id, edge_data(EdgeKind::UsesType))
+                .unwrap();
+            let mut calls: Vec<usize> = (0..19).collect();
+            if reversed {
+                calls.reverse();
+            }
+            for i in calls {
+                graph
+                    .add_edge(&ids[i], &ids[i + 1], edge_data(EdgeKind::Calls))
+                    .unwrap();
+            }
+
+            propagate_possible_types(&mut graph);
+
+            for id in &ids {
+                assert_eq!(return_types(&graph, id), ["Deep"], "reversed={reversed}");
+            }
+        }
+    }
+
+    /// A type returned into a caller flows on into that caller's other
+    /// callees' inputs, with trait types expanded to their implementors.
+    #[test]
+    fn returned_trait_reaches_sibling_callee_inputs_normal() {
+        let mut graph = CodeGraph::new();
+        let top = graph.add_node(mk_node("top", NodeKind::Function));
+        let producer = graph.add_node(mk_node("producer", NodeKind::Function));
+        let consumer = graph.add_node(mk_node("consumer", NodeKind::Function));
+        let service = graph.add_node(mk_node("Service", NodeKind::Trait));
+        let http = graph.add_node(mk_node("HttpService", NodeKind::Struct));
+        graph
+            .add_edge(&producer, &service, edge_data(EdgeKind::UsesType))
+            .unwrap();
+        graph
+            .add_edge(&http, &service, edge_data(EdgeKind::Implements))
+            .unwrap();
+        graph
+            .add_edge(&top, &consumer, edge_data(EdgeKind::Calls))
+            .unwrap();
+        graph
+            .add_edge(&top, &producer, edge_data(EdgeKind::Calls))
+            .unwrap();
+
+        propagate_possible_types(&mut graph);
+
+        let consumer_node = graph.get_node(&consumer).unwrap();
+        let inputs: Vec<String> =
+            serde_json::from_str(consumer_node.metadata.get("possible_input_types").unwrap())
+                .unwrap();
+        assert_eq!(inputs, ["HttpService", "Service"]);
     }
 
     #[test]
