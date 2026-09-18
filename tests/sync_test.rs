@@ -39,8 +39,10 @@ use codegraph::sync::{
     WatchSyncResult,
     detect_worktree_index_mismatch,
     emit_watch_event_for_tests,
+    find_writable_codegraph_root,
     git_worktree_root,
     worktree_mismatch_warning,
+    worktree_write_refusal,
 };
 use notify::event::{
     AccessKind,
@@ -882,10 +884,12 @@ mod worktree {
     use std::path::PathBuf;
     use std::process::Command;
 
+    use codegraph::directory::find_nearest_codegraph_root;
+
     use super::*;
 
     fn git(cwd: &Path, args: &[&str]) {
-        let status = Command::new("git")
+        let output = Command::new("git")
             .args([
                 "-c",
                 "core.hooksPath=/dev/null",
@@ -897,11 +901,14 @@ mod worktree {
             .args(args)
             .current_dir(cwd)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
+            .output()
             .expect("git should be runnable");
-        assert!(status.success(), "git {args:?} failed in {}", cwd.display());
+        assert!(
+            output.status.success(),
+            "git {args:?} failed in {}: {}",
+            cwd.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     /// realpath so macOS /var → /private/var symlinking doesn't break equality.
@@ -989,6 +996,151 @@ mod worktree {
             Some(real(main_repo.path()))
         );
         assert_eq!(git_worktree_root(non_git.path()), None);
+    }
+
+    /// A throwaway repository with one commit.
+    fn committed_repo() -> TempDir {
+        let repo = TempDir::new().unwrap();
+        let root = repo.path();
+        git(root, &["init", "-q"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "user.name", "Test"]);
+        fs::write(root.join("lib.rs"), "pub fn lib() {}\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "init"]);
+        repo
+    }
+
+    /// Marks `dir` as holding an index (write resolution only looks for the
+    /// database file).
+    fn fake_index(dir: &Path) {
+        fs::create_dir_all(dir.join(".codegraph")).unwrap();
+        fs::write(dir.join(".codegraph/codegraph.db"), b"").unwrap();
+    }
+
+    fn writable(start: &Path) -> Option<PathBuf> {
+        find_writable_codegraph_root(start)
+            .expect("the index belongs to this checkout")
+            .map(|root| real(&root))
+    }
+
+    #[test]
+    fn writes_from_a_nested_worktree_never_resolve_the_main_checkout_index() {
+        let (main_repo, worktree) = setup();
+        fake_index(main_repo.path());
+        let deep = worktree.join("src/deep");
+        fs::create_dir_all(&deep).unwrap();
+
+        // Reads still find the main checkout's index (and warn)...
+        assert_eq!(
+            find_nearest_codegraph_root(&deep).map(|root| real(&root)),
+            Some(real(main_repo.path()))
+        );
+        // ...writes refuse it, naming both checkouts.
+        let m = find_writable_codegraph_root(&deep).unwrap_err();
+        assert_eq!(m.worktree_root, real(&worktree));
+        assert_eq!(m.index_root, real(main_repo.path()));
+        let refusal = worktree_write_refusal(&m);
+        assert!(refusal.contains(&format!("codegraph init {}", real(&worktree).display())));
+
+        // Once the worktree has its own index, writes go there.
+        fake_index(&worktree);
+        assert_eq!(writable(&deep), Some(real(&worktree)));
+        // And the main checkout still resolves its own.
+        assert_eq!(writable(main_repo.path()), Some(real(main_repo.path())));
+    }
+
+    #[test]
+    fn plain_subdirectories_of_a_checkout_keep_walking_up() {
+        let (main_repo, _worktree) = setup();
+        fake_index(main_repo.path());
+        // Monorepo package, and a sub-path that does not exist yet (#238).
+        let package = main_repo.path().join("packages/app/src");
+        fs::create_dir_all(&package).unwrap();
+        assert_eq!(writable(&package), Some(real(main_repo.path())));
+        assert_eq!(
+            writable(&main_repo.path().join("not/created")),
+            Some(real(main_repo.path()))
+        );
+        assert!(detect_worktree_index_mismatch(&package, main_repo.path()).is_none());
+    }
+
+    #[test]
+    fn a_submodule_belongs_to_its_superprojects_index() {
+        let (main_repo, _worktree) = setup();
+        let upstream = committed_repo();
+        git(
+            main_repo.path(),
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                // A global excludes file may ignore `vendor/`.
+                "--force",
+                upstream.path().to_str().unwrap(),
+                "vendor/lib",
+            ],
+        );
+        let submodule = main_repo.path().join("vendor/lib");
+        assert!(
+            submodule.join(".git").is_file(),
+            "git links submodules with a .git file"
+        );
+        fake_index(main_repo.path());
+
+        // The superproject checks the submodule out and indexes its files
+        // (`ls-files --recurse-submodules`): it is not a different checkout.
+        assert_eq!(writable(&submodule), Some(real(main_repo.path())));
+        assert!(detect_worktree_index_mismatch(&submodule, main_repo.path()).is_none());
+    }
+
+    #[test]
+    fn a_nested_clone_is_a_different_checkout() {
+        let (main_repo, _worktree) = setup();
+        fake_index(main_repo.path());
+        let clone = main_repo.path().join("third_party/clone");
+        fs::create_dir_all(&clone).unwrap();
+        git(&clone, &["init", "-q"]);
+        let m = find_writable_codegraph_root(&clone).unwrap_err();
+        assert_eq!(m.worktree_root, real(&clone));
+    }
+
+    #[test]
+    fn a_worktree_outside_the_repo_resolves_only_its_own_index() {
+        let main_repo = committed_repo();
+        fake_index(main_repo.path());
+        let parent = TempDir::new().unwrap();
+        let outside = parent.path().join("feature");
+        git(
+            main_repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                outside.to_str().unwrap(),
+            ],
+        );
+        let src = outside.join("src");
+        fs::create_dir_all(&src).unwrap();
+
+        // `git worktree add ../x`: nothing above it is the main checkout, so
+        // there is no index to borrow, for reads or writes.
+        assert_eq!(find_nearest_codegraph_root(&src), None);
+        assert_eq!(writable(&src), None);
+
+        // An index in the plain directory holding it is not its own either.
+        fake_index(parent.path());
+        let m = find_writable_codegraph_root(&src).unwrap_err();
+        assert_eq!(m.worktree_root, real(&outside));
+        assert_eq!(m.index_root, real(parent.path()));
+
+        // Its own index always wins.
+        fake_index(&outside);
+        assert_eq!(writable(&src), Some(real(&outside)));
     }
 
     #[test]

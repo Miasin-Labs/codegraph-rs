@@ -25,6 +25,7 @@ use super::{
     parse_int_js,
     process,
     resolve_project_path,
+    resolve_project_path_quiet,
     success,
 };
 
@@ -120,7 +121,7 @@ pub(crate) fn cmd_node(
 
 fn discover_daemons(path_arg: Option<&str>) -> Vec<DaemonRecord> {
     let mut records = list_daemons(true);
-    let root = resolve_project_path(path_arg);
+    let root = resolve_project_path_quiet(path_arg);
     if let Some(current) = daemon_at(&root) {
         let existing = records.iter().any(|record| record.pid == current.pid);
         if !existing {
@@ -185,7 +186,7 @@ pub(crate) fn cmd_daemon(path_arg: Option<&str>, stop: bool, all: bool, json: bo
         let results = if all {
             stop_all_daemons()
         } else {
-            vec![stop_daemon_at(&resolve_project_path(path_arg))]
+            vec![stop_daemon_at(&resolve_project_path_quiet(path_arg))]
         };
         if json {
             println!(

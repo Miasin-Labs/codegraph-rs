@@ -18,6 +18,11 @@ use walkdir::{DirEntry, WalkDir};
 use crate::codegraph::{CodeGraph, SegmentVocabState, is_initialized};
 use crate::db::{database_schema_is_current, get_database_path};
 use crate::mcp::tools::ToolHandler;
+use crate::sync::worktree::{
+    WorktreeIndexMismatch,
+    detect_worktree_index_mismatch,
+    worktree_mismatch_notice,
+};
 use crate::telemetry::Telemetry;
 
 const MAX_INPUT_BYTES: u64 = 1_048_576;
@@ -36,6 +41,10 @@ struct FrontloadPlan {
     explore_root: Option<PathBuf>,
     nudge_projects: Vec<PathBuf>,
     via_sub_scan: bool,
+    /// Set when `explore_root` was reached by walking up out of the prompt's
+    /// git checkout (a worktree nested in the main checkout): that index is
+    /// read with the worktree notice, and never synced from here.
+    borrowed: Option<WorktreeIndexMismatch>,
 }
 
 fn gate(outcome: &str) {
@@ -345,6 +354,7 @@ fn plan_frontload(cwd: &Path, prompt: &str) -> FrontloadPlan {
         explore_root: None,
         nudge_projects: Vec::new(),
         via_sub_scan: false,
+        borrowed: None,
     };
     let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     for ancestor in cwd.ancestors().take(6) {
@@ -353,6 +363,7 @@ fn plan_frontload(cwd: &Path, prompt: &str) -> FrontloadPlan {
                 explore_root: Some(ancestor.to_path_buf()),
                 nudge_projects: Vec::new(),
                 via_sub_scan: false,
+                borrowed: detect_worktree_index_mismatch(&cwd, ancestor),
             };
         }
     }
@@ -368,6 +379,7 @@ fn plan_frontload(cwd: &Path, prompt: &str) -> FrontloadPlan {
             explore_root: projects.into_iter().next(),
             nudge_projects: Vec::new(),
             via_sub_scan: true,
+            borrowed: None,
         };
     }
     let lower = prompt.to_lowercase();
@@ -395,12 +407,14 @@ fn plan_frontload(cwd: &Path, prompt: &str) -> FrontloadPlan {
                 .filter(|project| project != &selected)
                 .collect(),
             via_sub_scan: true,
+            borrowed: None,
         }
     } else {
         FrontloadPlan {
             explore_root: None,
             nudge_projects: projects,
             via_sub_scan: true,
+            borrowed: None,
         }
     }
 }
@@ -480,12 +494,22 @@ fn process_input(input: PromptInput, output: &mut impl Write) -> Result<(), ()> 
     };
 
     // Opening an outdated database migrates it inline, which a large graph
-    // cannot finish inside the hook timeout.
+    // cannot finish inside the hook timeout. A borrowed index (another git
+    // checkout's) is never synced from here, not even to upgrade it.
     if !database_schema_is_current(&get_database_path(&root)) {
-        spawn_background_sync(&root);
+        if plan.borrowed.is_none() {
+            spawn_background_sync(&root);
+        }
         gate("noop-schema-outdated");
         return Ok(());
     }
+    // Everything injected from a borrowed index leads with the worktree
+    // notice, so the agent knows it describes a different checkout's code.
+    let borrowed_notice = plan
+        .borrowed
+        .as_ref()
+        .map(|mismatch| format!("{}\n", worktree_mismatch_notice(mismatch)))
+        .unwrap_or_default();
     let graph = Rc::new(CodeGraph::open_sync(&root).map_err(|_| ())?);
     let token_verified = !keyworded
         && code_tokens.iter().any(|token| {
@@ -518,7 +542,7 @@ fn process_input(input: PromptInput, output: &mut impl Write) -> Result<(), ()> 
             };
             write!(
                 output,
-                "<codegraph_context note=\"Structural context from CodeGraph for this prompt; treat returned source as already read; {more}.\">\n{}{}\n</codegraph_context>\n",
+                "<codegraph_context note=\"Structural context from CodeGraph for this prompt; treat returned source as already read; {more}.\">\n{borrowed_notice}{}{}\n</codegraph_context>\n",
                 cap_text(text),
                 others.as_deref().unwrap_or_default()
             )
@@ -541,7 +565,7 @@ fn process_input(input: PromptInput, output: &mut impl Write) -> Result<(), ()> 
     let vocab = graph
         .segment_vocab_state()
         .unwrap_or(SegmentVocabState::Empty);
-    if vocab != SegmentVocabState::Complete {
+    if vocab != SegmentVocabState::Complete && plan.borrowed.is_none() {
         spawn_background_sync(&root);
     }
     // An incomplete vocabulary still only yields verified symbols, so match
@@ -581,7 +605,7 @@ fn process_input(input: PromptInput, output: &mut impl Write) -> Result<(), ()> 
     };
     write!(
         output,
-        "<codegraph_context note=\"CodeGraph found indexed symbols matching this prompt; query the graph before searching files.\">\nThis project's CodeGraph index contains symbols matching this request:\n{lines}\nCall codegraph_explore ONCE{project_hint} with the relevant names in one query (for example, \"{example}\") to get source and call paths.\n{}</codegraph_context>\n",
+        "<codegraph_context note=\"CodeGraph found indexed symbols matching this prompt; query the graph before searching files.\">\n{borrowed_notice}This project's CodeGraph index contains symbols matching this request:\n{lines}\nCall codegraph_explore ONCE{project_hint} with the relevant names in one query (for example, \"{example}\") to get source and call paths.\n{}</codegraph_context>\n",
         others.as_deref().unwrap_or_default()
     )
     .map_err(|_| ())?;
@@ -629,6 +653,34 @@ mod tests {
             extract_prose_candidates("please fix the checkout state machine tests"),
             ["checkout", "state", "machine"]
         );
+    }
+
+    #[test]
+    fn a_nested_worktree_borrows_the_main_index_and_a_subdirectory_does_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().canonicalize().unwrap().join("main");
+        std::fs::create_dir_all(main.join(".git/worktrees/wt")).unwrap();
+        std::fs::write(main.join(".git/worktrees/wt/commondir"), "../..\n").unwrap();
+        crate::directory::create_directory(&main).unwrap();
+        std::fs::write(main.join(".codegraph/codegraph.db"), b"").unwrap();
+        let worktree = main.join(".claude/worktrees/wt");
+        std::fs::create_dir_all(worktree.join("src")).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            "gitdir: ../../../.git/worktrees/wt\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(main.join("src")).unwrap();
+
+        let plan = plan_frontload(&worktree.join("src"), "how does it work");
+        assert_eq!(plan.explore_root.as_deref(), Some(main.as_path()));
+        let borrowed = plan.borrowed.expect("the worktree borrows the main index");
+        assert_eq!(borrowed.worktree_root, worktree);
+        assert_eq!(borrowed.index_root, main);
+
+        let plan = plan_frontload(&main.join("src"), "how does it work");
+        assert_eq!(plan.explore_root.as_deref(), Some(main.as_path()));
+        assert_eq!(plan.borrowed, None);
     }
 
     #[test]

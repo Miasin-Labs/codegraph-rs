@@ -89,6 +89,19 @@ impl ToolHandler {
         // the upgrade to a background sync and answer now; only migrate
         // inline when no background process can take it.
         if !crate::db::database_schema_is_current(&crate::db::get_database_path(&resolved_root)) {
+            // The upgrade is a write, and an index borrowed from a different
+            // git checkout (a nested worktree walking up to the main's) is
+            // only ever read from here — never synced in the background.
+            if let Some(mismatch) = detect_worktree_index_mismatch(pp, &resolved_root) {
+                return Err(CodeGraphError::other(format!(
+                    "The nearest index above {project_path} is {index}'s, a different git \
+                     checkout, and it is on an older schema; this session won't upgrade \
+                     another checkout's index. Run \"codegraph init {here}\" for a \
+                     checkout-local index; meanwhile use your built-in tools there.",
+                    index = mismatch.index_root.display(),
+                    here = mismatch.worktree_root.display()
+                )));
+            }
             let upgrade = crate::sync::background::spawn_background_sync(&resolved_root);
             if upgrade.in_progress() {
                 return Err(CodeGraphError::other(format!(

@@ -17,7 +17,7 @@ use super::{
     js_to_fixed,
     process,
     resolve_absolute,
-    resolve_project_path,
+    resolve_project_path_quiet,
     success,
     warn,
     worktree_mismatch_warning,
@@ -50,7 +50,7 @@ fn print_pending_paths(label: &str, paths: &[String]) {
 
 /// codegraph status [path]
 pub(crate) fn cmd_status(path_arg: Option<&str>, json: bool) {
-    let project_path = resolve_project_path(path_arg);
+    let project_path = resolve_project_path_quiet(path_arg);
     // The directory the user actually ran from, before walking up to the index
     // root. Used to detect when the resolved index lives in a different git
     // working tree (e.g. a nested worktree borrowing the main checkout's index).

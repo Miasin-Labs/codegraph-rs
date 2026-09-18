@@ -7,7 +7,9 @@ use super::{
     info,
     is_initialized,
     process,
+    refuse_foreign_index,
     resolve_project_path,
+    resolve_writable_project_path,
     success,
 };
 
@@ -42,7 +44,9 @@ pub(crate) async fn cmd_resolve_bench(path_arg: Option<&str>, limit: usize) {
 }
 
 pub(crate) fn cmd_unlock(path_arg: Option<&str>) {
-    let project_path = resolve_project_path(path_arg);
+    // The lock may be held by the owning checkout's live indexer.
+    let project_path =
+        resolve_writable_project_path(path_arg).unwrap_or_else(|m| refuse_foreign_index(&m, false));
 
     let body = || -> Result<(), String> {
         if !is_initialized(&project_path) {

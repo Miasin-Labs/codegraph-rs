@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::directory::find_nearest_codegraph_root;
 use crate::error::Result;
 use crate::mcp::engine::EngineHandle;
+use crate::sync::worktree::find_writable_codegraph_root;
 
 #[cfg(unix)]
 mod daemon;
@@ -29,11 +29,19 @@ fn daemon_internal_set() -> bool {
     env_enabled(DAEMON_INTERNAL_ENV)
 }
 
+/// The index root whose shared daemon this session may join (or spawn).
+///
+/// A daemon watches and syncs its root, so only a session inside the checkout
+/// that owns the index gets one. A session in a different checkout — a
+/// worktree nested in the main checkout finds the main's index — runs direct:
+/// it reads the borrowed index with the worktree notice, and neither starts
+/// nor shares the other checkout's daemon (which could not tell its sessions
+/// apart to warn this one).
 fn resolve_daemon_root(explicit_path: Option<&str>) -> Option<PathBuf> {
     let candidate = explicit_path
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())?;
-    let root = find_nearest_codegraph_root(&candidate)?;
+    let root = find_writable_codegraph_root(&candidate).ok().flatten()?;
     Some(std::fs::canonicalize(&root).unwrap_or(root))
 }
 
@@ -68,7 +76,7 @@ impl MCPServer {
         }
 
         let Some(root) = resolve_daemon_root(self.project_path.as_deref()) else {
-            return direct::start(self, "no .codegraph/ root found").await;
+            return direct::start(self, "no .codegraph/ root owned by this checkout").await;
         };
 
         #[cfg(unix)]
@@ -131,6 +139,29 @@ mod tests {
         let missing = tmp.path().join("no-project");
         std::fs::create_dir_all(&missing).unwrap();
         assert!(resolve_daemon_root(Some(&missing.to_string_lossy())).is_none());
+    }
+
+    #[test]
+    fn a_nested_worktree_never_joins_the_main_checkouts_daemon() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(main.join(".git/worktrees/wt")).unwrap();
+        std::fs::write(main.join(".git/worktrees/wt/commondir"), "../..\n").unwrap();
+        std::fs::create_dir_all(main.join(".codegraph")).unwrap();
+        std::fs::write(main.join(".codegraph").join("codegraph.db"), b"").unwrap();
+        let worktree = main.join(".claude/worktrees/wt");
+        std::fs::create_dir_all(worktree.join("src")).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", main.join(".git/worktrees/wt").display()),
+        )
+        .unwrap();
+
+        assert!(resolve_daemon_root(Some(&worktree.join("src").to_string_lossy())).is_none());
+        assert_eq!(
+            resolve_daemon_root(Some(&main.to_string_lossy())),
+            Some(std::fs::canonicalize(&main).unwrap())
+        );
     }
 
     fn env_enabled_for_test(value: &str) -> bool {

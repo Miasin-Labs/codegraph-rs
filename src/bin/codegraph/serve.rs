@@ -1,17 +1,7 @@
-use super::{
-    MCPServer,
-    blue,
-    bold,
-    cyan,
-    dim,
-    error_msg,
-    get_glyphs,
-    process,
-    resolve_project_path,
-};
+use super::{MCPServer, blue, bold, cyan, dim, error_msg, get_glyphs, process, resolve_serve_path};
 
 pub(crate) async fn cmd_serve(path_arg: Option<&str>, mcp: bool, no_watch: bool) {
-    let project_path = path_arg.map(|p| resolve_project_path(Some(p)));
+    let project_path = path_arg.map(resolve_serve_path);
 
     // Commander sets watch=false when --no-watch is passed. Route it through
     // the same env-var chokepoint the watcher and MCP server already honor.

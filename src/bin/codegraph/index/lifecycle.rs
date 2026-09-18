@@ -29,10 +29,11 @@ use super::{
     offer_watch_fallback,
     print_index_result,
     process,
+    refuse_foreign_index,
     remove_git_sync_hook,
     resolve_absolute,
     resolve_index_path,
-    resolve_project_path,
+    resolve_writable_project_path,
     run_index_all,
     success,
     warn,
@@ -92,7 +93,10 @@ pub(crate) async fn cmd_init(path_arg: Option<&str>, force: bool, verbose: bool)
 
 /// codegraph uninit [path]
 pub(crate) fn cmd_uninit(path_arg: Option<&str>, force: bool) {
-    let project_path = resolve_project_path(path_arg);
+    // Deleting another checkout's index from a worktree nested in it would be
+    // the worst version of the borrowed-index mistake.
+    let project_path =
+        resolve_writable_project_path(path_arg).unwrap_or_else(|m| refuse_foreign_index(&m, false));
 
     let body = || -> Result<(), String> {
         if !is_initialized(&project_path) {
@@ -157,9 +161,11 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
     // success, never saying it had ignored the requested path. Resolve an
     // explicit path literally and, when it is not initialized, refuse and point
     // at `init` for that exact path. A bare `index` (no path) keeps the
-    // subdirectory convenience of resolving the nearest initialized project.
-    // (upstream #1524)
-    let project_path = resolve_index_path(path_arg);
+    // subdirectory convenience of resolving the nearest initialized project
+    // (upstream #1524) — within this git checkout only: from a worktree nested
+    // in the main checkout it refuses rather than rebuild the main's index.
+    let project_path =
+        resolve_index_path(path_arg).unwrap_or_else(|m| refuse_foreign_index(&m, false));
 
     let body = async {
         if !force {
@@ -238,7 +244,11 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
 
 /// codegraph sync [path]
 pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
-    let project_path = resolve_project_path(path_arg);
+    // Git sync hooks live in the repository's common dir, so a commit in a
+    // nested worktree runs `codegraph sync` there too: it must not walk up
+    // into (and rewrite) the main checkout's index.
+    let project_path =
+        resolve_writable_project_path(path_arg).unwrap_or_else(|m| refuse_foreign_index(&m, quiet));
 
     let body = async {
         if !is_initialized(&project_path) {

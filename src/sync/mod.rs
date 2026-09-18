@@ -8,7 +8,8 @@
 //!   auto-triggers sync on file changes
 //! - Watch policy: decides when the watcher must be disabled (e.g. WSL2 /mnt)
 //! - Git sync hooks: opt-in commit/merge/checkout hooks when watching is off
-//! - Git worktree awareness: detect when a query borrows another tree's index
+//! - Git worktree awareness: detect when a query borrows another checkout's
+//!   index, and keep writes out of it
 //! - Content hashing for change detection (in extraction module)
 //! - Incremental reindexing (in extraction module)
 
@@ -43,7 +44,10 @@ pub use watcher::{
 pub use worktree::{
     WorktreeIndexMismatch,
     detect_worktree_index_mismatch,
+    find_writable_codegraph_root,
     git_worktree_root,
+    worktree_auto_sync_reason,
     worktree_mismatch_notice,
     worktree_mismatch_warning,
+    worktree_write_refusal,
 };

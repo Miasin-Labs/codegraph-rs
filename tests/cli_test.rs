@@ -774,3 +774,188 @@ fn bare_index_from_subdirectory_still_resolves_initialized_ancestor() {
         stdout_str(&out)
     );
 }
+
+// =============================================================================
+// A worktree nested inside the main checkout (e.g. `.claude/worktrees/<name>`)
+// walks up to the main checkout's `.codegraph/`. Reads may use it, with the
+// worktree notice; writes must never touch it.
+// =============================================================================
+
+fn run_git(cwd: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .output()
+        .expect("git should be runnable");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Every file in `root`'s `.codegraph/` with its length and mtime: any write
+/// to the index (database, WAL, lock, logs) changes this.
+fn index_dir_listing(root: &Path) -> Vec<(String, u64, SystemTime)> {
+    let mut listing: Vec<_> = fs::read_dir(root.join(".codegraph"))
+        .unwrap()
+        .flatten()
+        .map(|entry| {
+            let meta = entry.metadata().unwrap();
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                meta.len(),
+                meta.modified().unwrap(),
+            )
+        })
+        .collect();
+    listing.sort();
+    listing
+}
+
+/// Row counts and indexed paths, read without opening the index for writing.
+fn index_contents(root: &Path) -> (i64, i64, Vec<String>) {
+    let db = rusqlite::Connection::open_with_flags(
+        root.join(".codegraph/codegraph.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let count = |table: &str| -> i64 {
+        db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+    };
+    let mut statement = db.prepare("SELECT path FROM files ORDER BY path").unwrap();
+    let paths = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    (count("nodes"), count("edges"), paths)
+}
+
+fn combined_output(out: &Output) -> String {
+    format!(
+        "{}{}",
+        stdout_str(out),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+#[test]
+fn a_nested_worktree_never_writes_the_main_checkouts_index() {
+    let (_dir, main) = temp_project_without_parent_index();
+    write_smoke_fixture(&main);
+    run_git(&main, &["init", "-q"]);
+    run_git(&main, &["config", "user.email", "test@example.com"]);
+    run_git(&main, &["config", "user.name", "Test"]);
+    run_git(&main, &["add", "src"]);
+    run_git(&main, &["commit", "-q", "-m", "init"]);
+    let init = run_cli(&main, &["init"]);
+    assert!(init.status.success(), "{}", combined_output(&init));
+
+    // A worktree of another branch, nested inside the main checkout, with a
+    // symbol the main checkout doesn't have.
+    let worktree = main.join(".claude/worktrees/agent-x");
+    run_git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "agent-x",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    fs::write(
+        worktree.join("src/worktree_only.ts"),
+        "export function worktreeOnly(): number {\n  return 7;\n}\n",
+    )
+    .unwrap();
+
+    let contents_before = index_contents(&main);
+    let listing_before = index_dir_listing(&main);
+
+    // Every write command refuses, from the worktree root and from inside it.
+    let write_commands: [(PathBuf, &[&str]); 6] = [
+        (worktree.clone(), &["index", "--force"]),
+        (worktree.clone(), &["index"]),
+        (worktree.join("src"), &["sync"]),
+        (worktree.clone(), &["sync", "src"]),
+        (worktree.clone(), &["uninit", "-f"]),
+        (worktree.clone(), &["unlock"]),
+    ];
+    for (cwd, args) in write_commands {
+        let out = run_cli(&cwd, args);
+        let output = combined_output(&out);
+        assert!(!out.status.success(), "{args:?} must refuse: {output}");
+        assert!(
+            output.contains("belongs to a different git checkout"),
+            "{args:?}: {output}"
+        );
+        assert!(
+            output.contains(&format!("codegraph init {}", worktree.display())),
+            "{args:?}: {output}"
+        );
+    }
+    // A git hook's quiet sync refuses silently.
+    let quiet = run_cli(&worktree, &["sync", "--quiet"]);
+    assert!(!quiet.status.success());
+    assert!(
+        combined_output(&quiet).is_empty(),
+        "{}",
+        combined_output(&quiet)
+    );
+
+    assert_eq!(
+        index_dir_listing(&main),
+        listing_before,
+        "the main checkout's index was written"
+    );
+    assert_eq!(index_contents(&main), contents_before);
+
+    // Reads still work from the worktree, and say whose index they used.
+    let status = run_status_json(&worktree);
+    assert_eq!(
+        status["worktreeMismatch"]["worktreeRoot"],
+        serde_json::json!(worktree.to_string_lossy())
+    );
+    assert_eq!(
+        status["worktreeMismatch"]["indexRoot"],
+        serde_json::json!(main.to_string_lossy())
+    );
+    let query = run_cli(&worktree, &["query", "add", "--json"]);
+    assert!(query.status.success(), "{}", combined_output(&query));
+    let results: serde_json::Value = serde_json::from_str(stdout_str(&query).trim())
+        .expect("the notice stays off stdout, so --json still parses");
+    assert!(results.as_array().is_some_and(|rows| !rows.is_empty()));
+    assert!(
+        String::from_utf8_lossy(&query.stderr).contains("different git checkout"),
+        "{}",
+        combined_output(&query)
+    );
+
+    // A plain subdirectory of the main checkout still walks up and syncs it.
+    let sync = run_cli(&main.join("src"), &["sync"]);
+    assert!(sync.status.success(), "{}", combined_output(&sync));
+    assert!(run_status_json(&main.join("src"))["worktreeMismatch"].is_null());
+
+    // `codegraph init` gives the worktree its own index; writes then go there.
+    let init = run_cli(&worktree, &["init"]);
+    assert!(init.status.success(), "{}", combined_output(&init));
+    let index = run_cli(&worktree.join("src"), &["index", "--force"]);
+    assert!(index.status.success(), "{}", combined_output(&index));
+    let (_, _, worktree_paths) = index_contents(&worktree);
+    assert!(worktree_paths.contains(&"src/worktree_only.ts".to_string()));
+    assert_eq!(index_contents(&main), contents_before);
+    assert!(run_status_json(&worktree)["worktreeMismatch"].is_null());
+}

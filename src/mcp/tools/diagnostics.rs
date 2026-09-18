@@ -25,7 +25,22 @@ impl ToolHandler {
         &self,
         args: &Map<String, Value>,
     ) -> Result<ToolResult> {
-        let cg = self.get_code_graph(args.get("projectPath").and_then(|v| v.as_str()))?;
+        let project_path = args.get("projectPath").and_then(|v| v.as_str());
+        let cg = self.get_code_graph(project_path)?;
+        // The checker runs in the index's checkout and writes its output under
+        // that checkout's `.codegraph/diagnostics/`. From a different checkout
+        // (a worktree nested in the main one) it would build — and report — the
+        // other checkout's code, so refuse instead.
+        if let Some(mismatch) = self.worktree_mismatch_for(project_path) {
+            return Ok(self.error_result(&format!(
+                "codegraph_diagnostics runs the checker in the index's own checkout ({index}), \
+                 but you are working in a different git checkout ({here}) — it would report \
+                 {index}'s code, not yours. Run the build in {here} yourself, or run \
+                 \"codegraph init {here}\" so this checkout has its own index.",
+                index = mismatch.index_root.display(),
+                here = mismatch.worktree_root.display()
+            )));
+        }
         let root = cg.get_project_root().to_path_buf();
         let checker = match Checker::for_project(&root, args.get("checker").and_then(Value::as_str))
         {

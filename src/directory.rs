@@ -73,6 +73,13 @@ pub fn is_initialized(project_root: &Path) -> bool {
 ///
 /// Walks up from the given path to find a CodeGraph-initialized project,
 /// similar to how git finds `.git/` directories.
+///
+/// The walk crosses git checkout boundaries, so from a worktree nested inside
+/// the main checkout it finds the MAIN checkout's index. That is fine for
+/// reading (with the worktree notice), never for writing: commands that write
+/// an index resolve it through
+/// [`crate::sync::worktree::find_writable_codegraph_root`], which refuses an
+/// index that [`checkout_below_index_root`] says belongs to another checkout.
 pub fn find_nearest_codegraph_root(start_path: &Path) -> Option<PathBuf> {
     let mut current = crate::utils::lexical_resolve(
         &std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
@@ -85,6 +92,114 @@ pub fn find_nearest_codegraph_root(start_path: &Path) -> Option<PathBuf> {
         {
             let parent = current.parent()?;
             current = parent.to_path_buf()
+        }
+    }
+}
+
+/// Whether `dir` is the top level of its own git checkout.
+///
+/// A checkout marks its top level with a `.git` entry: a directory for a
+/// repository's working tree (the main checkout, or a clone nested inside
+/// another project), a `gitdir:` file for a linked worktree (`git worktree
+/// add`) or a clone with a separate git dir. Code above that entry belongs to
+/// a different checkout, so an index found above it is someone else's.
+///
+/// A submodule is the exception. Its `.git` file points into the
+/// superproject's `.git/modules/`; the superproject checks it out and indexes
+/// its files (`git ls-files --recurse-submodules`), so a submodule stays part
+/// of the superproject's checkout, like any plain subdirectory.
+///
+/// Filesystem checks only — one `stat`, plus reading a `.git` file when there
+/// is one — never a `git` process: the prompt hook runs this under a timeout.
+pub fn is_git_checkout_root(dir: &Path) -> bool {
+    let dot_git = dir.join(".git");
+    match fs::metadata(&dot_git) {
+        Ok(meta) if meta.is_dir() => true,
+        Ok(meta) if meta.is_file() => !links_a_submodule(dir, &dot_git),
+        _ => false,
+    }
+}
+
+/// Whether the `.git` file `dot_git` in `dir` links a submodule's working
+/// tree rather than a linked worktree or a separate-git-dir clone.
+fn links_a_submodule(dir: &Path, dot_git: &Path) -> bool {
+    let Some(git_dir) = git_file_target(dir, dot_git) else {
+        return false;
+    };
+    // Every linked worktree's private git dir holds a `commondir` file (and
+    // lives in `<common>/worktrees/<name>`); a submodule's git dir is a whole
+    // repository and has neither.
+    if git_dir.join("commondir").is_file()
+        || git_dir.parent().and_then(Path::file_name) == Some(std::ffi::OsStr::new("worktrees"))
+    {
+        return false;
+    }
+    git_dir
+        .components()
+        .any(|component| component.as_os_str() == "modules")
+}
+
+/// The git dir a `.git` file points at (`gitdir: <path>`, relative paths
+/// taken from the directory holding the file).
+fn git_file_target(dir: &Path, dot_git: &Path) -> Option<PathBuf> {
+    use std::io::Read;
+
+    // A gitfile is one short line; never read more than a path's worth.
+    let mut text = String::new();
+    fs::File::open(dot_git)
+        .ok()?
+        .take(4096)
+        .read_to_string(&mut text)
+        .ok()?;
+    let target = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    Some(crate::utils::lexical_resolve(dir, target))
+}
+
+/// The git checkout nested below `index_root` that `start_path` is in, if any.
+///
+/// Walks up from `start_path` to `index_root` (exclusive) and returns the
+/// innermost checkout top level ([`is_git_checkout_root`]) passed on the way.
+/// `Some` means the index at `index_root` belongs to a different checkout than
+/// the one `start_path` is in — a worktree nested inside the main checkout, a
+/// clone nested inside another project. `None` means `start_path` is a plain
+/// subdirectory of `index_root`'s own checkout (a monorepo package, a
+/// not-yet-created path), or that `index_root` is not above it at all.
+pub fn checkout_below_index_root(start_path: &Path, index_root: &Path) -> Option<PathBuf> {
+    let start = real_path_lenient(start_path);
+    let root = real_path_lenient(index_root);
+    if !start.starts_with(&root) {
+        return None;
+    }
+    start
+        .ancestors()
+        .take_while(|dir| *dir != root)
+        .find(|dir| is_git_checkout_root(dir))
+        .map(Path::to_path_buf)
+}
+
+/// `path` made absolute with symlinks resolved as far as it exists, so a
+/// not-yet-created sub-path still compares equal to its real ancestors.
+pub(crate) fn real_path_lenient(path: &Path) -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let absolute = crate::utils::lexical_resolve(&cwd, &path.to_string_lossy());
+    let mut missing = Vec::new();
+    let mut existing = absolute.as_path();
+    loop {
+        if let Ok(real) = fs::canonicalize(existing) {
+            return missing
+                .iter()
+                .rev()
+                .fold(real, |real, part| real.join(part));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => return absolute,
         }
     }
 }
@@ -314,6 +429,158 @@ mod tests {
         assert_eq!(
             fs::canonicalize(found).unwrap(),
             fs::canonicalize(tmp.path()).unwrap()
+        );
+    }
+
+    /// `root/.git` as a repository, `root/.git/worktrees/<name>` as a linked
+    /// worktree's admin dir (with the `commondir` git writes there).
+    fn fake_repo(root: &Path, worktrees: &[&str]) {
+        fs::create_dir_all(root.join(".git")).unwrap();
+        for name in worktrees {
+            let admin = root.join(".git/worktrees").join(name);
+            fs::create_dir_all(&admin).unwrap();
+            fs::write(admin.join("commondir"), "../..\n").unwrap();
+        }
+    }
+
+    fn fake_index(root: &Path) {
+        create_directory(root).unwrap();
+        fs::write(get_codegraph_dir(root).join("codegraph.db"), b"").unwrap();
+    }
+
+    fn real(path: &Path) -> PathBuf {
+        fs::canonicalize(path).unwrap()
+    }
+
+    #[test]
+    fn checkout_roots_are_git_dirs_and_worktree_files_but_not_submodules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        fake_repo(&main, &["wt"]);
+        assert!(is_git_checkout_root(&main));
+
+        // Linked worktree nested inside the main checkout (absolute gitdir).
+        let worktree = main.join(".claude/worktrees/wt");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", main.join(".git/worktrees/wt").display()),
+        )
+        .unwrap();
+        assert!(is_git_checkout_root(&worktree));
+
+        // Submodule: relative gitdir into the superproject's .git/modules/.
+        let submodule = main.join("vendor/lib");
+        fs::create_dir_all(main.join(".git/modules/vendor/lib")).unwrap();
+        fs::create_dir_all(&submodule).unwrap();
+        fs::write(
+            submodule.join(".git"),
+            "gitdir: ../../.git/modules/vendor/lib\n",
+        )
+        .unwrap();
+        assert!(!is_git_checkout_root(&submodule));
+
+        // A worktree whose admin dir is gone still reads as a worktree, and a
+        // gitfile that isn't one (or a separate-git-dir clone) is a boundary.
+        let stale = main.join("stale");
+        fs::create_dir_all(&stale).unwrap();
+        fs::write(stale.join(".git"), "gitdir: /gone/.git/worktrees/stale\n").unwrap();
+        assert!(is_git_checkout_root(&stale));
+        let odd = main.join("odd");
+        fs::create_dir_all(&odd).unwrap();
+        fs::write(odd.join(".git"), "not a gitfile\n").unwrap();
+        assert!(is_git_checkout_root(&odd));
+
+        // Plain directories are not.
+        assert!(!is_git_checkout_root(&main.join("vendor")));
+        assert!(!is_git_checkout_root(tmp.path()));
+    }
+
+    #[test]
+    fn a_nested_worktree_is_a_different_checkout_than_the_index_above_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        fake_repo(&main, &["wt"]);
+        fake_index(&main);
+        let worktree = main.join(".claude/worktrees/wt");
+        fs::create_dir_all(worktree.join("src/deep")).unwrap();
+        fs::write(
+            worktree.join(".git"),
+            "gitdir: ../../../.git/worktrees/wt\n",
+        )
+        .unwrap();
+
+        // The read walk still finds the main checkout's index...
+        let found = find_nearest_codegraph_root(&worktree.join("src/deep")).unwrap();
+        assert_eq!(real(&found), real(&main));
+        // ...but it is the worktree's checkout that sits between.
+        for start in [
+            worktree.clone(),
+            worktree.join("src/deep"),
+            worktree.join("not/yet/created"),
+        ] {
+            assert_eq!(
+                checkout_below_index_root(&start, &main),
+                Some(real(&worktree)),
+                "{}",
+                start.display()
+            );
+        }
+
+        // With its own index the worktree resolves to itself.
+        fake_index(&worktree);
+        let found = find_nearest_codegraph_root(&worktree.join("src/deep")).unwrap();
+        assert_eq!(real(&found), real(&worktree));
+        assert_eq!(
+            checkout_below_index_root(&worktree.join("src"), &found),
+            None
+        );
+    }
+
+    #[test]
+    fn plain_subdirectories_and_submodules_belong_to_the_index_above_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        fake_repo(&main, &[]);
+        fake_index(&main);
+        let package = main.join("packages/app/src");
+        fs::create_dir_all(&package).unwrap();
+        assert_eq!(checkout_below_index_root(&package, &main), None);
+        assert_eq!(checkout_below_index_root(&main, &main), None);
+        // Monorepo sub-paths that don't exist yet (issue #238).
+        assert_eq!(
+            checkout_below_index_root(&main.join("new/dir"), &main),
+            None
+        );
+
+        let submodule = main.join("vendor/lib");
+        fs::create_dir_all(main.join(".git/modules/lib")).unwrap();
+        fs::create_dir_all(submodule.join("src")).unwrap();
+        fs::write(submodule.join(".git"), "gitdir: ../../.git/modules/lib\n").unwrap();
+        assert_eq!(
+            checkout_below_index_root(&submodule.join("src"), &main),
+            None
+        );
+
+        // An index somewhere unrelated is never "above" the start.
+        let elsewhere = tmp.path().join("elsewhere");
+        fake_index(&elsewhere);
+        assert_eq!(checkout_below_index_root(&package, &elsewhere), None);
+    }
+
+    #[test]
+    fn a_repository_nested_below_an_index_is_a_different_checkout() {
+        // A clone (`.git` directory) inside an indexed project or an indexed
+        // non-git workspace directory: the index above it is not its own.
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        fake_index(&workspace);
+        let clone = workspace.join("repo");
+        fake_repo(&clone, &[]);
+        fs::create_dir_all(clone.join("src")).unwrap();
+        assert_eq!(
+            checkout_below_index_root(&clone.join("src"), &workspace),
+            Some(real(&clone))
         );
     }
 

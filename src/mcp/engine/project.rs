@@ -7,6 +7,7 @@ use super::MCPEngine;
 use crate::codegraph::{CodeGraph, IndexOptions, OpenOptions};
 use crate::directory::find_nearest_codegraph_root;
 use crate::extraction::IndexProgress;
+use crate::sync::worktree::{detect_worktree_index_mismatch, worktree_auto_sync_reason};
 use crate::sync::{WatchOptions, WatchProbe, watch_disabled_reason};
 
 impl MCPEngine {
@@ -32,7 +33,7 @@ impl MCPEngine {
             &resolved_root,
             &OpenOptions::default(),
         )) {
-            self.activate_project(resolved_root, codegraph);
+            self.activate_project(search_from, resolved_root, codegraph);
         }
     }
 
@@ -47,7 +48,7 @@ impl MCPEngine {
             &resolved_root,
             &OpenOptions::default(),
         )) {
-            Ok(codegraph) => self.activate_project(resolved_root, codegraph),
+            Ok(codegraph) => self.activate_project(search_from, resolved_root, codegraph),
             Err(error) => self.logs.log(
                 "error",
                 &format!(
@@ -58,11 +59,24 @@ impl MCPEngine {
         }
     }
 
-    fn activate_project(&self, root: std::path::PathBuf, codegraph: CodeGraph) {
+    fn activate_project(&self, search_from: &str, root: std::path::PathBuf, codegraph: CodeGraph) {
         let codegraph = Rc::new(codegraph);
         *self.cg.borrow_mut() = Some(Rc::clone(&codegraph));
         *self.project_path.borrow_mut() = Some(root.to_string_lossy().to_string());
         self.tool_handler.set_default_code_graph(codegraph);
+        // A session started in a different git checkout than the index (a
+        // worktree nested in the main checkout) reads that index — tools carry
+        // the worktree notice — but never writes it: no watcher, no catch-up
+        // sync, either of which would rewrite the other checkout's index.
+        if let Some(mismatch) = detect_worktree_index_mismatch(Path::new(search_from), &root) {
+            let reason = worktree_auto_sync_reason(&mismatch);
+            self.logs.log(
+                "warning",
+                &format!("File watcher and catch-up sync not started — {reason}."),
+            );
+            self.tool_handler.set_auto_sync_disabled(reason);
+            return;
+        }
         self.start_watching();
         self.catch_up_sync();
     }

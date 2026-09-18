@@ -1197,6 +1197,168 @@ async fn watcher_setup_failure_state_is_visible_on_every_successful_read() {
     }
 }
 
+/// Paths in `root`'s index.
+fn indexed_paths(root: &Path) -> Vec<String> {
+    let cg = CodeGraph::open_sync(root).unwrap();
+    let paths = cg
+        .get_files()
+        .unwrap()
+        .into_iter()
+        .map(|file| file.path)
+        .collect();
+    cg.close();
+    paths
+}
+
+/// A session started in a worktree nested inside the main checkout finds the
+/// main checkout's index by walking up. It may read it — every result says
+/// so — but must never write it: no watcher, no catch-up sync, no diagnostics
+/// run in the other checkout.
+#[tokio::test(flavor = "current_thread")]
+async fn a_session_in_a_nested_worktree_reads_the_main_index_but_never_writes_it() {
+    let _lock = env_read().await;
+    let tmp = TempDir::new().unwrap();
+    let main = tmp.path().canonicalize().unwrap();
+    std::fs::create_dir_all(main.join(".git/worktrees/wt")).unwrap();
+    std::fs::write(main.join(".git/worktrees/wt/commondir"), "../..\n").unwrap();
+    std::fs::create_dir_all(main.join("src")).unwrap();
+    std::fs::write(
+        main.join("src/alpha.ts"),
+        "export function alphaMain() { return 1; }\n",
+    )
+    .unwrap();
+    init_project(&main).await;
+    let worktree = main.join(".claude/worktrees/wt");
+    std::fs::create_dir_all(worktree.join("src")).unwrap();
+    std::fs::write(
+        worktree.join(".git"),
+        "gitdir: ../../../.git/worktrees/wt\n",
+    )
+    .unwrap();
+    // Changed since the main index was built: a catch-up sync would add it.
+    std::fs::write(
+        main.join("src/late.ts"),
+        "export function lateMain() { return 2; }\n",
+    )
+    .unwrap();
+
+    let start = worktree.join("src").to_string_lossy().into_owned();
+    tokio::task::spawn_blocking(move || {
+        let engine = MCPEngine::new(MCPEngineOptions::default());
+        engine.ensure_initialized(&start);
+        let handler = engine.get_tool_handler();
+
+        let search = handler.execute("codegraph_search", &json!({ "query": "alphaMain" }));
+        assert_ne!(search.is_error, Some(true), "{}", search.text());
+        let notices = &search.meta.as_ref().expect("notices").notices;
+        let mismatch = notices
+            .iter()
+            .find(|notice| notice.kind == "worktree_mismatch")
+            .expect("the worktree notice");
+        assert!(mismatch.message.contains("different git checkout"));
+        let auto_sync = notices
+            .iter()
+            .find(|notice| notice.kind == "auto_sync_disabled")
+            .expect("the session never syncs a borrowed index");
+        assert!(
+            auto_sync.data.as_ref().unwrap()["reason"]
+                .as_str()
+                .unwrap()
+                .contains("never syncs it")
+        );
+
+        let status = handler.execute("codegraph_status", &json!({}));
+        assert!(
+            status
+                .text()
+                .contains("belongs to a different git checkout"),
+            "{}",
+            status.text()
+        );
+
+        let diagnostics = handler.execute("codegraph_diagnostics", &json!({ "wait": 0 }));
+        assert_eq!(diagnostics.is_error, Some(true), "{}", diagnostics.text());
+        assert!(diagnostics.text().contains("different git checkout"));
+
+        // An explicit projectPath inside the worktree is the same borrow.
+        let fresh = ToolHandler::new(None);
+        let explicit = fresh.execute(
+            "codegraph_search",
+            &json!({ "query": "alphaMain", "projectPath": worktree.to_string_lossy() }),
+        );
+        assert!(
+            explicit
+                .meta
+                .as_ref()
+                .is_some_and(|meta| meta.notices.iter().any(|n| n.kind == "worktree_mismatch"))
+        );
+        fresh.close_all();
+        engine.stop();
+    })
+    .await
+    .unwrap();
+
+    let paths = indexed_paths(&main);
+    assert!(paths.contains(&"src/alpha.ts".to_string()), "{paths:?}");
+    assert!(!paths.contains(&"src/late.ts".to_string()), "{paths:?}");
+    assert!(!main.join(".codegraph/diagnostics").exists());
+
+    // Control: a session in the main checkout itself does catch up.
+    let start = main.join("src").to_string_lossy().into_owned();
+    tokio::task::spawn_blocking(move || {
+        let engine = MCPEngine::new(MCPEngineOptions { watch: false });
+        engine.ensure_initialized(&start);
+        let search = engine
+            .get_tool_handler()
+            .execute("codegraph_search", &json!({ "query": "lateMain" }));
+        assert!(
+            search
+                .meta
+                .as_ref()
+                .is_none_or(|meta| meta.notices.iter().all(|n| n.kind != "worktree_mismatch"))
+        );
+        engine.stop();
+    })
+    .await
+    .unwrap();
+    assert!(indexed_paths(&main).contains(&"src/late.ts".to_string()));
+}
+
+/// An outdated index is upgraded by a background sync — but never one
+/// borrowed from a different checkout.
+#[tokio::test(flavor = "current_thread")]
+async fn a_borrowed_outdated_index_is_never_upgraded_from_a_nested_worktree() {
+    let _lock = env_read().await;
+    let tmp = TempDir::new().unwrap();
+    let main = tmp.path().canonicalize().unwrap();
+    std::fs::create_dir_all(main.join(".git")).unwrap();
+    std::fs::create_dir_all(main.join(".codegraph")).unwrap();
+    // No schema_versions table: "outdated".
+    std::fs::write(main.join(".codegraph/codegraph.db"), b"").unwrap();
+    let worktree = main.join("wt");
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(worktree.join(".git"), "gitdir: ../.git/worktrees/wt\n").unwrap();
+
+    let handler = ToolHandler::new(None);
+    let result = handler.execute(
+        "codegraph_search",
+        &json!({ "query": "anything", "projectPath": worktree.to_string_lossy() }),
+    );
+    assert_eq!(result.is_error, Some(true), "{}", result.text());
+    assert!(result.text().contains("won't upgrade"), "{}", result.text());
+    assert!(
+        result
+            .text()
+            .contains(&format!("codegraph init {}", worktree.display())),
+        "{}",
+        result.text()
+    );
+    assert_eq!(
+        std::fs::read(main.join(".codegraph/codegraph.db")).unwrap(),
+        b""
+    );
+}
+
 // =============================================================================
 // Notices reach the model over the real server — in the payload of a
 // structured tool (so in `structuredContent` AND the JSON text), as leading
