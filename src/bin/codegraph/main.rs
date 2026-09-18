@@ -62,7 +62,14 @@ use codegraph::analyze::SliceDirection;
 use codegraph::context_analysis::{self, AnalysisContextOptions};
 use codegraph::db::{DatabaseConnection, QueryBuilder, get_database_path};
 use codegraph::directory::{get_codegraph_dir, is_initialized};
-use codegraph::history::{HistoryDb, default_history_path, default_jfc_logs_dir, parse_logs_dir};
+use codegraph::history::{
+    HistoryDb,
+    IngestOptions,
+    JfcLogs,
+    ToolCallSource,
+    default_history_path,
+    default_jfc_logs_dir,
+};
 use codegraph::installer::targets::{Location, get_target, list_target_ids};
 use codegraph::installer::{
     RunInstallerOptions,

@@ -169,6 +169,13 @@ cargo test --workspace
 - **Concurrency lint** (`analysis/src/concurrency.rs`, per-language rules in
   `concurrency_rules.rs`): flags lossy best-effort sends. Library-only since
   the vuln engine (its sole CLI surface) was deleted.
-- **Tool-history flywheel** (`src/history.rs`): a separate, global, redacted
-  SQLite DB of agent tool usage (`codegraph history ingest|show`) — never the
-  per-project graph schema.
+- **Tool-history flywheel** (`src/history/`): a separate, global, redacted
+  SQLite DB of agent tool usage (`~/.codegraph/history.db`, created 0600;
+  `codegraph history ingest|show`) — never the per-project graph schema.
+  Source adapters (`history/sources/`, JFC logs today) emit one `RawToolCall`
+  per *native call id*; `ToolEvent::from_raw` is the only way to build a row
+  and redacts every string (`history/redact.rs`) before deriving anything
+  from it. Rows are keyed on a hash of the native id (`call_key` UNIQUE +
+  `INSERT OR IGNORE`), so re-ingesting is a no-op; the schema is versioned by
+  `PRAGMA user_version` (`history/schema.rs`). `show` opens read-only and
+  must never create state.

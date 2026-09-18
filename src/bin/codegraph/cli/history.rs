@@ -3,7 +3,8 @@ use super::Subcommand;
 /// `codegraph history` — the global, redacted tool-call history flywheel.
 #[derive(Subcommand)]
 pub(crate) enum HistoryCommands {
-    /// Parse JFC logs into the redacted history database
+    /// Parse JFC logs into the redacted history database (idempotent: one
+    /// row per tool call, keyed on its native id)
     Ingest {
         /// Log directory (default: ~/.config/jfc/logs)
         #[arg(long, value_name = "dir")]
@@ -11,16 +12,16 @@ pub(crate) enum HistoryCommands {
         /// History DB path (default: ~/.codegraph/history.db)
         #[arg(long, value_name = "path")]
         db: Option<String>,
-        /// Tag ingested events with this project path
+        /// Attribute ingested calls to this project path (default: derived per call)
         #[arg(short = 'p', long, value_name = "path")]
         project: Option<String>,
     },
-    /// Show usage rankings from the history database
+    /// Show usage rankings from the history database (read-only)
     Show {
         /// History DB path (default: ~/.codegraph/history.db)
         #[arg(long, value_name = "path")]
         db: Option<String>,
-        /// Scope file rankings to a project path substring
+        /// Scope rankings to a project path substring
         #[arg(short = 'p', long, value_name = "path")]
         project: Option<String>,
         /// Show top N per section
