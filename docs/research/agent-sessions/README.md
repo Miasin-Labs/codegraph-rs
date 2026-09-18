@@ -92,7 +92,7 @@ assume they need.
 |---|---|---|---|
 | 1 | Bounded, compact wire output: honour limits, one payload not two, slim rows, a budget below the host cap | 5.8 MB `files` calls; 42% explore overflow; 94 → 35 tok rows | shipped: 24K default budget, `files` honours depth and pages, slim v2 rows (linux `files{maxDepth:1}` 5.76 MB → 942 B) |
 | 2 | Re-read ledger on every source-emitting tool (`node`, not just `explore`) | 8.6M tok re-sent; 97% saving per re-read; 4–8 re-reads per episode | shipped: `node` records and honours the ledger (a repeat file read 13.5 KB → 424 B) |
-| 3 | Session memory: fixed `history` ingest + redaction, then `recall` and a ≤1 KB session digest | 45% cross-session re-discovery; ~57M tok | ingest/redaction in flight; recall designed |
+| 3 | Session memory: fixed `history` ingest + redaction, then `recall` and a ≤1 KB session digest | 45% cross-session re-discovery; ~57M tok | ingest fixed (one row per call, idempotent, 3.8× over-count gone, redaction of sudo passwords/keys/JWTs/emails); `recall` + session digest designed, not built |
 | 4 | Explore that ranks and folds in 1-hop neighbours (edges, co-change, tests) under a hard budget | 60% of replay misses; 0.49 single-call ceiling | gap |
 | 5 | Symbol windows instead of files: `node(file, line)` → enclosing span; outline mode; cursor paging | 48.5M tok of read lines unused; 12.2M in paging chains | partial |
 | 6 | Text search over indexed files returning hits + enclosing symbol, per-file caps | 27% of greps are text; >100-hit searches = half of search tokens | gap |
