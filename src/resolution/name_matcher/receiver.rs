@@ -14,6 +14,8 @@ pub(super) use local::infer_local_receiver_type;
 pub(crate) use local::infer_receiver_type_from_declaration;
 pub(super) use rust::{
     RustType,
+    declared_type,
+    external_path,
     file_is_module,
     fn_local_uses,
     infer_rust_chain_type,
@@ -21,5 +23,6 @@ pub(super) use rust::{
     is_local_at_call,
     resolve_type,
     self_field_receiver_type,
+    signature_return,
 };
 pub(crate) use typed::resolve_method_on_type;

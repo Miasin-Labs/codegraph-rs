@@ -136,6 +136,34 @@ impl QueryBuilder {
         Ok(UnresolvedBatch { refs, last_id })
     }
 
+    /// [`Self::get_unresolved_references_batch_after_id`] for one language.
+    pub fn get_unresolved_references_for_language_after_id(
+        &self,
+        language: Language,
+        after_id: i64,
+        limit: usize,
+    ) -> Result<UnresolvedBatch> {
+        let mut stmt = self.db.conn().prepare_cached(
+            "SELECT * FROM unresolved_refs WHERE id > ? AND language = ? ORDER BY id LIMIT ?",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![after_id, language.as_str(), limit as i64],
+            |row| {
+                let id: i64 = row.get("id")?;
+                let reference = unresolved_from_row(row)?;
+                Ok((id, reference))
+            },
+        )?;
+        let mut refs = Vec::new();
+        let mut last_id = after_id;
+        for row in rows {
+            let (id, reference) = row?;
+            last_id = id;
+            refs.push(reference);
+        }
+        Ok(UnresolvedBatch { refs, last_id })
+    }
+
     /// Get all tracked file paths (lightweight — no full FileRecord objects).
     pub fn get_all_file_paths(&self) -> Result<Vec<String>> {
         let mut stmt = self

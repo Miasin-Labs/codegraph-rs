@@ -110,7 +110,10 @@ fn self_field_ending(before: &str) -> Option<&str> {
 }
 
 /// The type written in the field's declaration (`pub graph: Graph,`).
-pub(super) fn declared_type(field: &Node, context: &dyn ResolutionContext) -> Option<String> {
+pub(in crate::resolution::name_matcher) fn declared_type(
+    field: &Node,
+    context: &dyn ResolutionContext,
+) -> Option<String> {
     let source = context.read_file_arc(&field.file_path)?;
     let declaration = source
         .split('\n')

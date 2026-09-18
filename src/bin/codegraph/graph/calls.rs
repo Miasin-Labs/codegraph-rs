@@ -213,6 +213,68 @@ pub(crate) fn cmd_call_graph(
             related.truncate(limit);
             per_def.push((group, related));
         }
+        // Callees in other graphs (dependency shards, linked projects),
+        // per definition — listed after the project's own.
+        let externals: Vec<Vec<codegraph::db::ExternalEdge>> = groups
+            .iter()
+            .map(|group| {
+                if direction != CallDirection::Callees {
+                    return Ok(Vec::new());
+                }
+                let mut seen: HashSet<(String, String)> = HashSet::new();
+                let mut edges = cg
+                    .get_external_edges(&group.node_ids)
+                    .map_err(|e| e.to_string())?;
+                edges.retain(|edge| {
+                    matches!(
+                        edge.kind,
+                        codegraph::EdgeKind::Calls | codegraph::EdgeKind::Instantiates
+                    ) && seen.insert((edge.target_graph_key.clone(), edge.target_node_id.clone()))
+                });
+                edges.truncate(limit);
+                Ok(edges)
+            })
+            .collect::<Result<_, String>>()?;
+        let graph_label = |key: &str| key.rsplit('/').next().unwrap_or(key).to_string();
+        let external_json = |edges: &[codegraph::db::ExternalEdge]| -> Vec<serde_json::Value> {
+            edges
+                .iter()
+                .map(|edge| {
+                    serde_json::json!({
+                        "graph": edge.target_graph_key,
+                        "graphKind": edge.target_graph_kind.as_str(),
+                        "name": edge.target_name,
+                        "qualifiedName": edge.target_qualified_name,
+                        "kind": edge.target_kind.as_str(),
+                        "filePath": edge.target_file_path,
+                        "startLine": edge.target_line,
+                    })
+                })
+                .collect()
+        };
+        let print_external = |edges: &[codegraph::db::ExternalEdge], indent: &str| {
+            if edges.is_empty() {
+                return;
+            }
+            println!(
+                "{}",
+                bold(&format!("{indent}In other graphs ({}):", edges.len()))
+            );
+            for edge in edges {
+                println!(
+                    "{indent}  {}{} {}",
+                    cyan(&format!("{:<12}", edge.target_kind.as_str())),
+                    white(&edge.target_qualified_name),
+                    dim(&format!(
+                        "{} {}:{}",
+                        graph_label(&edge.target_graph_key),
+                        edge.target_file_path,
+                        edge.target_line.unwrap_or_default()
+                    ))
+                );
+            }
+            println!();
+        };
 
         let single = groups.len() == 1;
 
@@ -243,13 +305,20 @@ pub(crate) fn cmd_call_graph(
                     direction.noun().to_string(),
                     serde_json::Value::Array(related_json(&related)),
                 );
+                if let Some(external) = externals.first().filter(|edges| !edges.is_empty()) {
+                    obj.insert(
+                        "external".to_string(),
+                        serde_json::Value::Array(external_json(external)),
+                    );
+                }
             } else {
                 // Multiple distinct definitions: nest edges under their def so
                 // attribution survives (a flat union cannot express it).
                 let defs: Vec<serde_json::Value> = per_def
                     .iter()
-                    .map(|(group, related)| {
-                        serde_json::json!({
+                    .zip(&externals)
+                    .map(|((group, related), external)| {
+                        let mut def = serde_json::json!({
                             "definition": {
                                 "qualifiedName": group.qualified_name,
                                 "kind": group.kind,
@@ -257,7 +326,11 @@ pub(crate) fn cmd_call_graph(
                                 "startLine": group.start_line,
                             },
                             direction.noun(): related_json(related),
-                        })
+                        });
+                        if !external.is_empty() {
+                            def["external"] = serde_json::Value::Array(external_json(external));
+                        }
+                        def
                     })
                     .collect();
                 obj.insert("definitions".to_string(), serde_json::Value::Array(defs));
@@ -269,8 +342,12 @@ pub(crate) fn cmd_call_graph(
             );
         } else if single {
             let related = per_def.first().map(|(_, r)| r.clone()).unwrap_or_default();
-            if related.is_empty() {
+            let external = externals.first().cloned().unwrap_or_default();
+            if related.is_empty() && external.is_empty() {
                 info(&format!("No {} found for \"{symbol}\"", direction.noun()));
+            } else if related.is_empty() {
+                println!();
+                print_external(&external, "");
             } else {
                 println!(
                     "{}",
@@ -290,6 +367,7 @@ pub(crate) fn cmd_call_graph(
                     println!("{}", dim(&format!("  {file_path}{loc}")));
                     println!();
                 }
+                print_external(&external, "");
             }
             if let Some(note) = &filter_note {
                 println!("{}", dim(&format!("Note: {note}")));
@@ -305,7 +383,7 @@ pub(crate) fn cmd_call_graph(
                     groups.len()
                 ))
             );
-            for (group, related) in &per_def {
+            for ((group, related), external) in per_def.iter().zip(&externals) {
                 let head_loc = if group.start_line != 0 {
                     format!(":{}", group.start_line)
                 } else {
@@ -336,6 +414,7 @@ pub(crate) fn cmd_call_graph(
                     }
                 }
                 println!();
+                print_external(external, "  ");
             }
             if let Some(note) = &filter_note {
                 println!("{}", dim(&format!("Note: {note}")));

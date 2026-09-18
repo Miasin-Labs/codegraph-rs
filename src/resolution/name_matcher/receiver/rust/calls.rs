@@ -2,9 +2,9 @@
 //! associated fn's or free fn's indexed signature, a smart pointer or
 //! cell's constructor seen through to what it holds.
 
-use super::lookup::{RustType, assoc_fn_return, free_fn_return, resolve_type};
+use super::lookup::{RustType, assoc_fn_return, external_path, free_fn_return, resolve_type};
 use super::types::{is_deref_wrapper, starts_uppercase};
-use super::{Inference, Site, Value};
+use super::{Inference, Origin, Site, Value};
 
 /// Std cells and locks whose `new(x)` holds `x` (see `adaptors`).
 const CELLS: &[&str] = &["Cell", "Mutex", "OnceCell", "RefCell", "RwLock"];
@@ -61,6 +61,11 @@ impl Inference<'_> {
             ),
         };
         if !owner_ty.is_project_type(self.context) {
+            // `Connection::open(p)`: what the dependency declares, when its
+            // graph is reachable.
+            if let Some(value) = self.foreign_method_value(&owner_ty, callee) {
+                return Some(value);
+            }
             if is_deref_wrapper(&owner_ty.name) {
                 // `Arc::new(Graph::new())` derefs to what it wraps.
                 return matches!(callee, "new" | "from" | "clone" | "pin")
@@ -93,7 +98,7 @@ impl Inference<'_> {
             return Some(Value::Written {
                 text,
                 self_ty: Some(owner_ty),
-                file,
+                file: Origin::Project(file),
             });
         }
         // Trait constructors a derive or blanket impl may supply.
@@ -102,18 +107,36 @@ impl Inference<'_> {
             "try_from" | "from_str" => Some(Value::Written {
                 text: "Result<Self>".to_string(),
                 self_ty: Some(owner_ty),
-                file: self.reference.file_path.clone(),
+                file: Origin::Project(self.reference.file_path.clone()),
             }),
             _ => None,
         }
     }
 
     fn free_fn_value(&self, path: &str) -> Option<Value> {
-        let (text, file) = free_fn_return(path, self.reference, self.context)?;
+        let Some((text, file)) = free_fn_return(path, self.reference, self.context) else {
+            return self.foreign_fn_value(path);
+        };
         Some(Value::Written {
             text,
             self_ty: None,
-            file,
+            file: Origin::Project(file),
+        })
+    }
+
+    /// `serde_json::from_str(..)`, `tempdir()` after `use tempfile::tempdir`:
+    /// the return type a reachable crate outside the project declares.
+    fn foreign_fn_value(&self, path: &str) -> Option<Value> {
+        let foreign = self.context.foreign_types()?;
+        let (krate, rest) = external_path(path, &self.reference.file_path, self.context)?;
+        let found = foreign.fn_return(&krate, &rest)?;
+        Some(Value::Written {
+            text: found.text,
+            self_ty: None,
+            file: Origin::Foreign {
+                krate: found.krate,
+                file: found.file,
+            },
         })
     }
 }

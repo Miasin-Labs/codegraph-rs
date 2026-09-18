@@ -11,6 +11,7 @@ mod arkui;
 mod chains;
 mod dependency_names;
 mod exact;
+pub(crate) mod external;
 mod file;
 mod fuzzy;
 mod method;

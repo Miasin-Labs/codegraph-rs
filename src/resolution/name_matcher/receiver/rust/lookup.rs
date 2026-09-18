@@ -36,8 +36,14 @@ enum Home {
         module: Option<String>,
     },
     /// A crate outside the project (`std`, `tree_sitter`), or a slice,
-    /// tuple, or pointer: no project method runs on it.
-    External,
+    /// tuple, or pointer: no project method runs on it. `krate` is the
+    /// crate a path named (`tree_sitter` for `tree_sitter::Node`), when one
+    /// did, and `path` the type's path inside it (`["bytes", "Regex"]`);
+    /// the external resolution pass follows them into that crate's graph.
+    External {
+        krate: Option<String>,
+        path: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,8 +88,45 @@ impl RustType {
     pub(super) fn external(name: &str) -> Self {
         RustType {
             name: name.to_string(),
-            home: Home::External,
+            home: Home::External {
+                krate: None,
+                path: Vec::new(),
+            },
         }
+    }
+
+    /// The type at `path` (its name last) of the crate `krate` outside the
+    /// project.
+    pub(super) fn in_crate(krate: &str, path: Vec<String>) -> Option<Self> {
+        Some(RustType {
+            name: path.last()?.clone(),
+            home: Home::External {
+                krate: Some(krate.to_string()),
+                path,
+            },
+        })
+    }
+
+    /// The crate outside the project a path placed this type in
+    /// (`tree_sitter` for `tree_sitter::Node`), if one did.
+    pub(in crate::resolution::name_matcher) fn external_crate(&self) -> Option<&str> {
+        match &self.home {
+            Home::External { krate, .. } => krate.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The type's path inside [`Self::external_crate`] (`["Node"]`,
+    /// `["bytes", "Regex"]`).
+    pub(in crate::resolution::name_matcher) fn external_path(&self) -> &[String] {
+        match &self.home {
+            Home::External { path, .. } if !path.is_empty() => path,
+            _ => std::slice::from_ref(&self.name),
+        }
+    }
+
+    fn is_external(&self) -> bool {
+        matches!(self.home, Home::External { .. })
     }
 
     /// The project defines this type (not merely a same-named one).
@@ -91,7 +134,7 @@ impl RustType {
         &self,
         context: &dyn ResolutionContext,
     ) -> bool {
-        self.home != Home::External && is_rust_project_type(&self.name, context)
+        !self.is_external() && is_rust_project_type(&self.name, context)
     }
 
     /// The method `Self::method` the project defines, best match first. An
@@ -104,7 +147,7 @@ impl RustType {
         reference: &UnresolvedRef,
         context: &dyn ResolutionContext,
     ) -> Option<&'a Node> {
-        if self.home == Home::External && is_rust_project_type(&self.name, context) {
+        if self.is_external() && is_rust_project_type(&self.name, context) {
             return None;
         }
         methods_of(self, nodes, method, reference).first().copied()
@@ -153,7 +196,7 @@ impl RustType {
                 false,
                 globs.iter().any(|module| file_is_module(path, module)),
             ),
-            Home::External => (true, false, false),
+            Home::External { .. } => (true, false, false),
         };
         let shared = path
             .split('/')
@@ -292,13 +335,57 @@ fn resolve_path(path: &str, file: &str, context: &dyn ResolutionContext) -> Reso
                 scope: CrateScope::Key(crate_key(file)),
                 module: module.or_else(|| Some(root.to_string())),
             },
-            None => Home::External,
+            None => Home::External {
+                krate: Some(root.to_string()),
+                path: rest.iter().map(|segment| segment.to_string()).collect(),
+            },
         },
     };
     Resolved::Type(RustType {
         name: name.to_string(),
         home,
     })
+}
+
+/// The crate outside the project, and the path inside it, that `path`
+/// written in `file` names — `use` declarations followed: `from_str` after
+/// `use serde_json::from_str;` is (`serde_json`, [`from_str`]), and
+/// `Node::new` after `use tree_sitter::Node;` is (`tree_sitter`, [`Node`,
+/// `new`]). `None` for a project path (`crate::`, a workspace crate, a
+/// local module) or a bare name no `use` places.
+pub(in crate::resolution::name_matcher) fn external_path(
+    path: &str,
+    file: &str,
+    context: &dyn ResolutionContext,
+) -> Option<(String, Vec<String>)> {
+    let mut segments: Vec<String> = path
+        .split("::")
+        .map(str::trim)
+        .filter(|part| !part.is_empty() && !part.starts_with('<'))
+        .map(str::to_string)
+        .collect();
+    for _ in 0..MAX_HOPS {
+        let (root, rest) = segments.split_first()?;
+        if let Some(mut full) = use_path(root, file, context) {
+            full.extend(rest.iter().cloned());
+            if full != segments {
+                segments = full;
+                continue;
+            }
+        }
+        if rest.is_empty()
+            || matches!(
+                root.as_str(),
+                "crate" | "$crate" | "self" | "super" | "Self"
+            )
+            || project_crate_dir(root, context).is_some()
+            || is_local_module(root, file, context)
+        {
+            return None;
+        }
+        return Some((root.clone(), rest.to_vec()));
+    }
+    None
 }
 
 /// The modules `file` glob-imports: `use crate::fixture::*` -> `fixture`.
@@ -343,11 +430,10 @@ pub(in crate::resolution::name_matcher) fn fn_local_uses(
 /// `root` is a module of `file`'s crate (a 2018-edition relative path).
 fn is_local_module(root: &str, file: &str, context: &dyn ResolutionContext) -> bool {
     let here = crate_key(file);
-    context.get_nodes_by_name(root).iter().any(|node| {
-        node.language == Language::Rust
-            && node.kind == NodeKind::Module
-            && crate_key(&node.file_path) == here
-    })
+    context
+        .get_nodes_by_name_and_kind(root, NodeKind::Module)
+        .iter()
+        .any(|node| node.language == Language::Rust && crate_key(&node.file_path) == here)
 }
 
 /// When the definition `ty` names is a type alias: the aliased type as
@@ -357,7 +443,7 @@ fn alias_target(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
 ) -> Option<(String, String)> {
-    if ty.home == Home::External {
+    if ty.is_external() {
         return None;
     }
     let nodes = context.get_nodes_by_name(&ty.name);
@@ -440,7 +526,7 @@ pub(super) fn free_fn_return(
 ) -> Option<(String, String)> {
     // A path or `use` pins the fn's crate and module like a type's.
     let home = resolve_type(path, &reference.file_path, reference, context);
-    if home.home == Home::External {
+    if home.is_external() {
         return None;
     }
     let nodes = context.get_nodes_by_name(&home.name);

@@ -8,6 +8,8 @@
 
 pub mod alias_binding;
 pub mod callback_synthesizer;
+pub mod external;
+pub mod foreign;
 pub mod frameworks;
 pub mod go_module;
 #[cfg(feature = "gpu")]
@@ -27,5 +29,6 @@ pub mod workspace_packages;
 // Re-export types (TS `export * from './types'`)
 // The module's public classes/functions (TS `export class ReferenceResolver`
 // / `export function createResolver`).
+pub use foreign::{ForeignText, ForeignTypes};
 pub use resolver::{ReferenceResolver, ResolverContext, create_resolver};
 pub use types::*;

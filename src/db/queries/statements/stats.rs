@@ -99,6 +99,16 @@ impl QueryBuilder {
         Ok(())
     }
 
+    /// Remove a metadata key (absent is fine).
+    pub fn delete_metadata(&self, key: &str) -> Result<()> {
+        let mut stmt = self
+            .db
+            .conn()
+            .prepare_cached("DELETE FROM project_metadata WHERE key = ?")?;
+        stmt.execute([key])?;
+        Ok(())
+    }
+
     /// Get all metadata as a key-value map.
     pub fn get_all_metadata(&self) -> Result<HashMap<String, String>> {
         let mut stmt = self

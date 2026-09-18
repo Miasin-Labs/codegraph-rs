@@ -2067,13 +2067,13 @@ async fn project_path_on_an_outdated_index_upgrades_in_the_background() {
     let other_db = other.path().join(".codegraph/codegraph.db");
     rusqlite::Connection::open(&other_db)
         .unwrap()
-        .execute_batch("UPDATE schema_versions SET version = 8 WHERE version = 9;")
+        .execute_batch("UPDATE schema_versions SET version = 9 WHERE version = 10;")
         .unwrap();
     let schema_v9 = || -> i64 {
         rusqlite::Connection::open(&other_db)
             .unwrap()
             .query_row(
-                "SELECT COUNT(*) FROM schema_versions WHERE version = 9",
+                "SELECT COUNT(*) FROM schema_versions WHERE version = 10",
                 [],
                 |row| row.get(0),
             )

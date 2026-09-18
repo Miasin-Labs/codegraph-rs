@@ -208,14 +208,15 @@ mod tests {
         let dir = get_codegraph_dir(root);
         fs::create_dir_all(&dir).unwrap();
         let conn = rusqlite::Connection::open(dir.join("codegraph.db")).unwrap();
-        conn.execute_batch(
+        conn.execute_batch(&format!(
             "CREATE TABLE schema_versions (version INTEGER PRIMARY KEY, applied_at INTEGER, description TEXT);
-             INSERT INTO schema_versions VALUES (9, 0, 'x');
+             INSERT INTO schema_versions VALUES ({}, 0, 'x');
              CREATE TABLE files (path TEXT PRIMARY KEY, language TEXT, indexed_at INTEGER, node_count INTEGER);
              INSERT INTO files VALUES ('src/lib.rs', 'rust', 1000, 2);
              CREATE TABLE nodes (id TEXT); CREATE TABLE edges (id INTEGER);
              CREATE TABLE project_metadata (key TEXT PRIMARY KEY, value TEXT, updated_at INTEGER);",
-        )
+            crate::db::CURRENT_SCHEMA_VERSION
+        ))
         .unwrap();
     }
 

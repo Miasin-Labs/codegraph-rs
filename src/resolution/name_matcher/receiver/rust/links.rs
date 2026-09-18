@@ -14,9 +14,9 @@
 use super::adaptors::{Adapted, adapt, guarded, indexed, item};
 use super::expr::Tail;
 use super::fields::declared_type;
-use super::lookup::{RustType, assoc_fn_return, resolve_named};
+use super::lookup::{RustType, assoc_fn_return};
 use super::types::{Named, named_type, peeled, split_path, split_top_level};
-use super::{Inference, Value};
+use super::{Inference, Origin, Value};
 
 /// How many lock guards deep one method call is followed.
 const MAX_GUARDS: u8 = 2;
@@ -53,8 +53,11 @@ impl Inference<'_> {
             return Some(Value::Written {
                 text,
                 self_ty: Some(ty),
-                file,
+                file: Origin::Project(file),
             });
+        }
+        if let Some(value) = self.foreign_method_value(&ty, method) {
+            return Some(value);
         }
         let Value::Written {
             text,
@@ -109,14 +112,52 @@ impl Inference<'_> {
         };
         let ty = self.resolve(value)?;
         if !ty.is_project_type(self.context) {
-            return None;
+            return self.foreign_field_value(&ty, field);
         }
         let nodes = self.context.get_nodes_by_name(field);
         let declaration = ty.field(field, &nodes, self.reference)?;
         Some(Value::Written {
             text: declared_type(declaration, self.context)?,
             self_ty: Some(ty),
-            file: declaration.file_path.clone(),
+            file: Origin::Project(declaration.file_path.clone()),
+        })
+    }
+
+    /// What `ty.method(..)` returns when `ty` is a type of a crate outside
+    /// the project whose graph the external pass reaches: the return type
+    /// that crate declares. `None` without such a graph (the in-project
+    /// pass), or when the crate has no one such method.
+    pub(super) fn foreign_method_value(&self, ty: &RustType, method: &str) -> Option<Value> {
+        let krate = ty.external_crate()?;
+        let found =
+            self.context
+                .foreign_types()?
+                .method_return(krate, ty.external_path(), method)?;
+        Some(Value::Written {
+            text: found.text,
+            self_ty: Some(ty.clone()),
+            file: Origin::Foreign {
+                krate: found.krate,
+                file: found.file,
+            },
+        })
+    }
+
+    /// The declared type of the public field `ty.field` of a crate outside
+    /// the project (see [`Self::foreign_method_value`]).
+    fn foreign_field_value(&self, ty: &RustType, field: &str) -> Option<Value> {
+        let krate = ty.external_crate()?;
+        let found = self
+            .context
+            .foreign_types()?
+            .field_type(krate, ty.external_path(), field)?;
+        Some(Value::Written {
+            text: found.text,
+            self_ty: Some(ty.clone()),
+            file: Origin::Foreign {
+                krate: found.krate,
+                file: found.file,
+            },
         })
     }
 
@@ -172,7 +213,7 @@ impl Inference<'_> {
                 // `Self::Item`, `T::Output`.
                 return None;
             }
-            let ty = resolve_named(named, self_ty.as_ref(), file, self.reference, self.context)?;
+            let ty = self.resolve_written(named, self_ty.as_ref(), file)?;
             // A one-letter struct (`struct S`) is a type all the same.
             return (!generic || ty.is_project_type(self.context)).then_some(ty);
         }

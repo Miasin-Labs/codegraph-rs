@@ -5,7 +5,7 @@
 
 use super::lookup::resolve_type;
 use super::types::{matching_paren, split_top_level};
-use super::{Inference, Value};
+use super::{Inference, Origin, Value};
 use crate::types::{Language, NodeKind};
 
 impl Inference<'_> {
@@ -64,7 +64,7 @@ impl Inference<'_> {
         Some(Value::Written {
             text,
             self_ty,
-            file: declaration.file_path.clone(),
+            file: Origin::Project(declaration.file_path.clone()),
         })
     }
 }

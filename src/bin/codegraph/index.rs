@@ -53,6 +53,7 @@ use super::{
     yellow,
 };
 
+mod external;
 mod lifecycle;
 mod lock;
 mod query;

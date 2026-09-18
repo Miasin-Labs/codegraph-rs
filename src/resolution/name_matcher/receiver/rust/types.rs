@@ -261,7 +261,7 @@ pub(super) fn signature_params(signature: &str) -> Vec<(&str, &str)> {
 }
 
 /// The return type of a signature, `None` for `()`.
-pub(super) fn signature_return(signature: &str) -> Option<&str> {
+pub(in crate::resolution::name_matcher) fn signature_return(signature: &str) -> Option<&str> {
     let open = signature.find('(')?;
     let close = open + matching_close(&signature[open..])?;
     let rest = signature[close + 1..].trim_start().strip_prefix("->")?;

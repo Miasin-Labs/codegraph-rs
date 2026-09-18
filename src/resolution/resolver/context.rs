@@ -89,7 +89,7 @@ pub(super) fn is_low_value_js_ts_resolution_source(reference: &UnresolvedRef) ->
 }
 
 impl ResolverContext {
-    pub(super) fn new(project_root: String, queries: QueryBuilder) -> Self {
+    pub(crate) fn new(project_root: String, queries: QueryBuilder) -> Self {
         let limit = resolve_cache_limit();
         let content_limit = std::cmp::max(64, limit / 5);
         ResolverContext {

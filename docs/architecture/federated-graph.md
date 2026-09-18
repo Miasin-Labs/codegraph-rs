@@ -59,13 +59,147 @@ flowchart TB
 1. **Atlas** (`src/atlas/`, `codegraph projects`) and **dependency store**
    (`src/deps/`, `codegraph deps`): registration, discovery, lockfile parsing,
    source location, shard builds.
-2. **Cross-shard resolution**: a project's unresolved references resolve into
-   its dependency shards and linked projects' indexes; edges record the target
-   shard; dependency signatures type call chains.
+2. **Cross-shard resolution** (done for Rust — `src/resolution/external/`):
+   a project's unresolved references resolve into its dependency shards and
+   linked projects' indexes; edges record the target graph; dependency
+   signatures type call chains. See below.
 3. **Cross-shard queries**: `node`, `callers`, `callees`, `impact`, `explore`
    follow edges into shards; a projects view; "who across my projects calls X".
 4. **History join** (done — `src/history/atlas_join/`): session memory
    keyed to atlas projects and followed across their links. See below.
+
+## Cross-shard resolution (phase 2)
+
+In-project resolution runs first and is unchanged. What it leaves in
+`unresolved_refs` is then examined by the external pass
+(`resolution/external/pass.rs`); only a reference whose target is *one*
+item of a graph the project reaches becomes an edge — ambiguity, overloads
+and unknown receiver types produce nothing.
+
+**Reachable graphs** (`external/graphs.rs::discover`, read-only, opens no
+graph): the dependency versions `deps/registry.db` records for the project
+(registry and git sources, direct and transitive) whose shard `meta.json`
+this build can read, and the atlas's `cargo_path_dep` links from the project
+into another registered project (the path dependency's crate is a directory
+of that project; it resolves in that project's own index). Each graph is
+keyed by the name code uses for its crate (`[lib] name`, else the package
+name with `-` → `_`; for a link, the dependency key). Two versions under one
+name resolve to the direct one; otherwise the name is left out. A missing or
+unreadable shard is skipped silently (`skipped.noShard`).
+
+**What resolves where (Rust).**
+
+| Reference | Looked up | `resolved_by` |
+|---|---|---|
+| `serde_json::from_str`, `Node::new` after `use tree_sitter::Node`, `linkscope::deep::helper` | the path as `crate::…` from the crate's library root in its graph: module layout + `pub use` (`match_rust_path`), then another crate's re-export (`pub use clap_builder::*`, ≤2 hops), then the one item of that shape in the crate | `qualified-name` / `re-export` |
+| bare `from_str(..)`, `impl Serialize for X`, `x: Regex` brought in by a `use` | the same, from the `use` path | `import` |
+| `recv.m(..)`, `recv` typed by an annotation/binding to a dependency type | `Type::m` in that crate — exactly one, callable from outside | `instance-method` |
+| `a.b().m(..)` (dropped receiver) typed through project types | same | `receiver-chain` |
+| any receiver whose type came through a dependency's declared return or field type (`conn.prepare(q)?.query_map(..)`) | same | `dependency-chain` |
+
+Chain typing is the in-project inference (`name_matcher/receiver/rust`) run
+with a context whose `ResolutionContext::foreign_types()` answers from the
+graphs (`resolution/foreign.rs`): a dependency method's signature return type
+continues the chain, written text resolved in *that* crate's file (its `use`
+declarations, a bare name in the file's own module; `Self` = the owner;
+`Option`/`Result`/iterator adaptors as before). An external type carries its
+path inside the crate (`Home::External { krate, path }`: `regex::bytes::Regex`
+is `["bytes", "Regex"]`), so same-named types of one crate are told apart by
+the file their path resolves to. A method lookup follows what Rust's method
+resolution follows: a type alias to its aliased type (`StableDiGraph` →
+`StableGraph`), a `Deref` impl's `Target` when the type has no such method
+(`CachedStatement` → `Statement`), and an inherent method before trait-impl
+methods of the same name. A type no reachable graph defines, a generic
+parameter, overloads (`impl From<i8> for Value` + `impl From<String> for
+Value` both index as `Value::from`; only `cfg` twins count as one), a
+private inherent item, and anything the in-project pass would not guess all
+end the chain. In-project contexts return `None`, so in-project results are
+exactly as before (the edge sets of both measured projects are identical).
+
+**Edge model** (`external_edges`, schema v10; `db/queries/statements/
+external_edges.rs`):
+
+| Column | Meaning |
+|---|---|
+| `source` | the referencing node in this project (FK, `ON DELETE CASCADE`) |
+| `kind` | `calls` (`instantiates` for a tuple-struct constructor), `references`, `implements`, `extends` |
+| `target_graph_kind` | `dependency` \| `project` |
+| `target_graph_key` | `crates/<name>-<version>` (the shard directory under `codegraph_home()/deps/`) \| the linked project's canonical root (the atlas key) |
+| `target_node_id` | the node's id in that graph when resolved (ids are hashes of file/kind/name/line, so stable while the item does not move) |
+| `target_name`, `target_qualified_name`, `target_kind`, `target_file_path`, `target_line` | the target's identity, `file_path` relative to that graph's root (shard: the dependency's source dir; project: its root) |
+| `reference_name`, `line`, `col`, `metadata` | the reference as written — enough to restore it to `unresolved_refs` |
+| `confidence`, `resolved_by`, `created_at` | how |
+
+Read API on `QueryBuilder`: `insert_external_edges`,
+`get_outgoing_external_edges(source_ids)`, `get_external_edges_into(key,
+target_node_id?)`, `count_external_edges`, `external_edge_graph_keys`,
+`restore_external_edges(keys)`; `CodeGraph::get_external_edges(node_ids)`.
+In-project `edges` never point outside the database.
+
+**Contract for phase 3.** To follow an edge: `dependency` → open
+`DepsHome::shard_dir` of the key read-only (`ShardHandle::open_dir`),
+`project` → the root's `.codegraph/codegraph.db` through `atlas::ro`; look
+the target up by `target_node_id`, and when a rebuilt/re-indexed graph no
+longer has that id, by (`target_qualified_name`, `target_kind`,
+`target_file_path`). The reverse direction ("who across my projects calls
+X") is `get_external_edges_into(key, id)` over each project that uses the
+graph (`Registry::users_of`, atlas `links_to`). Callers never re-resolve.
+
+**Re-resolution.** The pass records the graph fingerprints it completed
+against (`project_metadata.external_resolution`: shard `built_at`/extractor/
+source fingerprint, linked project's `last_indexed`/node count). When they
+change — a shard built, rebuilt or removed, a lockfile bump, a linked project
+re-indexed — the next full-mode pass restores the edges into changed or
+vanished graphs and re-examines every unresolved Rust reference; otherwise it
+examines only what this run left unresolved. A full pass cut short by its
+budget records the last row it finished (`project_metadata.
+external_resolution_resume`, with the graphs it ran against); the next pass
+over the same graphs continues from there instead of restarting, so a
+project too large for one budget still gets through. Everything is
+idempotent: resolved references are gone from `unresolved_refs`. `codegraph deps build` queues a
+detached `codegraph sync` for each indexed project using a shard it just
+built (`deps::trigger::queue_reresolution`, ≤8 projects), and every CLI
+`sync` checks anyway.
+
+**Where it runs.** CLI `init`/`index`/`sync` after registering the project
+(full mode: examines everything after an index, the changed files'
+references after a sync, everything on a graph change); the file watcher's
+syncs (incremental: only the references that sync left, no restoring); the
+background sync above. Never an MCP request or the prompt hook (the MCP
+catch-up sync leaves it off). `CODEGRAPH_EXTERNAL=0` turns it off.
+
+**Bounds.** Budget `CODEGRAPH_EXTERNAL_BUDGET_MS` (60 s full, 5 s
+incremental). Graphs open read-only (`mode=ro&immutable=1` shards; linked
+indexes through `atlas::ro`, so no `-wal`/`-shm` appears beside them), at
+most `CODEGRAPH_EXTERNAL_MAX_OPEN` (32) per worker, LRU-closed, a failed open
+not retried in the pass; lookups are memoized per pass. A full pass runs
+over the in-memory project snapshot on up to 8 threads, each with its own
+graph handles; a method-name pre-filter (every reachable crate's method
+names, read once per full pass) skips receivers no crate could answer. Each
+report lists the most frequent references it could place in a reachable
+crate but not answer (`misses`, printed by `index -v`/`init -v`).
+
+Measured (2026-09, clean copies, scratch home with every dependency shard
+built): codegraph-rs 91k unresolved Rust references examined in ~0.6 s on 8
+threads (8,168 edges into 251 dependency graphs, ~470 read-only opens);
+iphonern 9.4k in ~0.2 s (1,159 into dependencies, 46 into the linked
+`linkscope` index). A one-file `sync` of codegraph-rs pays ~40 ms (discovery
+~4 ms + a sequential pass over that file's references).
+
+**Dependency method names.** The per-crate `.api` artifacts
+(`resolution/rust_deps/`) stay: they feed the in-project refusal rule
+(`is_rust_dependency_method`), which must hold from the first index (shards
+come later, from a detached builder), load in ~1 ms on every resolver start
+including the watcher and MCP catch-up (opening dozens of shard databases
+would not), and not change in-project results when shards appear. Where a
+shard is ready, the external pass does what the name list could only
+approximate — it resolves the typed call into the shard.
+
+**Other languages.** npm `.d.ts` and Go module shards are discovered by the
+same registry but not yet resolved: `discover` keeps `crates` only and
+`external::rust` is the one resolver. A TypeScript/Go resolver plugs in as a
+sibling of `external/rust/` (imports → the package's exported symbols) with
+its ecosystem admitted in `graphs.rs`.
 
 ## History join (phase 4)
 

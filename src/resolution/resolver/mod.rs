@@ -10,6 +10,7 @@ mod cache;
 mod context;
 mod edges;
 mod engine;
+mod external;
 #[cfg(feature = "gpu")]
 mod gpu_batch;
 #[cfg(feature = "gpu")]

@@ -374,8 +374,8 @@ fn gets_schema_version() {
     let (_dir, db, _q) = setup();
     let version = db.get_schema_version().unwrap();
     assert!(version.is_some());
-    assert_eq!(version.unwrap().version, 9);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 9);
+    assert_eq!(version.unwrap().version, 10);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 10);
 }
 
 #[test]
@@ -829,7 +829,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 9);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 10);
 
     let handle = db.get_db().unwrap();
     // Migration 2 added columns + project_metadata
@@ -870,7 +870,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     // History records each applied migration
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 }
 
 #[test]
@@ -881,12 +881,12 @@ fn open_does_not_rerun_migrations_on_current_database() {
         let _db = DatabaseConnection::initialize(&db_path).unwrap();
     }
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 9);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 10);
     let handle = db.get_db().unwrap();
     assert!(!codegraph::db::needs_migration(&handle));
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 9]);
+    assert_eq!(versions, vec![1, 10]);
 }
 
 #[test]
@@ -942,7 +942,7 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 9);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 10);
     let handle = db.get_db().unwrap();
 
     // v5 added the nullable byte-offset columns.
@@ -991,7 +991,7 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
 
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 }
 
 #[test]
@@ -1047,7 +1047,7 @@ fn open_migrates_rust_v7_shape_and_enforces_edge_identity() {
     assert!(!codegraph::db::database_schema_is_current(&db_path));
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 9);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 10);
     assert!(codegraph::db::database_schema_is_current(&db_path));
     let handle = db.get_db().unwrap();
 
@@ -1149,7 +1149,7 @@ fn open_migrates_typescript_v7_shape_without_duplicate_column_failures() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 9);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 10);
     let handle = db.get_db().unwrap();
 
     let node_columns: Vec<String> = {
@@ -1810,4 +1810,128 @@ fn search_surfaces_camelcase_symbol_via_segment_vocab() {
         names.contains(&"getShippingMethodIdFromCheckout"),
         "query 'checkout' must surface camelCase symbol via segment vocab, got {names:?}"
     );
+}
+
+// =============================================================================
+// Schema v10 — external edges (cross-graph references)
+// =============================================================================
+
+fn external_edge(source: &str, key: &str, target: &str, line: u32) -> codegraph::db::ExternalEdge {
+    codegraph::db::ExternalEdge {
+        source: source.to_string(),
+        kind: EdgeKind::Calls,
+        target_graph_kind: codegraph::db::ExternalGraphKind::Dependency,
+        target_graph_key: key.to_string(),
+        target_node_id: format!("{key}#{target}"),
+        target_name: target.to_string(),
+        target_qualified_name: target.to_string(),
+        target_kind: NodeKind::Function,
+        target_file_path: "src/lib.rs".to_string(),
+        target_line: Some(3),
+        reference_name: format!("dep::{target}"),
+        line: Some(line),
+        column: Some(4),
+        confidence: 0.95,
+        resolved_by: "qualified-name".to_string(),
+        metadata: None,
+    }
+}
+
+#[test]
+fn migration_10_adds_external_edges_to_a_v9_index_idempotently() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("v9.db");
+    {
+        // A current index, then taken back to v9: no external_edges.
+        let _db = DatabaseConnection::initialize(&db_path).unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "DROP TABLE external_edges;
+             UPDATE schema_versions SET version = 9 WHERE version = 10;",
+        )
+        .unwrap();
+    }
+    let table = |db: &DatabaseConnection| -> i64 {
+        db.get_db()
+            .unwrap()
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'external_edges'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    for _ in 0..2 {
+        let db = DatabaseConnection::open(&db_path).unwrap();
+        assert_eq!(db.get_schema_version().unwrap().unwrap().version, 10);
+        assert_eq!(table(&db), 1);
+        let history = codegraph::db::get_migration_history(&db.get_db().unwrap()).unwrap();
+        let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
+        assert_eq!(versions, vec![1, 9, 10], "migration 10 ran exactly once");
+    }
+    // A fresh index has the table from schema.sql.
+    let (_fresh, db, _q) = setup();
+    assert_eq!(table(&db), 1);
+}
+
+#[test]
+fn external_edges_round_trip_and_restore_to_unresolved_references() {
+    let (_dir, _db, q) = setup();
+    q.insert_nodes(&[make_node("caller", "caller")]).unwrap();
+    let edges = [
+        external_edge("caller", "crates/dep-1.0.0", "from_str", 7),
+        external_edge("caller", "crates/dep-1.0.0", "to_string", 8),
+        external_edge("caller", "/work/linked", "trace", 9),
+        // Its source is not a node of this index: skipped.
+        external_edge("ghost", "crates/dep-1.0.0", "from_str", 1),
+    ];
+    assert_eq!(q.insert_external_edges(&edges).unwrap(), 3);
+    assert_eq!(
+        q.insert_external_edges(&edges).unwrap(),
+        0,
+        "duplicates ignored"
+    );
+
+    let out = q
+        .get_outgoing_external_edges(&["caller".to_string()])
+        .unwrap();
+    assert_eq!(out.len(), 3);
+    assert_eq!(out[0], edges[0]);
+    let into = q
+        .get_external_edges_into("crates/dep-1.0.0", Some("crates/dep-1.0.0#from_str"))
+        .unwrap();
+    assert_eq!(into.len(), 1);
+    let counts = q.count_external_edges().unwrap();
+    assert_eq!(counts[0].graph_key, "crates/dep-1.0.0");
+    assert_eq!(counts[0].edges, 2);
+
+    // The dependency graph went away: its edges become references again.
+    let restored = q
+        .restore_external_edges(&["crates/dep-1.0.0".to_string()])
+        .unwrap();
+    assert_eq!(restored, 2);
+    let names: Vec<String> = q
+        .get_unresolved_references()
+        .unwrap()
+        .into_iter()
+        .map(|r| {
+            format!(
+                "{} {} {}",
+                r.reference_name,
+                r.reference_kind.as_str(),
+                r.line
+            )
+        })
+        .collect();
+    assert_eq!(names.len(), 2);
+    assert!(
+        names.contains(&"dep::from_str calls 7".to_string()),
+        "{names:?}"
+    );
+    assert_eq!(q.get_all_external_edges().unwrap().len(), 1);
+
+    // Deleting the source node takes its external edges with it.
+    q.delete_file("a.ts").unwrap();
+    assert!(q.get_all_external_edges().unwrap().is_empty());
 }

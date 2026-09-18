@@ -5,7 +5,10 @@ use std::fs;
 use std::path::Path;
 
 use codegraph::db::{DatabaseConnection, get_database_path};
-use codegraph::{CodeGraph, IndexOptions};
+use codegraph::{CodeGraph, ExternalScope, IndexOptions};
+
+#[path = "federation/fixture.rs"]
+mod federation;
 
 fn write(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
@@ -518,4 +521,56 @@ async fn dependency_method_names_are_not_resolved_by_name_alone() {
             .is_file(),
         "the vendored crate's artifact stays with the project"
     );
+}
+
+/// Calls whose callee lives in a dependency: the in-project pass leaves
+/// them unresolved (a dependency type runs no project method), and the
+/// external pass resolves them into the dependency's shard — through a
+/// path, a `use`, a typed receiver, and a chain typed by the dependency's
+/// own return types.
+#[tokio::test(flavor = "multi_thread")]
+async fn dependency_calls_become_external_edges_into_their_shards() {
+    let machine = federation::Federation::new();
+    machine.prepare(true).await;
+    assert!(
+        !call_edges(&machine.app)
+            .iter()
+            .any(|edge| edge.contains("query_map") || edge.contains("from_str")),
+        "a dependency's method landed on a project node"
+    );
+    let report = machine.resolve(ExternalScope::AllUnresolved).await;
+    assert!(report.complete, "{report:#?}");
+    let edges = machine.external_edges();
+    for expected in [
+        "run jsonish::from_str -> dependency:jsonish-1.0.0::from_str",
+        "run Connection::open -> dependency:sqlish-0.3.0::Connection::open",
+        "run root.walk -> dependency:treelike-0.2.0::Node::walk",
+        "run query_map -> dependency:sqlish-0.3.0::Statement::query_map (dependency-chain",
+        "run facade::Command::new -> dependency:facade_builder-4.0.0::Command::new (re-export",
+    ] {
+        assert!(
+            edges.iter().any(|edge| edge.starts_with(expected)),
+            "missing {expected}: {edges:#?}"
+        );
+    }
+}
+
+/// A path dependency that is its own indexed project resolves into that
+/// project's index, by the crate's module paths.
+#[tokio::test(flavor = "multi_thread")]
+async fn path_dependency_calls_resolve_into_the_linked_project() {
+    let machine = federation::Federation::new();
+    machine.prepare(false).await;
+    machine.resolve(ExternalScope::AllUnresolved).await;
+    let edges = machine.external_edges();
+    for expected in [
+        "run linkme::trace_detail -> project:linkme::trace_detail",
+        "run linkme::Field::text -> project:linkme::Field::text",
+        "run linkme::deep::helper -> project:linkme::helper",
+    ] {
+        assert!(
+            edges.iter().any(|edge| edge.starts_with(expected)),
+            "missing {expected}: {edges:#?}"
+        );
+    }
 }

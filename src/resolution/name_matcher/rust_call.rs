@@ -134,10 +134,37 @@ pub(crate) fn rust_call_admits(
         && !syntax.names_local(reference, context)
 }
 
+/// How a Rust call spells its callee, for the external resolution pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RustCallShape {
+    /// `f(..)`, naming no local of the enclosing fn.
+    Bare,
+    /// `f(..)` where `f` is a local (a closure, a fn pointer).
+    BareLocal,
+    /// `self.m(..)`.
+    OnSelf,
+    /// `a.b().m(..)`, recorded as `m` with the receiver text.
+    DroppedReceiver,
+}
+
+/// The shape of a Rust call recorded under a plain name; `None` for any
+/// other reference (a path, `recv.m`, another language).
+pub(crate) fn rust_call_shape(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+) -> Option<RustCallShape> {
+    Some(match Syntax::of(reference, context)? {
+        Syntax::Bare if Syntax::Bare.names_local(reference, context) => RustCallShape::BareLocal,
+        Syntax::Bare => RustCallShape::Bare,
+        Syntax::OnSelf => RustCallShape::OnSelf,
+        Syntax::DroppedReceiver => RustCallShape::DroppedReceiver,
+    })
+}
+
 /// The type of the receiver a Rust method call dropped: its recorded text
 /// followed link by link, else (no text recorded) a `self.field` read from
 /// the call site.
-fn dropped_receiver_type(
+pub(super) fn dropped_receiver_type(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
 ) -> Option<RustType> {

@@ -177,6 +177,39 @@ CREATE INDEX IF NOT EXISTS idx_unresolved_status ON unresolved_refs(status);
 CREATE INDEX IF NOT EXISTS idx_unresolved_failed_tail ON unresolved_refs(name_tail) WHERE status = 'failed';
 CREATE INDEX IF NOT EXISTS idx_edges_provenance ON edges(provenance);
 
+-- External edges (schema v10): references this project makes INTO another
+-- graph — a dependency's shared shard or a linked project's own index. Kept
+-- apart from `edges` (whose target must be a node of this database). The
+-- reference as written travels with the row so it can be restored to
+-- `unresolved_refs` when the target graph changes or disappears. See
+-- docs/architecture/federated-graph.md for the contract.
+CREATE TABLE IF NOT EXISTS external_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    target_graph_kind TEXT NOT NULL,
+    target_graph_key TEXT NOT NULL,
+    target_node_id TEXT NOT NULL,
+    target_name TEXT NOT NULL,
+    target_qualified_name TEXT NOT NULL,
+    target_kind TEXT NOT NULL,
+    target_file_path TEXT NOT NULL,
+    target_line INTEGER,
+    reference_name TEXT NOT NULL,
+    line INTEGER,
+    col INTEGER,
+    confidence REAL NOT NULL,
+    resolved_by TEXT NOT NULL,
+    metadata TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (source) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_external_edges_identity
+  ON external_edges(source, kind, target_graph_key, target_node_id, IFNULL(line, -1), IFNULL(col, -1));
+CREATE INDEX IF NOT EXISTS idx_external_edges_source ON external_edges(source, kind);
+CREATE INDEX IF NOT EXISTS idx_external_edges_target
+  ON external_edges(target_graph_key, target_node_id);
+
 -- Project metadata for version/provenance tracking
 CREATE TABLE IF NOT EXISTS project_metadata (
     key TEXT PRIMARY KEY,

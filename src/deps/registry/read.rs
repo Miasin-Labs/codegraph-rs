@@ -117,7 +117,7 @@ impl Registry {
     }
 
     /// Shards to (re)build: never built, interrupted, built by an older
-    /// extractor or schema, or failed under an older extractor — and whose
+    /// extractor or a schema this build cannot read, or failed under an older extractor — and whose
     /// source some project has. `every` lists every buildable version
     /// regardless of state (a forced rebuild). Direct dependencies first,
     /// then the most shared.
@@ -137,7 +137,7 @@ impl Registry {
                AND u.source_dir IS NOT NULL
                AND (?4 OR p.state IN ('missing', 'building')
                     OR (p.state IN ('ready', 'partial')
-                        AND (COALESCE(p.extractor_version, 0) < ?1 OR COALESCE(p.schema_version, 0) != ?2))
+                        AND (COALESCE(p.extractor_version, 0) < ?1 OR COALESCE(p.schema_version, 0) < ?5 OR COALESCE(p.schema_version, 0) > ?2))
                     OR (p.state IN ('failed', 'unavailable') AND p.error IS NOT NULL
                         AND COALESCE(p.extractor_version, 0) < ?1))
                AND (?3 IS NULL OR p.id IN (
@@ -152,7 +152,8 @@ impl Registry {
                     crate::extraction::EXTRACTION_VERSION,
                     crate::db::CURRENT_SCHEMA_VERSION,
                     project_root,
-                    every
+                    every,
+                    crate::db::MIN_READABLE_SCHEMA_VERSION
                 ],
                 |row| {
                     let ecosystem: String = row.get(1)?;

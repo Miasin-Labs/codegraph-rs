@@ -46,16 +46,18 @@ mod variants;
 
 use bindings::{Binding, binding_in_line};
 use expr::{Head, Tail, parse_initializer, scrutinee_end, statement_end, tuple_expression};
-pub(in crate::resolution::name_matcher) use fields::self_field_receiver_type;
+pub(in crate::resolution::name_matcher) use fields::{declared_type, self_field_receiver_type};
 use locals::caller_fn;
 pub(in crate::resolution::name_matcher) use locals::is_local_at_call;
 use lookup::resolve_named;
 pub(in crate::resolution::name_matcher) use lookup::{
     RustType,
+    external_path,
     file_is_module,
     fn_local_uses,
     resolve_type,
 };
+pub(in crate::resolution::name_matcher) use types::signature_return;
 use types::{named_type, signature_params, unwrapped};
 
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
@@ -177,10 +179,22 @@ enum Value {
     Written {
         text: String,
         self_ty: Option<RustType>,
-        file: String,
+        file: Origin,
     },
     /// A type already resolved.
     Resolved(RustType),
+}
+
+/// Where a written type is written: a file of the project, or — reached
+/// through a dependency's return type — a file of a crate outside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Origin {
+    Project(String),
+    /// `file` of `krate`'s graph (see [`crate::resolution::ForeignTypes`]).
+    Foreign {
+        krate: String,
+        file: String,
+    },
 }
 
 struct Inference<'a> {
@@ -200,7 +214,7 @@ impl Inference<'_> {
         Value::Written {
             text: text.into(),
             self_ty: self.owner.clone(),
-            file: self.reference.file_path.clone(),
+            file: Origin::Project(self.reference.file_path.clone()),
         }
     }
 
@@ -211,13 +225,39 @@ impl Inference<'_> {
                 text,
                 self_ty,
                 file,
-            } => resolve_named(
-                named_type(&text)?,
-                self_ty.as_ref(),
-                &file,
-                self.reference,
-                self.context,
-            ),
+            } => self.resolve_written(named_type(&text)?, self_ty.as_ref(), &file),
+        }
+    }
+
+    /// What a written type means where it is written: in a project file, as
+    /// the file's `use` declarations say; in a file of a crate outside the
+    /// project, as that crate's graph says (a type it defines or imports),
+    /// else by name only (`Vec`, a generic `T`) — no method is looked up
+    /// on it there.
+    fn resolve_written(
+        &self,
+        named: types::Named<'_>,
+        self_ty: Option<&RustType>,
+        file: &Origin,
+    ) -> Option<RustType> {
+        match file {
+            Origin::Project(file) => {
+                resolve_named(named, self_ty, file, self.reference, self.context)
+            }
+            Origin::Foreign { krate, file } => match named {
+                types::Named::SelfType => self_ty.cloned(),
+                types::Named::Structural(name) => Some(RustType::external(name)),
+                types::Named::Path(path) => {
+                    let placed = self
+                        .context
+                        .foreign_types()
+                        .and_then(|foreign| foreign.resolve_type(krate, file, path));
+                    match placed {
+                        Some((krate, path)) => RustType::in_crate(&krate, path),
+                        None => Some(RustType::external(path.rsplit("::").next()?)),
+                    }
+                }
+            },
         }
     }
 

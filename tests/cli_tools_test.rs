@@ -140,10 +140,10 @@ fn sql_count(root: &Path, query: &str) -> i64 {
 const FORGET_VOCAB: &str = "DELETE FROM name_segment_vocab;
      DELETE FROM project_metadata WHERE key = 'name_segment_vocab_state';";
 const VOCAB_COMPLETE: &str = "SELECT COUNT(*) FROM project_metadata WHERE key = 'name_segment_vocab_state' AND value = 'complete'";
-const SCHEMA_V9: &str = "SELECT COUNT(*) FROM schema_versions WHERE version = 9";
-// A real v8 index keeps its earlier rows; relabel rather than delete the v9 row
-// so only migration 9 is pending.
-const SCHEMA_BACK_TO_V8: &str = "UPDATE schema_versions SET version = 8 WHERE version = 9;";
+const SCHEMA_CURRENT: &str = "SELECT COUNT(*) FROM schema_versions WHERE version = 10";
+// A real v9 index keeps its earlier rows; relabel rather than delete the v10
+// row so only migration 10 is pending.
+const SCHEMA_BACK_TO_V9: &str = "UPDATE schema_versions SET version = 9 WHERE version = 10;";
 
 /// Run the prompt hook on `prompt`; `background` allows its detached sync.
 fn run_prompt_hook(root: &Path, registry: &Path, prompt: &str, background: bool) -> Output {
@@ -187,15 +187,19 @@ async fn prompt_hook_never_migrates_or_rebuilds_inline() {
     let (_temp, root, registry) = fixture().await;
 
     // An outdated schema would be migrated by opening the graph.
-    sql(&root, SCHEMA_BACK_TO_V8);
+    sql(&root, SCHEMA_BACK_TO_V9);
     let output = run_prompt_hook(&root, &registry, PROSE_PROMPT, false);
     assert!(output.stdout.is_empty(), "{}", stdout(&output));
-    assert_eq!(sql_count(&root, SCHEMA_V9), 0, "the hook must not migrate");
+    assert_eq!(
+        sql_count(&root, SCHEMA_CURRENT),
+        0,
+        "the hook must not migrate"
+    );
 
     // A never-built vocabulary would be rebuilt.
     sql(
         &root,
-        "UPDATE schema_versions SET version = 9 WHERE version = 8;",
+        "UPDATE schema_versions SET version = 10 WHERE version = 9;",
     );
     sql(&root, FORGET_VOCAB);
     let output = run_prompt_hook(&root, &registry, PROSE_PROMPT, false);
@@ -239,14 +243,14 @@ async fn prompt_hook_matches_against_an_incomplete_vocabulary() {
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_hook_heals_the_index_in_a_background_sync() {
     let (_temp, root, registry) = fixture().await;
-    sql(&root, SCHEMA_BACK_TO_V8);
+    sql(&root, SCHEMA_BACK_TO_V9);
     sql(&root, FORGET_VOCAB);
 
     let output = run_prompt_hook(&root, &registry, PROSE_PROMPT, true);
     assert!(output.stdout.is_empty(), "{}", stdout(&output));
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while sql_count(&root, SCHEMA_V9) == 0 || sql_count(&root, VOCAB_COMPLETE) == 0 {
+    while sql_count(&root, SCHEMA_CURRENT) == 0 || sql_count(&root, VOCAB_COMPLETE) == 0 {
         assert!(
             std::time::Instant::now() < deadline,
             "the background sync never migrated and healed the index"

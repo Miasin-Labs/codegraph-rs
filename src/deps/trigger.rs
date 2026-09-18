@@ -146,6 +146,59 @@ pub fn spawn_background_build(home: &DepsHome, project_root: &Path) -> Backgroun
     }
 }
 
+/// Most projects one finished build queues a re-resolving sync for.
+pub const MAX_RERESOLVE_PROJECTS: usize = 8;
+
+/// After a build published `built` shards: start a detached `codegraph
+/// sync` for each indexed project that uses one of them (at most
+/// [`MAX_RERESOLVE_PROJECTS`], `first` — the project that asked for the
+/// build — ahead of the rest). The sync notices the new shards and
+/// re-resolves the project's dependency-bound references into them
+/// ([`crate::resolution::external`]); it is budgeted, and a no-op when the
+/// graphs did not change. Never inline, never when
+/// `CODEGRAPH_NO_BACKGROUND_SYNC=1`.
+pub fn queue_reresolution(
+    registry: &super::registry::Registry,
+    built: &[super::model::DepKey],
+    first: Option<&str>,
+) -> Vec<(String, BackgroundSync)> {
+    queue_reresolution_with(registry, built, first, &|root| {
+        crate::sync::background::spawn_background_sync(root)
+    })
+}
+
+/// [`queue_reresolution`] with an explicit sync spawner (tests).
+pub fn queue_reresolution_with(
+    registry: &super::registry::Registry,
+    built: &[super::model::DepKey],
+    first: Option<&str>,
+    spawn: &dyn Fn(&Path) -> BackgroundSync,
+) -> Vec<(String, BackgroundSync)> {
+    let mut roots: Vec<String> = Vec::new();
+    for key in built {
+        for root in registry.users_of(key).unwrap_or_default() {
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+    }
+    if let Some(first) = first {
+        if let Some(at) = roots.iter().position(|root| root == first) {
+            let root = roots.remove(at);
+            roots.insert(0, root);
+        }
+    }
+    roots
+        .into_iter()
+        .filter(|root| crate::db::get_database_path(Path::new(root)).is_file())
+        .take(MAX_RERESOLVE_PROJECTS)
+        .map(|root| {
+            let outcome = spawn(Path::new(&root));
+            (root, outcome)
+        })
+        .collect()
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

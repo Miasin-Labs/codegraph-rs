@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::db::CURRENT_SCHEMA_VERSION;
+use crate::db::{CURRENT_SCHEMA_VERSION, MIN_READABLE_SCHEMA_VERSION};
 use crate::deps::model::{DepKey, DepSource, Ecosystem, ShardState};
 use crate::deps::scope::{PartialReason, ShardLimits};
 use crate::deps::store::META_FILE;
@@ -72,13 +72,16 @@ impl ShardMeta {
     /// Built by this extractor and schema (an older shard still reads —
     /// same schema — but misses newer extraction; it is rebuilt lazily).
     pub fn is_current(&self) -> bool {
-        self.extractor_version >= EXTRACTION_VERSION
-            && self.schema_version == CURRENT_SCHEMA_VERSION
+        self.extractor_version >= EXTRACTION_VERSION && self.is_readable()
     }
 
-    /// The database can be opened by this build without migrating it.
+    /// The database can be opened by this build without migrating it: any
+    /// schema whose node/edge tables this build reads as its own (a schema
+    /// bump that only adds project-side tables leaves shards readable until
+    /// they are rebuilt lazily).
     pub fn is_readable(&self) -> bool {
-        self.format == META_FORMAT && self.schema_version == CURRENT_SCHEMA_VERSION
+        self.format == META_FORMAT
+            && (MIN_READABLE_SCHEMA_VERSION..=CURRENT_SCHEMA_VERSION).contains(&self.schema_version)
     }
 
     pub fn read(shard_dir: &Path) -> Option<ShardMeta> {

@@ -25,6 +25,7 @@ pub use connection::{
 };
 pub use migrations::{
     CURRENT_SCHEMA_VERSION,
+    MIN_READABLE_SCHEMA_VERSION,
     Migration,
     MigrationRecord,
     database_schema_is_current,
@@ -37,6 +38,9 @@ pub use migrations::{
 pub use queries::{
     CrossFileLink,
     DominantFile,
+    ExternalEdge,
+    ExternalEdgeCount,
+    ExternalGraphKind,
     NodeEdgeCount,
     QueryBuilder,
     ResolvedRefKey,

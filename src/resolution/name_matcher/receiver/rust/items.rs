@@ -5,7 +5,7 @@
 use super::bindings::{Binding, binding_in_line};
 use super::lookup::resolve_type;
 use super::types::starts_uppercase;
-use super::{Inference, MAX_LINE_BYTES, Value};
+use super::{Inference, MAX_LINE_BYTES, Origin, Value};
 use crate::types::{Language, NodeKind};
 
 impl Inference<'_> {
@@ -62,7 +62,7 @@ impl Inference<'_> {
         Some(Value::Written {
             text,
             self_ty: None,
-            file,
+            file: Origin::Project(file),
         })
     }
 }

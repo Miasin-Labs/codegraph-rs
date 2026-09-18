@@ -78,6 +78,7 @@ pub(crate) async fn run_index_all(cg: &CodeGraph, verbose: bool) -> codegraph::R
             signal: None,
             verbose: true,
             dependency_scan: true,
+            external: None,
         })
         .await
     } else {
@@ -98,6 +99,7 @@ pub(crate) async fn run_index_all(cg: &CodeGraph, verbose: bool) -> codegraph::R
                 signal: None,
                 verbose: false,
                 dependency_scan: true,
+                external: None,
             })
             .await
         };

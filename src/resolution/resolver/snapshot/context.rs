@@ -32,6 +32,12 @@ impl ResolutionContext for SnapshotContext {
         self.lookup_nodes(&self.nodes_by_name, name, |node, key| node.name == key)
     }
 
+    fn get_nodes_by_name_and_kind(&self, name: &str, kind: NodeKind) -> Vec<Node> {
+        self.lookup_nodes(&self.nodes_by_name, name, |node, key| {
+            node.kind == kind && node.name == key
+        })
+    }
+
     fn get_nodes_by_qualified_name(&self, qualified_name: &str) -> Vec<Node> {
         self.lookup_nodes(
             &self.nodes_by_qualified_name,

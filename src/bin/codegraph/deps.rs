@@ -540,6 +540,30 @@ async fn cmd_build(args: BuildRequestArgs) -> CmdResult {
             merge(&mut report, rest);
         }
     }
+    // Projects using what was just built re-resolve their dependency-bound
+    // references into it: a detached, budgeted sync each.
+    let built: Vec<DepKey> = report
+        .results
+        .iter()
+        .filter_map(|result| match result {
+            ShardResult::Built { meta } => Some(meta.key()),
+            _ => None,
+        })
+        .collect();
+    let queued =
+        codegraph::deps::trigger::queue_reresolution(&registry, &built, canonical.as_deref());
+    if !quiet {
+        let started = queued
+            .iter()
+            .filter(|(_, outcome)| outcome.in_progress())
+            .count();
+        if started > 0 {
+            println!(
+                "{} re-resolving {started} project(s) against the new shards in the background",
+                dim("·")
+            );
+        }
+    }
     if args.json {
         return print_json(&report);
     }

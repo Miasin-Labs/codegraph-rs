@@ -69,6 +69,14 @@ pub use crate::graph::{NodeMetrics, PathStep};
 // codegraph-api notes left this re-export to the MCP owner).
 pub use crate::mcp::MCPServer;
 pub use crate::resolution::ResolutionResult;
+use crate::resolution::external::{
+    ExternalMode,
+    ExternalOptions,
+    ExternalRefs,
+    ExternalReport,
+    external_resolution_enabled,
+};
+use crate::resolution::types::UnresolvedRef;
 use crate::resolution::{ReferenceResolver, create_resolver};
 use crate::search::split_identifier_segments;
 use crate::sync::{DEFAULT_READY_TIMEOUT_MS, SyncError, SyncFn, WatchSyncResult};
@@ -156,6 +164,26 @@ pub struct IndexOptions<'a> {
     /// set it; time-boxed callers (the MCP catch-up sync) leave it off and
     /// resolve with whatever artifacts exist.
     pub dependency_scan: bool,
+    /// After a sync's in-project resolution, resolve what it left
+    /// unresolved into dependency shards and linked projects
+    /// ([`crate::resolution::external`]). The file watcher sets
+    /// `Incremental`; the CLI runs its full pass itself after registering
+    /// the project ([`CodeGraph::resolve_external`]). `None` (the MCP
+    /// catch-up sync, shard builds) leaves references as they are.
+    pub external: Option<ExternalMode>,
+}
+
+/// Which references [`CodeGraph::resolve_external`] examines (a pass
+/// examines every unresolved Rust reference anyway whenever the reachable
+/// graphs changed since the last complete pass).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExternalScope {
+    /// Every unresolved reference (after a full index).
+    AllUnresolved,
+    /// The unresolved references of these files (after a sync).
+    Files(Vec<String>),
+    /// None beyond what a change of the reachable graphs calls for.
+    GraphChangesOnly,
 }
 
 /// Completeness of the most recent full-index run.
@@ -969,6 +997,7 @@ impl CodeGraph {
         }
 
         // Resolve references if files were updated
+        let mut remaining: Option<Vec<UnresolvedRef>> = None;
         if result.files_added > 0 || result.files_modified > 0 {
             if result.changed_file_paths.is_some() || result.changed_node_names.is_some() {
                 let by_file = match &result.changed_file_paths {
@@ -986,9 +1015,11 @@ impl CodeGraph {
                 let mut cb = |current: usize, total: usize| {
                     emit_resolving(options.on_progress, current, total);
                 };
-                self.resolver
+                let resolution = self
+                    .resolver
                     .resolve_and_persist(&unresolved_refs, Some(&mut cb))
                     .await?;
+                remaining = Some(resolution.unresolved);
             } else {
                 // No git info — use batched resolution to avoid OOM
                 let unresolved_count = self.queries.get_unresolved_references_count()? as usize;
@@ -1001,6 +1032,23 @@ impl CodeGraph {
                 self.resolver
                     .resolve_and_persist_batched(Some(&mut cb), None)
                     .await?;
+            }
+        }
+
+        if let Some(mode) = options.external.filter(|_| external_resolution_enabled()) {
+            let refs = match &remaining {
+                Some(remaining) => ExternalRefs::These(remaining),
+                None if touched => ExternalRefs::All,
+                None => ExternalRefs::These(&[]),
+            };
+            if let Err(error) = self
+                .resolver
+                .resolve_external(refs, &ExternalOptions::from_env(mode))
+            {
+                crate::error::log_warn(
+                    "External resolution failed",
+                    Some(&serde_json::json!({ "error": error.to_string() })),
+                );
             }
         }
 
@@ -1018,6 +1066,63 @@ impl CodeGraph {
         }
 
         Ok(result)
+    }
+
+    /// Resolve the references in-project resolution left unresolved into
+    /// the graphs this project reaches — its dependencies' shards and the
+    /// projects the atlas links it to ([`crate::resolution::external`]),
+    /// under the project's write lock. The CLI runs this after an index or
+    /// sync, once the project's lockfiles and links are recorded. `None`
+    /// when another process holds the lock (or `CODEGRAPH_EXTERNAL=0`).
+    pub async fn resolve_external(
+        &self,
+        scope: ExternalScope,
+        options: &ExternalOptions,
+    ) -> Result<Option<ExternalReport>> {
+        if !external_resolution_enabled() {
+            return Ok(None);
+        }
+        let _guard = self.lock_index_mutex().await;
+        if self.file_lock.borrow_mut().acquire().is_err() {
+            return Ok(None);
+        }
+        let report = self.resolve_external_locked(scope, options);
+        self.file_lock.borrow_mut().release();
+        report.map(Some)
+    }
+
+    fn resolve_external_locked(
+        &self,
+        scope: ExternalScope,
+        options: &ExternalOptions,
+    ) -> Result<ExternalReport> {
+        let files: Vec<UnresolvedRef> = match &scope {
+            ExternalScope::Files(paths) => self
+                .queries
+                .get_unresolved_references_by_files(paths)?
+                .into_iter()
+                .filter_map(|row| {
+                    Some(UnresolvedRef {
+                        file_path: row.file_path.filter(|path| !path.is_empty())?,
+                        language: row.language?,
+                        from_node_id: row.from_node_id,
+                        reference_name: row.reference_name,
+                        reference_kind: row.reference_kind,
+                        line: row.line,
+                        column: row.column,
+                        candidates: row.candidates,
+                        metadata: row.metadata,
+                    })
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let refs = match scope {
+            ExternalScope::AllUnresolved => ExternalRefs::All,
+            _ => ExternalRefs::These(&files),
+        };
+        self.resolver.clear_caches();
+        self.resolver.resolve_external(refs, options)
     }
 
     /// Check if an indexing operation is currently in progress.
@@ -1169,7 +1274,13 @@ impl CodeGraph {
         let root = self.project_root.clone();
         let sync_fn: SyncFn = Arc::new(move || {
             let cg = CodeGraph::open_sync(&root).map_err(|e| Box::new(e) as SyncError)?;
-            let result = runtime.block_on(cg.sync(&IndexOptions::default()));
+            // The watcher's own thread, never a request: what the sync
+            // leaves unresolved may resolve into dependency shards and
+            // linked projects (bounded; no full pass).
+            let result = runtime.block_on(cg.sync(&IndexOptions {
+                external: Some(ExternalMode::Incremental),
+                ..IndexOptions::default()
+            }));
             cg.close();
             let result = result.map_err(|e| Box::new(e) as SyncError)?;
             // sync() returns this exact zero-shape iff it failed to acquire the
@@ -1613,6 +1724,13 @@ impl CodeGraph {
     /// Get callees of a function/method. `max_depth: None` = TS default 1.
     pub fn get_callees(&self, node_id: &str, max_depth: Option<u32>) -> Result<Vec<NodeRef>> {
         self.traverser.get_callees(node_id, max_depth.unwrap_or(1))
+    }
+
+    /// The references of `node_ids` resolved into other graphs — dependency
+    /// shards and linked projects ([`crate::resolution::external`]). Their
+    /// targets are not nodes of this index; following them is phase 3.
+    pub fn get_external_edges(&self, node_ids: &[String]) -> Result<Vec<crate::db::ExternalEdge>> {
+        self.queries.get_outgoing_external_edges(node_ids)
     }
 
     /// Calculate the impact radius of a node.

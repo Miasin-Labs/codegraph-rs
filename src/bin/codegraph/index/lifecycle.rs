@@ -1,4 +1,5 @@
 use codegraph::utils::validate_project_path;
+use codegraph::{ExternalScope, IndexResult, SyncResult};
 
 use super::{
     BufRead,
@@ -81,10 +82,17 @@ pub(crate) async fn cmd_init(path_arg: Option<&str>, force: bool, verbose: bool)
         // try { offerWatchFallback } catch { /* non-fatal */ }
         offer_watch_fallback(&project_path, false);
 
-        clack_outro("Done");
-        cg.close();
         super::super::projects::register_after_write(&project_path, false);
         let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
+        super::external::resolve_external_after_write(
+            &cg,
+            ExternalScope::AllUnresolved,
+            false,
+            verbose,
+        )
+        .await;
+        cg.close();
+        clack_outro("Done");
         Ok::<(), String>(())
     };
 
@@ -211,9 +219,11 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
             if !result.success {
                 process::exit(1);
             }
-            cg.close();
             super::super::projects::register_after_write(&project_path, true);
             let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
+            super::external::resolve_external_after_write(&cg, index_scope(&result), true, false)
+                .await;
+            cg.close();
             return Ok(());
         }
 
@@ -239,10 +249,12 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
             process::exit(1);
         }
 
-        clack_outro("Done");
-        cg.close();
         super::super::projects::register_after_write(&project_path, false);
         let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
+        super::external::resolve_external_after_write(&cg, index_scope(&result), false, verbose)
+            .await;
+        cg.close();
+        clack_outro("Done");
         Ok::<(), String>(())
     };
 
@@ -275,15 +287,18 @@ pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
             CodeGraph::open(&project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
 
         if quiet {
-            cg.sync(&IndexOptions {
-                dependency_scan: true,
-                ..IndexOptions::default()
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-            cg.close();
+            let result = cg
+                .sync(&IndexOptions {
+                    dependency_scan: true,
+                    ..IndexOptions::default()
+                })
+                .await
+                .map_err(|e| e.to_string())?;
             super::super::projects::register_after_write(&project_path, true);
             let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
+            super::external::resolve_external_after_write(&cg, sync_scope(&result), true, false)
+                .await;
+            cg.close();
             return Ok(());
         }
 
@@ -307,6 +322,7 @@ pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
                 signal: None,
                 verbose: false,
                 dependency_scan: true,
+                external: None,
             })
             .await
         };
@@ -342,10 +358,11 @@ pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
             ));
         }
 
-        clack_outro("Done");
-        cg.close();
         super::super::projects::register_after_write(&project_path, false);
         let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
+        super::external::resolve_external_after_write(&cg, sync_scope(&result), false, false).await;
+        cg.close();
+        clack_outro("Done");
         Ok::<(), String>(())
     };
 
@@ -354,5 +371,26 @@ pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
             error_msg(&format!("Failed to sync: {msg}"));
         }
         process::exit(1);
+    }
+}
+
+/// What an external pass after `index` examines: everything when files
+/// were (re)indexed, else only what changed reachable graphs call for.
+fn index_scope(result: &IndexResult) -> ExternalScope {
+    if result.files_indexed > 0 {
+        ExternalScope::AllUnresolved
+    } else {
+        ExternalScope::GraphChangesOnly
+    }
+}
+
+/// What an external pass after `sync` examines: the changed files'
+/// references (all of them when the sync had no list of changed files).
+fn sync_scope(result: &SyncResult) -> ExternalScope {
+    let changed = result.files_added + result.files_modified + result.files_removed;
+    match &result.changed_file_paths {
+        Some(paths) => ExternalScope::Files(paths.clone()),
+        None if changed > 0 => ExternalScope::AllUnresolved,
+        None => ExternalScope::GraphChangesOnly,
     }
 }

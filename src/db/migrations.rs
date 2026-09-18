@@ -13,7 +13,15 @@ use crate::error::Result;
 /// Version 9 is a shared superset that both the Rust and TypeScript v9 readers
 /// can open. Shape repair remains idempotent because a foreign v9 database is
 /// already version-current and would otherwise skip Rust's missing columns.
-pub const CURRENT_SCHEMA_VERSION: u32 = 9;
+/// Version 10 adds `external_edges` (cross-graph references); every table a
+/// v9 reader uses is unchanged.
+pub const CURRENT_SCHEMA_VERSION: u32 = 10;
+
+/// The oldest schema whose `nodes`/`edges`/`files` tables this build reads
+/// as its own. Read-only consumers of *another* graph (a dependency shard, a
+/// linked project's index) accept anything from here to
+/// [`CURRENT_SCHEMA_VERSION`]; only v10's `external_edges` is missing below.
+pub const MIN_READABLE_SCHEMA_VERSION: u32 = 9;
 
 /// Migration definition.
 pub struct Migration {
@@ -26,7 +34,7 @@ pub struct Migration {
 ///
 /// Note: Version 1 is the initial schema, handled by schema.sql.
 /// Future migrations go here.
-static MIGRATIONS: [Migration; 8] = [
+static MIGRATIONS: [Migration; 9] = [
     Migration {
         version: 2,
         description: "Add project metadata, provenance tracking, and unresolved ref context",
@@ -95,7 +103,49 @@ static MIGRATIONS: [Migration; 8] = [
         description: "Reconcile Rust and TypeScript v9 store columns and indexes",
         up: repair_shared_schema_v9,
     },
+    Migration {
+        version: 10,
+        description: "Add external_edges: references resolved into dependency shards and linked projects",
+        up: create_external_edges,
+    },
 ];
+
+/// v10: the cross-graph edge table (idempotent; `schema.sql` holds the same
+/// DDL for fresh databases).
+pub(crate) fn create_external_edges(db: &Db) -> Result<()> {
+    db.exec(EXTERNAL_EDGES_DDL)
+}
+
+/// The `external_edges` table and its indexes — kept in step with
+/// `schema.sql` (a test compares them).
+pub(crate) const EXTERNAL_EDGES_DDL: &str = "
+CREATE TABLE IF NOT EXISTS external_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    target_graph_kind TEXT NOT NULL,
+    target_graph_key TEXT NOT NULL,
+    target_node_id TEXT NOT NULL,
+    target_name TEXT NOT NULL,
+    target_qualified_name TEXT NOT NULL,
+    target_kind TEXT NOT NULL,
+    target_file_path TEXT NOT NULL,
+    target_line INTEGER,
+    reference_name TEXT NOT NULL,
+    line INTEGER,
+    col INTEGER,
+    confidence REAL NOT NULL,
+    resolved_by TEXT NOT NULL,
+    metadata TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (source) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_external_edges_identity
+  ON external_edges(source, kind, target_graph_key, target_node_id, IFNULL(line, -1), IFNULL(col, -1));
+CREATE INDEX IF NOT EXISTS idx_external_edges_source ON external_edges(source, kind);
+CREATE INDEX IF NOT EXISTS idx_external_edges_target
+  ON external_edges(target_graph_key, target_node_id);
+";
 
 fn table_has_column(db: &Db, table: &str, column: &str) -> Result<bool> {
     let sql = format!("PRAGMA table_info({table})");

@@ -296,6 +296,15 @@ pub trait ResolutionContext {
     }
     /// Get all nodes by name
     fn get_nodes_by_name(&self, name: &str) -> Vec<Node>;
+    /// The nodes named `name` of kind `kind`. Inference asks whether a
+    /// path segment is a module (`fmt` in `fmt::Formatter`) on every
+    /// reference, and a name like `fmt` also names thousands of methods:
+    /// contexts that hold the graph in memory filter before copying.
+    fn get_nodes_by_name_and_kind(&self, name: &str, kind: NodeKind) -> Vec<Node> {
+        let mut nodes = self.get_nodes_by_name(name);
+        nodes.retain(|node| node.kind == kind);
+        nodes
+    }
     /// Get all nodes by qualified name
     fn get_nodes_by_qualified_name(&self, qualified_name: &str) -> Vec<Node>;
     /// Get all nodes of a kind
@@ -391,6 +400,13 @@ pub trait ResolutionContext {
     /// knows no dependency, which is the behaviour without them.
     fn is_rust_dependency_method(&self, _name: &str) -> bool {
         false
+    }
+    /// Declarations of crates outside the project, for typing chains
+    /// through a dependency's return types ([`crate::resolution::foreign`]).
+    /// Only the external resolution pass answers; in-project contexts keep
+    /// the default, so a chain ends at the first external type.
+    fn foreign_types(&self) -> Option<&dyn crate::resolution::ForeignTypes> {
+        None
     }
 }
 

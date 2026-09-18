@@ -195,6 +195,8 @@ cargo test --workspace
   pattern (`variants.rs`), or `self.0` of a tuple struct are typed the same
   way. The first unknown or external link ends the chain — never guess the
   rest — and a generic parameter (`T`, `Self::Item`) is unknown, not a type.
+  (Only the external pass continues past a dependency type, below; an
+  external type carries the crate its path named: `Home::External { krate }`.)
   Inference runs per reference, so anything it reads per file must be
   cached: `use` leaves and fn-local `use` leaves come from the contexts'
   per-file caches (`get_rust_use_leaves`, `get_rust_fn_local_uses`), line
@@ -212,7 +214,10 @@ cargo test --workspace
   when `IndexOptions::dependency_scan` is set (CLI `init/index/sync`), never
   by the MCP catch-up sync or the hook; resolution only reads them. Bump the
   scanner version in `rust_deps/store.rs` whenever `scan.rs` changes what it
-  records. `CODEGRAPH_RUST_DEPS=0` turns it all off; a missing lockfile,
+  records. These names stay even where a shard exists: they feed the
+  in-project refusal rule, which must hold from the first index and load
+  cheaply on every resolver start (see the architecture doc).
+  `CODEGRAPH_RUST_DEPS=0` turns it all off; a missing lockfile,
   source, or artifact is today's behaviour. Other passes may keep
   per-package *directories* (`<name>-<version>/`) in the same `crates/` dir;
   this pass only reads and writes its `.api` files and leaves the rest alone.
@@ -221,9 +226,13 @@ cargo test --workspace
   binds a call op to a `Calls` edge target only when exactly one same-named
   target fits (`points_to/binding.rs`); ambiguity binds nothing.
 - **SQLite schema is versioned** (`src/db/schema.sql` + `src/db/migrations.rs`,
-  currently through v9). A schema change must bump `schema_versions`, add an
-  idempotent migration, treat new columns as nullable (backfill on re-index),
-  and update count/size pin tests.
+  currently through v10: `external_edges`). A schema change must bump
+  `schema_versions`, add an idempotent migration, treat new columns as
+  nullable (backfill on re-index), and update count/size pin tests
+  (`tests/db_test.rs`, `cli_tools_test`, `mcp_server_test`, atlas fixtures).
+  Readers of *another* graph (shards, linked indexes) accept
+  `MIN_READABLE_SCHEMA_VERSION..=CURRENT` (9..=10): a bump that only adds
+  project-side tables must not make every shard unreadable or rebuilt.
  - Language-support additions pin sizes with **count tests** (a regression guard
    on how many nodes/edges a fixture yields).
  - **Extraction is bounded by the pinned tree-sitter grammar.** A grammar that
@@ -265,7 +274,8 @@ cargo test --workspace
   `CodeGraph::init_detached` + `index_file_list`: DB and lock live in the
   shard, the source tree is only read; built in a `.tmp-` sibling, VACUUMed to
   one rollback-journal file, renamed into place; one `flock` per shard;
-  rebuilt lazily when `EXTRACTION_VERSION`/schema/source fingerprint change).
+  rebuilt lazily when `EXTRACTION_VERSION`/source fingerprint change or the
+  schema leaves the readable range).
   `ShardHandle`/`deps::shard_for` open `mode=ro&immutable=1` and must never
   create a file. `deps/registry.db` (0600, WAL, `PRAGMA user_version`) keys
   projects by **canonical checkout root** (the atlas's key). The only trigger
@@ -328,6 +338,51 @@ cargo test --workspace
   line) naming linked projects with open failures or shared-code edits in
   the last 7 days — no history read at all without code links, ~1 ms with
   them on the real stores.
+
+## Cross-graph resolution (federation phase 2)
+
+`src/resolution/external/` (contract: `docs/architecture/federated-graph.md`).
+After in-project resolution, what is still unresolved resolves into the
+project's dependency shards (`deps/registry.db` versions with a readable
+shard) and the projects the atlas links it to by `cargo_path_dep` (that
+project's own index), as `external_edges` rows (schema v10: target graph
+kind + key `crates/<name>-<ver>` or the linked canonical root, target node
+id/name/qualified name/kind/file/line, and the reference as written so it can
+be restored). In-project `edges` and in-project results are untouched: the
+external pass only reads `unresolved_refs`, and the in-project contexts'
+`ResolutionContext::foreign_types()` is `None`.
+
+- **Rust only** (`external/rust/`): paths and `use`d names go to the crate
+  their first segment names (`crate::…` from its lib root via
+  `match_rust_path`, then another crate's `pub use` ≤2 hops, then the unique
+  item of that shape); `recv.m()`/dropped receivers go to `Type::m` of the
+  crate whose type inference found, typing chains through dependency return
+  types (`resolution/foreign.rs` → `external/declarations.rs`). External
+  types carry their in-crate path (`Home::External { krate, path }`) so
+  `regex::Regex` and `regex::bytes::Regex` stay apart; method lookup follows
+  type aliases, `Deref::Target` (only when the type has no such method) and
+  prefers the one inherent method over trait impls, as rustc does. Exactly
+  one target or nothing: overloads (`impl From<X> for T` ×n, all `T::from`),
+  private inherent items, and unknown/generic types resolve to nothing; only
+  `cfg` twins count as one item. Private methods are admitted only inside a
+  `trait`/`impl … for` (the index records trait-impl methods without `pub`).
+- **When**: CLI `init|index|sync` after registration (full mode), the file
+  watcher (incremental: only that sync's leftovers), and the detached `sync`
+  that `deps build` queues for projects using a shard it built
+  (`deps::trigger::queue_reresolution`, ≤8). Never MCP requests or the hook.
+  Graph fingerprints in `project_metadata.external_resolution` decide when a
+  full pass restores stale edges and re-examines everything; a pass its
+  budget cut short resumes from `external_resolution_resume`.
+- **Bounds**: 60 s full / 5 s incremental (`CODEGRAPH_EXTERNAL_BUDGET_MS`),
+  ≤32 open graphs per worker (`CODEGRAPH_EXTERNAL_MAX_OPEN`), ≤8 workers over
+  the project snapshot, lookups memoized per pass, read-only opens that create
+  nothing (tests pin it). `CODEGRAPH_EXTERNAL=0` turns it off,
+  `CODEGRAPH_EXTERNAL_TRACE=1` prints phase timings. Contexts that hold the
+  graph in memory must answer `get_nodes_by_name_and_kind` without copying
+  every same-named node (`fmt` names thousands of methods; this was 2/3 of
+  the pass before), and a wrapping context must delegate it.
+- **Surfaces**: `codegraph callees` lists callees "In other graphs" (JSON
+  `external`); following edges in MCP tools is phase 3.
 
 ## Atlas (federated project graph, phase 1)
 
