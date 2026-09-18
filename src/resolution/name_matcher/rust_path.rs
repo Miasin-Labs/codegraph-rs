@@ -32,7 +32,9 @@ struct ModuleLocation {
 fn module_location(file_path: &str) -> ModuleLocation {
     let normalized = file_path.replace('\\', "/");
     let parts: Vec<&str> = normalized.split('/').filter(|p| !p.is_empty()).collect();
-    let Some(src) = parts.iter().position(|part| *part == "src") else {
+    // The innermost `src` owns the file: `src/tools/clippy/clippy_lints/src/x.rs`
+    // belongs to the clippy_lints crate, not a `tools::clippy::…` module.
+    let Some(src) = parts.iter().rposition(|part| *part == "src") else {
         return ModuleLocation {
             crate_key: normalized,
             module: Vec::new(),
@@ -274,6 +276,9 @@ mod tests {
         assert_eq!(bin.module, ["analyze", "co_change"]);
         assert_eq!(at("src/bin/tool.rs").crate_key, "src/bin/tool.rs");
         assert_eq!(at("tests/api.rs").crate_key, "tests/api.rs");
+        let nested = at("src/tools/clippy/clippy_lints/src/methods/chars_cmp.rs");
+        assert_eq!(nested.crate_key, "src/tools/clippy/clippy_lints/src");
+        assert_eq!(nested.module, ["methods", "chars_cmp"]);
     }
 
     #[test]
