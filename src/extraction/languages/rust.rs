@@ -895,6 +895,37 @@ fn caller() {
         assert_eq!(names, ["Cell::new", "seed"]);
     }
 
+    /// A method call on a chain or field (`v.iter().next()`, `self.items.len()`)
+    /// is named by its bare method, and the reference says the receiver was
+    /// dropped. Plain identifier and `self` receivers are not dropped.
+    #[test]
+    fn dropped_receivers_are_flagged_on_call_references() {
+        let source = "fn caller(&self, v: Vec<u8>) {\n    v.iter().next();\n    self.items.len();\n    self.run();\n    v.len();\n    x[0].clone();\n    assert!(v.iter().any(|b| *b == 0));\n}\n";
+        let result = TreeSitterExtractor::new(
+            "src/lib.rs",
+            source,
+            Some(Language::Rust),
+            Some(&RustExtractor),
+        )
+        .extract();
+        let (dropped, kept): (Vec<&UnresolvedReference>, Vec<_>) = result
+            .unresolved_references
+            .iter()
+            .filter(|reference| reference.reference_kind == EdgeKind::Calls)
+            .partition(|reference| crate::types::receiver_was_dropped(reference.metadata.as_ref()));
+        assert_eq!(sorted_names(&dropped), ["any", "clone", "len", "next"]);
+        assert_eq!(sorted_names(&kept), ["run", "v.iter", "v.iter", "v.len"]);
+    }
+
+    fn sorted_names<'r>(references: &[&'r UnresolvedReference]) -> Vec<&'r str> {
+        let mut names: Vec<_> = references
+            .iter()
+            .map(|reference| reference.reference_name.as_str())
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
     /// Documents the `const trait` grammar limitation (tree-sitter-rust 0.24):
     /// a normal `trait` extracts its methods as `Trait::method`, but a nightly
     /// `const trait` fails to parse as a trait, hoisting its methods to bare

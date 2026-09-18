@@ -17,6 +17,7 @@ mod qualified;
 mod razor;
 mod receiver;
 mod rust_path;
+mod std_methods;
 mod support;
 
 #[cfg(test)]
@@ -86,6 +87,12 @@ pub fn match_reference_full_hints(
     fuzzy: Option<Option<(&Node, bool)>>,
 ) -> Option<ResolvedRef> {
     // Try strategies in order of confidence
+
+    // `v.iter().next()`: a common std method on a dropped receiver. Every
+    // same-named project symbol is a guess (see `std_methods`).
+    if std_methods::is_receiverless_std_method_call(reference) {
+        return None;
+    }
 
     // ArkUI attributes never fall through to ordinary name matching: common
     // framework names such as `.width` would otherwise manufacture edges to

@@ -75,3 +75,52 @@ async fn calls_inside_macro_arguments_become_edges() {
         );
     }
 }
+
+/// `v.iter().next()` names only `next`; exact-name matching used to land it
+/// on the project's sole `next`. A project-unique method name in a chain
+/// still resolves.
+#[tokio::test(flavor = "current_thread")]
+async fn chained_std_calls_do_not_resolve_to_same_named_project_methods() {
+    let (_dir, edges) = index_crate(&[
+        ("src/lib.rs", "mod frontier;\nmod graph;\nmod walk;\n"),
+        (
+            "src/frontier.rs",
+            "pub struct FrontierIter(u32);\n\
+             impl Iterator for FrontierIter {\n\
+             \x20   type Item = u32;\n\
+             \x20   fn next(&mut self) -> Option<u32> { None }\n\
+             }\n",
+        ),
+        (
+            "src/graph.rs",
+            "pub struct Graph;\n\
+             impl Graph {\n\
+             \x20   pub fn get_outgoing_edges(&self, id: u32) -> Vec<u32> { vec![id] }\n\
+             }\n\
+             pub fn load_graph() -> Graph { Graph }\n",
+        ),
+        (
+            "src/walk.rs",
+            "use crate::graph::load_graph;\n\
+             pub fn walk(v: Vec<u32>) -> Option<u32> {\n\
+             \x20   let first = v.iter().next().copied();\n\
+             \x20   let edges = load_graph().get_outgoing_edges(1);\n\
+             \x20   assert_eq!(v.iter().next(), edges.first());\n\
+             \x20   first\n\
+             }\n",
+        ),
+    ])
+    .await;
+    assert!(
+        !edges
+            .iter()
+            .any(|edge| edge == "walk -> FrontierIter::next"),
+        "std `.next()` resolved to a project method: {edges:?}"
+    );
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge == "walk -> Graph::get_outgoing_edges"),
+        "project-unique chained call should resolve: {edges:?}"
+    );
+}

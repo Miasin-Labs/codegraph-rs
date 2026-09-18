@@ -10,7 +10,8 @@
 //! - `f(…)` → `f`
 //! - `a::b::c(…)` → `a::b::c`
 //! - `recv.m(…)` → `recv.m` when `recv` is a plain identifier, bare `m` when
-//!   it is `self` or any longer expression (`a.b().m()`, `x[0].m()`)
+//!   it is `self` or any longer expression (`a.b().m()`, `x[0].m()`); the
+//!   longer ones are marked as having dropped their receiver
 //!
 //! Attributes (`#[derive(Debug)]`), nested `macro_rules!` definitions, the
 //! pattern half of `matches!`, `$`-prefixed metavariables, and item
@@ -193,6 +194,6 @@ fn method_call(
         Some(receiver) if !longer_receiver && receiver.kind() == "self" => {
             TokenCall::at(method_name.to_string(), receiver)
         }
-        _ => TokenCall::at(method_name.to_string(), method),
+        _ => TokenCall::at(method_name.to_string(), method).with_dropped_receiver(),
     }
 }

@@ -614,6 +614,25 @@ impl Node {
 /// Arbitrary JSON metadata attached to an edge.
 pub type Metadata = serde_json::Map<String, serde_json::Value>;
 
+/// Reference metadata key set on a method call whose receiver expression was
+/// not a plain identifier (`v.iter().next()`, `self.map.get(k)`) and was
+/// dropped, leaving only the bare method name to resolve. Resolution copies it
+/// onto the edge like any other reference metadata.
+pub const RECEIVER_DROPPED: &str = "receiverDropped";
+
+/// Metadata marking a reference's receiver as dropped.
+pub fn receiver_dropped_metadata() -> Metadata {
+    Metadata::from_iter([(RECEIVER_DROPPED.to_string(), serde_json::Value::Bool(true))])
+}
+
+/// Whether `metadata` marks the reference's receiver as dropped.
+pub fn receiver_was_dropped(metadata: Option<&Metadata>) -> bool {
+    metadata
+        .and_then(|metadata| metadata.get(RECEIVER_DROPPED))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// An edge representing a relationship between two nodes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

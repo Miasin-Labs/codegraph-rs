@@ -2,7 +2,7 @@ use super::context::find_named_child;
 use super::extractor::TreeSitterExtractor;
 use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
 use crate::extraction::tree_sitter_types::SyntaxNode;
-use crate::types::{EdgeKind, Language, UnresolvedReference};
+use crate::types::{EdgeKind, Language, Metadata, UnresolvedReference, receiver_dropped_metadata};
 
 /// Tree-sitter node kinds that represent constructor invocations
 /// (`new Foo()` and friends). Used by extract_instantiation to emit
@@ -15,6 +15,16 @@ pub(super) const INSTANTIATION_KINDS: &[&str] = &[
 
 impl<'a> TreeSitterExtractor<'a> {
     fn push_call_reference(&mut self, caller_id: &str, name: String, node: SyntaxNode<'_>) {
+        self.push_call_reference_with(caller_id, name, node, None);
+    }
+
+    fn push_call_reference_with(
+        &mut self,
+        caller_id: &str,
+        name: String,
+        node: SyntaxNode<'_>,
+        metadata: Option<Metadata>,
+    ) {
         if name.is_empty() {
             return;
         }
@@ -27,8 +37,16 @@ impl<'a> TreeSitterExtractor<'a> {
             file_path: None,
             language: None,
             candidates: None,
-            metadata: None,
+            metadata,
         });
+    }
+
+    /// Rust: a method call on anything but a plain identifier or `self`
+    /// (`v.iter().next()`, `self.map.get(k)`, `x[0].len()`) is named by its
+    /// bare method, and resolution must know the receiver was dropped.
+    fn drops_rust_receiver(&self, receiver: Option<SyntaxNode<'_>>) -> bool {
+        self.language == Language::Rust
+            && receiver.is_some_and(|receiver| receiver.kind() != "self")
     }
 
     /// C++ operator overloads invoked via infix (`a + b`) or subscript (`a[i]`)
@@ -366,6 +384,7 @@ impl<'a> TreeSitterExtractor<'a> {
 
         // Get the function/method being called
         let mut callee_name = String::new();
+        let mut metadata = None;
 
         // Java/Kotlin method_invocation has 'object' + 'name' fields instead of 'function'
         // PHP member_call_expression has 'object' + 'name', scoped_call_expression has 'scope' + 'name'
@@ -537,6 +556,9 @@ impl<'a> TreeSitterExtractor<'a> {
                                 }
                             }
                             _ => {
+                                if self.drops_rust_receiver(receiver) {
+                                    metadata = Some(receiver_dropped_metadata());
+                                }
                                 callee_name = method_name;
                             }
                         }
@@ -553,7 +575,7 @@ impl<'a> TreeSitterExtractor<'a> {
         }
 
         if !callee_name.is_empty() {
-            self.push_call_reference(&caller_id, callee_name, node);
+            self.push_call_reference_with(&caller_id, callee_name, node, metadata);
         }
     }
 }

@@ -20,7 +20,14 @@
 
 use std::borrow::Cow;
 
-use crate::types::{EdgeKind, Node, NodeKind, UnresolvedReference, Visibility};
+use crate::types::{
+    EdgeKind,
+    Node,
+    NodeKind,
+    UnresolvedReference,
+    Visibility,
+    receiver_dropped_metadata,
+};
 
 /// Alias matching the TS sources' `SyntaxNode` import from web-tree-sitter.
 /// Per-language extractors should use this name for parity with the TS files.
@@ -141,6 +148,10 @@ pub struct TokenCall {
     pub line: u32,
     /// 0-based column of the call shape's first token.
     pub column: u32,
+    /// A method call whose receiver was more than a plain identifier or
+    /// `self`, so `name` is the bare method (see
+    /// [`RECEIVER_DROPPED`](crate::types::RECEIVER_DROPPED)).
+    pub receiver_dropped: bool,
 }
 
 impl TokenCall {
@@ -151,6 +162,15 @@ impl TokenCall {
             name,
             line: start.row as u32 + 1,
             column: start.column as u32,
+            receiver_dropped: false,
+        }
+    }
+
+    /// The same call, marked as having dropped its receiver.
+    pub fn with_dropped_receiver(self) -> Self {
+        TokenCall {
+            receiver_dropped: true,
+            ..self
         }
     }
 
@@ -165,7 +185,7 @@ impl TokenCall {
             file_path: None,
             language: None,
             candidates: None,
-            metadata: None,
+            metadata: self.receiver_dropped.then(receiver_dropped_metadata),
         }
     }
 }

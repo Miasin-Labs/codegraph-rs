@@ -7,6 +7,7 @@ mod qualified;
 mod receiver;
 mod rust_path;
 mod rust_use_tree;
+mod std_methods;
 
 use fixture::{Fixture, make_ref, node};
 
