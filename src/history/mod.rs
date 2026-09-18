@@ -54,11 +54,12 @@ pub use sources::opencode::OpencodeDb;
 pub use sources::{EventSource, SourceStats, ToolCallSource};
 pub use store::{HistoryDb, HistoryError, IngestOptions, IngestReport, ensure_store_dir};
 
-/// The history store: `CODEGRAPH_HISTORY_DB`, else `~/.codegraph/history.db`.
+/// The history store: `CODEGRAPH_HISTORY_DB`, else `history.db` in the
+/// machine-wide CodeGraph directory ([`crate::directory::codegraph_home`]).
 pub fn default_history_path() -> PathBuf {
     match std::env::var_os("CODEGRAPH_HISTORY_DB") {
         Some(p) if !p.is_empty() => PathBuf::from(p),
-        _ => home_dir().join(".codegraph").join("history.db"),
+        _ => crate::directory::codegraph_home().join("history.db"),
     }
 }
 

@@ -12,6 +12,32 @@ use crate::error::{CodeGraphError, Result};
 /// Default CodeGraph directory name.
 pub const CODEGRAPH_DIR: &str = ".codegraph";
 
+/// The machine-wide CodeGraph directory that holds cross-project state
+/// (the atlas, shared dependency graphs, session history, daemon registry):
+/// `$CODEGRAPH_HOME` when set and non-empty, else `~/.codegraph`. Distinct
+/// from a project's own `.codegraph/` index directory ([`get_codegraph_dir`]).
+pub fn codegraph_home() -> PathBuf {
+    match std::env::var_os("CODEGRAPH_HOME") {
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(CODEGRAPH_DIR),
+    }
+}
+
+/// [`codegraph_home`], created if missing and kept private to the user
+/// (mode 0700 on unix): it holds data derived from every indexed project.
+pub fn ensure_codegraph_home() -> Result<PathBuf> {
+    let home = codegraph_home();
+    fs::create_dir_all(&home)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(home)
+}
+
 static WARNED_INVALID_CODEGRAPH_DIR: AtomicBool = AtomicBool::new(false);
 
 /// Active project data-directory name. `CODEGRAPH_DIR` may select a sibling
@@ -392,6 +418,28 @@ pub fn validate_directory(project_root: &Path) -> DirectoryValidation {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codegraph_home_honours_the_override_and_defaults_to_the_home_dir() {
+        // Only this test reads or writes CODEGRAPH_HOME in this binary.
+        let tmp = tempfile::tempdir().unwrap();
+        let chosen = tmp.path().join("cg-home");
+        std::env::set_var("CODEGRAPH_HOME", &chosen);
+        assert_eq!(super::codegraph_home(), chosen);
+        let made = super::ensure_codegraph_home().unwrap();
+        assert!(made.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&made).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        std::env::set_var("CODEGRAPH_HOME", "");
+        assert!(super::codegraph_home().ends_with(super::CODEGRAPH_DIR));
+        std::env::remove_var("CODEGRAPH_HOME");
+    }
+
     use super::*;
 
     #[test]

@@ -51,10 +51,7 @@ pub fn get_registry_dir() -> PathBuf {
             return PathBuf::from(path);
         }
     }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".codegraph")
-        .join("daemons")
+    crate::directory::codegraph_home().join("daemons")
 }
 
 fn normalized_root(root: &Path) -> PathBuf {
