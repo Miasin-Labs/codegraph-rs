@@ -1132,11 +1132,10 @@ mod worktree {
         assert_eq!(find_nearest_codegraph_root(&src), None);
         assert_eq!(writable(&src), None);
 
-        // An index in the plain directory holding it is not its own either.
+        // An index over the plain directory holding it is a workspace index
+        // that covers it (the workspace indexer walks its files too).
         fake_index(parent.path());
-        let m = find_writable_codegraph_root(&src).unwrap_err();
-        assert_eq!(m.worktree_root, real(&outside));
-        assert_eq!(m.index_root, real(parent.path()));
+        assert_eq!(writable(&src), Some(real(parent.path())));
 
         // Its own index always wins.
         fake_index(&outside);

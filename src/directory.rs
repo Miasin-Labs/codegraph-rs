@@ -167,10 +167,15 @@ fn git_file_target(dir: &Path, dot_git: &Path) -> Option<PathBuf> {
 /// clone nested inside another project. `None` means `start_path` is a plain
 /// subdirectory of `index_root`'s own checkout (a monorepo package, a
 /// not-yet-created path), or that `index_root` is not above it at all.
+///
+/// Only an index that itself lives in a git checkout belongs to one. An index
+/// over a plain directory (a multi-repo workspace such as `~/work/.codegraph`
+/// above `~/work/a` and `~/work/b`) covers the repos inside it, so they are
+/// never "another checkout".
 pub fn checkout_below_index_root(start_path: &Path, index_root: &Path) -> Option<PathBuf> {
     let start = real_path_lenient(start_path);
     let root = real_path_lenient(index_root);
-    if !start.starts_with(&root) {
+    if !start.starts_with(&root) || !root.ancestors().any(is_git_checkout_root) {
         return None;
     }
     start
@@ -569,18 +574,35 @@ mod tests {
     }
 
     #[test]
-    fn a_repository_nested_below_an_index_is_a_different_checkout() {
-        // A clone (`.git` directory) inside an indexed project or an indexed
-        // non-git workspace directory: the index above it is not its own.
+    fn a_repository_nested_below_an_indexed_checkout_is_a_different_checkout() {
+        // A clone (`.git` directory) inside an indexed git project: the
+        // index above it belongs to the outer checkout, not to it.
         let tmp = tempfile::tempdir().unwrap();
-        let workspace = tmp.path().join("workspace");
-        fake_index(&workspace);
-        let clone = workspace.join("repo");
+        let project = tmp.path().join("project");
+        fake_repo(&project, &[]);
+        fake_index(&project);
+        let clone = project.join("vendor").join("repo");
         fake_repo(&clone, &[]);
         fs::create_dir_all(clone.join("src")).unwrap();
         assert_eq!(
-            checkout_below_index_root(&clone.join("src"), &workspace),
+            checkout_below_index_root(&clone.join("src"), &project),
             Some(real(&clone))
+        );
+    }
+
+    #[test]
+    fn repositories_in_an_indexed_plain_workspace_belong_to_its_index() {
+        // `~/work/.codegraph` over `~/work/a` and `~/work/b`: the workspace
+        // index covers the repos inside it, so they may read and write it.
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        fake_index(&workspace);
+        let repo = workspace.join("repo");
+        fake_repo(&repo, &[]);
+        fs::create_dir_all(repo.join("src")).unwrap();
+        assert_eq!(
+            checkout_below_index_root(&repo.join("src"), &workspace),
+            None
         );
     }
 
