@@ -135,3 +135,80 @@ fn ingest_twice_then_show_scoped_to_the_project() {
     // The default path was never touched.
     assert!(!home.path().join(".codegraph").exists());
 }
+
+/// `recall` is read-only (no store, nothing created); an incremental ingest
+/// of a Claude Code transcript feeds it.
+#[test]
+fn incremental_ingest_feeds_a_read_only_recall() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = home.path().join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    let db = home.path().join("state/history.db");
+    let (repo_s, db_s) = (repo.to_string_lossy(), db.to_string_lossy());
+
+    let before = run(
+        home.path(),
+        &["history", "recall", "src/", "-p", &repo_s, "--db", &db_s],
+    );
+    assert!(
+        before.status.success(),
+        "{}",
+        String::from_utf8_lossy(&before.stderr)
+    );
+    assert!(stdout(&before).contains("no agent history recorded yet"));
+    assert!(!db.exists(), "recall must not create the store");
+
+    let projects = home.path().join("cc");
+    let transcript = projects.join("-repo/s1.jsonl");
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    let cwd: &str = &repo_s;
+    let lines = [
+        format!(
+            r#"{{"type":"user","uuid":"u1","cwd":"{cwd}","timestamp":"2026-09-10T10:00:01.000Z","message":{{"role":"user","content":"look at lib"}}}}"#
+        ),
+        format!(
+            r#"{{"type":"assistant","uuid":"a1","cwd":"{cwd}","timestamp":"2026-09-10T10:00:02.000Z","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_1","name":"Read","input":{{"file_path":"{cwd}/src/lib.rs"}}}}]}}}}"#
+        ),
+        format!(
+            r#"{{"type":"user","uuid":"u2","cwd":"{cwd}","timestamp":"2026-09-10T10:00:03.000Z","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_1","content":"pub fn f() {{}}"}}]}}}}"#
+        ),
+    ];
+    std::fs::write(&transcript, lines.join("\n") + "\n").unwrap();
+    let projects_s = projects.to_string_lossy();
+    let ingest = [
+        "history",
+        "ingest",
+        "--incremental",
+        "--source",
+        "claude-code",
+        "--claude-dir",
+        &projects_s,
+        "--db",
+        &db_s,
+        "--no-git",
+    ];
+    let out = run(home.path(), &ingest);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout(&out).contains("Ingested 1 new tool call(s)"),
+        "{}",
+        stdout(&out)
+    );
+
+    let recall = json(&run(
+        home.path(),
+        &[
+            "history", "recall", "src/", "-p", &repo_s, "--db", &db_s, "--json",
+        ],
+    ));
+    assert_eq!(recall["kind"], "recall");
+    assert_eq!(recall["episodes"][0]["source"], "claude-code");
+    assert_eq!(recall["episodes"][0]["files"][0]["path"], "src/lib.rs");
+    assert_eq!(recall["episodes"][0]["files"][0]["op"], "read");
+    assert!(!home.path().join(".codegraph").exists());
+}

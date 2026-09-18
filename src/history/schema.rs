@@ -6,7 +6,7 @@
 use rusqlite::{Connection, Transaction};
 
 /// Schema version this build writes.
-pub(crate) const CURRENT_VERSION: i64 = 2;
+pub(crate) const CURRENT_VERSION: i64 = 3;
 
 struct Migration {
     version: i64,
@@ -21,6 +21,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
         apply: v2_call_keys,
+    },
+    Migration {
+        version: 3,
+        apply: v3_memory,
     },
 ];
 
@@ -78,6 +82,123 @@ fn v2_call_keys(tx: &Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_events_call_key ON tool_events(call_key);
          CREATE INDEX IF NOT EXISTS idx_tool_events_source ON tool_events(source);",
+    )
+}
+
+/// v3: the cross-session memory (see `history::memory`). Sessions split
+/// into episodes at human prompts; per episode, the files touched, the
+/// identifiers looked up, and build/test/commit outcomes; plus co-edited
+/// file pairs and a precomputed per-repository digest for the prompt hook.
+/// Only repo-relative paths, index-resolved identifiers (else a hash),
+/// masked command templates, codes, hashes and numbers are stored.
+/// `tool_events.remembered` marks calls already folded into the memory, so
+/// a v2 store's rows are folded in when their calls are seen again.
+fn v3_memory(tx: &Transaction<'_>) -> rusqlite::Result<()> {
+    if !has_column(tx, "tool_events", "remembered")? {
+        tx.execute_batch(
+            "ALTER TABLE tool_events ADD COLUMN remembered INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS repos (
+             id   INTEGER PRIMARY KEY,
+             root TEXT NOT NULL UNIQUE
+         );
+         CREATE TABLE IF NOT EXISTS sessions (
+             id         INTEGER PRIMARY KEY,
+             source     TEXT NOT NULL,
+             native_key TEXT NOT NULL UNIQUE,
+             parent_id  INTEGER,
+             root_id    INTEGER,
+             repo_id    INTEGER,
+             started_at INTEGER,
+             ended_at   INTEGER,
+             calls      INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE INDEX IF NOT EXISTS idx_sessions_repo ON sessions(repo_id, started_at);
+         CREATE TABLE IF NOT EXISTS episodes (
+             id         INTEGER PRIMARY KEY,
+             session_id INTEGER NOT NULL,
+             prompt_key TEXT NOT NULL UNIQUE,
+             repo_id    INTEGER,
+             started_at INTEGER NOT NULL,
+             ended_at   INTEGER,
+             calls      INTEGER NOT NULL DEFAULT 0,
+             outcome    TEXT,
+             outcome_ts INTEGER
+         );
+         CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id, started_at);
+         CREATE INDEX IF NOT EXISTS idx_episodes_repo ON episodes(repo_id, started_at);
+         CREATE TABLE IF NOT EXISTS files (
+             id      INTEGER PRIMARY KEY,
+             repo_id INTEGER NOT NULL,
+             path    TEXT NOT NULL,
+             UNIQUE (repo_id, path)
+         );
+         CREATE TABLE IF NOT EXISTS touches (
+             episode_id  INTEGER NOT NULL,
+             file_id     INTEGER NOT NULL,
+             op          TEXT NOT NULL CHECK (op IN ('e', 'r', 's')),
+             n           INTEGER NOT NULL DEFAULT 0,
+             bytes       INTEGER NOT NULL DEFAULT 0,
+             first_ts    INTEGER,
+             last_ts     INTEGER,
+             fingerprint TEXT,
+             PRIMARY KEY (episode_id, file_id, op)
+         ) WITHOUT ROWID;
+         CREATE INDEX IF NOT EXISTS idx_touches_file ON touches(file_id, last_ts);
+         CREATE TABLE IF NOT EXISTS idents (
+             id      INTEGER PRIMARY KEY,
+             repo_id INTEGER NOT NULL,
+             name    TEXT NOT NULL,
+             UNIQUE (repo_id, name)
+         );
+         CREATE TABLE IF NOT EXISTS lookups (
+             episode_id    INTEGER NOT NULL,
+             ident_id      INTEGER NOT NULL,
+             n             INTEGER NOT NULL DEFAULT 0,
+             found_file_id INTEGER,
+             found_line    INTEGER,
+             last_ts       INTEGER,
+             PRIMARY KEY (episode_id, ident_id)
+         ) WITHOUT ROWID;
+         CREATE INDEX IF NOT EXISTS idx_lookups_ident ON lookups(ident_id);
+         CREATE TABLE IF NOT EXISTS outcomes (
+             id         INTEGER PRIMARY KEY,
+             call_key   TEXT NOT NULL UNIQUE,
+             episode_id INTEGER NOT NULL,
+             repo_id    INTEGER,
+             kind       TEXT NOT NULL,
+             template   TEXT NOT NULL,
+             ok         INTEGER,
+             err_codes  TEXT,
+             err_sig    TEXT,
+             ts         INTEGER
+         );
+         CREATE INDEX IF NOT EXISTS idx_outcomes_repo ON outcomes(repo_id, ts);
+         CREATE INDEX IF NOT EXISTS idx_outcomes_template ON outcomes(repo_id, template, ts);
+         CREATE INDEX IF NOT EXISTS idx_outcomes_sig ON outcomes(repo_id, err_sig);
+         CREATE TABLE IF NOT EXISTS coedits (
+             repo_id  INTEGER NOT NULL,
+             file_a   INTEGER NOT NULL,
+             file_b   INTEGER NOT NULL,
+             episodes INTEGER NOT NULL DEFAULT 0,
+             commits  INTEGER NOT NULL DEFAULT 0,
+             last_ts  INTEGER,
+             PRIMARY KEY (repo_id, file_a, file_b)
+         ) WITHOUT ROWID;
+         CREATE INDEX IF NOT EXISTS idx_coedits_b ON coedits(repo_id, file_b);
+         CREATE TABLE IF NOT EXISTS repo_digests (
+             repo_id  INTEGER PRIMARY KEY,
+             built_at INTEGER NOT NULL,
+             body     TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS ingest_state (
+             source TEXT NOT NULL,
+             key    TEXT NOT NULL,
+             value  TEXT NOT NULL,
+             PRIMARY KEY (source, key)
+         ) WITHOUT ROWID;",
     )
 }
 

@@ -86,6 +86,7 @@ impl ToolHandler {
             "codegraph_arch" => self.handle_arch(args),
             "codegraph_xref" => self.handle_xref(args),
             "codegraph_paths" => self.handle_paths(args),
+            "codegraph_recall" => self.handle_recall(args),
             _ => return self.error_result(&format!("Unknown tool: {tool_name}")),
         };
         let result = match result {

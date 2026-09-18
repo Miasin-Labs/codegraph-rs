@@ -34,6 +34,9 @@ struct PromptInput {
     #[serde(default)]
     prompt: String,
     cwd: Option<String>,
+    /// Claude Code's session id: the history digest is shown on a session's
+    /// first prompt only.
+    session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -629,7 +632,29 @@ pub fn run_prompt_hook() {
     let Ok(input) = serde_json::from_str::<PromptInput>(&raw) else {
         return;
     };
+    let _ = write_history_digest(&input, &mut std::io::stdout());
     let _ = process_input(input, &mut std::io::stdout());
+}
+
+/// On a session's first prompt, what earlier sessions in this repository
+/// did (`CODEGRAPH_HISTORY=0` turns it off). Read-only and bounded; see
+/// [`crate::history::session_start`].
+fn write_history_digest(input: &PromptInput, output: &mut impl Write) -> Result<(), ()> {
+    let cwd = input
+        .cwd
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+    let Some(cwd) = cwd else {
+        return Ok(());
+    };
+    if let Some(block) =
+        crate::history::session_start::session_start_digest(&cwd, input.session_id.as_deref())
+    {
+        output.write_all(block.as_bytes()).map_err(|_| ())?;
+        gate("history-digest");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

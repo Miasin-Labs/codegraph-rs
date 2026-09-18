@@ -34,7 +34,7 @@ impl BackgroundSync {
 
 /// `CODEGRAPH_NO_BACKGROUND_SYNC=1` keeps all work inline (deterministic tests,
 /// or hosts that forbid detached processes).
-fn background_disabled() -> bool {
+pub(crate) fn background_disabled() -> bool {
     std::env::var("CODEGRAPH_NO_BACKGROUND_SYNC").is_ok_and(|value| {
         !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
     })
@@ -43,7 +43,7 @@ fn background_disabled() -> bool {
 /// The `codegraph` CLI: this executable when it is the CLI, otherwise a
 /// `codegraph` next to it (e.g. beside `codegraph-mcp-server`). Never any
 /// other binary — a test harness or the MCP server would misread `sync`.
-fn cli_binary() -> Option<PathBuf> {
+pub(crate) fn cli_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let name = |path: &Path| {
         path.file_stem()

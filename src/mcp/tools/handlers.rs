@@ -166,6 +166,7 @@ mod tests {
             "codegraph_arch",
             "codegraph_xref",
             "codegraph_paths",
+            "codegraph_recall",
         ];
         assert_eq!(defs.len(), expected.len());
         assert_eq!(names, expected);

@@ -35,9 +35,10 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use super::{SourceStats, ToolCallSource};
+use super::{EventSource, RawPrompt, RawSession, SourceEvent, SourceStats, ToolCallSource, Visit};
 use crate::history::event::RawToolCall;
 use crate::history::store::HistoryError;
+use crate::history::time::parse_rfc3339_ms;
 
 /// Cap on a buffered multi-line record (a command with a huge heredoc).
 const MAX_RECORD: usize = 256 * 1024;
@@ -120,6 +121,76 @@ impl ToolCallSource for JfcLogs {
     }
 }
 
+impl EventSource for JfcLogs {
+    fn id(&self) -> &'static str {
+        "jfc"
+    }
+
+    fn location(&self) -> String {
+        self.dir.display().to_string()
+    }
+
+    /// One unit per log file, checkpointed at its size: a file that has not
+    /// grown is skipped; one that has is re-read whole (its calls are
+    /// already stored, so only the new ones land).
+    fn visit_events(
+        &self,
+        visit: &Visit<'_>,
+        sink: &mut dyn FnMut(SourceEvent) -> Result<(), HistoryError>,
+    ) -> Result<SourceStats, HistoryError> {
+        let files = match self.log_files() {
+            Ok(files) => files,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(SourceStats::default()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut stats = SourceStats::default();
+        for path in files {
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let key = super::key_hash(&path.to_string_lossy());
+            if visit.cursors.get(&key).map(String::as_str) == Some(size.to_string().as_str()) {
+                continue;
+            }
+            if visit.budget.exhausted() {
+                stats.deferred += 1;
+                continue;
+            }
+            let session = session_name(&path);
+            let Ok(parsed) =
+                File::open(&path).and_then(|f| parse_log_events(BufReader::new(f), &session))
+            else {
+                stats.skipped += 1;
+                continue;
+            };
+            stats.inputs += 1;
+            if !visit.in_scope(parsed.first_cwd.as_deref()) {
+                continue; // left for an unscoped run
+            }
+            sink(SourceEvent::Session(RawSession {
+                native_id: session.clone(),
+                parent: None,
+                cwd: parsed.first_cwd.clone(),
+                started_ms: parsed.calls.first().and_then(RawToolCall::when_ms),
+            }))?;
+            for (ts, line) in parsed.prompts {
+                sink(SourceEvent::Prompt(RawPrompt {
+                    native_id: format!("{session}#L{line}"),
+                    session: session.clone(),
+                    ts_ms: ts.as_deref().and_then(parse_rfc3339_ms),
+                }))?;
+            }
+            for call in parsed.calls {
+                stats.calls += 1;
+                sink(SourceEvent::call(call))?;
+            }
+            sink(SourceEvent::Checkpoint {
+                key,
+                value: size.to_string(),
+            })?;
+        }
+        Ok(stats)
+    }
+}
+
 /// Session id for a log file: its name without a trailing `.log`
 /// (`ses_20260810_141304`, `jfc.log.2026-05-05`, `jfc-cli`).
 fn session_name(path: &Path) -> String {
@@ -135,7 +206,23 @@ fn session_name(path: &Path) -> String {
 
 /// Parse one JFC log into its tool calls, in first-announced order.
 /// Invalid UTF-8 is replaced, never fatal.
-pub fn parse_log<R: BufRead>(mut reader: R, session: &str) -> io::Result<Vec<RawToolCall>> {
+pub fn parse_log<R: BufRead>(reader: R, session: &str) -> io::Result<Vec<RawToolCall>> {
+    Ok(parse_log_events(reader, session)?.calls)
+}
+
+/// One JFC log parsed for the memory: its calls, the human prompts typed
+/// into it, and the session's first working directory.
+#[derive(Debug, Default)]
+pub struct ParsedLog {
+    pub calls: Vec<RawToolCall>,
+    /// `(timestamp, line number)` of each human prompt (`handle_submit` with
+    /// non-empty text). The prompt text itself is never read.
+    pub prompts: Vec<(Option<String>, usize)>,
+    pub first_cwd: Option<String>,
+}
+
+/// Parse one JFC log into its calls and prompts.
+pub fn parse_log_events<R: BufRead>(mut reader: R, session: &str) -> io::Result<ParsedLog> {
     let mut parser = LogParser::new(session);
     let mut buf = Vec::new();
     loop {
@@ -222,6 +309,7 @@ struct LogParser {
     first_cwd: Option<String>,
     pending: Option<Pending>,
     line_no: usize,
+    prompts: Vec<(Option<String>, usize)>,
 }
 
 impl LogParser {
@@ -235,6 +323,7 @@ impl LogParser {
             first_cwd: None,
             pending: None,
             line_no: 0,
+            prompts: Vec::new(),
         }
     }
 
@@ -252,6 +341,15 @@ impl LogParser {
             return;
         };
         let ts = Some(ts.to_owned());
+        if target == "jfc::input" && msg.starts_with("handle_submit ") {
+            // Only the length says it was a real prompt; the preview is never read.
+            let typed =
+                field(msg, "text_len").is_some_and(|n| n.parse::<u64>().is_ok_and(|n| n > 0));
+            if typed {
+                self.prompts.push((ts, self.line_no));
+            }
+            return;
+        }
         if target == "jfc::tools" {
             self.detail(&line[..target_at], msg, ts);
         } else {
@@ -421,10 +519,11 @@ impl LogParser {
         None
     }
 
-    fn finish(mut self) -> Vec<RawToolCall> {
+    fn finish(mut self) -> ParsedLog {
         self.flush_pending();
         let first_cwd = self.first_cwd;
-        self.calls
+        let calls = self
+            .calls
             .into_iter()
             .map(|c| {
                 let mut raw = c.raw;
@@ -433,7 +532,12 @@ impl LogParser {
                 }
                 raw
             })
-            .collect()
+            .collect();
+        ParsedLog {
+            calls,
+            prompts: self.prompts,
+            first_cwd,
+        }
     }
 }
 

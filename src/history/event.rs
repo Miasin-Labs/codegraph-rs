@@ -32,6 +32,46 @@ pub struct RawToolCall {
     pub command: Option<String>,
     /// File the tool read or wrote (Read/Edit/Write).
     pub file_path: Option<String>,
+    /// When the call ran, in epoch milliseconds, when the source has it as a
+    /// number (else [`Self::ts`] is parsed).
+    pub ts_ms: Option<i64>,
+    /// More files the call edited (the files of an `apply_patch`).
+    pub extra_paths: Vec<String>,
+    /// Search pattern (Grep, Glob).
+    pub pattern: Option<String>,
+    /// Directory or file a search was scoped to.
+    pub search_path: Option<String>,
+    /// Symbol names a code-intelligence call asked about.
+    pub symbols: Vec<String>,
+    /// Free-text query of a code-intelligence call.
+    pub query: Option<String>,
+    /// First line a read started at (Read `offset`).
+    pub line: Option<u32>,
+    /// What the call returned, when the source records it.
+    pub result: Option<CallResult>,
+}
+
+/// The result of a tool call, reduced to what the memory needs. The excerpt
+/// lives only in memory: error codes and a signature hash are derived from
+/// it, the text itself is never stored.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CallResult {
+    /// The tool reported an error (non-zero exit for a shell call).
+    pub is_error: Option<bool>,
+    /// Exit status of a shell call.
+    pub exit_code: Option<i64>,
+    /// Size of the output the agent received.
+    pub output_bytes: u64,
+    /// Bounded head of a build/test command's output.
+    pub excerpt: Option<String>,
+}
+
+impl RawToolCall {
+    /// When the call ran, in epoch milliseconds.
+    pub fn when_ms(&self) -> Option<i64> {
+        self.ts_ms
+            .or_else(|| self.ts.as_deref().and_then(super::time::parse_rfc3339_ms))
+    }
 }
 
 /// One stored, redaction-clean tool invocation — a `tool_events` row.

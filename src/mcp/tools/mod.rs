@@ -7,6 +7,7 @@ mod format;
 mod graph;
 mod handlers;
 mod output;
+mod recall;
 mod registry;
 mod schema;
 mod text;

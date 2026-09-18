@@ -62,7 +62,15 @@ impl HistoryDb {
     pub fn open(path: &Path) -> Result<Self, HistoryError> {
         create_private(path)?;
         let conn = Connection::open(path)?;
+        // WAL: the prompt hook and MCP readers never wait on an ingest.
+        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Self::init(conn)
+    }
+
+    /// The underlying connection (the memory writer and rollups).
+    pub(super) fn conn(&self) -> &Connection {
+        &self.conn
     }
 
     /// In-memory store (tests).
@@ -85,6 +93,7 @@ impl HistoryDb {
         }
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let conn = Connection::open_with_flags(path, flags)?;
+        let _ = conn.busy_timeout(std::time::Duration::from_millis(500));
         let has_table: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tool_events')",
             [],
@@ -305,10 +314,9 @@ impl<'c> Writer<'c> {
     }
 }
 
-/// Create `path` owner-only (0600) — and its missing parent directories
-/// 0700 — if it doesn't exist yet. Existing files and directories are left
-/// as they are.
-fn create_private(path: &Path) -> io::Result<()> {
+/// Create the missing parent directories of the store at `path` owner-only
+/// (0700), so its lock file can be taken before the store is opened.
+pub fn ensure_store_dir(path: &Path) -> io::Result<()> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         if !dir.exists() {
             let mut builder = fs::DirBuilder::new();
@@ -321,6 +329,14 @@ fn create_private(path: &Path) -> io::Result<()> {
             builder.create(dir)?;
         }
     }
+    Ok(())
+}
+
+/// Create `path` owner-only (0600) — and its missing parent directories
+/// 0700 — if it doesn't exist yet. Existing files and directories are left
+/// as they are.
+fn create_private(path: &Path) -> io::Result<()> {
+    ensure_store_dir(path)?;
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

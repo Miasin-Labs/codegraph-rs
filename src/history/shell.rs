@@ -81,6 +81,20 @@ impl CommandProfile {
     }
 }
 
+/// The command word and argument tokens of each segment of `cmd`, heredoc
+/// bodies dropped (`cd /r && cargo test -p x` → `[("cd", ["/r"]), ("cargo",
+/// ["test", "-p", "x"])]`). Redirection tokens stay in the arguments.
+pub(crate) fn command_segments(cmd: &str) -> Vec<(String, Vec<String>)> {
+    let body = strip_heredocs(cmd);
+    split_segments(&body)
+        .into_iter()
+        .filter_map(|seg| {
+            let tokens = tokenize(seg);
+            command_word(&tokens).map(|(word, args)| (word, args.to_vec()))
+        })
+        .collect()
+}
+
 /// Drop heredoc bodies (`<<EOF … EOF`, `<<-'X' … X`): they're data, not commands.
 fn strip_heredocs(cmd: &str) -> String {
     let mut out = String::with_capacity(cmd.len());

@@ -263,7 +263,8 @@ fn log_files_skip_symlinks_and_non_logs() {
         SourceStats {
             inputs: 2,
             skipped: 0,
-            calls: 2
+            calls: 2,
+            deferred: 0,
         }
     );
     assert_eq!(seen.len(), 2);

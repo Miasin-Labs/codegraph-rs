@@ -6,6 +6,7 @@ mod explore;
 mod filters;
 mod insight;
 mod lookup;
+mod memory;
 mod navigation;
 mod schema_builder;
 mod text;
