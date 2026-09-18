@@ -209,7 +209,7 @@ fn explore_evidence(response: &Value) -> HashSet<(String, u64, u64, String)> {
 
 /// The annotation set every tool must carry (rmcp ToolAnnotations camelCase).
 /// The default tool surface, in catalog order.
-const DEFAULT_TOOLS: [&str; 8] = [
+const DEFAULT_TOOLS: [&str; 10] = [
     "codegraph_search",
     "codegraph_callers",
     "codegraph_callees",
@@ -218,6 +218,8 @@ const DEFAULT_TOOLS: [&str; 8] = [
     "codegraph_explore",
     "codegraph_status",
     "codegraph_files",
+    "codegraph_history",
+    "codegraph_tests",
 ];
 
 fn expected_annotations() -> Value {

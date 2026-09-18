@@ -20,12 +20,13 @@ Use codegraph for **structural** questions — where X is defined, what X's sign
 - **Trust codegraph results.** They come from a full AST parse. Do NOT re-verify them with grep — that's slower, less accurate, and wastes context.
 - **Don't grep first** when looking up a symbol by name. `codegraph_search` is faster and returns kind + location + signature in one call.
 - **Don't chain `codegraph_search` + `codegraph_node`** when you just want context — `codegraph_explore` returns focused source for related symbols in one call.
-- **Don't loop `codegraph_node` over many symbols** — one `codegraph_explore` call returns several symbols' source grouped in a single capped call, while each separate node/Read call re-reads the whole context and costs far more.
+- **Don't loop `codegraph_node` over many symbols** — pass them all in one call (`symbols: [...]`, also on `codegraph_search`), or use one `codegraph_explore`. A grep alternation `a|b|c` is the same batch done worse.
+- **Before editing, check what moves with it**: `codegraph_history <symbol>` (git co-change) and `codegraph_tests <symbol>` (tests that reach it through its callers).
 - **Index lag**: the file watcher debounces ~500ms behind writes; don't re-query immediately after editing a file in the same turn.
 
 ### Advanced tools and customization
 
-The default configuration exposes 8 core tools. Additional tools can be enabled via the `CODEGRAPH_MCP_TOOLS` environment variable:
+The default configuration exposes 10 core tools (`search, node, explore, callers, callees, impact, files, status, history, tests`). Additional tools can be enabled via the `CODEGRAPH_MCP_TOOLS` environment variable:
 
 ```bash
 # Enable specific tools (comma-separated, short names without codegraph_ prefix)

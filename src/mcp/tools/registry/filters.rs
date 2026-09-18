@@ -6,7 +6,8 @@ use super::super::schema::ToolDefinition;
 use super::catalog::tools;
 
 const DEFAULT_MCP_TOOLS: &[&str] = &[
-    "search", "node", "explore", "callers", "callees", "impact", "files", "status",
+    "search", "node", "explore", "callers", "callees", "impact", "files", "status", "history",
+    "tests",
 ];
 
 pub(in crate::mcp::tools) fn short_tool_name(name: &str) -> &str {

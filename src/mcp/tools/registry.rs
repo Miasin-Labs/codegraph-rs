@@ -4,6 +4,7 @@ mod admin;
 mod catalog;
 mod explore;
 mod filters;
+mod insight;
 mod lookup;
 mod navigation;
 mod schema_builder;

@@ -12,4 +12,5 @@ mod relevance;
 mod search;
 mod symbols;
 mod synthesis;
+mod test_reach;
 mod xref;

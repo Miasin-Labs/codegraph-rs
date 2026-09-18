@@ -159,6 +159,8 @@ mod tests {
             "codegraph_explore",
             "codegraph_status",
             "codegraph_files",
+            "codegraph_history",
+            "codegraph_tests",
             "codegraph_arch",
             "codegraph_xref",
             "codegraph_paths",

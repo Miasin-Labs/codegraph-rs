@@ -1,5 +1,5 @@
 /// The default surface in catalog order (`get_static_tools` keeps it).
-const DEFAULT_TOOLS: [&str; 8] = [
+const DEFAULT_TOOLS: [&str; 10] = [
     "codegraph_search",
     "codegraph_callers",
     "codegraph_callees",
@@ -8,6 +8,8 @@ const DEFAULT_TOOLS: [&str; 8] = [
     "codegraph_explore",
     "codegraph_status",
     "codegraph_files",
+    "codegraph_history",
+    "codegraph_tests",
 ];
 
 fn sorted_default_tools() -> Vec<&'static str> {

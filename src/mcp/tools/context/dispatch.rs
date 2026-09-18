@@ -79,6 +79,8 @@ impl ToolHandler {
                 };
             }
             "codegraph_files" => self.handle_files(args),
+            "codegraph_history" => self.handle_history(args),
+            "codegraph_tests" => self.handle_tests(args),
             "codegraph_arch" => self.handle_arch(args),
             "codegraph_xref" => self.handle_xref(args),
             "codegraph_paths" => self.handle_paths(args),

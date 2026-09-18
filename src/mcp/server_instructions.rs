@@ -41,7 +41,7 @@ calls; a grep/read exploration is dozens.
 
 ## Available tools
 
-Eight core tools are available by default:
+Ten core tools are available by default:
 
 - **`codegraph_explore`** — Primary context tool: natural-language question or symbol/file names → verbatim source + call paths + dependencies (Read-equivalent)
 - **`codegraph_search`** — Quick symbol lookup: name → locations/kinds/signatures (no source)
@@ -51,6 +51,13 @@ Eight core tools are available by default:
 - **`codegraph_impact`** — Refactor impact analysis: symbol → affected code
 - **`codegraph_files`** — Project file structure from the index
 - **`codegraph_status`** — Index status and statistics
+- **`codegraph_history`** — What changes together with a symbol, from git history (instead of git log/blame)
+- **`codegraph_tests`** — Which tests exercise a symbol, via its callers (pick the tests to run after a change)
+
+Batch lookups: `codegraph_search` and `codegraph_node` take a `symbols` array
+for several names in one call — use it instead of a grep alternation `a|b|c`.
+Re-reading a range already sent this session returns `alreadySent` instead of
+the source again.
 
 Most questions are answered by `codegraph_explore` alone. Use the specific
 tools (search/node/callers/etc.) when you need ONLY that focused information
@@ -107,6 +114,7 @@ mod tests {
         assert!(SERVER_INSTRUCTIONS.contains("## Primary tool: codegraph_explore"));
         for tool in [
             "search", "node", "explore", "callers", "callees", "impact", "files", "status",
+            "history", "tests",
         ] {
             assert!(
                 SERVER_INSTRUCTIONS.contains(&format!("**`codegraph_{tool}`**")),

@@ -1,4 +1,5 @@
 mod admin;
+mod analysis;
 mod context;
 mod explore;
 mod format;
