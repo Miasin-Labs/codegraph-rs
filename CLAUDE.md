@@ -51,12 +51,20 @@ cargo test --workspace
 
 - **MCP tools are extensible.** The old "frozen at 8 for TS wire parity" rule is
   **RETIRED (2026-06)** — the Rust server is the source of truth now, not a TS
-  mirror. **8 tools by default** (`DEFAULT_MCP_TOOLS` in
+  mirror. **10 tools by default** (`DEFAULT_MCP_TOOLS` in
   `registry/filters.rs`: `search, callers, callees, impact, node, explore,
-  status, files`), listed on every project regardless of size — there is no
-  small-repo gating. `arch, xref, paths` are opt-in through the
-  `CODEGRAPH_MCP_TOOLS` allowlist (comma-separated short names), for 11 in
+  status, files, history, tests`), listed on every project regardless of size
+  — there is no small-repo gating. `arch, xref, paths` are opt-in through the
+  `CODEGRAPH_MCP_TOOLS` allowlist (comma-separated short names), for 13 in
   all. Keep `server_instructions.rs` naming exactly the default set. The
+  surface is shaped by mined agent behaviour (627k tool calls, 2026-09):
+  `search`/`node` take a `symbols` batch (agents otherwise grep `a|b|c`),
+  `search` takes `projectPaths` for several indexes in one call, and the
+  `node` file view records into and honours the per-session ledger
+  (`explore_session`) so a re-read of unchanged lines returns `alreadySent`.
+  Any tool that emits source must do the same, and every new structured field
+  must be declared in its output schema — the payloads set
+  `additionalProperties: false`, and clients reject undeclared fields. The
   inference vulnerability engine (`vuln`/`verify_roles` tools, `analyze vuln`)
   was **deleted (2026-09)** — recover it from git history, don't re-gate it.
   To add one, update the domain-shaped `src/mcp/tools/` tree: (1) route the
@@ -71,13 +79,17 @@ cargo test --workspace
   in `tests/mcp_tools_test.rs`. Heavy analyses may ALSO ship as
   `codegraph analyze …` CLI subcommands mirrored by `src/analyze/reports/`
   report fns.
-- **The prompt hook (`src/prompt_hook.rs`) must never do unbounded work.**
-  Claude Code kills a `UserPromptSubmit` hook at 30s, and a killed transaction
-  rolls back, so inline work on a large index times out on every prompt. The
-  hook checks the schema read-only (`db::database_schema_is_current`) and the
-  vocabulary state (`CodeGraph::segment_vocab_state`); anything short of
-  current/complete is handed to a detached `codegraph sync`. Per-open schema
-  repair (`repair_shared_schema_v9`) must stay cheap for the same reason, and
+- **Time-boxed callers must never do unbounded work.** Claude Code kills a
+  `UserPromptSubmit` hook at 30s and MCP clients time out requests; a killed
+  transaction rolls back, so inline work on a large index fails on every try.
+  The prompt hook checks the schema read-only (`db::database_schema_is_current`)
+  and the vocabulary state (`CodeGraph::segment_vocab_state`); MCP
+  `get_code_graph` checks the schema before opening a `projectPath` index.
+  Anything short of current/complete goes to `sync::background::
+  spawn_background_sync` (a detached `codegraph sync`; it only ever launches
+  the `codegraph` CLI binary, never the current test/server executable, and
+  `CODEGRAPH_NO_BACKGROUND_SYNC=1` keeps work inline). Per-open schema repair
+  (`repair_shared_schema_v9`) must stay cheap for the same reason, and
   `rebuild_name_segment_vocab` must stay one transaction that ends by marking
   the vocabulary complete.
 - **Recursive AST/graph walkers must call `ensure_sufficient_stack`** (crate
@@ -88,7 +100,7 @@ cargo test --workspace
   (`for_language(lang)`). Add a language by extending these, not by branching in
   the walkers.
 - **SQLite schema is versioned** (`src/db/schema.sql` + `src/db/migrations.rs`,
-  currently through v6). A schema change must bump `schema_versions`, add an
+  currently through v9). A schema change must bump `schema_versions`, add an
   idempotent migration, treat new columns as nullable (backfill on re-index),
   and update count/size pin tests.
  - Language-support additions pin sizes with **count tests** (a regression guard
