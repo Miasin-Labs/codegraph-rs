@@ -170,20 +170,27 @@ where
     })
 }
 
-/// A Rust call a framework resolved: the target is one the call's syntax
-/// can run (a bare call never runs a method or shadows a local, and so on).
-/// Other languages and references pass unchecked.
+/// A Rust call or reference a framework resolved: the target is one the
+/// syntax or role can name (a bare call never runs a method or shadows a
+/// local; an `impl` names a trait; an enum variant needs a `use`). Other
+/// languages pass unchecked.
 fn framework_target_admitted(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
     result: &ResolvedRef,
 ) -> bool {
-    if reference.language != Language::Rust || reference.reference_kind != EdgeKind::Calls {
+    if reference.language != Language::Rust {
         return true;
     }
     context
         .get_node_by_id(&result.target_node_id)
-        .is_none_or(|target| name_matcher::rust_call_admits(reference, context, &target))
+        .is_none_or(|target| {
+            if reference.reference_kind == EdgeKind::Calls {
+                name_matcher::rust_call_admits(reference, context, &target)
+            } else {
+                name_matcher::rust_reference_admits(reference, context, &target)
+            }
+        })
 }
 
 #[cfg(not(feature = "gpu"))]

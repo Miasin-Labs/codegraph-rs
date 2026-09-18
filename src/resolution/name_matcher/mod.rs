@@ -39,7 +39,7 @@ pub use method::{match_method_call, match_method_call_hinted};
 pub use qualified::match_by_qualified_name;
 use qualified::match_by_qualified_name as qualified_name;
 pub(crate) use receiver::{infer_receiver_type_from_declaration, resolve_method_on_type};
-pub(crate) use rust_call::rust_call_admits;
+pub(crate) use rust_call::{rust_call_admits, rust_reference_admits};
 pub use rust_path::{
     RustUse,
     UseBinding,
@@ -96,6 +96,11 @@ pub fn match_reference_full_hints(
     // can run, and a std method on a dropped receiver is never guessed at
     // (see `rust_call`).
     if let Some(decided) = rust_call::match_rust_call(reference, context) {
+        return decided;
+    }
+    // Rust `impl Eq for T`, `x: String`: the role limits the target kind (a
+    // trait; an enum variant only when a `use` brings it into scope).
+    if let Some(decided) = rust_call::match_rust_reference(reference, context) {
         return decided;
     }
 

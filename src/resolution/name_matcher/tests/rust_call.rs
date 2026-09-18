@@ -466,3 +466,122 @@ impl Holder {
         None
     );
 }
+
+/// A bare-named reference of `kind` from the first fn of `source`.
+fn reference(fixture: &Fixture, name: &str, kind: EdgeKind) -> UnresolvedRef {
+    let caller = fixture
+        .get_nodes_in_file(FILE)
+        .into_iter()
+        .find(|node| matches!(node.kind, NodeKind::Function | NodeKind::Method))
+        .expect("a fn in the source");
+    UnresolvedRef {
+        from_node_id: caller.id,
+        ..make_ref(name, kind, 2, FILE, Language::Rust)
+    }
+}
+
+#[test]
+fn a_bare_type_never_names_an_enum_variant_out_of_scope() {
+    // `path: &Path`, `name: String`: std's types, not `Named::Path` or
+    // `TomlValue::String`, which only a `use` would bring into scope.
+    let variants = vec![
+        rust_node(NodeKind::EnumMember, "Named::Path", "src/named.rs", 3),
+        rust_node(NodeKind::EnumMember, "TomlValue::String", "src/toml.rs", 3),
+    ];
+    let source = "fn open(path: &Path, name: String) {\n}\n";
+    let fixture = project_with(source, variants.clone());
+    for name in ["Path", "String"] {
+        assert_eq!(
+            target(&fixture, &reference(&fixture, name, EdgeKind::References)),
+            None,
+            "{name}"
+        );
+    }
+
+    // Imported, the variant is in scope.
+    let source = "fn open(path: &Path) {\n}\n";
+    let fixture = project_with(
+        source,
+        [
+            variants,
+            vec![use_decl(FILE, "use crate::named::Named::*;", 1)],
+        ]
+        .concat(),
+    );
+    assert_eq!(
+        target(&fixture, &reference(&fixture, "Path", EdgeKind::References)),
+        Some(id(NodeKind::EnumMember, "Named::Path", "src/named.rs"))
+    );
+}
+
+#[test]
+fn impl_and_derive_targets_are_traits() {
+    // `#[derive(Default, Eq)]` with only same-named enum variants in the
+    // project: std's traits, so nothing.
+    let others = vec![
+        rust_node(NodeKind::EnumMember, "Mode::Default", "src/mode.rs", 3),
+        rust_node(NodeKind::EnumMember, "BinOp::Eq", "src/op.rs", 3),
+    ];
+    let source = "fn build() {\n}\n";
+    let fixture = project_with(source, others.clone());
+    for name in ["Default", "Eq"] {
+        assert_eq!(
+            target(&fixture, &reference(&fixture, name, EdgeKind::Implements)),
+            None,
+            "{name}"
+        );
+    }
+
+    // A project trait of the name is the target.
+    let fixture = project_with(
+        source,
+        [
+            others,
+            vec![rust_node(NodeKind::Trait, "Visitor", "src/visit.rs", 1)],
+        ]
+        .concat(),
+    );
+    assert_eq!(
+        target(
+            &fixture,
+            &reference(&fixture, "Visitor", EdgeKind::Implements)
+        ),
+        Some(id(NodeKind::Trait, "Visitor", "src/visit.rs"))
+    );
+}
+
+#[test]
+fn prelude_names_in_references_stay_std_unless_imported() {
+    // `None` as a value and `Result` as a type are std's, even with a
+    // project constant `None` or a `Result` alias elsewhere.
+    let namesakes = vec![
+        rust_node(NodeKind::Constant, "None", "src/aggregate.rs", 3),
+        rust_node(NodeKind::TypeAlias, "Result", "src/error.rs", 3),
+    ];
+    let source = "fn run() {\n}\n";
+    let fixture = project_with(source, namesakes.clone());
+    for name in ["None", "Result"] {
+        assert_eq!(
+            target(&fixture, &reference(&fixture, name, EdgeKind::References)),
+            None,
+            "{name}"
+        );
+    }
+
+    // `use crate::error::Result;` brings the alias in.
+    let fixture = project_with(
+        source,
+        [
+            namesakes,
+            vec![use_decl(FILE, "use crate::error::Result;", 1)],
+        ]
+        .concat(),
+    );
+    assert_eq!(
+        target(
+            &fixture,
+            &reference(&fixture, "Result", EdgeKind::References)
+        ),
+        Some(id(NodeKind::TypeAlias, "Result", "src/error.rs"))
+    );
+}

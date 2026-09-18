@@ -18,6 +18,10 @@
 //! the receiver is `self.field` (the field's declared type), and otherwise
 //! stays unresolved when std defines a method of its name (see
 //! [`is_receiverless_std_method_call`]).
+//!
+//! The same scope rules gate bare-named references ([`match_rust_reference`]):
+//! an `impl`/derive/supertrait target must be a trait, and an enum variant is
+//! reachable unqualified only through a `use`.
 
 use super::exact::pick_exact;
 use super::receiver::{file_is_module, fn_local_uses, is_local_at_call, self_field_receiver_type};
@@ -40,6 +44,11 @@ const PRELUDE_VALUES: &[&str] = &[
     "size_of",
     "size_of_val",
 ];
+
+/// Types the std prelude brings into every module: a bare reference to one
+/// names std's unless the file defines or imports a project namesake (as
+/// `crate::error::Result` is).
+const PRELUDE_TYPES: &[&str] = &["Box", "Option", "Result", "String", "Vec"];
 
 /// Crates whose `use` paths never name a project item.
 const STD_CRATES: &[&str] = &["alloc", "core", "std"];
@@ -88,6 +97,72 @@ pub(crate) fn rust_call_admits(
     !is_receiverless_std_method_call(reference)
         && syntax.admits(target, &mut FileScope::new(reference, context))
         && !syntax.names_local(reference, context)
+}
+
+/// Decide a bare-named Rust reference whose role limits its target: an
+/// `impl Trait for T`, derive or supertrait names a trait, and an enum
+/// variant is visible unqualified only where a `use` brings it in (a bare
+/// `String` or `Path` in a type is std's, not some `Value::String`).
+/// `Some(result)` is final; `None` when no candidate is ruled out, leaving
+/// the reference to the other strategies unchanged.
+pub(super) fn match_rust_reference(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+) -> Option<Option<ResolvedRef>> {
+    if !is_role_gated_reference(reference) {
+        return None;
+    }
+    let mut scope = FileScope::new(reference, context);
+    let (admitted, ruled_out): (Vec<Node>, Vec<Node>) = context
+        .get_nodes_by_name(&reference.reference_name)
+        .into_iter()
+        .partition(|node| reference_admits(reference.reference_kind, node, &mut scope));
+    if ruled_out.is_empty() {
+        return None;
+    }
+    if admitted.is_empty() {
+        return Some(None);
+    }
+    Some(pick_exact(reference, &admitted, context, None))
+}
+
+/// Whether a bare-named Rust reference could name `target` given its role:
+/// always for other references and languages.
+pub(crate) fn rust_reference_admits(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+    target: &Node,
+) -> bool {
+    !is_role_gated_reference(reference)
+        || reference_admits(
+            reference.reference_kind,
+            target,
+            &mut FileScope::new(reference, context),
+        )
+}
+
+fn is_role_gated_reference(reference: &UnresolvedRef) -> bool {
+    reference.language == Language::Rust
+        && matches!(
+            reference.reference_kind,
+            EdgeKind::References | EdgeKind::Implements | EdgeKind::Extends
+        )
+        && is_identifier(&reference.reference_name)
+}
+
+fn reference_admits(kind: EdgeKind, node: &Node, scope: &mut FileScope<'_>) -> bool {
+    match kind {
+        EdgeKind::Implements | EdgeKind::Extends => {
+            node.language == Language::Rust && node.kind == NodeKind::Trait
+        }
+        _ => {
+            let visible = node.kind != NodeKind::EnumMember
+                || (node.language == Language::Rust && scope.variant_in_scope(node));
+            let prelude = PRELUDE_VALUES.contains(&node.name.as_str())
+                || PRELUDE_TYPES.contains(&node.name.as_str());
+            visible && (!prelude || node.kind == NodeKind::EnumMember || scope.item_in_scope(node))
+        }
+    }
 }
 
 /// How a call spells its callee.

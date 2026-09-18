@@ -160,7 +160,11 @@ cargo test --workspace
   a bare `f()` targets a function, tuple struct, const/static or enum variant,
   never a method or field; a name bound locally (param, `let`, closure, match
   arm) shadows project items; `Ok/Err/Some/None/drop/size_of…` stay std unless
-  the file defines or imports a project item of that name. Untyped and dropped
+  the file defines or imports a project item of that name. The same scope
+  rules gate bare-named references (`match_rust_reference`): an `impl`/derive/
+  supertrait target must be a trait, an enum variant needs a `use`, and the
+  prelude types (`String`, `Vec`, `Option`, `Result`, `Box`) are std's unless
+  imported. Untyped and dropped
   receivers are checked against `STD_METHOD_NAMES` (1,842 names generated from
   rust-src by `tests/std_method_names.rs`; regenerate with
   `CODEGRAPH_REGENERATE_STD_METHODS=1 cargo test --test std_method_names -- --ignored`
