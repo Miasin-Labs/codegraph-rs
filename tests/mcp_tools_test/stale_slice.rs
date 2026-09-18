@@ -161,6 +161,12 @@ async fn explore_omits_oversized_drifted_source_and_marks_stale_index() {
             .iter()
             .any(|item| { item["path"] == "src/big.ts" && item["reason"] == "stale_index" })
     );
+    // `stale_index` is a declared omission reason: clients validating the
+    // advertised schema must accept this payload.
+    assert!(
+        schema_matches(&explore_output_schema(), structured),
+        "stale-index payload failed the advertised schema: {structured}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

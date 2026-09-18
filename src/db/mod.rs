@@ -35,6 +35,7 @@ pub use migrations::{
     run_migrations,
 };
 pub use queries::{
+    CrossFileLink,
     DominantFile,
     NodeEdgeCount,
     QueryBuilder,

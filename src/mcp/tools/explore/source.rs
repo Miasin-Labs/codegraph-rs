@@ -65,7 +65,12 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
     let held_paths = plan.held_paths;
     let allocation = plan.allocation;
     debug_assert!(allocation.allowances.values().sum::<usize>() <= allocation.pool);
-    let mut carry = 0usize;
+    // Unspent allowance carries forward; so does overspend, as debt. A whole
+    // file may render at up to three times its allowance, and without the
+    // debt the files after it spent their full shares anyway, so rendered
+    // source ran far past the budget and the payload cap then had to strip
+    // whole chunks — often the top-ranked files' — to fit.
+    let mut balance = 0i64;
 
     for (idx, file_path) in req.ranked.sorted_files.iter().enumerate() {
         crate::graph::cancel::check()?;
@@ -127,7 +132,13 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
             .first()
             .map(|n| n.language.as_str())
             .unwrap_or("");
-        let funded = reserved.saturating_add(carry);
+        let funded = usize::try_from(
+            i64::try_from(reserved)
+                .unwrap_or(i64::MAX)
+                .saturating_add(balance),
+        )
+        .unwrap_or(0)
+        .max(super::allocation::MIN_CHARS);
         let mut file_budget = req.budget;
         file_budget.max_chars_per_file = funded;
         file_budget.max_output_chars = appender
@@ -160,7 +171,7 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
                     " · ⚠ changed since last index sync — source below is full and current; indexed symbol lines may be shifted",
                 );
                 let spent = appender.append(file_path, rendered);
-                carry = funded.saturating_sub(spent);
+                balance = overspend_balance(funded, spent);
             } else {
                 appender.append_notice(format!(
                     "#### {file_path} — ⚠ changed on disk after the last index sync — source omitted because indexed line ranges no longer match and a slice could show the wrong code. Read this file directly for current content."
@@ -188,7 +199,7 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
             super_many: &mut super_many,
         })? {
             let spent = appender.append(file_path, rendered);
-            carry = funded.saturating_sub(spent);
+            balance = overspend_balance(funded, spent);
             continue;
         }
 
@@ -211,7 +222,7 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
                 continue;
             }
             let spent = appender.append(file_path, rendered);
-            carry = funded.saturating_sub(spent);
+            balance = overspend_balance(funded, spent);
             continue;
         }
 
@@ -238,7 +249,7 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
                 continue;
             }
             let spent = appender.append(file_path, rendered);
-            carry = funded.saturating_sub(spent);
+            balance = overspend_balance(funded, spent);
             continue;
         }
 
@@ -259,6 +270,13 @@ pub(in crate::mcp::tools::explore) fn render_source_files(
         back_references,
         stale_files,
     })
+}
+
+/// What carries to the next file: unspent allowance, or overspend as debt.
+fn overspend_balance(funded: usize, spent: usize) -> i64 {
+    i64::try_from(funded)
+        .unwrap_or(i64::MAX)
+        .saturating_sub(i64::try_from(spent).unwrap_or(i64::MAX))
 }
 
 fn omitted_file(

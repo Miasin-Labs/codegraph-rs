@@ -688,6 +688,7 @@ pub(in crate::mcp::tools) fn explore_output_schema() -> Value {
             "backReferences": { "type": "array", "items": back_reference_schema() },
             "relationships": { "type": "array", "items": relationship_schema() },
             "additionalFiles": { "type": "array", "items": additional_file_schema() },
+            "relatedFiles": { "type": "array", "items": related_file_schema() },
             "literalMatches": { "type": "array", "items": literal_file_match_schema() },
             "trimmed": { "type": "boolean" },
             "filesOmitted": { "type": "integer" },
@@ -816,6 +817,22 @@ fn additional_file_schema() -> Value {
             "symbols": { "type": "array", "items": { "type": "string" } }
         },
         "required": ["path", "symbols"]
+    })
+}
+
+/// A one-hop neighbour of explore's files: why it is related and its key
+/// symbol (absent for a file related only by shared commits).
+fn related_file_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "path": { "type": "string" },
+            "reason": { "type": "string" },
+            "symbol": { "type": "string" },
+            "line": { "type": "integer" }
+        },
+        "required": ["path", "reason"]
     })
 }
 

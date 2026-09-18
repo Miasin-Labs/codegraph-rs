@@ -8,6 +8,7 @@ use super::types::{
     ExploreLiteralFile,
     ExploreLiteralLine,
     ExplorePayload,
+    ExploreRelatedFile,
     ExploreRelationship,
     OmittedFile,
     RankedExploreFiles,
@@ -26,6 +27,10 @@ pub(in crate::mcp::tools::explore) struct ExplorePayloadInput<'a> {
     pub back_references: Vec<ExploreBackReference>,
     pub relationships: Vec<ExploreRelationship>,
     pub additional_files: Vec<ExploreAdditionalFile>,
+    /// Ranked one-hop neighbours, best first.
+    pub related_files: Vec<ExploreRelatedFile>,
+    /// Source windows for the best neighbours, added while they fit.
+    pub related_windows: Vec<StructuredSourceFile>,
     pub literal_matches: &'a LiteralContentMatches,
     pub trimmed: bool,
     pub omissions: Vec<OmittedFile>,
@@ -55,6 +60,16 @@ pub(in crate::mcp::tools::explore) fn explore_payload(
         .collect();
     let files_omitted = input.omissions.len();
     let continuation = build_continuation(&input.omissions);
+    let related_paths: std::collections::HashSet<&str> = input
+        .related_files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    let additional_files = input
+        .additional_files
+        .into_iter()
+        .filter(|file| !related_paths.contains(file.path.as_str()))
+        .collect();
     let mut payload = ExplorePayload {
         schema_version: 2,
         kind: "explore",
@@ -65,13 +80,15 @@ pub(in crate::mcp::tools::explore) fn explore_payload(
         source_files: input.source_files,
         back_references: input.back_references,
         relationships: input.relationships,
-        additional_files: input.additional_files,
+        additional_files,
+        related_files: input.related_files,
         literal_matches,
         trimmed: input.trimmed || input.literal_matches.scan_was_truncated(),
         files_omitted,
         omissions: input.omissions,
         continuation,
     };
+    add_related_windows(&mut payload, input.related_windows, input.max_output_chars);
     if !cap_explore_payload(&mut payload, input.max_output_chars) {
         return Err(CodeGraphError::other(
             "Explore metadata exceeds the output budget after all optional evidence was withheld",
@@ -101,15 +118,44 @@ fn build_continuation(omissions: &[OmittedFile]) -> ExploreContinuation {
     ExploreContinuation { suggested_queries }
 }
 
+/// The payload's size cap: the adaptive explore budget, or the configured
+/// output cap when that is smaller.
+fn effective_cap(adaptive_cap: usize) -> usize {
+    output_char_cap().map_or(adaptive_cap, |configured| configured.min(adaptive_cap))
+}
+
+fn serialized_len(payload: &ExplorePayload<'_>) -> usize {
+    serde_json::to_string(payload)
+        .map(|value| value.len())
+        .unwrap_or(0)
+}
+
+/// Append related-file windows, best first, while the payload stays inside
+/// its cap. A window that does not fit is skipped, not cut.
+fn add_related_windows(
+    payload: &mut ExplorePayload<'_>,
+    windows: Vec<StructuredSourceFile>,
+    adaptive_cap: usize,
+) {
+    if windows.is_empty() {
+        return;
+    }
+    let cap = effective_cap(adaptive_cap);
+    let mut size = serialized_len(payload);
+    for window in windows {
+        let cost = serde_json::to_string(&window).map_or(usize::MAX, |text| text.len() + 1);
+        if size.saturating_add(cost) > cap {
+            continue;
+        }
+        size += cost;
+        payload.source_files.push(window);
+    }
+}
+
 /// Shed low-value metadata, then whole evidence units, until the complete
 /// serialized payload fits. Source and literal evidence remain verbatim.
 fn cap_explore_payload(payload: &mut ExplorePayload<'_>, adaptive_cap: usize) -> bool {
-    let cap = output_char_cap().map_or(adaptive_cap, |configured| configured.min(adaptive_cap));
-    let serialized_len = |payload: &ExplorePayload<'_>| {
-        serde_json::to_string(payload)
-            .map(|value| value.len())
-            .unwrap_or(0)
-    };
+    let cap = effective_cap(adaptive_cap);
     if serialized_len(payload) <= cap {
         return true;
     }
@@ -127,11 +173,14 @@ fn cap_explore_payload(payload: &mut ExplorePayload<'_>, adaptive_cap: usize) ->
 
     while serialized_len(payload) > cap {
         let mut target: Option<(usize, usize, usize)> = None;
+        // Source files are in rank order. Weigh each chunk's size by its
+        // file's rank so the best-ranked file's source goes last: a large
+        // chunk low in the ranking is shed before a similar one at the top.
         for (file_index, file) in payload.source_files.iter().enumerate() {
             for (chunk_index, chunk) in file.chunks.iter().enumerate() {
-                let len = chunk.source.len();
-                if target.is_none_or(|(_, _, best)| len > best) {
-                    target = Some((file_index, chunk_index, len));
+                let weight = chunk.source.len().saturating_mul(file_index + 1);
+                if target.is_none_or(|(_, _, best)| weight > best) {
+                    target = Some((file_index, chunk_index, weight));
                 }
             }
         }
@@ -164,6 +213,12 @@ fn cap_explore_payload(payload: &mut ExplorePayload<'_>, adaptive_cap: usize) ->
     payload
         .literal_matches
         .retain(|file| !file.lines.is_empty());
+
+    // Related rows had room reserved before source was rendered, so they go
+    // only after source overshoot has been shed.
+    while serialized_len(payload) > cap && payload.related_files.pop().is_some() {
+        payload.trimmed = true;
+    }
 
     if serialized_len(payload) > cap && !payload.continuation.suggested_queries.is_empty() {
         payload.continuation.suggested_queries.clear();

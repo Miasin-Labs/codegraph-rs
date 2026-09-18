@@ -29,6 +29,7 @@ use crate::context::{ContextBuilder, create_context_builder};
 // facade (issue #354). RoutingManifest/TopRouteFile/SqliteBackend appear in
 // facade method signatures, so they're surfaced too.
 pub use crate::db::{
+    CrossFileLink,
     DatabaseConnection,
     QueryBuilder,
     RoutingManifest,
@@ -1369,6 +1370,29 @@ impl CodeGraph {
     /// Get incoming edges to a node.
     pub fn get_incoming_edges(&self, node_id: &str) -> Result<Vec<Edge>> {
         self.queries.get_incoming_edges(node_id, None)
+    }
+
+    /// Edges between `file_path` and other files, joined to the far symbol —
+    /// at most `limit` per direction from the file's first `max_local_nodes`
+    /// symbols (see [`QueryBuilder::get_cross_file_links`]).
+    pub fn get_cross_file_links(
+        &self,
+        file_path: &str,
+        limit: usize,
+        max_local_nodes: usize,
+    ) -> Result<Vec<CrossFileLink>> {
+        self.queries
+            .get_cross_file_links(file_path, limit, max_local_nodes)
+    }
+
+    /// A node's non-`contains` in- or out-degree, counted up to `cap`.
+    pub fn count_node_edges_capped(
+        &self,
+        node_id: &str,
+        incoming: bool,
+        cap: usize,
+    ) -> Result<usize> {
+        self.queries.count_node_edges_capped(node_id, incoming, cap)
     }
 
     // =========================================================================

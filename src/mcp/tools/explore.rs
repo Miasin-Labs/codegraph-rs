@@ -8,6 +8,7 @@ mod handler;
 mod literal;
 mod payload;
 mod ranking;
+mod related;
 mod relationships;
 mod seed;
 mod skeleton;

@@ -17,6 +17,13 @@ use super::payload::{
     explore_payload,
     relationship_payloads,
 };
+use super::related::{
+    CoChangeProbe,
+    RelatedPlan,
+    RelatedRequest,
+    plan_related_files,
+    related_windows,
+};
 use super::relationships::{
     append_explore_footer,
     append_graph_sections,
@@ -41,6 +48,9 @@ impl ToolHandler {
 
         let cg = self.get_code_graph(args.get("projectPath").and_then(|v| v.as_str()))?;
         let project_root = cg.get_project_root().to_path_buf();
+        // Recent commit history for related-file co-change, read while the
+        // search below runs; dropped (and the process killed) if unused.
+        let history = CoChangeProbe::spawn(&project_root);
         let prior = args
             .get(SESSION_ARG)
             .and_then(|value| serde_json::from_value::<ProjectState>(value.clone()).ok());
@@ -95,6 +105,8 @@ impl ToolHandler {
                     back_references: Vec::new(),
                     relationships: Vec::new(),
                     additional_files: Vec::new(),
+                    related_files: Vec::new(),
+                    related_windows: Vec::new(),
                     literal_matches: &literal_matches,
                     trimmed: false,
                     omissions: Vec::new(),
@@ -111,6 +123,8 @@ impl ToolHandler {
                 back_references: Vec::new(),
                 relationships: Vec::new(),
                 additional_files: Vec::new(),
+                related_files: Vec::new(),
+                related_windows: Vec::new(),
                 literal_matches: &literal_matches,
                 trimmed: false,
                 omissions: Vec::new(),
@@ -173,6 +187,28 @@ impl ToolHandler {
             &mut lines,
         );
 
+        let related = match plan_related_files(
+            &RelatedRequest {
+                cg: &cg,
+                query: &query,
+                ranked: &ranked,
+                budget,
+            },
+            history,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => {
+                // Related files are an addition, not the answer: a failed
+                // read drops them, a cancelled call still stops here.
+                crate::graph::cancel::check()?;
+                RelatedPlan::empty()
+            }
+        };
+        // Source gives up the room the related rows (and their windows) need,
+        // so the whole answer stays inside the one explore budget.
+        let mut source_budget = budget;
+        source_budget.max_output_chars = budget.max_output_chars.saturating_sub(related.reserve);
+
         let flow = self.build_flow_from_named_symbols(&cg, &query);
         append_literal_content_section(&literal_matches, &mut lines);
         lines.push("### Source Code".to_string());
@@ -189,7 +225,7 @@ impl ToolHandler {
                 nodes: &nodes,
                 glue_node_ids: &seeds.glue_node_ids,
                 flow: &flow,
-                budget,
+                budget: source_budget,
                 max_files,
                 with_line_numbers,
                 initial_chars,
@@ -197,6 +233,7 @@ impl ToolHandler {
             },
             &mut lines,
         )?;
+        related.append_markdown(&mut lines);
         append_remaining_files(budget, &ranked, source_result.files_included, &mut lines);
         append_explore_footer(
             self,
@@ -207,6 +244,7 @@ impl ToolHandler {
             &mut lines,
         );
         let stale_files = source_result.stale_files.clone();
+        let windows = related_windows(&cg, &project_root, &related, prior.as_ref());
         let payload = explore_payload(ExplorePayloadInput {
             query: &query,
             total_symbols: nodes.len(),
@@ -229,6 +267,8 @@ impl ToolHandler {
             } else {
                 Vec::new()
             },
+            related_files: related.rows(),
+            related_windows: windows,
             literal_matches: &literal_matches,
             trimmed: source_result.any_file_trimmed,
             omissions: source_result.omissions,

@@ -15,6 +15,7 @@
 mod cache;
 mod edges;
 mod files;
+mod links;
 mod models;
 mod nodes;
 mod rows;
@@ -26,6 +27,7 @@ mod unresolved;
 use std::cell::RefCell;
 
 use cache::NodeLru;
+pub use links::CrossFileLink;
 pub use models::*;
 
 use crate::db::connection::Db;

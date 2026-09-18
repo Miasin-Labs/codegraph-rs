@@ -163,7 +163,7 @@ fn scan_unicode_hazards(source: &str, start_line: usize) -> Vec<UnicodeHazard> {
     hazards
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(in crate::mcp::tools::explore) struct StructuredSourceFile {
     pub path: String,
@@ -206,6 +206,19 @@ pub(in crate::mcp::tools::explore) struct ExploreRelationship {
 pub(in crate::mcp::tools::explore) struct ExploreAdditionalFile {
     pub path: String,
     pub symbols: Vec<String>,
+}
+
+/// A file one graph hop (or one shared commit) from explore's ranked files:
+/// why it is related and the symbol that ties it to them.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::mcp::tools::explore) struct ExploreRelatedFile {
+    pub path: String,
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -279,6 +292,8 @@ pub(in crate::mcp::tools::explore) struct ExplorePayload<'a> {
     pub back_references: Vec<ExploreBackReference>,
     pub relationships: Vec<ExploreRelationship>,
     pub additional_files: Vec<ExploreAdditionalFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub related_files: Vec<ExploreRelatedFile>,
     pub literal_matches: Vec<ExploreLiteralFile>,
     pub trimmed: bool,
     pub files_omitted: usize,
