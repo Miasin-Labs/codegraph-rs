@@ -73,6 +73,17 @@ impl<'a> TreeSitterExtractor<'a> {
             }
         }
 
+        // Calls inside unparsed tokens (a Rust macro invocation's arguments).
+        let token_calls = ext.extract_token_calls(node, self.source);
+        if !token_calls.is_empty() {
+            if let Some(caller_id) = self.node_stack.last() {
+                let references = token_calls
+                    .into_iter()
+                    .map(|call| call.into_reference(caller_id.clone()));
+                self.unresolved_references.extend(references);
+            }
+        }
+
         // Value-path reference (Rust `let p = UnitStruct;`) → a `References`
         // edge from the enclosing scope to the referenced symbol.
         if let Some(value_ref) = ext.extract_value_reference(node, self.source) {

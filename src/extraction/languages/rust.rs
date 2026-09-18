@@ -35,6 +35,8 @@
 //! are not extracted. The macro *definition* and *invocation site* are
 //! recorded; the generated items are not.
 
+mod macro_calls;
+
 use super::named_children;
 use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
 use crate::extraction::tree_sitter_types::{
@@ -44,6 +46,7 @@ use crate::extraction::tree_sitter_types::{
     LanguageExtractor,
     NodeExtra,
     SyntaxNode,
+    TokenCall,
 };
 use crate::types::{EdgeKind, NodeKind, UnresolvedReference, Visibility};
 
@@ -220,34 +223,47 @@ impl LanguageExtractor for RustExtractor {
             // generated items are out of scope), but we record a `References`
             // edge to the macro name so the call site is wired to the macro
             // definition. This is the link that makes the original
-            // `impl_two_step_sync_job!` invocation discoverable. We return
-            // `false` so the walker still descends into the token tree for any
-            // nested calls/identifiers the grammar did tokenize.
+            // `impl_two_step_sync_job!` invocation discoverable. The calls
+            // written in its arguments are recorded too (function bodies reach
+            // them through `extract_token_calls` instead). We return `false` so
+            // the walker still descends into the token tree.
             "macro_invocation" => {
+                let Some(parent_id) = ctx.node_stack().last().cloned() else {
+                    return false;
+                };
                 if let Some(macro_node) = node.child_by_field_name("macro") {
                     // `macro` may be an identifier or a scoped_identifier
                     // (`crate::m!`) — take the last path segment as the name.
                     let raw = get_node_text(macro_node, ctx.source());
                     let name = raw.rsplit("::").next().unwrap_or(raw).to_string();
                     if !name.is_empty() {
-                        if let Some(parent_id) = ctx.node_stack().last().cloned() {
-                            ctx.add_unresolved_reference(UnresolvedReference {
-                                from_node_id: parent_id,
-                                reference_name: name,
-                                reference_kind: EdgeKind::References,
-                                line: node.start_position().row as u32 + 1,
-                                column: node.start_position().column as u32,
-                                file_path: None,
-                                language: None,
-                                candidates: None,
-                                metadata: None,
-                            });
-                        }
+                        ctx.add_unresolved_reference(UnresolvedReference {
+                            from_node_id: parent_id.clone(),
+                            reference_name: name,
+                            reference_kind: EdgeKind::References,
+                            line: node.start_position().row as u32 + 1,
+                            column: node.start_position().column as u32,
+                            file_path: None,
+                            language: None,
+                            candidates: None,
+                            metadata: None,
+                        });
                     }
+                }
+                for call in macro_calls::macro_invocation_calls(node, ctx.source()) {
+                    ctx.add_unresolved_reference(call.into_reference(parent_id.clone()));
                 }
                 false
             }
             _ => false,
+        }
+    }
+
+    fn extract_token_calls(&self, node: SyntaxNode<'_>, source: &str) -> Vec<TokenCall> {
+        if node.kind() == "macro_invocation" {
+            macro_calls::macro_invocation_calls(node, source)
+        } else {
+            Vec::new()
         }
     }
 
@@ -762,6 +778,121 @@ pub enum Shape {
             "macro invocation should reference its definition `{}`",
             macro_def.name
         );
+    }
+
+    /// The `Calls` references extracted from `source`, as `name@line:column`.
+    fn call_references(source: &str) -> Vec<String> {
+        let result = TreeSitterExtractor::new(
+            "src/lib.rs",
+            source,
+            Some(Language::Rust),
+            Some(&RustExtractor),
+        )
+        .extract();
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        result
+            .unresolved_references
+            .iter()
+            .filter(|reference| reference.reference_kind == EdgeKind::Calls)
+            .map(|reference| {
+                format!(
+                    "{}@{}:{}",
+                    reference.reference_name, reference.line, reference.column
+                )
+            })
+            .collect()
+    }
+
+    fn call_names(source: &str) -> Vec<String> {
+        call_references(source)
+            .into_iter()
+            .map(|call| call.split('@').next().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// tree-sitter leaves macro arguments as raw tokens, so calls written in
+    /// them used to produce no reference at all.
+    #[test]
+    fn calls_inside_macro_arguments_are_references() {
+        let source = r#"
+fn caller(x: Vec<u8>) {
+    assert_eq!(helper(), 1);
+    println!("{}", f());
+    let v = vec![Foo::new()];
+    let s = format!("{}", x.len());
+    write!(out, "{}", crate::util::render(&x)).unwrap();
+}
+"#;
+        assert_eq!(
+            call_references(source),
+            [
+                "helper@3:15",
+                "f@4:19",
+                "Foo::new@5:17",
+                "x.len@6:26",
+                // The parsed `.unwrap()` around the macro, then its argument.
+                "unwrap@7:4",
+                "crate::util::render@7:22",
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_macro_arguments_are_scanned_and_patterns_are_not_calls() {
+        let names =
+            call_names("fn caller() { assert!(matches!(g(), Some(Kind::Tuple(_)) if ok(1))); }\n");
+        assert_eq!(names, ["g", "ok"], "pattern `Some(..)` is not a call");
+    }
+
+    /// Method calls keep a plain identifier receiver and drop anything longer,
+    /// the same way `calls.rs` names parsed method calls.
+    #[test]
+    fn macro_method_calls_are_named_like_parsed_calls() {
+        let names = call_names(
+            "fn caller(&self) { dbg!(self.run(), v.iter().count(), self.items.get(0), a[0].len()); }\n",
+        );
+        assert_eq!(names, ["run", "v.iter", "count", "get", "len"]);
+    }
+
+    /// Macro names, declarations, attributes, type-position `Fn(..)`,
+    /// metavariables, and turbofish paths that can't be named whole are
+    /// not calls.
+    #[test]
+    fn macro_tokens_that_only_look_like_calls_are_skipped() {
+        let source = r#"
+fn caller() {
+    inner!(outer!(1));
+    my_items! {
+        #[derive(Debug)]
+        struct Pair(u32);
+        fn declared(x: u32) -> Box<dyn Fn(u32)> { real_call(x) }
+    }
+    tricky!($x(1), Vec::<u8>::new());
+}
+"#;
+        assert_eq!(call_names(source), ["real_call"]);
+    }
+
+    /// A `macro_rules!` body is patterns and `$x` templates, never calls —
+    /// both as an item and when a macro invocation defines one.
+    #[test]
+    fn macro_rules_bodies_emit_no_calls() {
+        let source = r#"
+macro_rules! call_twice { ($f:ident) => { $f(); helper(); }; }
+fn caller() {
+    define! { macro_rules! nested { () => { helper() }; } }
+}
+"#;
+        assert!(call_names(source).is_empty(), "{:?}", call_names(source));
+    }
+
+    /// Item-level invocations (outside any fn body) still record their calls.
+    #[test]
+    fn item_level_macro_invocations_record_calls() {
+        let names = call_names(
+            "mod m {\n    thread_local! { static C: Cell<u32> = Cell::new(seed()); }\n}\n",
+        );
+        assert_eq!(names, ["Cell::new", "seed"]);
     }
 
     /// Documents the `const trait` grammar limitation (tree-sitter-rust 0.24):

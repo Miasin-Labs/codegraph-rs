@@ -20,7 +20,7 @@
 
 use std::borrow::Cow;
 
-use crate::types::{Node, NodeKind, UnresolvedReference, Visibility};
+use crate::types::{EdgeKind, Node, NodeKind, UnresolvedReference, Visibility};
 
 /// Alias matching the TS sources' `SyntaxNode` import from web-tree-sitter.
 /// Per-language extractors should use this name for parity with the TS files.
@@ -127,6 +127,47 @@ pub struct VariableInfo<'tree> {
     pub delegate_to_function: Option<SyntaxNode<'tree>>,
     /// The AST node to use for positioning (may differ from the declaration node)
     pub position_node: Option<SyntaxNode<'tree>>,
+}
+
+/// A call site recovered from tokens the grammar leaves unparsed, such as the
+/// arguments of a Rust macro invocation (`assert_eq!(helper(), 1)`).
+/// Returned by [`LanguageExtractor::extract_token_calls`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenCall {
+    /// The callee, named as the equivalent parsed call would be: `f`,
+    /// `a::b`, `recv.m`, or a bare `m`.
+    pub name: String,
+    /// 1-based line of the call shape's first token.
+    pub line: u32,
+    /// 0-based column of the call shape's first token.
+    pub column: u32,
+}
+
+impl TokenCall {
+    /// A call named `name` whose shape starts at `anchor`.
+    pub fn at(name: String, anchor: SyntaxNode<'_>) -> Self {
+        let start = anchor.start_position();
+        TokenCall {
+            name,
+            line: start.row as u32 + 1,
+            column: start.column as u32,
+        }
+    }
+
+    /// The `Calls` reference this call site contributes from `from_node_id`.
+    pub fn into_reference(self, from_node_id: String) -> UnresolvedReference {
+        UnresolvedReference {
+            from_node_id,
+            reference_name: self.name,
+            reference_kind: EdgeKind::Calls,
+            line: self.line,
+            column: self.column,
+            file_path: None,
+            language: None,
+            candidates: None,
+            metadata: None,
+        }
+    }
 }
 
 /// Classification returned by [`LanguageExtractor::classify_class_node`]
@@ -433,6 +474,15 @@ pub trait LanguageExtractor: Send + Sync {
     /// callee name if this node is a bare call, or `None` if not.
     fn extract_bare_call(&self, _node: SyntaxNode<'_>, _source: &str) -> Option<String> {
         None
+    }
+
+    /// Detect calls written inside tokens the grammar leaves unparsed. Used by
+    /// Rust, whose macro invocations keep their arguments as a raw
+    /// `token_tree` (`assert_eq!(helper(), 1)` holds no `call_expression`).
+    /// The body walker records each as a `Calls` reference from the enclosing
+    /// scope.
+    fn extract_token_calls(&self, _node: SyntaxNode<'_>, _source: &str) -> Vec<TokenCall> {
+        Vec::new()
     }
 
     /// Detect a value-path reference in a declaration — e.g. Rust
