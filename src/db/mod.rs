@@ -41,6 +41,7 @@ pub use queries::{
     ExternalEdge,
     ExternalEdgeCount,
     ExternalGraphKind,
+    ExternalTarget,
     NodeEdgeCount,
     QueryBuilder,
     ResolvedRefKey,

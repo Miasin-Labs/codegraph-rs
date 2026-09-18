@@ -167,6 +167,7 @@ mod tests {
             "codegraph_xref",
             "codegraph_paths",
             "codegraph_recall",
+            "codegraph_projects",
         ];
         assert_eq!(defs.len(), expected.len());
         assert_eq!(names, expected);
@@ -304,8 +305,9 @@ mod tests {
             }
         }
         // search, node (symbol + file view), files, status, explore, grep,
-        // recall (opt-in, but its schema is still served when enabled).
-        assert_eq!(checked, 8);
+        // recall and projects (list + one project) — opt-in, but their
+        // schemas are still served when enabled.
+        assert_eq!(checked, 10);
     }
 
     #[test]

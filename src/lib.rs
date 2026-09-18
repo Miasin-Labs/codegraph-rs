@@ -19,6 +19,7 @@ pub mod diagnostics;
 pub mod directory;
 pub mod error;
 pub mod extraction;
+pub mod federation;
 pub mod graph;
 pub mod history;
 pub mod installer;

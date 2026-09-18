@@ -10,6 +10,7 @@ use super::super::format::{
 };
 use super::super::schema::ToolResult;
 use super::execution::ExploreExecutionBudget;
+use super::external::plan_external;
 use super::literal::{append_literal_content_section, collect_literal_content_matches};
 use super::payload::{
     ExplorePayloadInput,
@@ -107,6 +108,7 @@ impl ToolHandler {
                     additional_files: Vec::new(),
                     related_files: Vec::new(),
                     related_windows: Vec::new(),
+                    external: Vec::new(),
                     literal_matches: &literal_matches,
                     trimmed: false,
                     omissions: Vec::new(),
@@ -125,6 +127,7 @@ impl ToolHandler {
                 additional_files: Vec::new(),
                 related_files: Vec::new(),
                 related_windows: Vec::new(),
+                external: Vec::new(),
                 literal_matches: &literal_matches,
                 trimmed: false,
                 omissions: Vec::new(),
@@ -204,10 +207,17 @@ impl ToolHandler {
                 RelatedPlan::empty()
             }
         };
-        // Source gives up the room the related rows (and their windows) need,
-        // so the whole answer stays inside the one explore budget.
+        // What the files about to be shown call in dependencies and linked
+        // projects (followed into those graphs).
+        let fed = self.federation();
+        let external = plan_external(fed.as_ref(), &cg, &ranked, max_files);
+        // Source gives up the room the related and external rows (and the
+        // related windows) need, so the whole answer stays inside the one
+        // explore budget.
         let mut source_budget = budget;
-        source_budget.max_output_chars = budget.max_output_chars.saturating_sub(related.reserve);
+        source_budget.max_output_chars = budget
+            .max_output_chars
+            .saturating_sub(related.reserve + external.reserve);
 
         let flow = self.build_flow_from_named_symbols(&cg, &query);
         append_literal_content_section(&literal_matches, &mut lines);
@@ -234,6 +244,7 @@ impl ToolHandler {
             &mut lines,
         )?;
         related.append_markdown(&mut lines);
+        external.append_markdown(&mut lines);
         append_remaining_files(budget, &ranked, source_result.files_included, &mut lines);
         append_explore_footer(
             self,
@@ -269,6 +280,7 @@ impl ToolHandler {
             },
             related_files: related.rows(),
             related_windows: windows,
+            external: external.rows,
             literal_matches: &literal_matches,
             trimmed: source_result.any_file_trimmed,
             omissions: source_result.omissions,

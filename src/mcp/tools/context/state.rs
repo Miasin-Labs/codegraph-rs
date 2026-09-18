@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::codegraph::CodeGraph;
+use crate::federation::FederationOptions;
 use crate::sync::worktree::WorktreeIndexMismatch;
 
 pub struct ToolHandler {
@@ -30,6 +31,9 @@ pub struct ToolHandler {
     /// EXCEEDS TS: per-call context (progress emitter + cooperative cancel
     /// flag) the engine sets around each `execute()` — see [`CallContext`].
     pub(in crate::mcp::tools) call_context: Rc<CallContext>,
+    /// Stores and bounds of cross-graph answers; `None` reads them from the
+    /// environment on every call (see [`crate::federation`]).
+    pub(in crate::mcp::tools) federation_options: RefCell<Option<FederationOptions>>,
 }
 
 /// Progress callback the session plumbs through the engine when a `tools/call`
@@ -95,7 +99,14 @@ impl ToolHandler {
             catch_up_gate: RefCell::new(None),
             auto_sync_disabled: RefCell::new(None),
             call_context: Rc::new(CallContext::default()),
+            federation_options: RefCell::new(None),
         }
+    }
+
+    /// Answer cross-graph questions from these stores and bounds instead of
+    /// the environment's (tests, embedders with their own home).
+    pub fn set_federation_options(&self, options: FederationOptions) {
+        *self.federation_options.borrow_mut() = Some(options);
     }
 
     /// Shared per-call context — the engine sets/clears it around `execute()`

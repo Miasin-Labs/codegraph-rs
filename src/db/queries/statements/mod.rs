@@ -28,7 +28,7 @@ mod unresolved;
 use std::cell::RefCell;
 
 use cache::NodeLru;
-pub use external_edges::{ExternalEdge, ExternalEdgeCount, ExternalGraphKind};
+pub use external_edges::{ExternalEdge, ExternalEdgeCount, ExternalGraphKind, ExternalTarget};
 pub use links::CrossFileLink;
 pub use models::*;
 

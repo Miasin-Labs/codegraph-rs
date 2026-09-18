@@ -298,6 +298,7 @@ pub(crate) async fn main() {
             offset,
             limit,
             symbols_only,
+            graph,
         } => cmd_node(
             name.as_deref(),
             path.as_deref(),
@@ -305,6 +306,7 @@ pub(crate) async fn main() {
             offset.as_deref(),
             limit.as_deref(),
             symbols_only,
+            graph.as_deref(),
         ),
         Commands::Files {
             path,

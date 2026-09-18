@@ -46,6 +46,11 @@ impl ToolHandler {
                 return r;
             }
         }
+        if args.contains_key("graph") {
+            if let Err(r) = self.validate_optional_path(args.get("graph"), "graph") {
+                return r;
+            }
+        }
         if args.contains_key("file") {
             if let Err(r) = self.validate_optional_path(args.get("file"), "file") {
                 return r;
@@ -87,6 +92,7 @@ impl ToolHandler {
             "codegraph_xref" => self.handle_xref(args),
             "codegraph_paths" => self.handle_paths(args),
             "codegraph_recall" => self.handle_recall(args),
+            "codegraph_projects" => self.handle_projects(args),
             _ => return self.error_result(&format!("Unknown tool: {tool_name}")),
         };
         let result = match result {

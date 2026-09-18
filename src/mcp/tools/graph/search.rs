@@ -39,6 +39,9 @@ impl ToolHandler {
         &self,
         args: &Map<String, Value>,
     ) -> Result<ToolResult> {
+        if let Some(scope) = super::search_scope::project_scope(args) {
+            return self.handle_search_scope(args, scope);
+        }
         if let Some(paths) = super::search_projects::project_paths(args) {
             return self.handle_search_projects(args, paths);
         }

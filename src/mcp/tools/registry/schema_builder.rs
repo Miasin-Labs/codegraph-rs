@@ -82,3 +82,14 @@ pub(in crate::mcp::tools::registry) fn project_path_property() -> Value {
         "Path to a different project with .codegraph/ initialized. If omitted, uses current project. Use this to query other codebases.",
     )
 }
+
+/// The other graph a symbol lives in — a dependency or a linked project.
+pub(in crate::mcp::tools::registry) fn graph_property() -> Value {
+    prop(
+        "string",
+        "The dependency (`serde_json`, `serde_json@1.0.150`) or linked project (`linkscope`) the \
+         symbol lives in, for a bare name. A path naming the crate (`serde_json::from_str`) finds \
+         it without this. Only graphs this project reaches: dependencies with a built shard, \
+         Cargo path dependencies on other indexed projects.",
+    )
+}

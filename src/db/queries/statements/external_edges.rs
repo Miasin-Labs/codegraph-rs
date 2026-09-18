@@ -79,6 +79,27 @@ pub struct ExternalEdge {
     pub metadata: Option<Metadata>,
 }
 
+/// One item of another graph, as an external edge records its target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternalTarget<'a> {
+    pub id: &'a str,
+    pub qualified_name: &'a str,
+    pub kind: NodeKind,
+    pub file_path: &'a str,
+}
+
+impl<'a> ExternalTarget<'a> {
+    /// `node` of its own graph.
+    pub fn of(node: &'a crate::types::Node) -> Self {
+        Self {
+            id: &node.id,
+            qualified_name: &node.qualified_name,
+            kind: node.kind,
+            file_path: &node.file_path,
+        }
+    }
+}
+
 /// External edges per target graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -212,6 +233,52 @@ impl QueryBuilder {
         let mut out = Vec::new();
         for row in rows {
             out.extend(row?);
+        }
+        Ok(out)
+    }
+
+    /// External edges into `graph_key` that point at one of `targets` —
+    /// by id, or, for edges recorded before that graph was rebuilt and ids
+    /// moved, by qualified name + kind + file — at most `limit`, ordered
+    /// by source and position.
+    pub fn get_external_edges_into_targets(
+        &self,
+        graph_key: &str,
+        targets: &[ExternalTarget<'_>],
+        limit: usize,
+    ) -> Result<Vec<ExternalEdge>> {
+        /// Four parameters per target plus the key stay well under
+        /// SQLite's variable limit.
+        const TARGET_CHUNK: usize = 100;
+        let mut out = Vec::new();
+        for chunk in targets.chunks(TARGET_CHUNK) {
+            if out.len() >= limit {
+                break;
+            }
+            let ids = placeholders(chunk.len());
+            let triples = vec!["(?, ?, ?)"; chunk.len()].join(", ");
+            let sql = format!(
+                "SELECT {COLUMNS} FROM external_edges
+                 WHERE target_graph_key = ?
+                   AND (target_node_id IN ({ids})
+                        OR (target_qualified_name, target_kind, target_file_path) IN (VALUES {triples}))
+                 ORDER BY source, IFNULL(line, -1), IFNULL(col, -1), id
+                 LIMIT ?"
+            );
+            let mut values: Vec<rusqlite::types::Value> = Vec::with_capacity(2 + chunk.len() * 4);
+            values.push(graph_key.to_string().into());
+            values.extend(chunk.iter().map(|target| target.id.to_string().into()));
+            for target in chunk {
+                values.push(target.qualified_name.to_string().into());
+                values.push(target.kind.as_str().to_string().into());
+                values.push(target.file_path.to_string().into());
+            }
+            values.push(((limit - out.len()) as i64).into());
+            let mut stmt = self.db.conn().prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(values), external_edge_from_row)?;
+            for row in rows {
+                out.extend(row?);
+            }
         }
         Ok(out)
     }

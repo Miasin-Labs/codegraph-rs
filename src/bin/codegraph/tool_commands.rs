@@ -77,6 +77,7 @@ pub(crate) fn cmd_node(
     offset: Option<&str>,
     limit: Option<&str>,
     symbols_only: bool,
+    graph: Option<&str>,
 ) {
     if name.is_none() && file.is_none() {
         error_msg(
@@ -107,6 +108,9 @@ pub(crate) fn cmd_node(
     }
     if symbols_only {
         args.insert("symbolsOnly".to_string(), Value::Bool(true));
+    }
+    if let Some(graph) = graph {
+        args.insert("graph".to_string(), Value::String(graph.to_string()));
     }
 
     match execute_and_print("codegraph_node", Value::Object(args), path_arg) {

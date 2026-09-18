@@ -119,6 +119,10 @@ pub(crate) enum Commands {
         /// File mode: print only the symbol map and dependents
         #[arg(long = "symbols-only")]
         symbols_only: bool,
+        /// The dependency (`serde_json`, `serde_json@1.0.150`) or linked
+        /// project a bare symbol name lives in
+        #[arg(short = 'g', long, value_name = "graph")]
+        graph: Option<String>,
     },
     /// Show project file structure from the index
     Files {

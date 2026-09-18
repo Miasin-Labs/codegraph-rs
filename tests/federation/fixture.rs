@@ -315,6 +315,13 @@ impl Federation {
         cg.close();
     }
 
+    /// Bring an indexed `dir` up to date with its files (a sync).
+    pub async fn reindex(&self, dir: &Path) {
+        let cg = CodeGraph::open(dir, &OpenOptions::default()).unwrap();
+        cg.sync(&IndexOptions::default()).await.unwrap();
+        cg.close();
+    }
+
     /// Record `app`'s lockfile in the dependency registry.
     pub fn record(&self) {
         let home = self.deps_home();
@@ -375,7 +382,32 @@ impl Federation {
         scope: ExternalScope,
         options: ExternalOptions,
     ) -> ExternalReport {
-        let cg = CodeGraph::open(&self.app, &OpenOptions::default()).unwrap();
+        self.resolve_project(&self.app, scope, options).await
+    }
+
+    /// Another project that depends on `linkme` by path, with `code` as its
+    /// library (not indexed yet).
+    pub fn write_dependent(&self, name: &str, code: &str) -> PathBuf {
+        let dir = self.root.join(name);
+        write(
+            &dir.join("Cargo.toml"),
+            &format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+                 linkme = {{ path = \"../linkme\" }}\n"
+            ),
+        );
+        write(&dir.join("src/lib.rs"), code);
+        dir
+    }
+
+    /// Run the external pass on the project at `dir`.
+    pub async fn resolve_project(
+        &self,
+        dir: &Path,
+        scope: ExternalScope,
+        options: ExternalOptions,
+    ) -> ExternalReport {
+        let cg = CodeGraph::open(dir, &OpenOptions::default()).unwrap();
         let report = cg
             .resolve_external(scope, &options)
             .await

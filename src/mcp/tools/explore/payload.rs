@@ -31,6 +31,8 @@ pub(in crate::mcp::tools::explore) struct ExplorePayloadInput<'a> {
     pub related_files: Vec<ExploreRelatedFile>,
     /// Source windows for the best neighbours, added while they fit.
     pub related_windows: Vec<StructuredSourceFile>,
+    /// Targets in other graphs the answer's code calls, most called first.
+    pub external: Vec<super::external::ExploreExternal>,
     pub literal_matches: &'a LiteralContentMatches,
     pub trimmed: bool,
     pub omissions: Vec<OmittedFile>,
@@ -82,6 +84,7 @@ pub(in crate::mcp::tools::explore) fn explore_payload(
         relationships: input.relationships,
         additional_files,
         related_files: input.related_files,
+        external: input.external,
         literal_matches,
         trimmed: input.trimmed || input.literal_matches.scan_was_truncated(),
         files_omitted,
@@ -214,8 +217,11 @@ fn cap_explore_payload(payload: &mut ExplorePayload<'_>, adaptive_cap: usize) ->
         .literal_matches
         .retain(|file| !file.lines.is_empty());
 
-    // Related rows had room reserved before source was rendered, so they go
-    // only after source overshoot has been shed.
+    // Related and external rows had room reserved before source was
+    // rendered, so they go only after source overshoot has been shed.
+    while serialized_len(payload) > cap && payload.external.pop().is_some() {
+        payload.trimmed = true;
+    }
     while serialized_len(payload) > cap && payload.related_files.pop().is_some() {
         payload.trimmed = true;
     }

@@ -49,7 +49,10 @@ impl SymbolRow {
             file: None,
             line: node.start_line,
             end_line: node.end_line,
-            signature: node.signature.as_deref().and_then(compact_signature),
+            signature: node
+                .signature
+                .as_deref()
+                .and_then(|signature| compact_signature(signature, MAX_SIGNATURE_CHARS)),
         }
     }
 }
@@ -93,9 +96,12 @@ fn container(node: &Node) -> Option<String> {
 }
 
 /// A signature on one line: whitespace runs collapsed, the padding a
-/// multi-line parameter list leaves inside its brackets dropped, and long
-/// signatures clipped.
-fn compact_signature(signature: &str) -> Option<String> {
+/// multi-line parameter list leaves inside its brackets dropped, and
+/// signatures longer than `max_chars` clipped (ending in `…`).
+pub(in crate::mcp::tools) fn compact_signature(
+    signature: &str,
+    max_chars: usize,
+) -> Option<String> {
     let collapsed = signature.split_whitespace().collect::<Vec<_>>().join(" ");
     let collapsed = collapsed
         .replace("( ", "(")
@@ -104,10 +110,10 @@ fn compact_signature(signature: &str) -> Option<String> {
     if collapsed.is_empty() {
         return None;
     }
-    if collapsed.chars().count() <= MAX_SIGNATURE_CHARS {
+    if collapsed.chars().count() <= max_chars {
         return Some(collapsed);
     }
-    let mut clipped: String = collapsed.chars().take(MAX_SIGNATURE_CHARS).collect();
+    let mut clipped: String = collapsed.chars().take(max_chars).collect();
     clipped.push('…');
     Some(clipped)
 }

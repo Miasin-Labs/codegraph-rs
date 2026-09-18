@@ -20,6 +20,7 @@ use super::{
 
 mod affected;
 mod calls;
+mod federated;
 mod impact;
 
 pub(crate) use affected::cmd_affected;

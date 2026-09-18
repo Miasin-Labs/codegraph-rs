@@ -46,10 +46,10 @@ Twelve core tools are available by default:
 - **`codegraph_explore`** — Primary context tool: natural-language question or symbol/file names → verbatim source + call paths + dependencies (Read-equivalent)
 - **`codegraph_search`** — Quick symbol lookup: name → locations/kinds/signatures (no source)
 - **`codegraph_grep`** — Text search over the indexed files: regex or literal → hits grouped by file, each on its enclosing symbol (use it instead of shell grep/rg)
-- **`codegraph_node`** — Get one symbol's definition: name → source/signature/location
-- **`codegraph_callers`** — Find who calls a symbol: name → list of callers
-- **`codegraph_callees`** — Find what a symbol calls: name → list of callees  
-- **`codegraph_impact`** — Refactor impact analysis: symbol → affected code
+- **`codegraph_node`** — Get one symbol's definition: name → source/signature/location (also a dependency's or linked project's symbol)
+- **`codegraph_callers`** — Find who calls a symbol: name → list of callers, here and in the other indexed projects that use it
+- **`codegraph_callees`** — Find what a symbol calls: name → list of callees, including into dependencies and linked projects
+- **`codegraph_impact`** — Refactor impact analysis: symbol → affected code, crossing into dependent projects
 - **`codegraph_files`** — Project file structure from the index
 - **`codegraph_status`** — Index status and statistics
 - **`codegraph_history`** — What changes together with a symbol, from git history (instead of git log/blame)
@@ -59,7 +59,17 @@ Twelve core tools are available by default:
 Batch lookups: `codegraph_search` and `codegraph_node` take a `symbols` array
 for several names in one call — use it instead of a grep alternation `a|b|c`.
 `codegraph_search` also takes `projectPaths` to search several indexed projects
-at once, each hit tagged with its `project`.
+at once, each hit tagged with its `project`, or `projects: "linked"` (this
+project and those it shares code with) / `"all"` / project names.
+
+Answers cross projects and dependencies where the index has resolved the code
+into them: callees list what a symbol calls in a dependency
+(`serde_json@1.0.150 src/de.rs:2709`) or a linked project; `codegraph_node` on
+`serde_json::from_str` (a path naming the crate, or a bare name with
+`graph: "serde_json"`) reads that definition from the dependency's own source
+(its absolute `file`) with this project's call sites; callers and impact of
+shared code add the call sites in every project that uses it, grouped by
+project, and name the projects they could not read and why.
 
 Text that is not a symbol name — a log or error message, a string literal, part
 of a name, a regex, a TODO — goes to `codegraph_grep`, not shell grep/rg: it
@@ -76,7 +86,8 @@ tools (search/node/callers/etc.) when you need ONLY that focused information
 without full context.
 
 Advanced tools (arch, xref, paths) can be enabled via the `CODEGRAPH_MCP_TOOLS`
-environment variable — see project documentation.
+environment variable — see project documentation — as can `projects` (the
+indexed projects on this machine, their links and dependencies).
 
 ## Anti-patterns
 

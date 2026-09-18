@@ -4,6 +4,7 @@ mod adaptive;
 mod allocation;
 mod cluster;
 mod execution;
+mod external;
 mod handler;
 mod literal;
 mod payload;

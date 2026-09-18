@@ -1,3 +1,5 @@
+use codegraph::federation::{CrossCallers, Followed, ForeignSymbol, GraphSet};
+
 use super::{
     CodeGraph,
     HashSet,
@@ -154,6 +156,22 @@ pub(crate) fn cmd_call_graph(
                 }),
             )
             .map_err(|e| e.to_string())?;
+        // A path naming a dependency or a linked project
+        // (`serde_json::from_str`) is answered from that graph.
+        let fed = super::federated::reader();
+        if !matches
+            .iter()
+            .any(|m| is_exact_symbol_match(&m.node.name, symbol))
+        {
+            if let Some(fed) = &fed {
+                let foreign = super::federated::foreign_symbols(fed, &project_path, symbol);
+                if !foreign.is_empty() {
+                    print_foreign_calls(direction, fed, &project_path, &foreign, limit, json)?;
+                    cg.close();
+                    return Ok(());
+                }
+            }
+        }
         if matches.is_empty() {
             info(&format!("Symbol \"{symbol}\" not found"));
             cg.close();
@@ -214,8 +232,9 @@ pub(crate) fn cmd_call_graph(
             per_def.push((group, related));
         }
         // Callees in other graphs (dependency shards, linked projects),
-        // per definition — listed after the project's own.
-        let externals: Vec<Vec<codegraph::db::ExternalEdge>> = groups
+        // per definition, followed into those graphs — listed after the
+        // project's own.
+        let externals: Vec<Vec<Followed>> = groups
             .iter()
             .map(|group| {
                 if direction != CallDirection::Callees {
@@ -232,48 +251,66 @@ pub(crate) fn cmd_call_graph(
                     ) && seen.insert((edge.target_graph_key.clone(), edge.target_node_id.clone()))
                 });
                 edges.truncate(limit);
-                Ok(edges)
+                Ok(match &fed {
+                    Some(fed) => fed.follow_all(&edges),
+                    None => edges.iter().map(Followed::recorded).collect(),
+                })
             })
             .collect::<Result<_, String>>()?;
-        let graph_label = |key: &str| key.rsplit('/').next().unwrap_or(key).to_string();
-        let external_json = |edges: &[codegraph::db::ExternalEdge]| -> Vec<serde_json::Value> {
-            edges
+        // Callers in the other projects that use this code, per definition.
+        let others: Vec<Option<CrossCallers>> = groups
+            .iter()
+            .map(|group| {
+                let fed = fed
+                    .as_ref()
+                    .filter(|_| direction == CallDirection::Callers)?;
+                let targets: Vec<codegraph::Node> = chosen
+                    .iter()
+                    .filter(|node| group.node_ids.contains(&node.id))
+                    .cloned()
+                    .collect();
+                let cross = fed.callers_across(
+                    &super::federated::project_graph(&project_path),
+                    &targets,
+                    None,
+                    limit,
+                );
+                (!cross.is_empty()).then_some(cross)
+            })
+            .collect();
+        let external_json = |followed: &[Followed]| -> Vec<serde_json::Value> {
+            followed
                 .iter()
-                .map(|edge| {
-                    serde_json::json!({
-                        "graph": edge.target_graph_key,
-                        "graphKind": edge.target_graph_kind.as_str(),
-                        "name": edge.target_name,
-                        "qualifiedName": edge.target_qualified_name,
-                        "kind": edge.target_kind.as_str(),
-                        "filePath": edge.target_file_path,
-                        "startLine": edge.target_line,
-                    })
-                })
+                .map(super::federated::followed_json)
                 .collect()
         };
-        let print_external = |edges: &[codegraph::db::ExternalEdge], indent: &str| {
-            if edges.is_empty() {
+        let print_external = |followed: &[Followed], indent: &str| {
+            if followed.is_empty() {
                 return;
             }
             println!(
                 "{}",
-                bold(&format!("{indent}In other graphs ({}):", edges.len()))
+                bold(&format!("{indent}In other graphs ({}):", followed.len()))
             );
-            for edge in edges {
-                println!(
-                    "{indent}  {}{} {}",
-                    cyan(&format!("{:<12}", edge.target_kind.as_str())),
-                    white(&edge.target_qualified_name),
-                    dim(&format!(
-                        "{} {}:{}",
-                        graph_label(&edge.target_graph_key),
-                        edge.target_file_path,
-                        edge.target_line.unwrap_or_default()
-                    ))
-                );
+            for line in super::federated::followed_lines(followed, &format!("{indent}  ")) {
+                println!("{line}");
             }
             println!();
+        };
+        let add_others = |obj: &mut serde_json::Value, cross: &Option<CrossCallers>| {
+            if let Some(cross) = cross {
+                let (groups, skipped) = super::federated::cross_callers_json(cross);
+                obj["otherProjects"] = groups;
+                obj["skippedProjects"] = skipped;
+            }
+        };
+        let print_others = |cross: &Option<CrossCallers>| {
+            if let Some(cross) = cross {
+                super::federated::print_section(&super::federated::callers_text(
+                    cross,
+                    "Callers in other projects",
+                ));
+            }
         };
 
         let single = groups.len() == 1;
@@ -311,13 +348,19 @@ pub(crate) fn cmd_call_graph(
                         serde_json::Value::Array(external_json(external)),
                     );
                 }
+                if let Some(Some(cross)) = others.first() {
+                    let (groups, skipped) = super::federated::cross_callers_json(cross);
+                    obj.insert("otherProjects".to_string(), groups);
+                    obj.insert("skippedProjects".to_string(), skipped);
+                }
             } else {
                 // Multiple distinct definitions: nest edges under their def so
                 // attribution survives (a flat union cannot express it).
                 let defs: Vec<serde_json::Value> = per_def
                     .iter()
                     .zip(&externals)
-                    .map(|((group, related), external)| {
+                    .zip(&others)
+                    .map(|(((group, related), external), cross)| {
                         let mut def = serde_json::json!({
                             "definition": {
                                 "qualifiedName": group.qualified_name,
@@ -330,6 +373,7 @@ pub(crate) fn cmd_call_graph(
                         if !external.is_empty() {
                             def["external"] = serde_json::Value::Array(external_json(external));
                         }
+                        add_others(&mut def, cross);
                         def
                     })
                     .collect();
@@ -343,11 +387,13 @@ pub(crate) fn cmd_call_graph(
         } else if single {
             let related = per_def.first().map(|(_, r)| r.clone()).unwrap_or_default();
             let external = externals.first().cloned().unwrap_or_default();
-            if related.is_empty() && external.is_empty() {
+            let cross = others.first().cloned().flatten();
+            if related.is_empty() && external.is_empty() && cross.is_none() {
                 info(&format!("No {} found for \"{symbol}\"", direction.noun()));
             } else if related.is_empty() {
                 println!();
                 print_external(&external, "");
+                print_others(&cross);
             } else {
                 println!(
                     "{}",
@@ -368,6 +414,7 @@ pub(crate) fn cmd_call_graph(
                     println!();
                 }
                 print_external(&external, "");
+                print_others(&cross);
             }
             if let Some(note) = &filter_note {
                 println!("{}", dim(&format!("Note: {note}")));
@@ -383,7 +430,8 @@ pub(crate) fn cmd_call_graph(
                     groups.len()
                 ))
             );
-            for ((group, related), external) in per_def.iter().zip(&externals) {
+            for (((group, related), external), cross) in per_def.iter().zip(&externals).zip(&others)
+            {
                 let head_loc = if group.start_line != 0 {
                     format!(":{}", group.start_line)
                 } else {
@@ -415,6 +463,7 @@ pub(crate) fn cmd_call_graph(
                 }
                 println!();
                 print_external(external, "  ");
+                print_others(cross);
             }
             if let Some(note) = &filter_note {
                 println!("{}", dim(&format!("Note: {note}")));
@@ -429,4 +478,91 @@ pub(crate) fn cmd_call_graph(
         error_msg(&format!("{} failed: {msg}", direction.noun()));
         process::exit(1);
     }
+}
+
+/// Callers or callees of symbols that live in another graph: inside that
+/// graph, and (callers) in every project that uses it.
+fn print_foreign_calls(
+    direction: CallDirection,
+    fed: &GraphSet,
+    project_path: &std::path::Path,
+    foreign: &[ForeignSymbol],
+    limit: usize,
+    json: bool,
+) -> Result<(), String> {
+    let mut defs = Vec::new();
+    for found in foreign {
+        let traverser = found.graph.traverser();
+        let refs = match direction {
+            CallDirection::Callers => traverser.get_callers(&found.node.id, 1),
+            CallDirection::Callees => traverser.get_callees(&found.node.id, 1),
+        }
+        .map_err(|e| e.to_string())?;
+        let cross = (direction == CallDirection::Callers).then(|| {
+            fed.callers_across(
+                &found.graph.id,
+                std::slice::from_ref(&found.node),
+                Some(project_path),
+                limit,
+            )
+        });
+        if json {
+            let mut def = serde_json::json!({
+                "graph": found.graph.label,
+                "definition": {
+                    "qualifiedName": found.node.qualified_name,
+                    "kind": found.node.kind.as_str(),
+                    "filePath": found.graph.path_of(&found.node.file_path),
+                    "startLine": found.node.start_line,
+                },
+                direction.noun(): refs.iter().take(limit).map(|r| super::federated::node_json(&r.node)).collect::<Vec<_>>(),
+            });
+            if let Some(cross) = &cross {
+                let (groups, skipped) = super::federated::cross_callers_json(cross);
+                def["otherProjects"] = groups;
+                def["skippedProjects"] = skipped;
+            }
+            defs.push(def);
+            continue;
+        }
+        println!(
+            "{}",
+            bold(&format!(
+                "\n{} of {} ({}) in {} — {}:{} ({}):\n",
+                direction.heading(),
+                found.node.qualified_name,
+                found.node.kind.as_str(),
+                found.graph.label,
+                found.node.file_path,
+                found.node.start_line,
+                refs.len()
+            ))
+        );
+        for r in refs.iter().take(limit) {
+            println!(
+                "  {}{} {}",
+                cyan(&format!("{:<12}", r.node.kind.as_str())),
+                white(&r.node.name),
+                dim(&format!(
+                    "{} {}:{}",
+                    found.graph.label, r.node.file_path, r.node.start_line
+                ))
+            );
+        }
+        println!();
+        if let Some(cross) = &cross {
+            super::federated::print_section(&super::federated::callers_text(
+                cross,
+                &format!("Callers in projects using {}", found.graph.label),
+            ));
+        }
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "definitions": defs }))
+                .map_err(|e| e.to_string())?
+        );
+    }
+    Ok(())
 }

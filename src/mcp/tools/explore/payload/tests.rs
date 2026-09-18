@@ -31,6 +31,7 @@ fn adaptive_cap_applies_to_the_complete_serialized_payload() {
         additional_files,
         related_files: Vec::new(),
         related_windows: Vec::new(),
+        external: Vec::new(),
         literal_matches: &literals,
         trimmed: false,
         omissions: Vec::new(),
@@ -86,6 +87,7 @@ fn payload_input(
         additional_files: Vec::new(),
         related_files,
         related_windows,
+        external: Vec::new(),
         literal_matches: literals,
         trimmed: false,
         omissions: Vec::new(),
@@ -160,4 +162,39 @@ fn source_overshoot_is_shed_from_the_lowest_ranked_file_before_related_rows() {
         10,
         "rows had room reserved"
     );
+}
+
+fn external_row(index: usize) -> super::super::external::ExploreExternal {
+    super::super::external::ExploreExternal {
+        graph: "serde_json@1.0.150".to_string(),
+        symbol: format!("Deserializer::method_{index}"),
+        kind: "method",
+        file: "src/de.rs".to_string(),
+        line: Some(index as u32 + 10),
+        signature: Some(format!("(&mut self, v: {}) -> Result<()>", "T".repeat(30))),
+        from: "load".to_string(),
+        calls: 2,
+        unavailable: None,
+    }
+}
+
+#[test]
+fn external_rows_are_shed_before_related_rows_and_the_payload_fits() {
+    // No source to shed first: the rows are what must give.
+    let literals = LiteralContentMatches::default();
+    let rows = (0..4).map(related_row).collect::<Vec<_>>();
+    let mut input = payload_input(&literals, Vec::new(), rows.clone(), Vec::new(), 100_000);
+    input.external = (0..8).map(external_row).collect();
+    let full = explore_payload(input).unwrap();
+    assert_eq!(full["external"].as_array().unwrap().len(), 8);
+    let full_len = serde_json::to_string(&full).unwrap().len();
+
+    let mut input = payload_input(&literals, Vec::new(), rows, Vec::new(), full_len - 150);
+    input.external = (0..8).map(external_row).collect();
+    let payload = explore_payload(input).unwrap();
+    assert!(serde_json::to_string(&payload).unwrap().len() <= full_len - 150);
+    let external = payload["external"].as_array().unwrap().len();
+    assert!(external < 8, "{payload}");
+    assert_eq!(payload["relatedFiles"].as_array().unwrap().len(), 4);
+    assert_eq!(payload["trimmed"], true);
 }

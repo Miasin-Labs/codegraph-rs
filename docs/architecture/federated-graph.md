@@ -63,8 +63,10 @@ flowchart TB
    a project's unresolved references resolve into its dependency shards and
    linked projects' indexes; edges record the target graph; dependency
    signatures type call chains. See below.
-3. **Cross-shard queries**: `node`, `callers`, `callees`, `impact`, `explore`
-   follow edges into shards; a projects view; "who across my projects calls X".
+3. **Cross-shard queries** (done — `src/federation/`): `node`, `callers`,
+   `callees`, `impact`, `explore` follow edges into shards and linked
+   projects; a projects view (`codegraph_projects`, `search` over
+   `projects`); "who across my projects calls X". See below.
 4. **History join** (done — `src/history/atlas_join/`): session memory
    keyed to atlas projects and followed across their links. See below.
 
@@ -200,6 +202,111 @@ same registry but not yet resolved: `discover` keeps `crates` only and
 `external::rust` is the one resolver. A TypeScript/Go resolver plugs in as a
 sibling of `external/rust/` (imports → the package's exported symbols) with
 its ecosystem admitted in `graphs.rs`.
+
+## Cross-shard queries (phase 3)
+
+The graph tools answer across graphs from the edges phase 2 recorded; they
+never resolve anything themselves. `src/federation/` is the read layer both
+the MCP tools and the CLI use.
+
+```mermaid
+flowchart LR
+  Q["tool call<br/>callees · node · callers · impact · explore"] --> P[("this project's index<br/>edges + external_edges")]
+  Q --> GS["GraphSet (one per call)<br/>deadline · ≤16 open graphs, LRU · failures not retried"]
+  GS -- "follow: dependency key" --> SH[("shard<br/>mode=ro&amp;immutable=1")]
+  GS -- "follow: project key" --> LI[("linked project's index<br/>atlas::ro")]
+  GS -- "who uses graph G" --> USERS["registry users_of(G)<br/>atlas links_to(G): cargo_path_dep"]
+  USERS -- "≤16 projects" --> UI[("each user's index, read-only<br/>external_edges into G")]
+  SH -. "source window" .-> SRC["dependency source dir<br/>(never the network)"]
+```
+
+**Following an edge** (`GraphSet::follow`): a `dependency` key names a
+directory under `deps/` (`<ecosystem>/<one component>`, anything else is
+refused) opened through `ShardHandle::open_dir`; a `project` key is a
+canonical root whose index opens through `atlas::ro` when its schema is in
+the readable range. The target is looked up by `target_node_id`; when a
+rebuilt shard or re-indexed project no longer has that id, by qualified
+name + kind + file (the nearest to the recorded line), else the one item of
+that qualified name and kind in the graph. A missing shard or index, an
+unreadable one, or a spent budget yields `Target::Unavailable` — the row
+still shows the place the edge recorded, with "target not available (shard
+not built | project index missing | graph unreadable | out of time)".
+
+**The reverse direction** (`callers_across`, `impact_across`): the users of
+a graph are the registry's `users_of` for a dependency version (the shard's
+`meta.json` names it) and the atlas projects that link to a project by
+`cargo_path_dep`. Each is opened read-only and asked for its
+`external_edges` into the graph whose target is one of the items — by id,
+or by qualified name + kind + file for edges recorded before the target
+graph was rebuilt (`get_external_edges_into_targets`). A user whose index
+cannot hold the answer is skipped with a reason: no index, older than
+external edges (schema < 10), external resolution never ran (no
+`external_resolution` or resume mark and no edges), unreadable, out of
+time, over the project cap. A project whose last pass was cut short is
+read but marked incomplete. Callers are listed code before tests, then by
+file and line. Impact adds, per dependent project, its *entries* (symbols
+referencing anything in the blast radius — the symbol plus its in-graph
+dependents, ≤256) and their own dependents up to `depth - 1` inside that
+project, the crossing counting as one level.
+
+**A symbol that lives elsewhere** (`GraphSet::resolve_symbol`): a `::`
+path whose first segment is a crate the project reaches
+(`serde_json::from_str`, `linkscope::event_fields`) is looked up with phase
+2's path lookup — `crate::…` from the crate's library root, re-exports
+followed — else by name and qualified suffix; a bare name needs `graph`
+(`serde_json`, `serde_json@1.0.150`, a linked project's name). Only when
+the project itself has no such symbol.
+
+| Surface | Across graphs |
+|---|---|
+| `codegraph_callees` | "In other graphs": each external call edge followed (`- Connection::prepare (method) - rusqlite@0.40.1 src/lib.rs:781`); a foreign symbol's callees inside its graph |
+| `codegraph_callers` | "Callers in other projects", grouped by project, `Not read: <project> (<reason>)`; a foreign symbol's callers inside its graph and in every project using it |
+| `codegraph_impact` | "Across projects": per dependent project, entries + their dependents, capped (40 a project); a foreign symbol measured in its graph first |
+| `codegraph_node` | `external` rows (what the symbol references elsewhere, followed); a foreign match carries `graph`, an absolute `file`, its signature, a short source window (≤40 lines, `includeCode` ≤300) read from the dependency's source dir or the linked checkout, and this project's call sites as `callers` |
+| `codegraph_explore` | `external`: the ≤8 most-called targets of the shown files' symbols in other graphs (graph, symbol, place, signature, calling symbol, call count), room reserved from source, shed before related rows |
+| `codegraph_search` | `projects: "linked" \| "all" \| [names]`: the atlas's projects searched read-only (≤32 / ≤64 projects, never opened as session projects), one ranking, hits tagged with the project root |
+| `codegraph_projects` (opt-in) | the atlas's projects (name, root, languages, link counts), or one project's links either way, dependency counts (with a shard), and external edges per graph |
+| CLI `callers`/`callees`/`impact` | the same sections as text and in `--json` (`external[].graphLabel/unavailable`, `otherProjects`, `skippedProjects`); `node` goes through the MCP handler |
+
+**Session ledger.** A foreign definition's `file` is absolute, so the
+per-connection ledger records its lines under that path — a re-read comes
+back `alreadySent`, and a dependency's `src/lib.rs` is never mistaken for
+the project's own.
+
+**Bounds.** One `Deadline` per call (`CODEGRAPH_FEDERATION_DEADLINE_MS`,
+default 2.5 s): steps check it before opening a graph or reading a
+project, and a watchdog interrupts every connection it watches when it
+passes. ≤16 graphs open per call (LRU), ≤16 user projects read
+(`CODEGRAPH_FEDERATION_MAX_PROJECTS`), ≤400 edges read per project for
+callers (1,000 for impact), per-project caps on what is listed, and every
+text or payload inside the MCP output budget. `CODEGRAPH_FEDERATION=0`
+stops the tools following edges (the CLI then lists edges as recorded);
+the projects view and a scoped search still read the atlas. Every open is
+read-only and creates nothing (tests pin the shard store, the linked
+index and the dependency sources unchanged).
+
+Measured (2026-09, release build, scratch home; clean copies of
+codegraph-rs, `linkscope`, `unlace` and `iphonern` with their path
+dependencies pointing at each other; every direct dependency's shard built;
+the phase-2 pass run — unlace 221k references into 186 dependency graphs
+and 439 into linkscope, iphonern 1,159 + 46, codegraph-rs 8,241). MCP over
+stdio, the one text block the model reads, median of three calls, with
+following off → on:
+
+| Question | Answer | Size | Latency |
+|---|---|---|---|
+| callees `read_session` (codegraph-rs) | 10 in-project + 5 followed into rusqlite@0.40.1 / serde_json@1.0.150 | 1.2 KB | 5.6 → 7.3 ms |
+| node `serde_json::from_str` (codegraph-rs) | `src/de.rs:2709` of serde_json@1.0.150, its 6 lines from the registry source, 12 of 105 call sites here | 1.8 KB | 19 ms |
+| callers `serde_json::from_str` | 4 inside serde_json; 105 in codegraph-rs, 5 in iphonern; linkscope: none | 2.4 KB | 19 ms |
+| callers `event_fields` (linkscope) | 1 in-project; iphonern 3, unlace 14 | 1.7 KB | 3.4 → 5.7 ms |
+| impact `event_fields`, depth 2 (linkscope) | 3 in-project; 187 across — iphonern 3 in + 5, unlace 14 in + 26 listed (+139, tests last) | 2.4 KB | 1.8 → 8.9 ms |
+| node `linkscope::event_fields` (iphonern) | linkscope `src/trace.rs:160` window + 3 iphonern call sites | 1.2 KB | 12 ms |
+| explore "how does read_session read opencode sessions from sqlite" | 7 files of source + 8 `external` rows (rusqlite `Connection::prepare_cached` ×30 …, 1.7 KB) | 21.8 KB | 105 → 109 ms |
+| search `projects: "linked"` / `"all"` (iphonern) | 10 hits in linkscope / 3 hits over 4 projects | 3.3 / 1.2 KB | 5.5 / 100 ms |
+| projects `.` (codegraph-rs) | 268 dependencies (71 direct, 267 with a shard); edges into 34 graphs, tree-sitter@0.26.9 2,349 first | 1.8 KB | 11 ms |
+
+The CLI commands take 10–40 ms end to end. No file appeared in any other
+project's `.codegraph/` or in the shard store.
 
 ## History join (phase 4)
 

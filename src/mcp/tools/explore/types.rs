@@ -294,6 +294,9 @@ pub(in crate::mcp::tools::explore) struct ExplorePayload<'a> {
     pub additional_files: Vec<ExploreAdditionalFile>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub related_files: Vec<ExploreRelatedFile>,
+    /// What the answer's code calls in other graphs.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub external: Vec<super::external::ExploreExternal>,
     pub literal_matches: Vec<ExploreLiteralFile>,
     pub trimmed: bool,
     pub files_omitted: usize,

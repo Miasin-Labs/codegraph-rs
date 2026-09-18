@@ -1,10 +1,11 @@
 //! Administrative tool schemas.
 
-use serde_json::Map;
+use serde_json::{Map, Value};
 
 use super::super::output::{files_output_schema, status_output_schema};
+use super::super::projects::projects_output_schema;
 use super::super::schema::{InputSchema, ToolDefinition};
-use super::schema_builder::{project_path_property, prop, read_only_annotations};
+use super::schema_builder::{project_path_property, prop, prop_default, read_only_annotations};
 
 pub(in crate::mcp::tools::registry) fn push_status_tool(out: &mut Vec<ToolDefinition>) {
     // codegraph_status
@@ -77,4 +78,47 @@ pub(in crate::mcp::tools::registry) fn push_files_tool(out: &mut Vec<ToolDefinit
             annotations: read_only_annotations(),
         });
     }
+}
+
+pub(in crate::mcp::tools::registry) fn push_projects_tool(out: &mut Vec<ToolDefinition>) {
+    // codegraph_projects (opt-in)
+    let mut props = Map::new();
+    props.insert(
+        "project".into(),
+        prop(
+            "string",
+            "Show one project: its name, root path, or `.` for this one — its code links \
+             either way, dependencies, and the graphs its code calls into. Omit to list projects.",
+        ),
+    );
+    props.insert(
+        "query".into(),
+        prop(
+            "string",
+            "List only projects whose name or root contains this.",
+        ),
+    );
+    props.insert(
+        "limit".into(),
+        prop_default(
+            "number",
+            "Projects listed at most (default: 50)",
+            Value::from(50),
+        ),
+    );
+    out.push(ToolDefinition {
+        name: "codegraph_projects".into(),
+        description: "The indexed projects on this machine and how they connect: path \
+            dependencies and workspaces between them, each project's dependencies, and which \
+            dependencies and linked projects its code calls into. Use it to pick a projectPath \
+            or to see what else depends on this code."
+            .into(),
+        input_schema: InputSchema {
+            schema_type: "object".into(),
+            properties: props,
+            required: None,
+        },
+        output_schema: Some(projects_output_schema()),
+        annotations: read_only_annotations(),
+    });
 }

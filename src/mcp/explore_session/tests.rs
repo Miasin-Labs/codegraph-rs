@@ -218,3 +218,36 @@ fn shortened_source_is_not_recorded_as_sent() {
     let view = state.view_for(root.path());
     assert!(!range_already_sent(&view, root.path(), "a.rs", 1, 1));
 }
+
+/// A `node` match from another graph (a dependency's source) names its
+/// file absolutely: the ledger holds it under that path — so a re-read is
+/// `alreadySent` — and never as this project's same-named file.
+#[test]
+fn a_foreign_definition_is_held_under_its_absolute_path() {
+    let root = tempfile::tempdir().unwrap();
+    let dependency = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("lib.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    let foreign = dependency.path().join("lib.rs");
+    std::fs::write(&foreign, "pub fn from_str() {}\npub fn other() {}\n").unwrap();
+    let foreign = foreign.to_string_lossy().into_owned();
+    let mut state = ExploreSessionState::default();
+    state.record(
+        root.path(),
+        &ToolResult {
+            content: Vec::new(),
+            structured_content: Some(json!({
+                "kind": "node",
+                "matches": [{
+                    "name": "from_str", "kind": "function", "file": foreign,
+                    "line": 1, "endLine": 1, "graph": "dep@1.0.0",
+                    "code": "pub fn from_str() {}"
+                }]
+            })),
+            meta: None,
+            is_error: None,
+        },
+    );
+    let view = state.view_for(root.path());
+    assert!(range_already_sent(&view, root.path(), &foreign, 1, 1));
+    assert!(!range_already_sent(&view, root.path(), "lib.rs", 1, 1));
+}

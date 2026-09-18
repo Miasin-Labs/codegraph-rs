@@ -1,10 +1,11 @@
 //! Symbol lookup tool schemas.
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::super::output::{node_output_schema, search_output_schema};
 use super::super::schema::{InputSchema, ToolDefinition};
 use super::schema_builder::{
+    graph_property,
     project_path_property,
     prop,
     prop_array,
@@ -61,6 +62,19 @@ pub(in crate::mcp::tools::registry) fn push_search_tool(out: &mut Vec<ToolDefini
                  with its `project`. Use instead of repeating the call once per projectPath.",
             ),
         );
+        props.insert(
+            "projects".into(),
+            json!({
+                "description": "Search the projects this machine has indexed, read-only: \
+                    \"linked\" (this project and those it shares code with — path \
+                    dependencies, workspaces — either way), \"all\", or project names. Every \
+                    hit is tagged with its project's root (pass it as projectPath).",
+                "anyOf": [
+                    { "type": "string" },
+                    { "type": "array", "items": { "type": "string" } }
+                ]
+            }),
+        );
         out.push(ToolDefinition {
             name: "codegraph_search".into(),
             description: "Quick symbol search by name. Returns locations only (no code). Use codegraph_explore instead to get the actual source / understand an area in one call.".into(),
@@ -93,11 +107,14 @@ pub(in crate::mcp::tools::registry) fn push_callee_tools(out: &mut Vec<ToolDefin
                 Value::from(20),
             ),
         );
+        props.insert("graph".into(), graph_property());
         props.insert("projectPath".into(), project_path_property());
         out.push(ToolDefinition {
             name: "codegraph_callers".into(),
             description:
-                "List functions that call <symbol>. For the full flow, use codegraph_explore."
+                "List functions that call <symbol> — also in the other indexed projects that use \
+                 it (path-dependency dependents, or every project pinning a dependency). For the \
+                 full flow, use codegraph_explore."
                     .into(),
             input_schema: InputSchema {
                 schema_type: "object".into(),
@@ -127,11 +144,13 @@ pub(in crate::mcp::tools::registry) fn push_callee_tools(out: &mut Vec<ToolDefin
                 Value::from(20),
             ),
         );
+        props.insert("graph".into(), graph_property());
         props.insert("projectPath".into(), project_path_property());
         out.push(ToolDefinition {
             name: "codegraph_callees".into(),
             description:
-                "List functions that <symbol> calls. For the full flow, use codegraph_explore."
+                "List functions that <symbol> calls, including into dependencies and linked \
+                 projects. For the full flow, use codegraph_explore."
                     .into(),
             input_schema: InputSchema {
                 schema_type: "object".into(),
@@ -159,10 +178,12 @@ pub(in crate::mcp::tools::registry) fn push_impact_tool(out: &mut Vec<ToolDefini
                 Value::from(2),
             ),
         );
+        props.insert("graph".into(), graph_property());
         props.insert("projectPath".into(), project_path_property());
         out.push(ToolDefinition {
             name: "codegraph_impact".into(),
-            description: "List symbols affected by changing <symbol>. Use before a refactor."
+            description: "List symbols affected by changing <symbol>, including in the other \
+                indexed projects that depend on it. Use before a refactor."
                 .into(),
             input_schema: InputSchema {
                 schema_type: "object".into(),
@@ -234,10 +255,11 @@ pub(in crate::mcp::tools::registry) fn push_node_tool(out: &mut Vec<ToolDefiniti
                 "Optional: disambiguate to the definition at/around this line (use with the file:line a trail showed you).",
             ),
         );
+        props.insert("graph".into(), graph_property());
         props.insert("projectPath".into(), project_path_property());
         out.push(ToolDefinition {
             name: "codegraph_node".into(),
-            description: "Two modes: read an indexed file with line numbers and dependents by passing `file`, or inspect one symbol with source and its caller/callee trail by passing `symbol`. Use codegraph_explore for several related symbols or the full flow.".into(),
+            description: "Two modes: read an indexed file with line numbers and dependents by passing `file`, or inspect one symbol with source and its caller/callee trail by passing `symbol` (a dependency's or linked project's symbol, e.g. `serde_json::from_str`, is read from there). Use codegraph_explore for several related symbols or the full flow.".into(),
             input_schema: InputSchema {
                 schema_type: "object".into(),
                 properties: props,

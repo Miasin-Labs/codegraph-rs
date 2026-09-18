@@ -22,7 +22,7 @@ pub(in crate::mcp::tools) use notices::{
     notice_outputs,
     notices_schema,
 };
-pub(in crate::mcp::tools) use rows::{SymbolRef, SymbolRow};
+pub(in crate::mcp::tools) use rows::{SymbolRef, SymbolRow, compact_signature};
 use rows::{symbol_ref_schema, symbol_row_properties, symbol_row_required};
 
 fn is_false(value: &bool) -> bool {
@@ -149,6 +149,17 @@ pub(in crate::mcp::tools) struct NodeDetailOutput {
     pub callees: Vec<SymbolRef>,
     #[serde(skip_serializing_if = "is_zero")]
     pub callees_omitted: usize,
+    /// The graph this definition lives in when it is not this project's —
+    /// a dependency (`serde_json@1.0.150`) or a linked project — in which
+    /// case `file` is absolute and `callers` are this project's call sites.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph: Option<String>,
+    /// What the definition references in other graphs (dependencies,
+    /// linked projects), followed into them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub external: Vec<ExternalRef>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub external_omitted: usize,
 }
 
 impl NodeDetailOutput {
@@ -165,8 +176,46 @@ impl NodeDetailOutput {
             callers_omitted: 0,
             callees: Vec::new(),
             callees_omitted: 0,
+            graph: None,
+            external: Vec::new(),
+            external_omitted: 0,
         }
     }
+}
+
+/// An item of another graph a symbol references: where it is in that
+/// graph (`file` relative to the graph's root).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::mcp::tools) struct ExternalRef {
+    /// Its qualified name there (`Connection::open`).
+    pub name: String,
+    pub kind: &'static str,
+    /// `serde_json@1.0.150`, or a linked project's name.
+    pub graph: String,
+    pub file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    /// Why the target could not be read in its graph (the location is the
+    /// one recorded when the edge was resolved).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+}
+
+pub(in crate::mcp::tools) fn external_ref_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "name": { "type": "string" },
+            "kind": { "type": "string" },
+            "graph": { "type": "string" },
+            "file": { "type": "string" },
+            "line": { "type": "integer" },
+            "unavailable": { "type": "string" }
+        },
+        "required": ["name", "kind", "graph", "file"]
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -560,6 +609,12 @@ fn node_symbol_output_schema() -> Value {
             json!({ "type": "array", "items": symbol_ref_schema() }),
         ),
         ("calleesOmitted", json!({ "type": "integer" })),
+        ("graph", json!({ "type": "string" })),
+        (
+            "external",
+            json!({ "type": "array", "items": external_ref_schema() }),
+        ),
+        ("externalOmitted", json!({ "type": "integer" })),
     ] {
         detail.insert(name.into(), schema);
     }
@@ -689,6 +744,7 @@ pub(in crate::mcp::tools) fn explore_output_schema() -> Value {
             "relationships": { "type": "array", "items": relationship_schema() },
             "additionalFiles": { "type": "array", "items": additional_file_schema() },
             "relatedFiles": { "type": "array", "items": related_file_schema() },
+            "external": { "type": "array", "items": explore_external_schema() },
             "literalMatches": { "type": "array", "items": literal_file_match_schema() },
             "trimmed": { "type": "boolean" },
             "filesOmitted": { "type": "integer" },
@@ -727,6 +783,13 @@ pub(in crate::mcp::tools) fn success_or_error(success: Value) -> Value {
     // declaring the root `type: object` alongside the discriminated `oneOf`
     // keeps the success/error union while satisfying the validator.
     json!({ "type": "object", "oneOf": [success, error_output_schema()] })
+}
+
+/// [`success_or_error`] for a tool with several success shapes (each with
+/// its own `kind`).
+pub(in crate::mcp::tools) fn successes_or_error(mut successes: Vec<Value>) -> Value {
+    successes.push(error_output_schema());
+    json!({ "type": "object", "oneOf": successes })
 }
 
 fn error_output_schema() -> Value {
@@ -833,6 +896,27 @@ fn related_file_schema() -> Value {
             "line": { "type": "integer" }
         },
         "required": ["path", "reason"]
+    })
+}
+
+/// A target in another graph (a dependency, a linked project) the answer's
+/// code calls.
+fn explore_external_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "graph": { "type": "string" },
+            "symbol": { "type": "string" },
+            "kind": { "type": "string" },
+            "file": { "type": "string" },
+            "line": { "type": "integer" },
+            "signature": { "type": "string" },
+            "from": { "type": "string" },
+            "calls": { "type": "integer" },
+            "unavailable": { "type": "string" }
+        },
+        "required": ["graph", "symbol", "kind", "file", "from"]
     })
 }
 

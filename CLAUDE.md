@@ -56,8 +56,8 @@ cargo test --workspace
   status, files, history, tests, diagnostics, grep`), listed on every project
   regardless of size — there is no small-repo gating. `arch, xref, paths` are
   opt-in through the `CODEGRAPH_MCP_TOOLS` allowlist (comma-separated short
-  names), as is `recall` (cross-session memory, opt-in until measured), for 16
-  in all. `diagnostics` (`src/diagnostics/`) is the one tool
+  names), as are `recall` (cross-session memory, opt-in until measured) and
+  `projects` (the atlas's projects, links and dependencies), for 17 in all. `diagnostics` (`src/diagnostics/`) is the one tool
   that is not read-only: it runs `cargo check|clippy --offline` or the
   project's own `node_modules/.bin/tsc`, detached with output under
   `.codegraph/diagnostics/`, waits at most `wait` seconds, and a later call
@@ -381,8 +381,50 @@ external pass only reads `unresolved_refs`, and the in-project contexts'
   graph in memory must answer `get_nodes_by_name_and_kind` without copying
   every same-named node (`fmt` names thousands of methods; this was 2/3 of
   the pass before), and a wrapping context must delegate it.
-- **Surfaces**: `codegraph callees` lists callees "In other graphs" (JSON
-  `external`); following edges in MCP tools is phase 3.
+- **Surfaces**: the graph tools follow these edges (phase 3, below).
+
+## Cross-graph queries (federation phase 3)
+
+`src/federation/` (contract + measurements: `docs/architecture/federated-graph.md`)
+is the read side of phase 2, shared by the MCP tools and the CLI; it never
+resolves. One `GraphSet` per call opens other graphs read-only and creating
+nothing (shards `ShardHandle::open_dir`, a dependency key must be
+`<ecosystem>/<one dir>`; project indexes through `atlas::ro` in the readable
+schema range), ≤16 at a time (LRU), failures not retried, under one
+`Deadline` (`CODEGRAPH_FEDERATION_DEADLINE_MS`, 2.5 s; a watchdog interrupts
+watched connections, steps check `expired()` first).
+
+- **Follow** (`follow`): target by `target_node_id`, else qualified name +
+  kind + file (nearest line), else the unique qualified name + kind; a
+  missing/unreadable graph or spent budget is `Target::Unavailable`, shown
+  as "target not available (…)" with the recorded place — never an error.
+- **Reverse** (`callers_across`/`impact_across`): users = registry
+  `users_of` (dependency version) or atlas `links_to` by `cargo_path_dep`
+  (project); each user's index is read-only and asked for
+  `get_external_edges_into_targets` (id, or qname+kind+file for pre-rebuild
+  edges). ≤16 users (`CODEGRAPH_FEDERATION_MAX_PROJECTS`), ≤400/1,000 edges
+  each, per-project caps; users that can't answer are *skipped with a
+  reason* (no index, schema < 10, external pass never ran, unreadable, out of
+  time, cap). Lists put code before tests (`users::is_test`).
+- **Foreign symbols** (`resolve_symbol`): `serde_json::from_str` (first
+  segment = a crate the project reaches) via phase 2's `lookup_path`, or a
+  bare name + `graph` hint (crate, `name@version`, linked project name) —
+  only when the project has no such symbol. Tools take `graph` for this.
+- **Tools**: callees "In other graphs"; callers/impact sections for the
+  projects using the code; node `external` rows and, for a foreign match,
+  `graph` + ABSOLUTE `file` (so the session ledger records the dependency's
+  lines under their own path — never as a same-named project file) + a
+  short window from the dependency's source dir / linked checkout + this
+  project's call sites as `callers`; explore `external` (≤8 rows, reserved
+  from source, shed before related rows); search `projects: "linked" |
+  "all" | [names]` (read-only fan-out, never `get_code_graph`, which opens
+  and caches session projects); opt-in `codegraph_projects`. CLI
+  `callers/callees/impact` print the same sections (shared renderers in
+  `federation::render`) and `--json` `otherProjects`/`skippedProjects`.
+- `CODEGRAPH_FEDERATION=0` stops tools following edges (CLI lists them as
+  recorded); tests inject `ToolHandler::set_federation_options` instead of
+  env. Fixture: `tests/federation/fixture.rs`; tests:
+  `tests/federation_query_test.rs`.
 
 ## Atlas (federated project graph, phase 1)
 

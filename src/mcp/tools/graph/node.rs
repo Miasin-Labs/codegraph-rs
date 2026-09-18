@@ -12,16 +12,19 @@ use super::super::context::notices::stale_slice_notice;
 use super::super::format::{is_container_node_kind, mcp_output_budget, number_source_lines};
 use super::super::output::{NodeDetailOutput, NodeOutput, SymbolRef, SymbolRow, fit_node_payload};
 use super::super::schema::ToolResult;
+use super::federated::graph_arg;
 use super::node_file::FileViewRequest;
+use super::node_foreign::attach_external;
 use crate::codegraph::CodeGraph;
 use crate::error::Result;
 use crate::extraction::is_value_sensitive_language;
+use crate::federation::GraphSet;
 use crate::mcp::explore_session::{ProjectState, SESSION_ARG, range_already_sent};
 use crate::types::{Node, NodeRef};
 use crate::utils::resolve_existing_path_within_root_real;
 
 /// Callers/callees listed per definition; the rest are counted.
-const TRAIL_CAP: usize = 12;
+pub(super) const TRAIL_CAP: usize = 12;
 
 /// One rendered definition: its text section, its structured detail, and the
 /// file it came from when that file changed on disk since indexing.
@@ -88,8 +91,26 @@ impl ToolHandler {
             Err(r) => return Ok(r),
         };
 
-        let mut matches = self.find_symbol_matches(&cg, &symbol)?;
+        let graph = graph_arg(args);
+        let fed = self.federation();
+        let mut matches = match graph {
+            Some(_) => Vec::new(),
+            None => self.find_symbol_matches(&cg, &symbol)?,
+        };
         if matches.is_empty() {
+            // A symbol of a dependency or a linked project, read from there.
+            if let Some(fed) = &fed {
+                let foreign = self.foreign_symbols(fed, &cg, &symbol, graph.as_deref());
+                if !foreign.is_empty() {
+                    return self.foreign_node_result(
+                        fed,
+                        &cg,
+                        &foreign,
+                        include_code,
+                        prior.as_ref(),
+                    );
+                }
+            }
             return self.node_result(
                 &format!("Symbol not found: `{symbol}`"),
                 NodeOutput::new(0, false, Vec::new()),
@@ -105,8 +126,13 @@ impl ToolHandler {
 
         // Single definition — the common case.
         if matches.len() == 1 {
-            let rendered =
-                self.render_node_detail(&cg, &matches[0], include_code, prior.as_ref())?;
+            let rendered = self.render_node_detail(
+                &cg,
+                &matches[0],
+                include_code,
+                prior.as_ref(),
+                fed.as_ref(),
+            )?;
             let stale: Vec<String> = rendered.stale_file.into_iter().collect();
             return self.node_result(
                 &self.truncate_output(&rendered.text),
@@ -145,7 +171,8 @@ impl ToolHandler {
         let mut details: Vec<NodeDetailOutput> = Vec::new();
         let mut stale_files: Vec<String> = Vec::new();
         for node in matches.iter().take(HARD_CAP) {
-            let rendered = self.render_node_detail(&cg, node, true, prior.as_ref())?;
+            let rendered =
+                self.render_node_detail(&cg, node, true, prior.as_ref(), fed.as_ref())?;
             sections.push(rendered.text);
             details.push(rendered.detail);
             stale_files.extend(rendered.stale_file);
@@ -184,7 +211,7 @@ impl ToolHandler {
     }
 
     /// A symbol-mode result bounded to the MCP output budget.
-    fn node_result(
+    pub(super) fn node_result(
         &self,
         text: &str,
         output: NodeOutput,
@@ -205,10 +232,11 @@ impl ToolHandler {
         node: &Node,
         include_code: bool,
         prior: Option<&ProjectState>,
+        fed: Option<&GraphSet>,
     ) -> Result<RenderedDetail> {
         let stale_source = current_source_if_stale(cg, &node.file_path);
         if let Some(source) = stale_source {
-            return self.render_stale_node_detail(cg, node, include_code, source, prior);
+            return self.render_stale_node_detail(cg, node, include_code, source, prior, fed);
         }
         let mut code: Option<String> = None;
         let mut outline: Option<String> = None;
@@ -242,6 +270,9 @@ impl ToolHandler {
         detail.already_sent = already_sent;
         detail.outline = outline;
         attach_trail(&mut detail, &callers, &callees);
+        if let Some(fed) = fed {
+            text.push_str(&attach_external(fed, cg, node, &mut detail)?);
+        }
         Ok(RenderedDetail {
             text,
             detail,
@@ -256,6 +287,7 @@ impl ToolHandler {
         include_code: bool,
         source: String,
         prior: Option<&ProjectState>,
+        fed: Option<&GraphSet>,
     ) -> Result<RenderedDetail> {
         const MAX_LINES: usize = 300;
         const MAX_CHARS: usize = 12_000;
@@ -305,6 +337,9 @@ impl ToolHandler {
         detail.code = code;
         detail.already_sent = already_sent;
         attach_trail(&mut detail, &callers, &callees);
+        if let Some(fed) = fed {
+            lines.push(attach_external(fed, cg, node, &mut detail)?);
+        }
         Ok(RenderedDetail {
             text: lines.join("\n"),
             detail,
@@ -432,7 +467,7 @@ fn definition_line(node: &Node) -> String {
 
 /// Whether `code`, starting at `start` in `file`, went out earlier in this
 /// session and the file is unchanged since.
-fn was_sent(
+pub(super) fn was_sent(
     cg: &CodeGraph,
     prior: Option<&ProjectState>,
     file: &str,
@@ -449,7 +484,7 @@ fn was_sent(
     range_already_sent(prior, cg.get_project_root(), file, start, end)
 }
 
-fn already_sent_note(file: &str) -> String {
+pub(super) fn already_sent_note(file: &str) -> String {
     format!(
         "\n\n> The source of this definition was already sent earlier in this conversation and \
          `{file}` is unchanged on disk since; it is not repeated."
