@@ -42,6 +42,10 @@ pub(in crate::mcp::tools) struct SearchHitOutput {
     pub score: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub highlights: Option<Vec<String>>,
+    /// Which of a batch query's names this hit answered. Absent for a single
+    /// query, where it would repeat `query`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_query: Option<String>,
 }
 
 impl From<&SearchResult> for SearchHitOutput {
@@ -50,6 +54,7 @@ impl From<&SearchResult> for SearchHitOutput {
             node: NodeSummary::from(&result.node),
             score: result.score,
             highlights: result.highlights.clone(),
+            matched_query: None,
         }
     }
 }
@@ -60,6 +65,9 @@ pub(in crate::mcp::tools) struct SearchOutput {
     pub schema_version: u32,
     pub kind: &'static str,
     pub query: String,
+    /// Present when the caller passed several names in one call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queries: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter_kind: Option<String>,
     pub limit: usize,
@@ -78,10 +86,37 @@ impl SearchOutput {
             schema_version: 1,
             kind: "search",
             query,
+            queries: None,
             filter_kind,
             limit,
             total: results.len(),
             results: results.iter().map(SearchHitOutput::from).collect(),
+        }
+    }
+
+    /// One call, several names — agents otherwise emulate this with a regex
+    /// alternation through grep (82% of the greps in the mined sessions).
+    pub fn new_batch(
+        queries: Vec<String>,
+        filter_kind: Option<String>,
+        limit: usize,
+        hits: Vec<(String, SearchResult)>,
+    ) -> Self {
+        Self {
+            schema_version: 1,
+            kind: "search",
+            query: queries.join(", "),
+            queries: Some(queries),
+            filter_kind,
+            limit,
+            total: hits.len(),
+            results: hits
+                .iter()
+                .map(|(matched, result)| SearchHitOutput {
+                    matched_query: Some(matched.clone()),
+                    ..SearchHitOutput::from(result)
+                })
+                .collect(),
         }
     }
 }
@@ -420,6 +455,7 @@ pub(in crate::mcp::tools) fn search_output_schema() -> Value {
             "schemaVersion": { "type": "integer" },
             "kind": { "const": "search" },
             "query": { "type": "string" },
+            "queries": { "type": "array", "items": { "type": "string" } },
             "filterKind": { "type": "string" },
             "limit": { "type": "integer" },
             "total": { "type": "integer" },
@@ -676,7 +712,8 @@ fn search_hit_schema() -> Value {
         "properties": {
             "node": node_summary_schema(),
             "score": { "type": "number" },
-            "highlights": { "type": "array", "items": { "type": "string" } }
+            "highlights": { "type": "array", "items": { "type": "string" } },
+            "matchedQuery": { "type": "string" }
         },
         "required": ["node", "score"]
     })

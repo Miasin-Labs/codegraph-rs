@@ -7,6 +7,7 @@ use super::super::schema::{InputSchema, ToolDefinition};
 use super::schema_builder::{
     project_path_property,
     prop,
+    prop_array,
     prop_default,
     prop_enum,
     read_only_annotations,
@@ -21,6 +22,14 @@ pub(in crate::mcp::tools::registry) fn push_search_tool(out: &mut Vec<ToolDefini
             prop(
                 "string",
                 "Symbol name or partial name (e.g., \"auth\", \"signIn\", \"UserService\")",
+            ),
+        );
+        props.insert(
+            "symbols".into(),
+            prop_array(
+                "More names to look up in the SAME call, alongside `query` (e.g. query \"parseToken\", \
+                 symbols [\"AuthService\", \"signIn\"]). Use this instead of a grep alternation \
+                 like `a|b|c`; results are grouped per name.",
             ),
         );
         props.insert(
@@ -167,6 +176,13 @@ pub(in crate::mcp::tools::registry) fn push_node_tool(out: &mut Vec<ToolDefiniti
             prop(
                 "string",
                 "Name of the symbol to read (symbol mode). Omit it and pass `file` alone to read a whole file.",
+            ),
+        );
+        props.insert(
+            "symbols".into(),
+            prop_array(
+                "More symbols to read in the SAME call, alongside `symbol` (up to 12). \
+                 One call instead of one per name; results are merged in order.",
             ),
         );
         props.insert(

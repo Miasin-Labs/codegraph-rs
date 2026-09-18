@@ -32,6 +32,9 @@ impl ToolHandler {
         &self,
         args: &Map<String, Value>,
     ) -> Result<ToolResult> {
+        if let Some(names) = super::node_batch::batch_symbols(args) {
+            return self.handle_node_batch(args, names);
+        }
         let cg = self.get_code_graph(args.get("projectPath").and_then(|v| v.as_str()))?;
         // Default to false to minimize context usage
         let include_code = args.get("includeCode") == Some(&Value::Bool(true));

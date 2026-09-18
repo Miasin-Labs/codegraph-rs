@@ -6,6 +6,7 @@ mod calls;
 mod flow;
 mod impact;
 mod node;
+mod node_batch;
 mod paths;
 mod relevance;
 mod search;

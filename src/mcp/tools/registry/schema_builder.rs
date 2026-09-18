@@ -58,6 +58,13 @@ pub(in crate::mcp::tools::registry) fn prop_enum(
     Value::Object(prop_enum_map(prop_type, description, enum_values))
 }
 
+/// A `string[]` property: the batch form of a name argument.
+pub(in crate::mcp::tools::registry) fn prop_array(description: &str) -> Value {
+    let mut m = prop_map("array", description);
+    m.insert("items".into(), serde_json::json!({ "type": "string" }));
+    Value::Object(m)
+}
+
 pub(in crate::mcp::tools::registry) fn prop_default(
     prop_type: &str,
     description: &str,

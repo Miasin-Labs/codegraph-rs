@@ -6,6 +6,9 @@ fn assert_path_before(text: &str, first: &str, second: &str) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn search_node_and_explore_rank_header_generated_collisions_last_without_hiding_them() {
+    // The allowlist tests narrow CODEGRAPH_MCP_TOOLS under the write lock; hold
+    // the read side so this test never runs with search/node disabled.
+    let _env = env_read().await;
     let dir = TempDir::new().unwrap();
     write(
         &dir.path().join("payroll.go"),
