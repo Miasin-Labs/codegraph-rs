@@ -223,6 +223,12 @@ pub(crate) fn cmd_status(path_arg: Option<&str>, json: bool) {
             print_pending_paths("Modified", &changes.modified);
             print_pending_paths("Removed", &changes.removed);
             info("Run \"codegraph sync\" to update the index");
+        } else if cg.is_index_stale().unwrap_or(false) {
+            // Unchanged files keep an older extractor's output until a full
+            // re-extraction, so "no pending changes" is not "up to date".
+            warn(
+                "Index was built by an older extractor — run \"codegraph index\" to re-extract (fixes apply only after a re-extraction)",
+            );
         } else {
             success("Index is up to date");
         }

@@ -181,6 +181,11 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
 
         let cg =
             CodeGraph::open(&project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
+        // An index built by an older extractor keeps its old nodes/edges for
+        // every unchanged file (the content hash matches), so extractor fixes
+        // never reach them. Rebuild from scratch, as `--force` would.
+        let stale = !force && cg.is_index_stale().unwrap_or(false);
+        let force = force || stale;
 
         if quiet {
             // Quiet mode: no UI, just run
@@ -202,7 +207,11 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
 
         if force {
             cg.clear().map_err(|e| e.to_string())?;
-            clack_log_info("Cleared existing index");
+            if stale {
+                clack_log_info("Index was built by an older extractor — re-extracting every file");
+            } else {
+                clack_log_info("Cleared existing index");
+            }
         }
 
         let result = run_index_all(&cg, verbose)

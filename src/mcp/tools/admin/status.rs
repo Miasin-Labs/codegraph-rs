@@ -41,6 +41,14 @@ impl ToolHandler {
             ));
             lines.push(String::new());
         }
+        if cg.is_index_stale().unwrap_or(false) {
+            lines.push(
+                "Notice: this index was built by an older extractor. Unchanged files keep \
+                 its output (missing or wrong edges) until the user runs `codegraph index`."
+                    .to_string(),
+            );
+            lines.push(String::new());
+        }
         lines.push(format!("Files indexed: {}", stats.file_count));
         lines.push(format!("Total nodes: {}", stats.node_count));
         lines.push(format!("Total edges: {}", stats.edge_count));

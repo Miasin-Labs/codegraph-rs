@@ -388,3 +388,46 @@ async fn daemon_lists_registry_records_and_cleans_an_invalid_project_lock() {
     assert_eq!(results[0]["outcome"], "no-daemon");
     assert!(!lock_path.exists());
 }
+
+/// An index from an older extractor is not "up to date": status says so, and
+/// `codegraph index` re-extracts every file instead of skipping unchanged ones.
+#[tokio::test(flavor = "current_thread")]
+async fn stale_extractor_index_is_reported_and_rebuilt() {
+    let (_temp, root, registry) = fixture().await;
+    sql(
+        &root,
+        "UPDATE project_metadata SET value = '1' WHERE key = 'indexed_with_extraction_version';",
+    );
+
+    let status = run_cli(&root, &registry, &["status"]);
+    let text = format!(
+        "{}{}",
+        stdout(&status),
+        String::from_utf8_lossy(&status.stderr)
+    );
+    assert!(
+        text.contains("older extractor"),
+        "stale index not reported: {text}"
+    );
+
+    let index = run_cli(&root, &registry, &["index"]);
+    assert!(
+        index.status.success(),
+        "index failed: {}",
+        String::from_utf8_lossy(&index.stderr)
+    );
+    let rebuilt = format!(
+        "{}{}",
+        stdout(&index),
+        String::from_utf8_lossy(&index.stderr)
+    );
+    assert!(rebuilt.contains("re-extracting every file"), "{rebuilt}");
+
+    let after = run_cli(&root, &registry, &["status"]);
+    let after_text = format!(
+        "{}{}",
+        stdout(&after),
+        String::from_utf8_lossy(&after.stderr)
+    );
+    assert!(after_text.contains("up to date"), "{after_text}");
+}
