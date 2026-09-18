@@ -4,19 +4,21 @@
 //!
 //! Every query is an indexed, `LIMIT`ed read; [`recall_at`] runs them on a
 //! read-only connection under a hard deadline (SQLite interrupt) and bounds
-//! the answer to [`RECALL_BUDGET`] bytes of JSON.
+//! the answer to [`RECALL_BUDGET`] bytes of JSON. With
+//! [`RecallRequest::related`], projects the atlas links to this one answer
+//! the same question, each labelled ([`crate::history::atlas_join`]).
 
 use std::path::Path;
-use std::sync::mpsc;
 use std::time::Duration;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use super::index_probe::IndexProbe;
 use super::queries::Queries;
 use super::report::{RECALL_BUDGET, RecallReport};
+use crate::history::atlas_join;
+use crate::history::deadline::{Deadline, is_interrupt};
 use crate::history::repo::RepoLocator;
-use crate::history::schema::CURRENT_VERSION;
 use crate::history::store::HistoryError;
 use crate::history::time::now_ms;
 
@@ -99,65 +101,85 @@ pub struct RecallRequest {
     pub since_ms: Option<i64>,
     /// Episodes (or rows) to return.
     pub limit: usize,
+    /// Also ask the projects the atlas links to this one (path
+    /// dependencies either way, clones of the same remote).
+    pub related: bool,
 }
 
 /// Recall from the store at `db_path` (opened read-only) about the
-/// repository containing `project_root`, within `deadline`.
+/// repository containing `project_root`, within `deadline`. Linked
+/// projects (`req.related`) come from the default atlas.
 pub fn recall_at(
     db_path: &Path,
     project_root: &Path,
     req: &RecallRequest,
     deadline: Duration,
 ) -> Result<RecallReport, HistoryError> {
+    let atlas = req.related.then(crate::atlas::atlas_path);
+    recall_with_atlas(db_path, atlas.as_deref(), project_root, req, deadline)
+}
+
+/// [`recall_at`] with an explicit atlas (`None`: linked projects are not
+/// looked up). Every store is opened read-only and nothing is created.
+pub fn recall_with_atlas(
+    db_path: &Path,
+    atlas: Option<&Path>,
+    project_root: &Path,
+    req: &RecallRequest,
+    deadline: Duration,
+) -> Result<RecallReport, HistoryError> {
     let mut report = RecallReport::new(&req.about);
-    if !db_path.is_file() {
-        report.note = Some("no agent history recorded yet (run `codegraph history ingest`)".into());
+    let Some(conn) = atlas_join::open_history(db_path)? else {
+        report.note = Some(if db_path.is_file() {
+            "agent history is on an older schema; it is upgraded by the next ingest".into()
+        } else {
+            "no agent history recorded yet (run `codegraph history ingest`)".into()
+        });
         return Ok(report);
-    }
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let conn = Connection::open_with_flags(db_path, flags)?;
-    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version < CURRENT_VERSION {
-        report.note =
-            Some("agent history is on an older schema; it is upgraded by the next ingest".into());
-        return Ok(report);
-    }
+    };
     let Some(repo_root) = RepoLocator::new().repo_of_dir(project_root) else {
         report.note = Some("not inside a git repository".into());
         return Ok(report);
     };
     let probe = IndexProbe::open(&repo_root);
-    let interrupt = conn.get_interrupt_handle();
-    let (done, wait) = mpsc::channel::<()>();
-    let watchdog = std::thread::spawn(move || {
-        if wait.recv_timeout(deadline) == Err(mpsc::RecvTimeoutError::Timeout) {
-            interrupt.interrupt();
+    let deadline = Deadline::arm(&conn, deadline);
+    let now = now_ms();
+    let result = recall(&conn, &repo_root, probe.as_ref(), req, now).and_then(|mut found| {
+        if let (true, Some(atlas)) = (req.related, atlas) {
+            let ctx = atlas_join::RecallContext {
+                conn: &conn,
+                atlas,
+                project_root,
+                repo_root: &repo_root,
+                now,
+            };
+            atlas_join::add_related(&ctx, req, &mut found, &deadline)?;
         }
+        Ok(found)
     });
-    let result = recall(&conn, &repo_root, probe.as_ref(), req, now_ms());
-    let _ = done.send(());
-    let _ = watchdog.join();
     match result {
-        Ok(r) => Ok(r),
-        Err(rusqlite::Error::SqliteFailure(e, _))
-            if e.code == rusqlite::ErrorCode::OperationInterrupted =>
-        {
+        Ok(mut found) => {
+            found.fit(RECALL_BUDGET);
+            Ok(found)
+        }
+        Err(HistoryError::Sqlite(e)) if is_interrupt(&e) => {
             report.note = Some("recall timed out; narrow `about` or `since`".into());
             report.truncated = true;
             Ok(report)
         }
-        Err(e) => Err(e.into()),
+        Err(e) => Err(e),
     }
 }
 
-/// Run a recall on an open store connection.
+/// Run a recall on an open store connection (the caller fits the answer
+/// to its budget).
 pub(crate) fn recall(
     conn: &Connection,
     repo_root: &Path,
     probe: Option<&IndexProbe>,
     req: &RecallRequest,
     now: i64,
-) -> rusqlite::Result<RecallReport> {
+) -> Result<RecallReport, HistoryError> {
     let mut report = RecallReport::new(&req.about);
     let root_text = crate::history::redact(&repo_root.to_string_lossy()).0;
     let repo: Option<i64> = conn
@@ -211,6 +233,5 @@ pub(crate) fn recall(
             About::Last => "no episodes recorded".into(),
         });
     }
-    report.fit(RECALL_BUDGET);
     Ok(report)
 }

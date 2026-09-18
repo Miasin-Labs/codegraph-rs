@@ -14,7 +14,10 @@
 //! * **command profile** — the grep/cargo/git chains the user actually runs;
 //! * **cross-session memory** ([`memory`]) — what earlier sessions in a
 //!   repository explored, looked up, broke and fixed: `codegraph history
-//!   recall`, MCP `codegraph_recall`, and the prompt hook's session digest.
+//!   recall`, MCP `codegraph_recall`, and the prompt hook's session digest;
+//! * **per atlas project** ([`atlas_join`]) — that memory keyed to the
+//!   atlas's projects and followed across their links: `codegraph projects
+//!   list|show`, `recall --related`.
 //!
 //! Pipeline: a [`ToolCallSource`] / [`EventSource`] adapter (one per agent, see
 //! [`sources`]) reads the agent's native store and emits one [`RawToolCall`] per
@@ -28,7 +31,9 @@
 #![forbid(unsafe_code)]
 
 mod activity;
+pub mod atlas_join;
 pub mod background;
+mod deadline;
 mod event;
 pub mod ingest;
 pub mod memory;

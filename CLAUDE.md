@@ -261,7 +261,32 @@ cargo test --workspace
   250 ms interrupt) and a ≤1 KB digest the prompt hook adds on a session's
   first prompt. Ingest is always a detached, budgeted `codegraph history
   ingest --incremental` (single-writer lock); the hook and MCP only ever read.
-  `CODEGRAPH_HISTORY=0` turns the digest and background ingest off.
+  `CODEGRAPH_HISTORY=0` turns the digest and background ingest off. Every
+  read path (`read_digest`, `last_ingest_ms`, `HistoryDb::open_read_only`,
+  recall, `IndexProbe` into a project's index) opens through `atlas::ro`, so
+  it never creates a `-wal`/`-shm` file.
+- **History × atlas join** (`src/history/atlas_join/`, federation phase 4):
+  the memory read per atlas project and across its links, read-only and
+  bounded (`history::deadline` interrupts; indexed, `LIMIT`ed queries in
+  `memory/queries.rs`). `HistoryScope` reconciles the keys: history folds a
+  worktree into its main checkout, the atlas has one row per checkout, so a
+  project reads every history repo recorded at its `repo_root`, its
+  `checkout_root`, or another registered checkout of the same repo (one
+  history repo → every atlas checkout of it), narrowed to a path prefix
+  when the project is nested in its checkout. Surfaces: `projects list`
+  (`lastActivityMs`, `sessions30d`; `--sort activity`, `--limit`),
+  `projects show` ("Recent agent activity" + one line per linked project),
+  `history recall --project <name|path> --related`, and MCP recall
+  `related` (groups labelled by project; a path means *this* project's
+  path, so a dependent answers with its sessions that touched it; related
+  rows are trimmed before the project's own to keep ≤2 KB). Linked = code
+  links either way (`cargo_path_dep`, workspace members, npm file/workspace,
+  `go_replace`) plus `same_remote`; never `nested_workspace`, never a
+  checkout of the same repo. The prompt digest gains at most ONE line
+  (code links only; ≤320 B; the block stays ≤1 KB by dropping its hot-files
+  line) naming linked projects with open failures or shared-code edits in
+  the last 7 days — no history read at all without code links, ~1 ms with
+  them on the real stores.
 
 ## Atlas (federated project graph, phase 1)
 
@@ -298,6 +323,9 @@ between them is the project's canonical root (`atlas::canonical_root`).
   *creates* those files). Exact node/edge `COUNT(*)` runs under an interrupt
   deadline and falls back to `files.node_count`/`sqlite_stat1` estimates
   (`countsExact: false`). Readers (`Atlas::open_read_only`) create nothing.
+- **Agent activity (phase 4).** `projects list|show` and `recall --related`
+  read `history.db` through the history × atlas join (see "History × atlas
+  join" above); the atlas itself stores no activity.
 - **Tests.** Every test that spawns the `codegraph` or MCP binary sets
   `CODEGRAPH_HOME` (under `CARGO_TARGET_TMPDIR`) so registrations never touch
   the developer's atlas; lib tests use explicit atlas paths (the

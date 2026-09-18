@@ -30,7 +30,9 @@ mod rollup;
 mod writer;
 
 pub use digest::{DIGEST_BUDGET, DigestRead, DigestStatus, last_ingest_ms, read_digest};
-pub use recall::{About, RecallRequest, recall_at};
+pub(crate) use index_probe::IndexProbe;
+pub(crate) use queries::Queries;
+pub use recall::{About, RecallRequest, recall_at, recall_with_atlas};
 pub use report::{
     EpisodeRow,
     FailureRow,
@@ -38,6 +40,7 @@ pub use report::{
     PairRow,
     RECALL_BUDGET,
     RecallReport,
+    RelatedRecall,
     SymbolRow,
 };
 pub(crate) use rollup::roll_up;

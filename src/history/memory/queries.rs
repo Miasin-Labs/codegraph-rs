@@ -47,11 +47,12 @@ impl Queries<'_> {
             .collect::<rusqlite::Result<_>>()?;
         let mut out = Vec::new();
         for (id, started, calls, outcome, source) in candidates {
-            let (files, more, edited) = self.episode_files(id, prefix)?;
+            let (files, more, edited) = self.episode_files(id, self.repo, prefix)?;
             if prefix.is_some() && files.is_empty() {
                 continue;
             }
             out.push(EpisodeRow {
+                started_ms: started,
                 ago: ago(started, self.now),
                 source,
                 calls,
@@ -67,11 +68,12 @@ impl Queries<'_> {
         Ok(out)
     }
 
-    /// Files an episode touched (under `prefix`): strongest op first, then
-    /// most touched; whether it edited anything at all.
+    /// Files of `file_repo` an episode touched (under `prefix`): strongest
+    /// op first, then most touched; whether it edited anything at all.
     fn episode_files(
         &self,
         episode: i64,
+        file_repo: i64,
         prefix: Option<&str>,
     ) -> rusqlite::Result<(Vec<FileTouch>, usize, bool)> {
         let (lo, hi) = prefix_range(prefix.unwrap_or(""));
@@ -82,7 +84,7 @@ impl Queries<'_> {
              ORDER BY t.op = 'e' DESC, t.op = 'r' DESC, t.n DESC, f.path",
         )?;
         let rows: Vec<(String, String, i64, Option<String>, Option<i64>, bool)> = stmt
-            .query_map(params![episode, self.repo], |r| {
+            .query_map(params![episode, file_repo], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,
@@ -107,7 +109,11 @@ impl Queries<'_> {
                 more += 1;
                 continue;
             }
-            let unchanged = self.unchanged(&path, fingerprint.as_deref(), last_ts);
+            let unchanged = if file_repo == self.repo {
+                self.unchanged(&path, fingerprint.as_deref(), last_ts)
+            } else {
+                None
+            };
             files.push(FileTouch {
                 path,
                 op: op_name(&op),
@@ -221,6 +227,7 @@ impl Queries<'_> {
                 })
                 .unwrap_or_default();
             episodes.push(EpisodeRow {
+                started_ms: started,
                 ago: ago(started, self.now),
                 source,
                 calls,
@@ -279,6 +286,7 @@ impl Queries<'_> {
             }
             out.push((
                 FailureRow {
+                    ts_ms: ts,
                     ago: ago(ts, self.now),
                     kind,
                     command: template,
@@ -338,21 +346,147 @@ impl Queries<'_> {
         rows
     }
 
-    /// Files touched in the most episodes since `since`.
-    pub(crate) fn hot_files(&self, limit: i64) -> rusqlite::Result<Vec<(String, i64)>> {
+    /// Files (under `prefix`) touched in the most episodes since `since`.
+    pub(crate) fn hot_files(
+        &self,
+        prefix: &str,
+        limit: i64,
+    ) -> rusqlite::Result<Vec<(String, i64)>> {
+        let (lo, hi) = bounded_range(prefix);
         let mut stmt = self.conn.prepare_cached(
             "SELECT f.path, COUNT(DISTINCT t.episode_id) AS eps
              FROM episodes e JOIN touches t ON t.episode_id = e.id JOIN files f ON f.id = t.file_id
              WHERE e.repo_id = ?1 AND e.started_at >= ?2 AND f.repo_id = ?1 AND t.op <> 's'
+               AND f.path >= ?4 AND f.path < ?5
              GROUP BY f.id ORDER BY eps DESC, f.path LIMIT ?3",
         )?;
         let rows = stmt
-            .query_map(params![self.repo, self.since, limit], |r| {
+            .query_map(params![self.repo, self.since, limit, lo, hi], |r| {
                 Ok((r.get(0)?, r.get(1)?))
             })?
             .collect();
         rows
     }
+
+    /// When anything last happened in this repository (under `prefix`):
+    /// its own episodes' last calls, and any session's touches of its
+    /// files (an agent in another checkout editing it counts).
+    pub(crate) fn last_activity(&self, prefix: &str) -> rusqlite::Result<Option<i64>> {
+        let (lo, hi) = bounded_range(prefix);
+        let touched: Option<i64> = self
+            .conn
+            .prepare_cached(
+                "SELECT MAX(t.last_ts) FROM files f JOIN touches t ON t.file_id = f.id
+                 WHERE f.repo_id = ?1 AND f.path >= ?2 AND f.path < ?3",
+            )?
+            .query_row(params![self.repo, lo, hi], |r| r.get(0))?;
+        if !prefix.is_empty() {
+            return Ok(touched);
+        }
+        let own: Option<i64> = self
+            .conn
+            .prepare_cached(
+                "SELECT MAX(COALESCE(ended_at, started_at)) FROM episodes
+                 WHERE repo_id = ?1 AND calls > 0",
+            )?
+            .query_row(params![self.repo], |r| r.get(0))?;
+        Ok(own.max(touched))
+    }
+
+    /// Root sessions since `since` with an episode in this repository or a
+    /// touch of its files (only the touches under a non-empty `prefix`).
+    pub(crate) fn sessions(&self, prefix: &str) -> rusqlite::Result<i64> {
+        let (lo, hi) = bounded_range(prefix);
+        let sql = if prefix.is_empty() {
+            "SELECT COUNT(*) FROM (
+                 SELECT session_id FROM episodes WHERE repo_id = ?1 AND started_at >= ?2 AND calls > 0
+                 UNION
+                 SELECT e.session_id FROM files f JOIN touches t ON t.file_id = f.id
+                 JOIN episodes e ON e.id = t.episode_id
+                 WHERE f.repo_id = ?1 AND f.path >= ?3 AND f.path < ?4 AND t.last_ts >= ?2)"
+        } else {
+            "SELECT COUNT(DISTINCT e.session_id) FROM files f JOIN touches t ON t.file_id = f.id
+             JOIN episodes e ON e.id = t.episode_id
+             WHERE f.repo_id = ?1 AND f.path >= ?3 AND f.path < ?4 AND t.last_ts >= ?2"
+        };
+        self.conn
+            .prepare_cached(sql)?
+            .query_row(params![self.repo, self.since, lo, hi], |r| r.get(0))
+    }
+
+    /// Latest edit since `since` of a file of this repository (under
+    /// `prefix`) — by any session, or only by sessions of `by_repo`.
+    pub(crate) fn last_edit(
+        &self,
+        prefix: &str,
+        by_repo: Option<i64>,
+    ) -> rusqlite::Result<Option<i64>> {
+        let (lo, hi) = bounded_range(prefix);
+        self.conn
+            .prepare_cached(
+                "SELECT MAX(t.last_ts) FROM files f JOIN touches t ON t.file_id = f.id
+                 JOIN episodes e ON e.id = t.episode_id
+                 WHERE f.repo_id = ?1 AND f.path >= ?2 AND f.path < ?3 AND t.op = 'e'
+                   AND t.last_ts >= ?4 AND (?5 IS NULL OR e.repo_id = ?5)",
+            )?
+            .query_row(params![self.repo, lo, hi, self.since, by_repo], |r| {
+                r.get(0)
+            })
+    }
+
+    /// Episodes of this repository that touched files of `file_repo` under
+    /// `prefix` (another checkout's sessions working on a shared crate),
+    /// newest first.
+    pub(crate) fn episodes_touching(
+        &self,
+        file_repo: i64,
+        prefix: &str,
+    ) -> rusqlite::Result<Vec<EpisodeRow>> {
+        let (lo, hi) = bounded_range(prefix);
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT e.id, MAX(e.started_at), MAX(e.calls), MAX(e.outcome), MAX(s.source)
+             FROM files f JOIN touches t ON t.file_id = f.id
+             JOIN episodes e ON e.id = t.episode_id JOIN sessions s ON s.id = e.session_id
+             WHERE f.repo_id = ?1 AND f.path >= ?2 AND f.path < ?3
+               AND e.repo_id = ?4 AND e.started_at >= ?5
+             GROUP BY e.id ORDER BY MAX(e.started_at) DESC LIMIT ?6",
+        )?;
+        let rows: Vec<(i64, i64, i64, Option<String>, String)> = stmt
+            .query_map(
+                params![file_repo, lo, hi, self.repo, self.since, self.limit],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )?
+            .collect::<rusqlite::Result<_>>()?;
+        let scope = (!prefix.is_empty()).then_some(prefix);
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, started, calls, outcome, source) in rows {
+            let (files, more, _) = self.episode_files(id, file_repo, scope)?;
+            let edited = self.edited(id)?;
+            out.push(EpisodeRow {
+                started_ms: started,
+                ago: ago(started, self.now),
+                source,
+                calls,
+                outcome: outcome
+                    .unwrap_or_else(|| if edited { "edited" } else { "explored" }.into()),
+                files,
+                more_files: more,
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// `[lo, hi)` bounds of paths starting with `prefix`, with a finite upper
+/// bound for the empty prefix (every path).
+fn bounded_range(prefix: &str) -> (String, String) {
+    let (lo, hi) = prefix_range(prefix);
+    let hi = if hi.is_empty() {
+        "\u{10ffff}".to_owned()
+    } else {
+        hi
+    };
+    (lo, hi)
 }
 
 /// `[lo, hi)` bounds of paths starting with `prefix` (`hi` empty = no bound).

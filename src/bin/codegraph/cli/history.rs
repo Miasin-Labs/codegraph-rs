@@ -72,9 +72,14 @@ pub(crate) enum HistoryCommands {
         /// Episodes (or rows) to show
         #[arg(short = 'l', long, value_name = "n", default_value = "3")]
         limit: usize,
-        /// Repository (default: the current directory's)
-        #[arg(short = 'p', long, value_name = "path")]
+        /// Project: a path, or a name registered in the atlas (`codegraph
+        /// projects`) (default: the current directory's repository)
+        #[arg(short = 'p', long, value_name = "name|path")]
         project: Option<String>,
+        /// Also recall from projects linked to it in the atlas (path
+        /// dependencies either way, clones of its remote), labelled by project
+        #[arg(long)]
+        related: bool,
         /// History DB path (default: $CODEGRAPH_HISTORY_DB or ~/.codegraph/history.db)
         #[arg(long, value_name = "path")]
         db: Option<String>,

@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::{fs, io};
 
-use rusqlite::{Connection, OpenFlags, Statement, named_params, params};
+use rusqlite::{Connection, Statement, named_params, params};
 
 use super::event::{RawToolCall, ToolEvent};
 use super::project::ProjectResolver;
@@ -21,6 +21,9 @@ pub enum HistoryError {
     Sqlite(#[from] rusqlite::Error),
     #[error("history I/O: {0}")]
     Io(#[from] io::Error),
+    /// Reading the atlas (linked projects) failed.
+    #[error("{0}")]
+    Atlas(#[from] crate::atlas::AtlasError),
 }
 
 /// Knobs for an ingest pass.
@@ -86,14 +89,13 @@ impl HistoryDb {
     }
 
     /// Open an existing store read-only. `Ok(None)` when there is no history
-    /// yet (no file, or no table); never creates or migrates anything.
+    /// yet (no file, or no table); never creates (not even SQLite's side
+    /// files) or migrates anything.
     pub fn open_read_only(path: &Path) -> Result<Option<Self>, HistoryError> {
         if !path.is_file() {
             return Ok(None);
         }
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let conn = Connection::open_with_flags(path, flags)?;
-        let _ = conn.busy_timeout(std::time::Duration::from_millis(500));
+        let conn = crate::atlas::ro::open_read_only(path, std::time::Duration::from_millis(500))?;
         let has_table: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tool_events')",
             [],

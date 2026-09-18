@@ -50,7 +50,7 @@ mod model;
 mod query;
 mod register;
 pub mod remote;
-mod ro;
+pub(crate) mod ro;
 pub mod scan;
 mod schema;
 mod store;

@@ -277,6 +277,7 @@ fn recall(f: &Fixture, about: &str) -> RecallReport {
         about: About::parse(about),
         since_ms: None,
         limit: 3,
+        related: false,
     };
     recall_at(&f.db, &f.repo, &req, Duration::from_secs(5)).unwrap()
 }
@@ -511,6 +512,7 @@ fn a_burst_of_submits_is_one_episode() {
 #[test]
 fn recall_fits_its_budget() {
     let row = |i: usize| EpisodeRow {
+        started_ms: 0,
         ago: format!("{i}d"),
         source: "claude-code".into(),
         calls: 100,
@@ -557,6 +559,7 @@ fn digest_is_built_bounded_and_read_back() {
     // However much there is, the digest stays within its budget.
     let episodes: Vec<EpisodeRow> = (0..3)
         .map(|i| EpisodeRow {
+            started_ms: 0,
             ago: "1h".into(),
             source: "opencode".into(),
             calls: 999,
@@ -586,9 +589,10 @@ fn the_hook_reads_the_digest_once_per_session_without_writing() {
     let before = std::fs::read(&f.db).unwrap();
     let mut refreshed = 0;
     let started = std::time::Instant::now();
-    let first = session_start_digest_at(&f.db, &f.repo.join("src"), Some("ses-1"), &mut |_| {
-        refreshed += 1
-    });
+    let first =
+        session_start_digest_at(&f.db, None, &f.repo.join("src"), Some("ses-1"), &mut |_| {
+            refreshed += 1
+        });
     let elapsed = started.elapsed();
     let block = first.expect("first prompt gets the digest");
     assert!(block.starts_with("<codegraph_history"));
@@ -598,16 +602,18 @@ fn the_hook_reads_the_digest_once_per_session_without_writing() {
         "hook path took {elapsed:?}"
     );
     assert_eq!(
-        session_start_digest_at(&f.db, &f.repo, Some("ses-1"), &mut |_| refreshed += 1),
+        session_start_digest_at(&f.db, None, &f.repo, Some("ses-1"), &mut |_| refreshed += 1),
         None,
         "later prompts of the session get nothing"
     );
     assert!(
-        session_start_digest_at(&f.db, &f.worktree, Some("ses-2"), &mut |_| refreshed += 1)
-            .is_some()
+        session_start_digest_at(&f.db, None, &f.worktree, Some("ses-2"), &mut |_| {
+            refreshed += 1
+        })
+        .is_some()
     );
     assert_eq!(
-        session_start_digest_at(&f.db, &f.repo, None, &mut |_| refreshed += 1),
+        session_start_digest_at(&f.db, None, &f.repo, None, &mut |_| refreshed += 1),
         None
     );
     assert_eq!(refreshed, 0, "a fresh store is not refreshed");
@@ -623,7 +629,7 @@ fn the_hook_never_ingests_inline() {
     let f = fixture();
     let mut refreshed = Vec::new();
     // No store: nothing to show, a background refresh asked for, nothing created.
-    let got = session_start_digest_at(&f.db, &f.repo, Some("s"), &mut |db| {
+    let got = session_start_digest_at(&f.db, None, &f.repo, Some("s"), &mut |db| {
         refreshed.push(db.to_path_buf())
     });
     assert_eq!(got, None);
@@ -636,7 +642,7 @@ fn the_hook_never_ingests_inline() {
         .unwrap();
     drop(conn);
     let before = std::fs::read(&f.db).unwrap();
-    let got = session_start_digest_at(&f.db, &f.repo, Some("s"), &mut |db| {
+    let got = session_start_digest_at(&f.db, None, &f.repo, Some("s"), &mut |db| {
         refreshed.push(db.to_path_buf())
     });
     assert_eq!(got, None);

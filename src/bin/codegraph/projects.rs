@@ -17,6 +17,8 @@ use codegraph::atlas::{
     ScanOptions,
     register_project,
 };
+use codegraph::history::atlas_join::ActivitySummary;
+use serde::Serialize;
 use serde_json::json;
 
 use super::{
@@ -32,6 +34,7 @@ use super::{
     warn,
 };
 
+mod activity;
 mod render;
 
 use render::{ago, human_bytes, languages_line, short_path, status_label};
@@ -48,8 +51,12 @@ pub(crate) fn register_after_write(root: &Path, quiet: bool) {
 }
 
 pub(crate) fn cmd_projects(command: Option<ProjectsCommands>, json: bool) {
-    let result = match command.unwrap_or(ProjectsCommands::List) {
-        ProjectsCommands::List => cmd_list(json),
+    let command = command.unwrap_or(ProjectsCommands::List {
+        sort: "name".into(),
+        limit: None,
+    });
+    let result = match command {
+        ProjectsCommands::List { sort, limit } => cmd_list(&sort, limit, json),
         ProjectsCommands::Show { project } => cmd_show(&project, json),
         ProjectsCommands::Links { project, all } => cmd_links(&project, all, json),
         ProjectsCommands::Scan {
@@ -115,7 +122,19 @@ fn resolve(atlas: &Atlas, arg: &str) -> Result<Project, String> {
     }
 }
 
-fn cmd_list(json: bool) -> CmdResult {
+/// A listed project with its agent activity (JSON).
+#[derive(Serialize)]
+struct Listed<'a> {
+    #[serde(flatten)]
+    project: &'a Project,
+    #[serde(flatten)]
+    activity: ActivitySummary,
+}
+
+fn cmd_list(sort: &str, limit: Option<usize>, json: bool) -> CmdResult {
+    if !matches!(sort, "name" | "activity") {
+        return Err(format!("Unknown sort \"{sort}\" (one of: name, activity)"));
+    }
     let Some(atlas) = read_atlas()? else {
         if json {
             return print_json(&json!({ "atlas": atlas::atlas_path(), "projects": [] }));
@@ -124,21 +143,40 @@ fn cmd_list(json: bool) -> CmdResult {
         return Ok(());
     };
     let projects = atlas.projects().map_err(|e| e.to_string())?;
-    if json {
-        return print_json(&json!({ "atlas": atlas::atlas_path(), "projects": projects }));
-    }
-    println!(
-        "{} projects in {}\n",
-        projects.len(),
-        short_path(&atlas::atlas_path())
-    );
-    let width = projects
+    let reader = activity::open_reader();
+    let (summaries, cut_short) = activity::summaries(reader.as_ref(), &atlas, &projects);
+    let mut rows: Vec<Listed<'_>> = projects
         .iter()
-        .map(|p| p.name.len())
+        .zip(summaries)
+        .map(|(project, activity)| Listed { project, activity })
+        .collect();
+    if sort == "activity" {
+        // Stable: projects without activity keep their name order.
+        rows.sort_by_key(|r| std::cmp::Reverse(r.activity.last_activity_ms));
+    }
+    let total = rows.len();
+    rows.truncate(limit.unwrap_or(usize::MAX));
+    if json {
+        let mut value = json!({ "atlas": atlas::atlas_path(), "projects": rows });
+        if cut_short {
+            value["activityIncomplete"] = json!(true);
+        }
+        return print_json(&value);
+    }
+    let shown = if rows.len() < total {
+        format!("{} of {total}", rows.len())
+    } else {
+        total.to_string()
+    };
+    println!("{shown} projects in {}\n", short_path(&atlas::atlas_path()));
+    let width = rows
+        .iter()
+        .map(|r| r.project.name.len())
         .max()
         .unwrap_or(0)
         .min(40);
-    for p in &projects {
+    for row in &rows {
+        let p = row.project;
         let counts = match (p.file_count, p.node_count) {
             (Some(files), Some(nodes)) => format!(
                 "{} files, {}{} nodes",
@@ -149,7 +187,7 @@ fn cmd_list(json: bool) -> CmdResult {
             _ => String::new(),
         };
         println!(
-            "  {:<width$}  {}  {}  {}  {}  {}",
+            "  {:<width$}  {}  {}  {}  {}  {}  {}",
             bold(&p.name),
             status_label(p.status),
             languages_line(&p.languages, 2),
@@ -158,6 +196,7 @@ fn cmd_list(json: bool) -> CmdResult {
             p.last_indexed_ms
                 .map(|t| format!("indexed {}", ago(t)))
                 .unwrap_or_default(),
+            activity::summary_label(&row.activity),
             width = width + 8,
         );
         let mut second = vec![short_path(&p.root)];
@@ -168,6 +207,9 @@ fn cmd_list(json: bool) -> CmdResult {
             });
         }
         println!("    {}", dim(&second.join("  ")));
+    }
+    if cut_short {
+        warn("Agent activity is incomplete: the history read hit its time bound");
     }
     Ok(())
 }
@@ -180,6 +222,11 @@ fn cmd_show(arg: &str, json: bool) -> CmdResult {
     let clones = atlas.clones_of(&project).map_err(err)?;
     let links_out = atlas.links_from(project.id).map_err(err)?;
     let links_in = atlas.links_to(project.id).map_err(err)?;
+    let reader = activity::open_reader();
+    let (own_activity, linked_activity) = match &reader {
+        Some(reader) => activity::project_activity(reader, &atlas, &project),
+        None => (None, Vec::new()),
+    };
     if json {
         return print_json(&json!({
             "project": project,
@@ -187,6 +234,8 @@ fn cmd_show(arg: &str, json: bool) -> CmdResult {
             "clones": clones,
             "linksOut": links_out,
             "linksIn": links_in,
+            "activity": own_activity,
+            "linkedActivity": linked_activity,
         }));
     }
     let names = project_names(&atlas)?;
@@ -223,6 +272,8 @@ fn cmd_show(arg: &str, json: bool) -> CmdResult {
     }
     print_links("links out", &links_out, &names, &project, false, false);
     print_links("links in", &links_in, &names, &project, true, false);
+    activity::print_activity(own_activity.as_ref(), reader.is_some());
+    activity::print_linked(&linked_activity);
     Ok(())
 }
 

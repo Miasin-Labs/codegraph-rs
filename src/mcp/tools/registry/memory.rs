@@ -31,14 +31,24 @@ pub(in crate::mcp::tools::registry) fn push_recall_tool(out: &mut Vec<ToolDefini
             Value::from(3),
         ),
     );
+    props.insert(
+        "related".into(),
+        prop_default(
+            "boolean",
+            "Also ask the projects linked to this one (path dependencies either way, clones of \
+             its remote); their matches come back grouped by project. For a path: their \
+             sessions that touched it.",
+            Value::from(false),
+        ),
+    );
     props.insert("projectPath".into(), project_path_property());
     out.push(ToolDefinition {
         name: "codegraph_recall".into(),
         description: "What earlier agent sessions in this repository already did: the episodes \
             that read or edited a path (and whether those files changed since), where a symbol \
             was found, recent build/test failures and whether a later run fixed them, and files \
-            edited together. Call it before re-exploring an area another session worked on. \
-            At most 2 KB."
+            edited together; with `related`, the same for linked projects. Call it before \
+            re-exploring an area another session worked on. At most 2 KB."
             .into(),
         input_schema: InputSchema {
             schema_type: "object".into(),

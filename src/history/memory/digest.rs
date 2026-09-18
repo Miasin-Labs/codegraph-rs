@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use super::index_probe::IndexProbe;
 use super::queries::Queries;
@@ -16,6 +16,9 @@ use crate::history::schema::CURRENT_VERSION;
 pub const DIGEST_BUDGET: usize = 1024;
 
 const DAY_MS: i64 = 86_400_000;
+
+/// How long a hook-time read waits on an ingest's checkpoint.
+const READ_BUSY: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Build the digest of `repo` (an ingest-time rollup). `None` when the
 /// repository has no episodes.
@@ -42,7 +45,7 @@ pub(crate) fn build(
         since: now - 30 * DAY_MS,
         ..base
     }
-    .hot_files(6)?;
+    .hot_files("", 6)?;
     let failures = Queries {
         since: now - 14 * DAY_MS,
         limit: 2,
@@ -170,13 +173,13 @@ pub struct DigestRead {
     pub last_run_ms: Option<i64>,
 }
 
-/// When the last ingest into the store at `db_path` finished (read-only).
+/// When the last ingest into the store at `db_path` finished (read-only;
+/// creates nothing).
 pub fn last_ingest_ms(db_path: &Path) -> Option<i64> {
     if !db_path.is_file() {
         return None;
     }
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let conn = Connection::open_with_flags(db_path, flags).ok()?;
+    let conn = crate::atlas::ro::open_read_only(db_path, READ_BUSY).ok()?;
     conn.query_row(
         "SELECT value FROM ingest_state WHERE source = '_meta' AND key = 'last_run'",
         [],
@@ -188,7 +191,8 @@ pub fn last_ingest_ms(db_path: &Path) -> Option<i64> {
 }
 
 /// Read the digest of the repository at `repo_root` — read-only, one
-/// indexed lookup. Never creates, migrates or writes anything.
+/// indexed lookup. Never creates (not even SQLite's side files), migrates
+/// or writes anything.
 pub fn read_digest(db_path: &Path, repo_root: &Path) -> DigestRead {
     let absent = |status| DigestRead {
         status,
@@ -197,11 +201,9 @@ pub fn read_digest(db_path: &Path, repo_root: &Path) -> DigestRead {
     if !db_path.is_file() {
         return absent(DigestStatus::NoStore);
     }
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let Ok(conn) = Connection::open_with_flags(db_path, flags) else {
+    let Ok(conn) = crate::atlas::ro::open_read_only(db_path, READ_BUSY) else {
         return absent(DigestStatus::NoStore);
     };
-    let _ = conn.busy_timeout(std::time::Duration::from_millis(50));
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap_or(0);

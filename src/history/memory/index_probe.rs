@@ -2,10 +2,13 @@
 //! (`<repo>/.codegraph/codegraph.db`): a file's content hash (to tell
 //! whether it changed since a session read it) and whether an identifier
 //! names an indexed symbol (only those are stored in the clear).
+//!
+//! The index belongs to its project: it is opened the atlas's way
+//! ([`crate::atlas::ro`]), which never creates its `-wal`/`-shm` files.
 
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// A file modified this long after a touch still counts as what the touch
 /// saw (an edit's own write lands a moment after the call starts).
@@ -23,9 +26,8 @@ impl IndexProbe {
         if !path.is_file() {
             return None;
         }
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let conn = Connection::open_with_flags(path, flags).ok()?;
-        let _ = conn.busy_timeout(std::time::Duration::from_millis(200));
+        let conn =
+            crate::atlas::ro::open_read_only(&path, std::time::Duration::from_millis(200)).ok()?;
         conn.query_row("SELECT 1 FROM files LIMIT 1", [], |_| Ok(()))
             .optional()
             .ok()?;

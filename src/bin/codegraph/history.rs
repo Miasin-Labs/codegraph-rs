@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Duration;
 
 use codegraph::history::memory::{About, RecallRequest, recall_at};
@@ -78,13 +79,17 @@ pub(crate) fn cmd_history(command: HistoryCommands) {
             since,
             limit,
             project,
+            related,
             db,
             json,
         } => cmd_history_recall(
-            &about,
-            since.as_deref(),
-            limit,
-            project.as_deref(),
+            &RecallArgs {
+                about: &about,
+                since: since.as_deref(),
+                limit,
+                project: project.as_deref(),
+                related,
+            },
             db.as_deref(),
             json,
         ),
@@ -306,17 +311,19 @@ pub(crate) fn cmd_history_show(db: Option<&str>, project: Option<&str>, top_arg:
     }
 }
 
-fn cmd_history_recall(
-    about: &str,
-    since: Option<&str>,
+/// What `history recall` was asked.
+struct RecallArgs<'a> {
+    about: &'a str,
+    since: Option<&'a str>,
     limit: usize,
-    project: Option<&str>,
-    db: Option<&str>,
-    json: bool,
-) {
+    project: Option<&'a str>,
+    related: bool,
+}
+
+fn cmd_history_recall(args: &RecallArgs<'_>, db: Option<&str>, json: bool) {
     let db_path = db.map(PathBuf::from).unwrap_or_else(default_history_path);
     let body = || -> Result<(), String> {
-        let since_ms = match since {
+        let since_ms = match args.since {
             Some(s) => Some(
                 now_ms()
                     - parse_duration_ms(s)
@@ -324,14 +331,23 @@ fn cmd_history_recall(
             ),
             None => None,
         };
-        let root = match project {
-            Some(p) => std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p)),
+        let root = match args.project {
+            Some(p) => recall_root(p)?,
             None => std::env::current_dir().map_err(|e| e.to_string())?,
         };
+        let mut about = About::parse(args.about);
+        // A project nested in its repository names paths relative to
+        // itself; the memory keys them relative to the repository.
+        if let Some(repo) = codegraph::history::repo_root_of(&root) {
+            if let Ok(base) = root.strip_prefix(&repo) {
+                about = about.under(&base.to_string_lossy());
+            }
+        }
         let request = RecallRequest {
-            about: About::parse(about),
+            about,
             since_ms,
-            limit: limit.max(1),
+            limit: args.limit.max(1),
+            related: args.related,
         };
         let report =
             recall_at(&db_path, &root, &request, RECALL_DEADLINE).map_err(|e| e.to_string())?;
@@ -344,5 +360,44 @@ fn cmd_history_recall(
     if let Err(msg) = body() {
         error_msg(&format!("history recall failed: {msg}"));
         process::exit(1);
+    }
+}
+
+/// `--project`: an existing path as given, else a project name the atlas
+/// knows (read-only).
+fn recall_root(arg: &str) -> Result<PathBuf, String> {
+    if Path::new(arg).exists() {
+        return Ok(std::fs::canonicalize(arg).unwrap_or_else(|_| PathBuf::from(arg)));
+    }
+    let atlas = codegraph::atlas::open_read_only()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            format!("\"{arg}\" is not a path, and no atlas exists to look it up by name")
+        })?;
+    let mut named = atlas.projects_named(arg).map_err(|e| e.to_string())?;
+    // Prefer whole checkouts that are not linked worktrees (the main one).
+    if named.len() > 1 {
+        let main: Vec<_> = named
+            .iter()
+            .filter(|p| p.is_checkout() && !p.is_worktree)
+            .cloned()
+            .collect();
+        if main.len() == 1 {
+            named = main;
+        }
+    }
+    match named.len() {
+        1 => Ok(named.remove(0).root),
+        0 => Err(format!(
+            "No path or registered project named \"{arg}\" (see \"codegraph projects\")"
+        )),
+        n => Err(format!(
+            "\"{arg}\" names {n} projects; pass one of their paths:\n{}",
+            named
+                .iter()
+                .map(|p| format!("  {}", p.root.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )),
     }
 }

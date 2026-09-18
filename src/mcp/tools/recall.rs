@@ -1,6 +1,7 @@
 //! codegraph_recall — cross-session memory: what earlier agent sessions in
 //! this repository already explored, looked up, broke and fixed (see
-//! [`crate::history::memory`]).
+//! [`crate::history::memory`]); with `related`, the same for the projects
+//! the atlas links to it, each group labelled ([`crate::history::atlas_join`]).
 //!
 //! Read-only and bounded: the history store is opened read-only, every
 //! query is indexed under a hard deadline, and the answer is at most
@@ -69,6 +70,7 @@ impl ToolHandler {
             about,
             since_ms,
             limit,
+            related: args.get("related").and_then(Value::as_bool) == Some(true),
         };
         let report = recall_at(&db, &root, &request, RECALL_DEADLINE)
             .map_err(|e| CodeGraphError::other(format!("recall: {e}")))?;
@@ -142,6 +144,18 @@ pub(in crate::mcp::tools) fn recall_output_schema() -> Value {
         },
         "required": ["a", "b", "episodes", "commits"]
     });
+    let related = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "project": { "type": "string" },
+            "relation": { "enum": ["dependency", "dependent", "same-remote"] },
+            "episodes": { "type": "array", "items": episode.clone() },
+            "symbols": { "type": "array", "items": symbol.clone() },
+            "failures": { "type": "array", "items": failure.clone() }
+        },
+        "required": ["project", "relation"]
+    });
     success_or_error(json!({
         "type": "object",
         "additionalProperties": false,
@@ -154,6 +168,7 @@ pub(in crate::mcp::tools) fn recall_output_schema() -> Value {
             "symbols": { "type": "array", "items": symbol },
             "failures": { "type": "array", "items": failure },
             "cochange": { "type": "array", "items": pair },
+            "related": { "type": "array", "items": related },
             "truncated": { "type": "boolean" },
             "note": { "type": "string" }
         },
