@@ -131,7 +131,7 @@ tokens (low / mid / high) of ~723 M tokens of tool output.
 ## 6. Target: each recurring request → its minimal answer
 
 What each request kind should return, and where codegraph stands.
-Green = shipped, yellow = in flight on `feat/compiler-diagnostics`, red = gap.
+Green = shipped on `feat/compiler-diagnostics`, red = gap.
 
 ```mermaid
 flowchart LR
@@ -160,8 +160,7 @@ flowchart LR
   classDef shipped fill:#e3f4e1,stroke:#2f7d32,color:#111
   classDef flight fill:#fff6d9,stroke:#9a7b12,color:#111
   classDef gap fill:#fbe3e1,stroke:#b3261e,color:#111
-  class T1,T6,T7,T8 shipped
-  class T3,T4 flight
+  class T1,T3,T4,T6,T7,T8 shipped
   class T2,T5,T9,T10 gap
 ```
 
