@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 
 use super::context::ToolHandler;
 use super::format::num_or;
-use super::output::success_or_error;
+use super::output::{notices_schema, success_or_error};
 use super::schema::ToolResult;
 use crate::error::{CodeGraphError, Result};
 use crate::history::background::{history_enabled, is_stale, spawn_background_ingest};
@@ -148,6 +148,7 @@ pub(in crate::mcp::tools) fn recall_output_schema() -> Value {
         "properties": {
             "schemaVersion": { "type": "integer" },
             "kind": { "const": "recall" },
+            "notices": notices_schema(),
             "about": { "type": "string" },
             "episodes": { "type": "array", "items": episode },
             "symbols": { "type": "array", "items": symbol },

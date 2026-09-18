@@ -303,8 +303,9 @@ mod tests {
                 checked += 1;
             }
         }
-        // search, node (symbol + file view), files, status, explore, grep.
-        assert_eq!(checked, 7);
+        // search, node (symbol + file view), files, status, explore, grep,
+        // recall (opt-in, but its schema is still served when enabled).
+        assert_eq!(checked, 8);
     }
 
     #[test]
