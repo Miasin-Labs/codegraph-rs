@@ -10,6 +10,7 @@ use crate::db::QueryBuilder;
 use crate::error::Result;
 use crate::resolution::go_module::load_go_module;
 use crate::resolution::import_resolver::load_cpp_include_dirs;
+use crate::resolution::name_matcher::RustUse;
 use crate::resolution::path_aliases::load_project_aliases;
 use crate::resolution::types::{AliasMap, GoModule, ImportMapping, ReExport, WorkspacePackages};
 use crate::resolution::workspace_packages::load_workspace_packages;
@@ -84,6 +85,7 @@ pub(super) struct SnapshotContext {
     file_cache: Mutex<HashMap<String, Option<Arc<str>>>>,
     import_mapping_cache: Mutex<HashMap<ImportCacheKey, Vec<ImportMapping>>>,
     re_export_cache: Mutex<HashMap<ImportCacheKey, Vec<ReExport>>>,
+    rust_use_cache: Mutex<HashMap<String, Arc<[RustUse]>>>,
 }
 
 impl ResolverSnapshot {
@@ -168,6 +170,7 @@ impl SnapshotContext {
             file_cache: Mutex::new(HashMap::new()),
             import_mapping_cache: Mutex::new(HashMap::new()),
             re_export_cache: Mutex::new(HashMap::new()),
+            rust_use_cache: Mutex::new(HashMap::new()),
         })
     }
 

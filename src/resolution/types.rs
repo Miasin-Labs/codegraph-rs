@@ -17,9 +17,11 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::resolution::name_matcher::{RustUse, rust_use_leaves};
 use crate::types::{EdgeKind, Language, Metadata, Node, NodeKind};
 
 // =============================================================================
@@ -348,6 +350,14 @@ pub trait ResolutionContext {
     /// re-export chains when this is provided.
     fn get_re_exports(&self, _file_path: &str, _language: Language) -> Vec<ReExport> {
         Vec::new()
+    }
+    /// Rust `use` leaves declared by a file, parsed from its Import nodes'
+    /// signatures ([`rust_use_leaves`]). Following `pub use` chains reads the
+    /// same few module files for many references, so the production contexts
+    /// cache this per file; the default re-parses on every call, which keeps
+    /// test fixtures and external implementations working unchanged.
+    fn get_rust_use_leaves(&self, file_path: &str) -> Arc<[RustUse]> {
+        rust_use_leaves(&self.get_nodes_in_file(file_path)).into()
     }
     /// List immediate subdirectories of `relative_path` (relative to the
     /// project root). Returns an empty vec when the path doesn't exist

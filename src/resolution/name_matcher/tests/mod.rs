@@ -6,6 +6,7 @@ mod fuzzy;
 mod qualified;
 mod receiver;
 mod rust_path;
+mod rust_use_tree;
 
 use fixture::{Fixture, make_ref, node};
 

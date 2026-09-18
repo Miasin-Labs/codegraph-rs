@@ -5,6 +5,7 @@ use std::sync::Arc;
 use super::{ImportCacheKey, SnapshotContext};
 use crate::error::log_debug;
 use crate::resolution::import_resolver::{extract_import_mappings, extract_re_exports};
+use crate::resolution::name_matcher::{RustUse, rust_use_leaves};
 use crate::resolution::resolver::context::is_js_family_path;
 use crate::resolution::types::{
     AliasMap,
@@ -180,6 +181,29 @@ impl ResolutionContext for SnapshotContext {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(key, re_exports.clone());
         re_exports
+    }
+
+    fn get_rust_use_leaves(&self, file_path: &str) -> Arc<[RustUse]> {
+        {
+            let cache = self
+                .rust_use_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(cached) = cache.get(file_path) {
+                return Arc::clone(cached);
+            }
+        }
+        let leaves: Arc<[RustUse]> = rust_use_leaves(self.lookup_node_refs(
+            &self.nodes_by_file,
+            file_path,
+            |node, key| node.file_path == key,
+        ))
+        .into();
+        self.rust_use_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(file_path.to_string(), Arc::clone(&leaves));
+        leaves
     }
 
     fn list_directories(&self, relative_path: &str) -> Vec<String> {

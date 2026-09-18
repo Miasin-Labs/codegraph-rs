@@ -35,7 +35,15 @@ pub use method::{match_method_call, match_method_call_hinted};
 pub use qualified::match_by_qualified_name;
 use qualified::match_by_qualified_name as qualified_name;
 pub(crate) use receiver::{infer_receiver_type_from_declaration, resolve_method_on_type};
-pub use rust_path::match_rust_path;
+pub use rust_path::{
+    RustUse,
+    UseBinding,
+    UseLeaf,
+    UseVisibility,
+    match_rust_path,
+    parse_use_leaves,
+    rust_use_leaves,
+};
 
 use crate::resolution::types::{ResolutionContext, ResolvedRef, UnresolvedRef};
 use crate::types::Node;

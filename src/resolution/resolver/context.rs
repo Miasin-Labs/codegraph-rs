@@ -7,11 +7,12 @@ mod nodes;
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashSet;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use super::cache::resolve_cache_limit;
 use crate::db::QueryBuilder;
 use crate::resolution::lru_cache::LRUCache;
+use crate::resolution::name_matcher::RustUse;
 use crate::resolution::types::{
     AliasMap,
     GoModule,
@@ -32,6 +33,7 @@ pub struct ResolverContext {
     pub(super) file_cache: RefCell<LRUCache<String, Option<String>>>,
     pub(super) import_mapping_cache: RefCell<LRUCache<String, Vec<ImportMapping>>>,
     pub(super) re_export_cache: RefCell<LRUCache<String, Vec<ReExport>>>,
+    pub(super) rust_use_cache: RefCell<LRUCache<String, Arc<[RustUse]>>>,
     pub(super) name_cache: RefCell<LRUCache<String, Vec<Node>>>,
     pub(super) lower_name_cache: RefCell<LRUCache<String, Vec<Node>>>,
     pub(super) qualified_name_cache: RefCell<LRUCache<String, Vec<Node>>>,
@@ -94,6 +96,7 @@ impl ResolverContext {
             file_cache: RefCell::new(LRUCache::new(content_limit)),
             import_mapping_cache: RefCell::new(LRUCache::new(limit)),
             re_export_cache: RefCell::new(LRUCache::new(limit)),
+            rust_use_cache: RefCell::new(LRUCache::new(limit)),
             name_cache: RefCell::new(LRUCache::new(limit)),
             lower_name_cache: RefCell::new(LRUCache::new(limit)),
             qualified_name_cache: RefCell::new(LRUCache::new(limit)),
@@ -112,6 +115,7 @@ impl ResolverContext {
         self.file_cache.borrow_mut().clear();
         self.import_mapping_cache.borrow_mut().clear();
         self.re_export_cache.borrow_mut().clear();
+        self.rust_use_cache.borrow_mut().clear();
         self.name_cache.borrow_mut().clear();
         self.lower_name_cache.borrow_mut().clear();
         self.qualified_name_cache.borrow_mut().clear();
@@ -193,6 +197,10 @@ impl ResolutionContext for ResolverContext {
 
     fn get_re_exports(&self, file_path: &str, language: Language) -> Vec<ReExport> {
         self.cached_re_exports(file_path, language)
+    }
+
+    fn get_rust_use_leaves(&self, file_path: &str) -> Arc<[RustUse]> {
+        self.cached_rust_use_leaves(file_path)
     }
 
     fn get_cpp_include_dirs(&self) -> Vec<String> {

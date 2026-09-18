@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use super::{ResolverContext, is_js_family_path};
 use crate::resolution::import_resolver::{extract_import_mappings, extract_re_exports};
+use crate::resolution::name_matcher::{RustUse, rust_use_leaves};
 use crate::resolution::types::{ImportMapping, ReExport};
 use crate::types::Language;
 
@@ -51,5 +54,18 @@ impl ResolverContext {
             .borrow_mut()
             .set(key, re_exports.clone());
         re_exports
+    }
+
+    /// Rust use leaves per file, parsed once from the file's Import nodes.
+    pub(super) fn cached_rust_use_leaves(&self, file_path: &str) -> Arc<[RustUse]> {
+        let key = file_path.to_string();
+        if let Some(cached) = self.rust_use_cache.borrow_mut().get(&key) {
+            return Arc::clone(cached);
+        }
+        let leaves: Arc<[RustUse]> = rust_use_leaves(&self.cached_nodes_in_file(file_path)).into();
+        self.rust_use_cache
+            .borrow_mut()
+            .set(key, Arc::clone(&leaves));
+        leaves
     }
 }
