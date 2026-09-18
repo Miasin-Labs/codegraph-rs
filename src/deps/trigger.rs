@@ -112,7 +112,16 @@ pub fn spawn_background_build(home: &DepsHome, project_root: &Path) -> Backgroun
     let mut command = Command::new(exe);
     command
         .args(["deps", "build", "--background", "--quiet", "--budget-ms"])
-        .arg(budget.to_string())
+        .arg(budget.to_string());
+    // A project's code calls its direct dependencies' APIs; transitive ones
+    // matter only to chains typed through dependency return types. Build the
+    // direct set in the background (~3.5 GiB for every crate version here vs
+    // ~8.5 GiB for all) unless `CODEGRAPH_DEPS_ALL=1`; `deps build --all`
+    // builds the rest on demand.
+    if !env_flag("CODEGRAPH_DEPS_ALL") {
+        command.arg("--direct-only");
+    }
+    command
         .arg("--project")
         .arg(project_root)
         .stdin(Stdio::null())
@@ -141,4 +150,8 @@ fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| matches!(value.trim(), "1" | "true" | "yes"))
 }

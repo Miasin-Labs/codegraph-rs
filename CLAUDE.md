@@ -233,7 +233,9 @@ cargo test --workspace
   project without lockfiles writes nothing) and, if shards are pending, spawns
   ONE detached `codegraph deps build --background` (global builder lock,
   budget `CODEGRAPH_DEPS_BUDGET_MS`, default 5 min; it drains every
-  project's queue). Never from MCP or the prompt hook.
+  project's queue) — direct dependencies only unless `CODEGRAPH_DEPS_ALL=1`
+  (code calls its direct deps' APIs; `deps build --all` builds the rest).
+  Never from MCP or the prompt hook.
   `CODEGRAPH_NO_BACKGROUND_SYNC=1` stops the spawn, `CODEGRAPH_DEPS=0`
   the whole hook.
 - **Concurrency lint** (`analysis/src/concurrency.rs`, per-language rules in
