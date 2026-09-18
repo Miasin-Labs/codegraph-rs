@@ -64,6 +64,24 @@ fn get_root_module_inner(scoped_node: SyntaxNode<'_>, source: &str) -> String {
     }
 }
 
+/// Base name of an impl's self type: `OrderedMap<V>` -> `OrderedMap`,
+/// `cache::Fingerprint` -> `Fingerprint`, `&'a Foo` -> `Foo`, `u32` -> `u32`.
+/// Iterative, so arbitrarily nested `&&&Foo<T>` cannot grow the stack.
+fn impl_self_type_name(mut node: SyntaxNode<'_>, source: &str) -> Option<String> {
+    loop {
+        match node.kind() {
+            "type_identifier" | "primitive_type" => {
+                return Some(get_node_text(node, source).to_string());
+            }
+            "generic_type" | "reference_type" | "pointer_type" => {
+                node = node.child_by_field_name("type")?;
+            }
+            "scoped_type_identifier" => node = node.child_by_field_name("name")?,
+            _ => return None,
+        }
+    }
+}
+
 pub struct RustExtractor;
 
 impl LanguageExtractor for RustExtractor {
@@ -274,29 +292,15 @@ impl LanguageExtractor for RustExtractor {
         let mut parent = node.parent();
         while let Some(p) = parent {
             if p.kind() == "impl_item" {
-                // For `impl Type { ... }` — the type is a direct type_identifier child
-                // For `impl Trait for Type { ... }` — the type is the LAST type_identifier
-                // (the first is part of the trait path)
-                let children = named_children(p);
-                // Find all direct type_identifier children (not nested in scoped paths)
-                let type_idents: Vec<_> = children
-                    .iter()
-                    .filter(|c| c.kind() == "type_identifier")
-                    .collect();
-                if let Some(type_node) = type_idents.last() {
-                    // Last type_identifier is always the implementing type
-                    return Some(get_node_text(**type_node, source).to_string());
-                }
-                // Handle generic types: impl<T> MyStruct<T> { ... }
-                if let Some(generic_type) = children.iter().find(|c| c.kind() == "generic_type") {
-                    if let Some(inner_type) = named_children(*generic_type)
-                        .into_iter()
-                        .find(|c| c.kind() == "type_identifier")
-                    {
-                        return Some(get_node_text(inner_type, source).to_string());
-                    }
-                }
-                return None;
+                // The grammar labels the implementing type with the `type`
+                // field in both `impl Type` and `impl Trait for Type`. Reading
+                // bare `type_identifier` children instead picked the TRAIT
+                // whenever the self type was generic, path-qualified, or
+                // borrowed (`impl<V> Default for OrderedMap<V>` became
+                // `Default::default`), collapsing unrelated impls together.
+                return p
+                    .child_by_field_name("type")
+                    .and_then(|type_node| impl_self_type_name(type_node, source));
             }
             parent = p.parent();
         }
@@ -502,6 +506,77 @@ extern "C" {
         // foreign function in `extern "C"` block (function_signature_item)
         let c_fn = find("c_fn").expect("FFI fn in extern block");
         assert!(matches!(c_fn.kind, NodeKind::Function | NodeKind::Method));
+    }
+
+    /// Trait-impl methods are keyed by the implementing type even when that
+    /// type is generic, path-qualified, lifetime-bearing, or primitive. These
+    /// used to fall back to the trait (`Default::default`), merging every impl.
+    #[test]
+    fn trait_impl_methods_are_keyed_by_the_self_type_not_the_trait() {
+        let source = r#"
+pub struct OrderedMap<V>(Vec<V>);
+pub struct FrontierIter<'a>(&'a [u32]);
+mod cache { pub struct Fingerprint; }
+pub struct Fingerprint;
+impl<V> Default for OrderedMap<V> {
+    fn default() -> Self { OrderedMap(Vec::new()) }
+}
+impl Iterator for FrontierIter<'_> {
+    type Item = u32;
+    fn next(&mut self) -> Option<u32> { None }
+}
+impl From<Fingerprint> for cache::Fingerprint {
+    fn from(value: Fingerprint) -> Self { cache::Fingerprint }
+}
+pub trait Doubled { fn doubled(&self) -> Self; }
+impl Doubled for u32 {
+    fn doubled(&self) -> Self { self * 2 }
+}
+impl<'a> OrderedMap<&'a str> {
+    fn first(&self) -> Option<&&'a str> { self.0.first() }
+}
+"#;
+        let result = TreeSitterExtractor::new(
+            "src/impls.rs",
+            source,
+            Some(Language::Rust),
+            Some(&RustExtractor),
+        )
+        .extract();
+        let qualified: Vec<&str> = result
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Method)
+            .map(|node| node.qualified_name.as_str())
+            .collect();
+        for expected in [
+            "OrderedMap::default",
+            "FrontierIter::next",
+            "Fingerprint::from",
+            "u32::doubled",
+            "OrderedMap::first",
+        ] {
+            assert!(
+                qualified.contains(&expected),
+                "missing {expected}: {qualified:?}"
+            );
+        }
+        // `Doubled::doubled` legitimately exists once: the trait's own
+        // declaration. The `u32` impl must not add a trait-keyed copy.
+        assert_eq!(
+            qualified
+                .iter()
+                .filter(|name| **name == "Doubled::doubled")
+                .count(),
+            1,
+            "{qualified:?}"
+        );
+        for trait_keyed in ["Default::default", "Iterator::next", "From::from"] {
+            assert!(
+                !qualified.contains(&trait_keyed),
+                "trait-keyed {trait_keyed}: {qualified:?}"
+            );
+        }
     }
 
     #[test]
