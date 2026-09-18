@@ -81,12 +81,13 @@ async fn history_tool_reports_code_that_changes_together() {
     assert!(payload["commitsAnalyzed"].as_u64().unwrap() >= 3, "{payload}");
 }
 
-/// Both tools ship in the default surface.
+/// The insight tools ship in the default surface.
 #[tokio::test(flavor = "current_thread")]
-async fn history_and_tests_are_default_tools() {
+async fn history_tests_and_diagnostics_are_default_tools() {
     let _env = env_write().await;
     let _guard = EnvVarGuard::unset("CODEGRAPH_MCP_TOOLS");
     let names: Vec<String> = get_static_tools().into_iter().map(|t| t.name).collect();
     assert!(names.contains(&"codegraph_history".to_string()), "{names:?}");
     assert!(names.contains(&"codegraph_tests".to_string()), "{names:?}");
+    assert!(names.contains(&"codegraph_diagnostics".to_string()), "{names:?}");
 }

@@ -161,6 +161,7 @@ mod tests {
             "codegraph_files",
             "codegraph_history",
             "codegraph_tests",
+            "codegraph_diagnostics",
             "codegraph_arch",
             "codegraph_xref",
             "codegraph_paths",

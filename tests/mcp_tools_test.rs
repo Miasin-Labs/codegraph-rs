@@ -14,3 +14,4 @@ include!("mcp_tools_test/files_path_filter.rs");
 include!("mcp_tools_test/generated.rs");
 include!("mcp_tools_test/batch.rs");
 include!("mcp_tools_test/insight.rs");
+include!("mcp_tools_test/diagnostics.rs");

@@ -41,7 +41,7 @@ calls; a grep/read exploration is dozens.
 
 ## Available tools
 
-Ten core tools are available by default:
+Eleven core tools are available by default:
 
 - **`codegraph_explore`** — Primary context tool: natural-language question or symbol/file names → verbatim source + call paths + dependencies (Read-equivalent)
 - **`codegraph_search`** — Quick symbol lookup: name → locations/kinds/signatures (no source)
@@ -53,6 +53,7 @@ Ten core tools are available by default:
 - **`codegraph_status`** — Index status and statistics
 - **`codegraph_history`** — What changes together with a symbol, from git history (instead of git log/blame)
 - **`codegraph_tests`** — Which tests exercise a symbol, via its callers (pick the tests to run after a change)
+- **`codegraph_diagnostics`** — Compiler errors/warnings (cargo check/clippy or the project's tsc), each placed on its symbol; a long build keeps running between calls
 
 Batch lookups: `codegraph_search` and `codegraph_node` take a `symbols` array
 for several names in one call — use it instead of a grep alternation `a|b|c`.
@@ -83,7 +84,7 @@ environment variable — see project documentation.
 - If a tool reports a project isn't indexed (no `.codegraph/`), stop calling codegraph tools for that project for the rest of the session and use your built-in tools there instead. Indexing is the user's decision — mention they can run `codegraph init` if it comes up, but don't run it yourself.
 - Index lags file writes by ~1 second.
 - Cross-file resolution is best-effort name matching; ambiguous calls may return multiple candidates.
-- No live correctness validation — that's still the TypeScript compiler / test suite / linter's job. Codegraph supplements those with structural context they don't have.
+- The graph itself does no type checking: `codegraph_diagnostics` asks the project's own compiler (Rust and TypeScript only). Other languages' checkers, the test suite, and linters are still yours to run.
 "##;
 
 pub const SERVER_INSTRUCTIONS_NO_ROOT_INDEX: &str = r##"# Codegraph — available (per-project; pass projectPath)
@@ -115,8 +116,17 @@ mod tests {
     fn instructions_describe_the_live_default_surfaces() {
         assert!(SERVER_INSTRUCTIONS.contains("## Primary tool: codegraph_explore"));
         for tool in [
-            "search", "node", "explore", "callers", "callees", "impact", "files", "status",
-            "history", "tests",
+            "search",
+            "node",
+            "explore",
+            "callers",
+            "callees",
+            "impact",
+            "files",
+            "status",
+            "history",
+            "tests",
+            "diagnostics",
         ] {
             assert!(
                 SERVER_INSTRUCTIONS.contains(&format!("**`codegraph_{tool}`**")),

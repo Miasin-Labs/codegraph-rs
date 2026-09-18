@@ -51,12 +51,16 @@ cargo test --workspace
 
 - **MCP tools are extensible.** The old "frozen at 8 for TS wire parity" rule is
   **RETIRED (2026-06)** — the Rust server is the source of truth now, not a TS
-  mirror. **10 tools by default** (`DEFAULT_MCP_TOOLS` in
+  mirror. **11 tools by default** (`DEFAULT_MCP_TOOLS` in
   `registry/filters.rs`: `search, callers, callees, impact, node, explore,
-  status, files, history, tests`), listed on every project regardless of size
-  — there is no small-repo gating. `arch, xref, paths` are opt-in through the
-  `CODEGRAPH_MCP_TOOLS` allowlist (comma-separated short names), for 13 in
-  all. Keep `server_instructions.rs` naming exactly the default set. The
+  status, files, history, tests, diagnostics`), listed on every project
+  regardless of size — there is no small-repo gating. `arch, xref, paths` are
+  opt-in through the `CODEGRAPH_MCP_TOOLS` allowlist (comma-separated short
+  names), for 14 in all. `diagnostics` (`src/diagnostics/`) is the one tool
+  that is not read-only: it runs `cargo check|clippy --offline` or the
+  project's own `node_modules/.bin/tsc`, detached with output under
+  `.codegraph/diagnostics/`, waits at most `wait` seconds, and a later call
+  picks up a run still going — never an unbounded block. Keep `server_instructions.rs` naming exactly the default set. The
   surface is shaped by mined agent behaviour (627k tool calls, 2026-09):
   `search`/`node` take a `symbols` batch (agents otherwise grep `a|b|c`),
   `search` takes `projectPaths` for several indexes in one call, and the

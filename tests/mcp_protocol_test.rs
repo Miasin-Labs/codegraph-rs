@@ -207,9 +207,8 @@ fn explore_evidence(response: &Value) -> HashSet<(String, u64, u64, String)> {
         .collect()
 }
 
-/// The annotation set every tool must carry (rmcp ToolAnnotations camelCase).
 /// The default tool surface, in catalog order.
-const DEFAULT_TOOLS: [&str; 10] = [
+const DEFAULT_TOOLS: [&str; 11] = [
     "codegraph_search",
     "codegraph_callers",
     "codegraph_callees",
@@ -220,11 +219,15 @@ const DEFAULT_TOOLS: [&str; 10] = [
     "codegraph_files",
     "codegraph_history",
     "codegraph_tests",
+    "codegraph_diagnostics",
 ];
 
-fn expected_annotations() -> Value {
+/// The annotation set a tool must carry (rmcp ToolAnnotations camelCase):
+/// every tool is a read over the index except `diagnostics`, which runs the
+/// project's compiler and so writes build artifacts.
+fn expected_annotations(tool: &Value) -> Value {
     json!({
-        "readOnlyHint": true,
+        "readOnlyHint": tool["name"] != "codegraph_diagnostics",
         "destructiveHint": false,
         "idempotentHint": true,
         "openWorldHint": false,
@@ -302,7 +305,7 @@ async fn initialize_advertises_list_changed_and_logging() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn every_tool_carries_read_only_annotations() {
+async fn every_tool_carries_its_annotations() {
     let _guard = env_read().await;
     let tmp = TempDir::new().unwrap();
     let mut server = spawn_server(tmp.path(), &["--no-watch"], true);
@@ -316,8 +319,8 @@ async fn every_tool_carries_read_only_annotations() {
     for tool in tools {
         assert_eq!(
             tool["annotations"],
-            expected_annotations(),
-            "tool {} must carry the read-only annotation set",
+            expected_annotations(tool),
+            "tool {} must carry its annotation set",
             tool["name"]
         );
     }
@@ -454,7 +457,7 @@ async fn static_tools_fn_carries_annotations_too() {
     let _guard = env_read().await;
     let tools = serde_json::to_value(codegraph::mcp::tools::get_static_tools()).unwrap();
     for tool in tools.as_array().unwrap() {
-        assert_eq!(tool["annotations"], expected_annotations());
+        assert_eq!(tool["annotations"], expected_annotations(tool));
     }
 }
 
@@ -898,7 +901,7 @@ mod direct_fallback {
             DEFAULT_TOOLS
         );
         for tool in tools {
-            assert_eq!(tool["annotations"], expected_annotations());
+            assert_eq!(tool["annotations"], expected_annotations(tool));
         }
 
         server.send(&json!({

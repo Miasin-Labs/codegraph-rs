@@ -1,6 +1,7 @@
 mod admin;
 mod analysis;
 mod context;
+mod diagnostics;
 mod explore;
 mod format;
 mod graph;

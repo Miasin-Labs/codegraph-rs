@@ -13,6 +13,7 @@ pub mod analyze_ir;
 pub mod context;
 pub mod context_analysis;
 pub mod db;
+pub mod diagnostics;
 pub mod directory;
 pub mod error;
 pub mod extraction;

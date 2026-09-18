@@ -29,7 +29,7 @@ pub struct ToolHandler {
     pub(in crate::mcp::tools::context) auto_sync_disabled: RefCell<Option<String>>,
     /// EXCEEDS TS: per-call context (progress emitter + cooperative cancel
     /// flag) the engine sets around each `execute()` — see [`CallContext`].
-    pub(in crate::mcp::tools::context) call_context: Rc<CallContext>,
+    pub(in crate::mcp::tools) call_context: Rc<CallContext>,
 }
 
 /// Progress callback the session plumbs through the engine when a `tools/call`
