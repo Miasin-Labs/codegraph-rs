@@ -2,15 +2,25 @@
 //!
 //! A method call on a chained or field receiver (`v.iter().next()`,
 //! `self.map.get(k)`) reaches resolution as its bare method name, flagged as
-//! having dropped its receiver. When that name is one std and its traits
-//! define on nearly every type, the call almost always runs a std method, and
-//! the only project symbol name matching can offer is an unrelated same-named
-//! one (`.next()` landing on `FrontierIter::next`, `.cmp()` on
-//! `PathState::cmp`). Method-call syntax never names a free function, field,
-//! or variable either, so no name-matched target is right: the reference
-//! stays unresolved. Project-specific names (`.get_outgoing_edges()`) keep
-//! resolving as before.
+//! having dropped its receiver; a call on a local whose type inference cannot
+//! pin down (`|e| e.into_inner()`) keeps its receiver but gains no type. When
+//! std, core, or alloc define a method of that name on any type or trait, the
+//! call may well run it, and the only project symbol name matching can offer
+//! is an unrelated same-named one (`.next()` landing on `FrontierIter::next`,
+//! `.parent()` on `ModuleLocation::parent`). Such a call stays unresolved.
+//! Project-specific names (`.get_outgoing_edges()`) keep resolving as before.
+//!
+//! Two lists back this:
+//!
+//! - [`STD_METHOD_NAMES`], generated from the toolchain's library source
+//!   (`tests/std_method_names.rs` regenerates it), for receivers of unknown
+//!   type;
+//! - [`COMMON_STD_METHOD_NAMES`], the hand-picked names std defines on nearly
+//!   every type, for a receiver whose project type is known but lacks the
+//!   method (a derive or blanket impl supplies `clone`, `default`, `fmt`):
+//!   a rarer name there still reaches the remaining strategies.
 
+use super::std_method_names::STD_METHOD_NAMES;
 use crate::resolution::types::UnresolvedRef;
 use crate::types::{EdgeKind, Language, receiver_was_dropped};
 
@@ -118,27 +128,68 @@ pub(super) fn is_common_std_method_name(name: &str) -> bool {
     COMMON_STD_METHOD_NAMES.binary_search(&name).is_ok()
 }
 
-/// A Rust call to a common std method whose receiver was dropped: its target
+/// `name` is a method std, core, or alloc define on some type or trait
+/// ([`STD_METHOD_NAMES`]).
+pub(super) fn is_std_method_name(name: &str) -> bool {
+    STD_METHOD_NAMES.binary_search(&name).is_ok()
+}
+
+/// A Rust call to a std method name whose receiver was dropped: its target
 /// is a method on a type name matching cannot see.
 pub(super) fn is_receiverless_std_method_call(reference: &UnresolvedRef) -> bool {
     reference.language == Language::Rust
         && reference.reference_kind == EdgeKind::Calls
         && receiver_was_dropped(reference.metadata.as_ref())
-        && is_common_std_method_name(&reference.reference_name)
+        && is_std_method_name(&reference.reference_name)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::COMMON_STD_METHOD_NAMES;
+    use super::{COMMON_STD_METHOD_NAMES, STD_METHOD_NAMES, is_std_method_name};
 
-    /// `binary_search` needs the list sorted and free of duplicates.
+    /// `binary_search` needs both lists sorted and free of duplicates.
     #[test]
-    fn common_std_method_names_are_sorted_and_unique() {
-        assert!(
-            COMMON_STD_METHOD_NAMES
-                .windows(2)
-                .all(|pair| pair[0] < pair[1]),
-            "keep COMMON_STD_METHOD_NAMES sorted and unique"
-        );
+    fn std_method_name_lists_are_sorted_and_unique() {
+        for (name, list) in [
+            ("COMMON_STD_METHOD_NAMES", COMMON_STD_METHOD_NAMES),
+            ("STD_METHOD_NAMES", STD_METHOD_NAMES),
+        ] {
+            assert!(
+                list.windows(2).all(|pair| pair[0] < pair[1]),
+                "keep {name} sorted and unique"
+            );
+        }
+    }
+
+    /// The hand list only narrows the generated one.
+    #[test]
+    fn common_std_method_names_are_std_method_names() {
+        let missing: Vec<&str> = COMMON_STD_METHOD_NAMES
+            .iter()
+            .copied()
+            .filter(|name| !is_std_method_name(name))
+            .collect();
+        assert!(missing.is_empty(), "not std methods: {missing:?}");
+    }
+
+    /// Names std defines beyond the hand list, which receivers of unknown
+    /// type used to resolve by name alone.
+    #[test]
+    fn generated_names_cover_std_types_and_traits() {
+        for name in [
+            "count_ones",
+            "fetch_add",
+            "file_name",
+            "into_inner",
+            "parent",
+            "spawn",
+            "stderr",
+            "write_all",
+        ] {
+            assert!(is_std_method_name(name), "{name}");
+        }
+        for name in ["get_outgoing_edges", "resolve_all", "stop"] {
+            assert!(!is_std_method_name(name), "{name}");
+        }
     }
 }

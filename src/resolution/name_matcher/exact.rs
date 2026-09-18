@@ -43,6 +43,26 @@ pub fn match_by_exact_name_ranked(
         return None;
     }
 
+    if candidates.len() > 1
+        && (reference.language == Language::Java || reference.language == Language::Kotlin)
+    {
+        if let Some(jvm_match) = jvm_scope::match_exact_name(reference, context, &candidates) {
+            return Some(jvm_match);
+        }
+    }
+
+    pick_exact(reference, &candidates, context, ranked)
+}
+
+/// Pick the target among `candidates`, all named like the reference: the
+/// only one, else the best-ranked by [`find_best_match`] (or the GPU's
+/// `ranked` pick of the same), with confidence by how near it is.
+pub(super) fn pick_exact(
+    reference: &UnresolvedRef,
+    candidates: &[Node],
+    context: &dyn ResolutionContext,
+    ranked: Option<Option<&Node>>,
+) -> Option<ResolvedRef> {
     // If only one match, use it — but penalize cross-language matches
     if candidates.len() == 1 {
         let is_cross_language = candidates[0].language != reference.language;
@@ -54,16 +74,10 @@ pub fn match_by_exact_name_ranked(
         });
     }
 
-    if reference.language == Language::Java || reference.language == Language::Kotlin {
-        if let Some(jvm_match) = jvm_scope::match_exact_name(reference, context, &candidates) {
-            return Some(jvm_match);
-        }
-    }
-
     // Multiple matches - try to narrow down
     let best = match ranked {
         Some(precomputed) => precomputed,
-        None => find_best_match(reference, &candidates, context),
+        None => find_best_match(reference, candidates, context),
     };
     if let Some(best_match) = best {
         // Lower confidence when the match is from a distant/unrelated module

@@ -16,8 +16,10 @@ mod method;
 mod qualified;
 mod razor;
 mod receiver;
+mod rust_call;
 mod rust_method;
 mod rust_path;
+mod std_method_names;
 mod std_methods;
 mod support;
 
@@ -37,6 +39,7 @@ pub use method::{match_method_call, match_method_call_hinted};
 pub use qualified::match_by_qualified_name;
 use qualified::match_by_qualified_name as qualified_name;
 pub(crate) use receiver::{infer_receiver_type_from_declaration, resolve_method_on_type};
+pub(crate) use rust_call::rust_call_admits;
 pub use rust_path::{
     RustUse,
     UseBinding,
@@ -89,10 +92,11 @@ pub fn match_reference_full_hints(
 ) -> Option<ResolvedRef> {
     // Try strategies in order of confidence
 
-    // `v.iter().next()`: a common std method on a dropped receiver. Every
-    // same-named project symbol is a guess (see `std_methods`).
-    if std_methods::is_receiverless_std_method_call(reference) {
-        return None;
+    // Rust `f()`, `self.m()`, `a.b().m()`: the syntax limits what the call
+    // can run, and a std method on a dropped receiver is never guessed at
+    // (see `rust_call`).
+    if let Some(decided) = rust_call::match_rust_call(reference, context) {
+        return decided;
     }
 
     // ArkUI attributes never fall through to ordinary name matching: common

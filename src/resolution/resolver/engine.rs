@@ -136,6 +136,11 @@ where
 
     for framework in frameworks {
         if let Some(result) = framework.resolve(reference, context) {
+            // A framework's name-based pick is held to what the Rust call's
+            // syntax can run, like the name matcher's (see `rust_call`).
+            if !framework_target_admitted(reference, context, &result) {
+                continue;
+            }
             if result.confidence >= 0.9 {
                 return Some(result);
             }
@@ -163,6 +168,22 @@ where
             best
         }
     })
+}
+
+/// A Rust call a framework resolved: the target is one the call's syntax
+/// can run (a bare call never runs a method or shadows a local, and so on).
+/// Other languages and references pass unchecked.
+fn framework_target_admitted(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+    result: &ResolvedRef,
+) -> bool {
+    if reference.language != Language::Rust || reference.reference_kind != EdgeKind::Calls {
+        return true;
+    }
+    context
+        .get_node_by_id(&result.target_node_id)
+        .is_none_or(|target| name_matcher::rust_call_admits(reference, context, &target))
 }
 
 #[cfg(not(feature = "gpu"))]

@@ -111,6 +111,27 @@ impl RustType {
         methods_of(self, nodes, method, reference).first().copied()
     }
 
+    /// The field `Self::field` the project declares, best match first.
+    pub(super) fn field<'a>(
+        &self,
+        field: &str,
+        nodes: &'a [Node],
+        reference: &UnresolvedRef,
+    ) -> Option<&'a Node> {
+        let exact = format!("{}::{field}", self.name);
+        let suffix = format!("::{exact}");
+        let mut fields: Vec<&Node> = nodes
+            .iter()
+            .filter(|node| {
+                node.language == Language::Rust
+                    && node.kind == NodeKind::Field
+                    && (node.qualified_name == exact || node.qualified_name.ends_with(&suffix))
+            })
+            .collect();
+        self.sort_by_home(&mut fields, reference);
+        fields.first().copied()
+    }
+
     /// Sort `nodes` (definitions named like this type or its members) by
     /// how well they match its home, then by nearness to `reference`.
     fn sort_by_home(&self, nodes: &mut [&Node], reference: &UnresolvedRef) {
@@ -181,7 +202,7 @@ fn is_rust_project_type(name: &str, context: &dyn ResolutionContext) -> bool {
 }
 
 /// `file_path` holds module `module` (`…/module.rs` or `…/module/mod.rs`).
-fn file_is_module(file_path: &str, module: &str) -> bool {
+pub(in crate::resolution::name_matcher) fn file_is_module(file_path: &str, module: &str) -> bool {
     let mut parts = file_path.rsplit('/');
     let file = parts.next().unwrap_or_default();
     let stem = file.strip_suffix(".rs").unwrap_or(file);
@@ -311,7 +332,11 @@ fn use_path(name: &str, file: &str, context: &dyn ResolutionContext) -> Option<V
 
 /// `use` declarations written inside fn bodies, which the index keeps no
 /// Import node for; only those whose text mentions `name` are parsed.
-fn fn_local_uses(file: &str, name: &str, context: &dyn ResolutionContext) -> Vec<UseLeaf> {
+pub(in crate::resolution::name_matcher) fn fn_local_uses(
+    file: &str,
+    name: &str,
+    context: &dyn ResolutionContext,
+) -> Vec<UseLeaf> {
     let Some(source) = context.read_file_arc(file) else {
         return Vec::new();
     };

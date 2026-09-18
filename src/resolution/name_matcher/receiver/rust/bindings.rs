@@ -39,6 +39,17 @@ pub(super) fn binding_in_line<'a>(
     next_lines: &[&str],
     name: &str,
 ) -> Option<Binding<'a>> {
+    nearest_binding(line, next_lines, name).map(|(_, binding)| binding)
+}
+
+/// [`binding_in_line`] with the byte offset where the binding form starts:
+/// its `let`/`static`/`const`/`for` keyword, the closure's opening `|`, or
+/// the match arm's `=>`.
+pub(super) fn nearest_binding<'a>(
+    line: &'a str,
+    next_lines: &[&str],
+    name: &str,
+) -> Option<(usize, Binding<'a>)> {
     let mut nearest: Option<(usize, Binding<'a>)> = None;
     let mut consider = |position: usize, binding: Binding<'a>| {
         if nearest.as_ref().is_none_or(|(seen, _)| position >= *seen) {
@@ -69,7 +80,7 @@ pub(super) fn binding_in_line<'a>(
             }
         }
     }
-    nearest.map(|(_, binding)| binding)
+    nearest
 }
 
 /// Byte positions where `word` occurs as a whole identifier.
@@ -253,7 +264,7 @@ fn arm_pattern(line: &str) -> Option<(usize, &str)> {
 
 /// `name` occurs in `pattern` as a binding: not a path segment, a field
 /// name (`Foo { name: v }`), a call, a macro, or a method receiver.
-fn binds(pattern: &str, name: &str) -> bool {
+pub(super) fn binds(pattern: &str, name: &str) -> bool {
     word_positions(pattern, name).any(|start| {
         let before = pattern[..start].trim_end();
         let after = pattern[start + name.len()..].trim_start();

@@ -24,12 +24,21 @@
 mod bindings;
 mod crates;
 mod expr;
+mod fields;
+mod locals;
 mod lookup;
 mod types;
 
 use bindings::{Binding, binding_in_line};
 use expr::{Head, Tail, parse_initializer, scrutinee_end, statement_end};
-pub(in crate::resolution::name_matcher) use lookup::{RustType, resolve_type};
+pub(in crate::resolution::name_matcher) use fields::self_field_receiver_type;
+pub(in crate::resolution::name_matcher) use locals::is_local_at_call;
+pub(in crate::resolution::name_matcher) use lookup::{
+    RustType,
+    file_is_module,
+    fn_local_uses,
+    resolve_type,
+};
 use lookup::{assoc_fn_return, free_fn_return, resolve_named};
 use types::{is_deref_wrapper, named_type, signature_params, starts_uppercase, unwrapped};
 

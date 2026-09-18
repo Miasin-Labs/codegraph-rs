@@ -10,7 +10,9 @@
 //! - `recv.m(..)` resolves on the type [`infer_rust_receiver_type`] finds.
 //!   A type the project does not define (`Vec`, `tree_sitter::Node`) runs no
 //!   project method, and a common std method name (`next`, `get`, `iter`)
-//!   is not guessed at when no project method was found.
+//!   is not guessed at when no project method was found. When no type is
+//!   found, no method name std defines anywhere (`into_inner`, `parent`) is
+//!   guessed at either.
 //! - `Type::m(..)` names its type, so the target is `Type::m` or nothing: a
 //!   type the project does not define (`HashMap`, `process`, a generic `T`)
 //!   resolves to nothing, and a project type resolves on itself, after type
@@ -21,7 +23,7 @@
 //! fallbacks.
 
 use super::receiver::{RustType, infer_rust_receiver_type, resolve_type};
-use super::std_methods::is_common_std_method_name;
+use super::std_methods::{is_common_std_method_name, is_std_method_name};
 use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
 
 /// Decide `receiver.method(..)`: `Some(result)` is final, `None` leaves the
@@ -33,10 +35,28 @@ pub(super) fn match_instance_call(
     context: &dyn ResolutionContext,
 ) -> Option<Option<ResolvedRef>> {
     let Some(ty) = infer_rust_receiver_type(receiver, reference, context) else {
-        return is_common_std_method_name(method).then_some(None);
+        return is_std_method_name(method).then_some(None);
     };
     decide_on_type(
         &ty,
+        method,
+        reference,
+        context,
+        0.9,
+        ResolvedBy::InstanceMethod,
+    )
+}
+
+/// Decide a call of `method` on a receiver of the known type `ty` (a
+/// `self.field` receiver extraction dropped) like [`match_instance_call`].
+pub(super) fn match_typed_call(
+    ty: &RustType,
+    method: &str,
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+) -> Option<Option<ResolvedRef>> {
+    decide_on_type(
+        ty,
         method,
         reference,
         context,
