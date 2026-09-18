@@ -1,0 +1,30 @@
+%% Target: each recurring agent request -> its minimal answer, and codegraph's status. See FLOWCHART.md §6.
+flowchart LR
+  A([agent request]) --> K1["where is X, Y, Z"]
+  A --> K2["how does X work"]
+  A --> K3["what is at file:line /<br/>read before edit"]
+  A --> K4["read it again"]
+  A --> K5["who uses X / blast radius"]
+  A --> K6["is it broken"]
+  A --> K7["which tests cover X"]
+  A --> K8["what changes with X"]
+  A --> K9["literal text / regex"]
+  A --> K10["what did we do last time"]
+
+  K1 --> T1["search symbols[] → rows: name kind file:line signature<br/>594 → 252 tok"]
+  K2 --> T2["explore: rows + edges, code for top 3,<br/>ranked 1-hop files, budget under host cap<br/>4,267 → 1,264 tok"]
+  K3 --> T3["node(file, line) → enclosing symbol span<br/>1,607 → 806 tok"]
+  K4 --> T4["alreadySent reference or diff<br/>1,301 → 41 tok"]
+  K5 --> T5["callers / impact; xref fallback for non-callables"]
+  K6 --> T6["diagnostics: errors on symbols, counts for the rest<br/>528 → 126 tok"]
+  K7 --> T7["tests(symbol)"]
+  K8 --> T8["history(symbol) — git co-change"]
+  K9 --> T9["text search over indexed files,<br/>hits + enclosing symbol, per-file caps"]
+  K10 --> T10["recall(path | symbol | failures) + 1 KB session digest"]
+
+  classDef shipped fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef flight fill:#fff6d9,stroke:#9a7b12,color:#111
+  classDef gap fill:#fbe3e1,stroke:#b3261e,color:#111
+  class T1,T6,T7,T8 shipped
+  class T3,T4 flight
+  class T2,T5,T9,T10 gap

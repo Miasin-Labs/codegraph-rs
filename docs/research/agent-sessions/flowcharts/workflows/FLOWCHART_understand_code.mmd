@@ -1,0 +1,52 @@
+flowchart TD
+  s_run["run/exec"]
+  s_read["read_file"]
+  s_web["web/docs"]
+  s_find["find_files"]
+  s_check["build/lint"]
+  s_meta["todo/skill"]
+  s_test["run_tests"]
+  s_graph["graph_query"]
+  START(["Understand how X works<br/>n=6030 · med 6 calls · p90 36"])
+  s_search["search_text"]
+  s_sys["shell/env"]
+  s_other["other"]
+  s_vcs["git/gh"]
+  s_edit["edit"]
+  DONE([done])
+  s_delegate["subagent"]
+  START -->|"25% (1495)"| s_delegate
+  START -->|"15% (916)"| s_read
+  START -->|"15% (878)"| s_meta
+  START -->|"13% (767)"| s_find
+  s_check -->|"loop 36% (479)"| s_check
+  s_delegate -->|"loop 59% (3172)"| s_delegate
+  s_delegate -->|"25% (1352)"| DONE
+  s_edit -->|"loop 39% (932)"| s_edit
+  s_edit -->|"14% (338)"| s_read
+  s_find -->|"loop 43% (3314)"| s_find
+  s_find -->|"26% (2021)"| s_read
+  s_find -->|"21% (1641)"| s_search
+  s_graph -->|"loop 52% (509)"| s_graph
+  s_graph -->|"16% (151)"| s_read
+  s_graph -->|"11% (103)"| s_search
+  s_meta -->|"34% (1078)"| DONE
+  s_meta -->|"loop 26% (822)"| s_meta
+  s_other -->|"loop 27% (309)"| s_other
+  s_other -->|"19% (218)"| DONE
+  s_other -->|"10% (120)"| s_run
+  s_read -->|"loop 59% (16847)"| s_read
+  s_read -->|"23% (6519)"| s_search
+  s_run -->|"loop 49% (2436)"| s_run
+  s_run -->|"15% (737)"| DONE
+  s_search -->|"loop 50% (10163)"| s_search
+  s_search -->|"33% (6727)"| s_read
+  s_sys -->|"loop 19% (130)"| s_sys
+  s_sys -->|"14% (94)"| DONE
+  s_sys -->|"13% (84)"| s_run
+  s_sys -->|"12% (80)"| s_read
+  s_test -->|"loop 29% (344)"| s_test
+  s_test -->|"11% (133)"| s_search
+  s_test -->|"11% (130)"| s_read
+  s_vcs -->|"loop 52% (1523)"| s_vcs
+  s_web -->|"loop 74% (1977)"| s_web

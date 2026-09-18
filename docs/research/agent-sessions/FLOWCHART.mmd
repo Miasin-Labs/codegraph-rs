@@ -1,0 +1,18 @@
+%% The navigation loop every agent goal runs (627k mined tool calls). See FLOWCHART.md.
+flowchart TD
+  P([user prompt]) --> F["find files<br/>glob / ls / find"]
+  P --> S
+  P --> R
+  F --> S["search text<br/>grep / rg"]
+  S -->|"59,300× search→search<br/>reformulate; one name per call;<br/>82% of greps are regexes"| S
+  S -->|"38,888× search→read<br/>open every hit"| R["read file"]
+  R -->|"112,019× read→read<br/>paging, re-reading"| R
+  R --> S
+  R --> E["edit"]
+  E --> B["build / test"]
+  B -->|"edit→build→edit<br/>fix_test: median 38 calls, 6.6 min"| E
+  B --> D([answer / done])
+  R --> D
+
+  classDef hot fill:#fbe3e1,stroke:#b3261e,color:#111
+  class S,R hot

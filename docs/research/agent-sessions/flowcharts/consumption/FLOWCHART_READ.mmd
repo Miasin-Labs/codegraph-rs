@@ -1,0 +1,18 @@
+flowchart LR
+  R["file reads<br/>45,907 calls · 81.7M tok<br/>mean 145.5 lines"]:::out
+  R --> V["verbatim reuse · 2.0M tok<br/>2.7% · edit anchors, quotes"]:::used
+  R --> L["identifier / file:line reuse · +12.5M tok<br/>12.1% of lines used"]:::used
+  R --> WN["+-3 line context around used lines<br/>+18.7M tok"]:::used
+  R --> X["outside every used window<br/>48.5M tok"]:::waste
+  R -.-> AS["already sent, file unchanged<br/>6.2M tok · 8.5% of bytes"]:::waste
+  R -.-> WH["whole-file reads: 8,963<br/>24.9M tok, only 36.8% inside a used window"]:::waste
+  R -.-> PG["paging chains: 2,009 chains, 4,434 reads<br/>12.2M tok"]:::waste
+  R -.-> IJ["injected instruction files in read results<br/>1.2M tok"]:::waste
+  V --> MIN["minimal: symbol window, alreadySent elided<br/>30.5M tok"]:::used
+  L --> MIN
+  WN --> MIN
+
+  classDef out fill:#e8eef9,stroke:#3a5a9a,color:#111
+  classDef used fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef waste fill:#fbe3e1,stroke:#b3261e,color:#111
+  classDef next fill:#fff6d9,stroke:#9a7b12,color:#111

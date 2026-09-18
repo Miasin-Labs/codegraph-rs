@@ -1,0 +1,22 @@
+flowchart LR
+  EX["codegraph explore<br/>1,366 calls · 5.8M tok seen"]:::out
+  EX --> TR["harness-truncated: 579 calls (42.4%)<br/>~19k tok dropped each,<br/>~1k tok seen"]:::waste
+  EX --> CO["complete: 787 calls, 6k tok each"]:::out
+  CO --> CU["code lines used: 11.2%"]:::used
+  CO --> CW["code never used: ~89% of lines"]:::waste
+  EX -->|"30.2%"| G["grep the same symbol within 10 calls"]:::next
+  EX -->|"16.5%"| RF["read a file it just returned"]:::next
+  RF --> RA["re-read lines explore already sent<br/>15.0% of explores"]:::waste
+  ND["codegraph node<br/>1,558 calls · 2.6M tok"]:::out
+  ND --> NM1["what is at file:line · 618"]:::out
+  ND --> NM2["file paging offset/limit · 474"]:::out
+  ND --> NM3["symbol lookup · 376"]:::out
+  ND -->|"81.8%"| NA["node again within 10 calls"]:::next
+  SE["codegraph search<br/>513 calls · 257k tok"]:::out
+  SE --> RW["result row 93.6 tok,<br/>compact row 34.9 tok"]:::waste
+  SE --> SU["rows used: 33.6%"]:::used
+
+  classDef out fill:#e8eef9,stroke:#3a5a9a,color:#111
+  classDef used fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef waste fill:#fbe3e1,stroke:#b3261e,color:#111
+  classDef next fill:#fff6d9,stroke:#9a7b12,color:#111

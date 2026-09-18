@@ -1,0 +1,103 @@
+erDiagram
+    REPO ||--o{ SESSION : hosts
+    SESSION ||--o{ SESSION : "spawns subagent"
+    SESSION ||--|{ EPISODE : "split by human prompts"
+    EPISODE ||--o{ TOUCH : records
+    FILE ||--o{ TOUCH : "read, edited, searched"
+    EPISODE ||--o{ LOOKUP : records
+    IDENT ||--o{ LOOKUP : "searched for"
+    IDENT }o--o| FILE : "found in (locator)"
+    EPISODE ||--o{ OUTCOME : produces
+    OUTCOME }o--o{ FILE : "commit touches"
+    REPO ||--o{ FILE : contains
+    FILE ||--o{ COEDIT : "pair a"
+    FILE ||--o{ COEDIT : "pair b"
+    REPO ||--o| REPO_DIGEST : "precomputed for the prompt hook"
+
+    REPO {
+        int id PK
+        string root "canonical path"
+        string remote_hash "hash of git remote url"
+    }
+    SESSION {
+        int id PK
+        string src "opencode, claude-code, prime-agent, jfc"
+        string native_id UK "hashed, with src"
+        int parent_id FK "subagent tree"
+        int repo_id FK
+        string model "dominant model"
+        int started_at
+        int ended_at
+        int calls
+        int out_bytes
+        int tok_in
+        int tok_out
+        int tok_cache_read
+        int tok_cache_write
+    }
+    EPISODE {
+        int id PK
+        int session_id FK
+        int idx
+        int started_at
+        int prompt_len "length only, never text"
+        int calls
+        int nav_calls
+        int graph_calls
+        int out_bytes
+        string outcome "edited, tests-pass, tests-fail, commit, none"
+    }
+    FILE {
+        int id PK
+        int repo_id FK
+        string path "repo-relative"
+        string last_fingerprint "index content_hash at last touch"
+    }
+    TOUCH {
+        int episode_id FK
+        int file_id FK
+        string op "r e s"
+        int n
+        int bytes
+        int first_ts
+        int last_ts
+        string fingerprint
+        string ranges "line ranges served"
+    }
+    IDENT {
+        int id PK
+        int repo_id FK
+        string name "identifier-shaped only"
+        string node_id "codegraph node when resolvable"
+    }
+    LOOKUP {
+        int episode_id FK
+        int ident_id FK
+        int n
+        int bytes
+        int found_file_id FK "file read or edited next"
+        int found_line
+    }
+    OUTCOME {
+        int id PK
+        int episode_id FK
+        string kind "build test commit diagnostics"
+        string cmd_template "redacted, literals masked"
+        int ok
+        string err_sig "hash of first error lines"
+        string err_codes "E0308, TS2345"
+        string commit_sha
+        int ts
+    }
+    COEDIT {
+        int repo_id FK
+        int file_a FK
+        int file_b FK
+        int support
+        int last_ts
+    }
+    REPO_DIGEST {
+        int repo_id PK
+        int built_at
+        string body "1 KB, what we did last time"
+    }

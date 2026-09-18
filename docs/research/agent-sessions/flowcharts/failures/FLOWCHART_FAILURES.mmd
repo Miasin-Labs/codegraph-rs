@@ -1,0 +1,16 @@
+flowchart LR
+  C["240 labelled corrections<br/>(stratified sample of 40,000 flagged)"] --> NF["not an agent failure · 65%<br/>new request 63 · routine check 33<br/>deliberation 30 · pasted content 19 · other 12"]
+  C --> G["genuine failure · 35% (83)<br/>95% CI 29–41%"]
+  G --> ST["structural · 36% (30)<br/>misread control/data flow 9<br/>assumed dependency API 5 · stale view of a file 5<br/>assumed in-repo API 4 · missed a usage 3<br/>repo layout 2 · wrong target 1 · config keys 1"]
+  G --> NS["not structural · 64% (53)<br/>misread intent 11 · wrong external fact 11<br/>misread runtime evidence 9 · environment 8<br/>edit mechanics 5 · design rejected 5 · domain logic 3"]
+  G --> DET["caught by<br/>the human 36 · runtime 11 · self-review 11<br/>tool error 10 · compiler 10 · tests 4"]
+  ST --> P["preventable, high/medium confidence<br/>33% of genuine failures"]
+  NS -. rarely .-> P
+  P --> HAVE["existing codegraph<br/>explore 12 · node 7 · callers 6<br/>search 5 · diagnostics 3 · xref 2"]
+  P --> MISS["missing capability<br/>dependency API index 5 · stale-edit guard 4<br/>dataflow trace 3 · verify gate 3 · sibling paths 2"]
+  classDef waste fill:#fbe3e1,stroke:#b3261e,color:#111
+  classDef save fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef gap fill:#fff6d9,stroke:#9a7b12,color:#111
+  class G,ST,NS waste
+  class P,HAVE save
+  class MISS gap

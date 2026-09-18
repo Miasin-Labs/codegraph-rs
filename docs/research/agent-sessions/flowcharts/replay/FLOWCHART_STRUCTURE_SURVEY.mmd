@@ -1,0 +1,35 @@
+flowchart LR
+  P(["Structure survey<br/>n=28 episodes, 8 projects"])
+  subgraph AGENT["Agent actual path: median 26 nav calls, 145 KB"]
+    direction TB
+    A1["grep x6.4"]
+    A2["glob / ls / find x2.8"]
+    A3["read x18.4<br/>of which re-reads x7.1"]
+    A4["codegraph x0.2 · lsp x0.4"]
+    A1 --> A2 --> A3 --> A4
+    A3 -. reformulate, open next file .-> A1
+  end
+  AR{{"agent saw 0.74 of ground-truth files<br/>read precision 0.46<br/>+6.1 calls outside the index root"}}
+  subgraph CG["codegraph brief path: median 2 calls, 23 KB"]
+    direction TB
+    C1["explore(prompt terms)<br/>20 KB · recall 0.27"]
+    C3["files(path, maxDepth 2)<br/>cum 23 KB · recall 0.66"]
+    C1 --> C3
+  end
+  CR{{"codegraph surfaced 0.66<br/>precision 0.06"}}
+  MP["same steps 1:1 via node/search/files<br/>median 26 calls, 214 KB<br/>recall 0.84"]
+  OR["oracle explore (answer symbols)<br/>20 KB · recall 0.40"]
+  MISS["missed files, why:<br/>1 graph hop from a surfaced file: 19<br/>no term or edge links it: 11<br/>file has no symbols (config/docs): 4"]
+  P --> A1
+  A4 --> AR
+  AR -. substitute each call .-> MP
+  P --> C1
+  C3 --> CR
+  CR -.-> MISS
+  CR -. perfect terms .-> OR
+  classDef agent fill:#fde2c8,stroke:#b35c00,color:#000
+  classDef cg fill:#d6ecff,stroke:#1f5fa8,color:#000
+  classDef res fill:#eeeeee,stroke:#555,color:#000
+  class A1,A2,A3,A4,MP agent
+  class C1,C3 cg
+  class AR,CR,OR,MISS res

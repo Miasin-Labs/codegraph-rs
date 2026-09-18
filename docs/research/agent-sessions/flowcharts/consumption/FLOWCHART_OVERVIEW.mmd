@@ -1,0 +1,24 @@
+flowchart LR
+  ALL["All tool output in sample<br/>228,742 calls · 211.9M tok"]:::out
+  ALL --> RD["read · 86.9M tok<br/>41.0%"]:::out
+  ALL --> SR["search · 22.5M tok"]:::out
+  ALL --> BL["build/test/diag · 11.2M tok"]:::out
+  ALL --> CG["codegraph · 10.1M tok"]:::out
+  ALL --> FD["find/glob/ls · 3.7M tok"]:::out
+  ALL --> OT["other shell / python / skills / web<br/>77.4M tok"]:::out
+  RD --> NAV["navigation + build output<br/>127.1M tok"]:::out
+  SR --> NAV
+  BL --> NAV
+  CG --> NAV
+  FD --> NAV
+  NAV --> MIN["minimal sufficient answer<br/>46.7M tok (37%)"]:::used
+  NAV --> WST["not needed (largest parts below overlap)<br/>80.4M tok (63%)"]:::waste
+  WST --> W1["read lines outside any used window<br/>48.5M tok"]:::waste
+  WST --> W2["search hits never used<br/>15.0M tok"]:::waste
+  WST --> W3["re-sent unchanged content<br/>8.6M tok"]:::waste
+  WST --> W4["passing-test / progress lines<br/>5.3M tok"]:::waste
+
+  classDef out fill:#e8eef9,stroke:#3a5a9a,color:#111
+  classDef used fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef waste fill:#fbe3e1,stroke:#b3261e,color:#111
+  classDef next fill:#fff6d9,stroke:#9a7b12,color:#111

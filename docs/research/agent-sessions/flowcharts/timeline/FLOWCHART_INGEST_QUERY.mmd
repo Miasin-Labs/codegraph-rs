@@ -1,0 +1,41 @@
+flowchart TB
+    subgraph SRC["Agent stores (read-only)"]
+        oc[("opencode.db<br/>mode=ro")]
+        cc[/"Claude Code<br/>projects/**/*.jsonl"/]
+        pa[/"prime-agent<br/>sessions/*.jsonl"/]
+        jfc[/"JFC logs<br/>ses_*.log"/]
+    end
+    subgraph ING["codegraph history ingest --incremental (detached, never in a request path)"]
+        wm["per-source watermarks<br/>file + byte offset, session time_updated"]
+        parse["adapters: one per harness<br/>dedupe by native call id"]
+        norm["normalize: taxonomy kind, repo root,<br/>repo-relative paths, identifiers, outcomes"]
+        red["redact at parse time<br/>drop prompts, outputs, literals"]
+        up["upsert by natural key<br/>INSERT OR IGNORE, one txn per batch"]
+        roll["rollups: episodes, co-edit pairs,<br/>weekly timeline, REPO_DIGEST"]
+        wm --> parse --> norm --> red --> up --> roll
+    end
+    oc --> wm
+    cc --> wm
+    pa --> wm
+    jfc --> wm
+    budget{{"budget per run:<br/>5 s or 50k events,<br/>resume from watermark"}} -.-> ING
+    db[("~/.codegraph/history.db<br/>schema v2, mode 0600")]
+    up --> db
+    roll --> db
+    idx[("per-project index<br/>files.content_hash, nodes")]
+    idx -. "fingerprints, node ids" .-> norm
+    subgraph Q["Readers (all indexed, LIMITed, read-only)"]
+        hook["UserPromptSubmit hook<br/>1 primary-key read of REPO_DIGEST<br/>under 5 ms, 1 KB max"]
+        recall["MCP codegraph_recall<br/>about: path, symbol, failures, cochange<br/>2 KB default"]
+        hint["node / explore payloads<br/>optional priorSessions field"]
+        cli["CLI: codegraph history timeline, show"]
+    end
+    db --> hook
+    db --> recall
+    db --> hint
+    db --> cli
+    stale{"history.db missing<br/>or watermark stale?"}
+    hook --> stale
+    stale -- yes --> spawn["spawn_background_sync-style<br/>detached ingest"]
+    spawn --> ING
+    stale -- no --> ok["inject digest"]

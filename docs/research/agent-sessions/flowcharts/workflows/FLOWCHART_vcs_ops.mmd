@@ -1,0 +1,51 @@
+flowchart TD
+  s_run["run/exec"]
+  s_read["read_file"]
+  s_web["web/docs"]
+  s_find["find_files"]
+  s_check["build/lint"]
+  s_test["run_tests"]
+  s_meta["todo/skill"]
+  s_graph["graph_query"]
+  START(["Version-control operations<br/>n=1607 · med 7 calls · p90 51"])
+  s_search["search_text"]
+  s_sys["shell/env"]
+  s_other["other"]
+  s_vcs["git/gh"]
+  s_edit["edit"]
+  DONE([done])
+  s_delegate["subagent"]
+  START -->|"38% (608)"| s_vcs
+  START -->|"29% (458)"| s_meta
+  START -->|"13% (211)"| s_read
+  s_check -->|"loop 28% (355)"| s_check
+  s_check -->|"12% (151)"| s_test
+  s_check -->|"11% (142)"| s_vcs
+  s_delegate -->|"loop 52% (313)"| s_delegate
+  s_delegate -->|"14% (88)"| s_read
+  s_edit -->|"loop 44% (1537)"| s_edit
+  s_edit -->|"17% (603)"| s_read
+  s_edit -->|"11% (371)"| s_test
+  s_find -->|"loop 34% (420)"| s_find
+  s_find -->|"17% (212)"| s_read
+  s_find -->|"14% (175)"| s_search
+  s_graph -->|"loop 34% (52)"| s_graph
+  s_graph -->|"21% (32)"| s_read
+  s_graph -->|"12% (19)"| s_search
+  s_meta -->|"loop 21% (597)"| s_meta
+  s_meta -->|"17% (489)"| s_vcs
+  s_meta -->|"17% (486)"| DONE
+  s_meta -->|"11% (309)"| s_read
+  s_other -->|"loop 32% (246)"| s_other
+  s_read -->|"loop 52% (4208)"| s_read
+  s_read -->|"16% (1314)"| s_search
+  s_read -->|"11% (882)"| s_edit
+  s_run -->|"loop 48% (1295)"| s_run
+  s_search -->|"loop 40% (1763)"| s_search
+  s_search -->|"32% (1427)"| s_read
+  s_sys -->|"loop 23% (127)"| s_sys
+  s_sys -->|"11% (62)"| s_run
+  s_test -->|"loop 31% (449)"| s_test
+  s_test -->|"13% (192)"| s_read
+  s_vcs -->|"loop 67% (5194)"| s_vcs
+  s_web -->|"loop 67% (639)"| s_web

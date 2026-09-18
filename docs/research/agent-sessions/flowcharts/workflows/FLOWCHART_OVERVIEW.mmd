@@ -1,0 +1,58 @@
+flowchart TD
+  U([user prompt])
+  fix_compile["Fix a compile error (build loop)"]
+  refactor["Refactor / rename"]
+  survey_repo["Survey repo / onboard"]
+  research_web["External research / docs"]
+  fix_test["Fix a failing test (test loop)"]
+  vcs_ops["Version-control operations"]
+  implement_feature["Implement a feature"]
+  ops_env["Environment / ops setup"]
+  understand_code["Understand how X works"]
+  locate_def["Locate a definition"]
+  trace_flow["Trace data / control flow"]
+  impact_analysis["Find callers / blast radius"]
+  fix_bug["Fix a bug"]
+  debug_runtime["Debug runtime behaviour"]
+  review_diff["Review a diff"]
+  U -->|"starts 1778"| understand_code
+  U -->|"starts 1539"| locate_def
+  U -->|"starts 1279"| survey_repo
+  U -->|"starts 1175"| fix_bug
+  U -->|"starts 763"| refactor
+  U -->|"starts 693"| implement_feature
+  locate_def -->|"29% (420)"| understand_code
+  locate_def -->|"repeat 27% (390)"| locate_def
+  locate_def -->|"18% (253)"| fix_bug
+  fix_bug -->|"repeat 42% (967)"| fix_bug
+  fix_bug -->|"23% (538)"| understand_code
+  fix_bug -->|"10% (242)"| locate_def
+  ops_env -->|"repeat 30% (226)"| ops_env
+  ops_env -->|"22% (168)"| understand_code
+  ops_env -->|"19% (142)"| fix_bug
+  survey_repo -->|"30% (464)"| understand_code
+  survey_repo -->|"repeat 29% (444)"| survey_repo
+  survey_repo -->|"17% (260)"| fix_bug
+  implement_feature -->|"28% (124)"| fix_bug
+  implement_feature -->|"27% (121)"| understand_code
+  implement_feature -->|"13% (56)"| survey_repo
+  vcs_ops -->|"repeat 36% (336)"| vcs_ops
+  vcs_ops -->|"22% (206)"| understand_code
+  vcs_ops -->|"15% (137)"| fix_bug
+  understand_code -->|"repeat 47% (1540)"| understand_code
+  understand_code -->|"18% (587)"| fix_bug
+  understand_code -->|"12% (404)"| survey_repo
+  research_web -->|"repeat 38% (161)"| research_web
+  research_web -->|"20% (85)"| understand_code
+  research_web -->|"17% (73)"| fix_bug
+  debug_runtime -->|"27% (271)"| understand_code
+  debug_runtime -->|"repeat 26% (258)"| debug_runtime
+  debug_runtime -->|"20% (206)"| fix_bug
+  fix_compile -->|"25% (119)"| understand_code
+  fix_compile -->|"21% (100)"| fix_bug
+  fix_compile -->|"repeat 18% (88)"| fix_compile
+  refactor -->|"32% (72)"| understand_code
+  refactor -->|"repeat 23% (52)"| refactor
+  fix_test -->|"repeat 30% (163)"| fix_test
+  fix_test -->|"25% (136)"| understand_code
+  fix_test -->|"17% (92)"| fix_bug

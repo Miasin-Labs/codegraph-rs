@@ -1,0 +1,23 @@
+flowchart LR
+  Q["agent request"]:::out
+  Q --> K1["symbol lookup"]:::out
+  K1 --> A1["rows: name, kind, file:line-end, signature<br/>+ 3-line context · batch N names<br/>594 → 252 tok per call"]:::used
+  Q --> K2["text / regex search"]:::out
+  K2 --> A2["first K hits per file, rest as per-file counts<br/>skip hits already sent · cursor<br/>1,037 → 378 tok per call"]:::used
+  Q --> K3["read to understand"]:::out
+  K3 --> A3["outline first, then symbol windows<br/>1,889 → 704 tok per call"]:::used
+  Q --> K4["read before edit"]:::out
+  K4 --> A4["enclosing symbol span, line-numbered,<br/>+3 lines context<br/>1,607 → 806 tok per call"]:::used
+  Q --> K5["re-read"]:::out
+  K5 --> A5["alreadySent ref or diff since last send<br/>1,301 → 41 tok per call"]:::used
+  Q --> K6["build / check"]:::out
+  K6 --> A6["status + errors: code, msg, file:line, 6-line snippet<br/>528 → 126 tok per call"]:::used
+  Q --> K7["test run"]:::out
+  K7 --> A7["counts + failures: test, file:line, assertion<br/>868 → 170 tok per call"]:::used
+  Q --> K8["explore"]:::out
+  K8 --> A8["symbol rows + edges, code for top 3 only,<br/>hard budget under the harness cap<br/>4,267 → 1,264 tok per call"]:::used
+
+  classDef out fill:#e8eef9,stroke:#3a5a9a,color:#111
+  classDef used fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef waste fill:#fbe3e1,stroke:#b3261e,color:#111
+  classDef next fill:#fff6d9,stroke:#9a7b12,color:#111

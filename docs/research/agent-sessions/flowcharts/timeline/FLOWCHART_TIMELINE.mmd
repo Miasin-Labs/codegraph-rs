@@ -1,0 +1,25 @@
+gantt
+    title Harnesses, codegraph landings and behaviour phases (2026, UTC)
+    dateFormat YYYY-MM-DD
+    axisFormat %b %d
+    section Harness in use
+    opencode 517.6k calls                        :oc, 2026-02-14, 2026-09-01
+    JFC 140.2k calls                             :jfc, 2026-05-04, 2026-08-06
+    Claude Code 54.3k calls                      :cc, 2026-07-28, 2026-09-17
+    prime-agent 55.7k calls                      :pa, 2026-08-16, 2026-09-18
+    section codegraph-rs landings
+    first codegraph MCP call (TS era)            :milestone, f0, 2026-05-21, 0d
+    F1 Rust port, MCP and CLI                    :milestone, f1, 2026-06-06, 0d
+    F2 truncation opt-in                         :milestone, f2, 2026-06-12, 0d
+    F3 history.rs flywheel merged                :milestone, f3, 2026-06-30, 0d
+    F4 explore v2 machine-readable output        :milestone, f4, 2026-07-13, 0d
+    F5 outputSchema root fix                     :milestone, f5, 2026-07-16, 0d
+    F6 indexing hang fix and 30 upstream fixes   :milestone, f6, 2026-08-30, 0d
+    F7 8 default tools on every project          :milestone, f7, 2026-09-16, 0d
+    F8 view ledger, batch symbols, history tool  :milestone, f8, 2026-09-17, 0d
+    section Behaviour phases
+    A no graph - grep 17-39 pct, nav 50-84 pct   :a, 2026-02-14, 2026-05-20
+    B adoption - MCP in 47-59 pct of sessions    :active, b, 2026-05-21, 2026-07-05
+    C low volume - graph 2-7 pct of calls        :active, c, 2026-07-06, 2026-08-23
+    D harness shift - MCP in 0-2 pct of sessions :crit, d, 2026-08-24, 2026-09-13
+    E MCP back in Claude Code, 4 pct of sessions :e, 2026-09-14, 2026-09-18

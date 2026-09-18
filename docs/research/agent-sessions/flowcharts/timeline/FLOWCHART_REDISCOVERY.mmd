@@ -1,0 +1,28 @@
+flowchart LR
+    subgraph S1["Session 1 (day 0, repo R)"]
+        direction TB
+        p1["prompt"] --> g1["grep / rg, reformulated<br/>(1.9 greps per run)"]
+        g1 --> r1["read files A, B, C"]
+        r1 --> e1["edit B"]
+        e1 --> t1["build / test<br/>(11% of runs fail)"]
+    end
+    t1 --> lost(["session ends:<br/>context discarded,<br/>nothing persisted"])
+    lost -->|"gap: 34% under 1 day,<br/>32% 1-7 days, 23% 7-30 days,<br/>11% over 30 days"| p2
+    subgraph S2["Session 2 (later, same repo R)"]
+        direction TB
+        p2["prompt"] --> g2["grep again<br/>46% of searches reuse an identifier;<br/>20% reuse all of them"]
+        g2 --> r2["re-read A, B, C<br/>59.6% of file reads in git repos;<br/>80.6% of those files unchanged"]
+        r2 --> e2["edit"]
+        e2 --> t2["same failing command again<br/>(4.9% of failures)"]
+    end
+    subgraph M["With a session-history graph"]
+        direction TB
+        q["codegraph_recall(path or symbol)<br/>about 1-2 KB"] --> ans["last time: files A, B, C<br/>symbol X at B:120<br/>test Y failed then passed<br/>A and C unchanged since"]
+        ans --> tr["targeted read of B only"]
+    end
+    p2 -.->|"instead of g2 and r2"| q
+    tr -.-> e2
+    classDef waste fill:#fde2e1,stroke:#c0392b,color:#000
+    classDef save fill:#e3f4e8,stroke:#1e8449,color:#000
+    class g2,r2,t2 waste
+    class q,ans,tr save

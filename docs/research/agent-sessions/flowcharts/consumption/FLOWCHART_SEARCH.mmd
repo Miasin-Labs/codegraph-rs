@@ -1,0 +1,20 @@
+flowchart LR
+  S["grep / rg / grep-tool output<br/>27,603 calls · 22.5M tok<br/>mean 32.5 hits in 5.7 files"]:::out
+  S --> E["empty result<br/>11.1% of calls"]:::waste
+  S --> H["hit lines"]:::out
+  H --> US["strictly used · 1.9M tok<br/>line later read/edited/quoted<br/>10.2% of hits"]:::used
+  H --> UL["loosely used · +5.7M tok<br/>file opened or identifier reused<br/>38.7% of hits in total"]:::used
+  H --> UN["never touched · 15.0M tok"]:::waste
+  H -.-> AS["already sent by an earlier search<br/>2.4M tok"]:::waste
+  UN --> BIG["searches with more than 100 hits: 1,799 calls<br/>11.4M tok, 28.2% of hits used"]:::waste
+  S -->|"35.7%"| N1["next: read a file"]:::next
+  S -->|"26.5%"| N2["next: refine the search"]:::next
+  S -->|"10.8%"| N3["next: reformulate, nothing used"]:::next
+  S -->|"4.2%"| N4["next: edit directly"]:::next
+  US --> MIN["minimal answer: used hits + per-file counts<br/>8.5M tok"]:::used
+  UL --> MIN
+
+  classDef out fill:#e8eef9,stroke:#3a5a9a,color:#111
+  classDef used fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef waste fill:#fbe3e1,stroke:#b3261e,color:#111
+  classDef next fill:#fff6d9,stroke:#9a7b12,color:#111

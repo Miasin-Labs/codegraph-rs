@@ -1,0 +1,18 @@
+flowchart LR
+  B["build / test / lint / lsp output<br/>13,271 runs · 9.0M tok"]:::out
+  B --> P["passing-test lines 29.9%"]:::waste
+  B --> PR["compile progress / Running 19.6%"]:::waste
+  B --> O["program stdout, blanks, misc 16.1%"]:::waste
+  B --> BT["backtraces 4.6% · ANSI 0.3%"]:::waste
+  B --> WB["warning snippets/notes 7.1%"]:::waste
+  B --> SG["error/warn headers + file:line + summary<br/>16.2%"]:::used
+  B --> EB["error snippet, first 6 lines 3.7%"]:::used
+  B --> FR["failing runs 18.4%: 3.0M tok<br/>needed 1.2M"]:::out
+  B --> OK["passing runs: 6.0M tok<br/>needed 647k"]:::out
+  B -->|"37.9%"| SF["agent pipes through tail/head/grep"]:::next
+  SF --> RR["pure re-runs, nothing changed: 886<br/>86.6% after a self-filtered run,<br/>94.9% within 3 calls"]:::waste
+
+  classDef out fill:#e8eef9,stroke:#3a5a9a,color:#111
+  classDef used fill:#e3f4e1,stroke:#2f7d32,color:#111
+  classDef waste fill:#fbe3e1,stroke:#b3261e,color:#111
+  classDef next fill:#fff6d9,stroke:#9a7b12,color:#111
