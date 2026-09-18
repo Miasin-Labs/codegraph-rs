@@ -29,6 +29,9 @@
 //!                                critical, export, types, generics,
 //!                                boundaries, capabilities, schema, stats,
 //!                                cfg, dataflow)
+//!   codegraph projects [cmd]     The atlas of indexed projects
+//!                                (list, show, links, scan, prune, graph,
+//!                                register)
 //!   codegraph serve --mcp        Run as an MCP server over stdio
 //!   codegraph daemon             List or stop background daemons
 //!   codegraph version            Print the installed version
@@ -110,11 +113,12 @@ mod index;
 mod install;
 mod output;
 mod path;
+mod projects;
 mod serve;
 mod tool_commands;
 
 use analyze::{bridge_project_with_options, cmd_analyze, print_json};
-use cli::{AnalyzeCommands, Cli, Commands, HistoryCommands};
+use cli::{AnalyzeCommands, Cli, Commands, HistoryCommands, ProjectsCommands};
 use context::cmd_context;
 use files::cmd_files;
 use graph::{CallDirection, cmd_affected, cmd_call_graph, cmd_impact, is_exact_symbol_match};
@@ -204,6 +208,7 @@ fn record_command_telemetry(command: &Commands) {
         Commands::Context { .. } => "context",
         Commands::Analyze { .. } => "analyze",
         Commands::History { .. } => "history",
+        Commands::Projects { .. } => "projects",
         Commands::Upgrade { .. } => "upgrade",
         Commands::PromptHook => "prompt-hook",
         Commands::Version => "version",
@@ -399,6 +404,7 @@ pub(crate) async fn main() {
         ),
         Commands::Analyze { command } => cmd_analyze(command),
         Commands::History { command } => cmd_history(command),
+        Commands::Projects { command, json } => projects::cmd_projects(command, json),
         Commands::Telemetry { action } => cmd_telemetry(action.as_deref()),
         Commands::Upgrade {
             version,

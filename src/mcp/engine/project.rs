@@ -77,6 +77,9 @@ impl MCPEngine {
             self.tool_handler.set_auto_sync_disabled(reason);
             return;
         }
+        // One read-only atlas lookup; an unknown or day-old entry is
+        // refreshed by a detached `codegraph projects register`.
+        let _ = crate::atlas::background::register_in_background(&root);
         self.start_watching();
         self.catch_up_sync();
     }

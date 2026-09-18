@@ -30,6 +30,10 @@ impl ServerProcess {
             .arg("--path")
             .arg(root)
             .current_dir(root)
+            .env(
+                "CODEGRAPH_HOME",
+                concat!(env!("CARGO_TARGET_TMPDIR"), "/codegraph-home"),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

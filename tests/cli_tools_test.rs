@@ -8,10 +8,15 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_codegraph")
 }
 
+/// Machine-wide state (the atlas) for the spawned CLI, kept out of the
+/// developer's home.
+const TEST_HOME: &str = concat!(env!("CARGO_TARGET_TMPDIR"), "/codegraph-home");
+
 fn run_cli(root: &Path, registry: &Path, args: &[&str]) -> Output {
     Command::new(bin())
         .args(args)
         .current_dir(root)
+        .env("CODEGRAPH_HOME", TEST_HOME)
         .env("CODEGRAPH_NO_DAEMON", "1")
         .env("CODEGRAPH_DAEMON_REGISTRY_DIR", registry)
         .stdin(Stdio::null())
@@ -147,6 +152,7 @@ fn run_prompt_hook(root: &Path, registry: &Path, prompt: &str, background: bool)
     command
         .arg("prompt-hook")
         .current_dir(root)
+        .env("CODEGRAPH_HOME", TEST_HOME)
         .env("CODEGRAPH_DAEMON_REGISTRY_DIR", registry)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped());

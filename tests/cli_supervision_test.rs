@@ -10,6 +10,10 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_codegraph")
 }
 
+/// Machine-wide state (the atlas) for the spawned CLI, kept out of the
+/// developer's home.
+const TEST_HOME: &str = concat!(env!("CARGO_TARGET_TMPDIR"), "/codegraph-home");
+
 #[test]
 fn normal_init_and_index_complete() {
     // Given: a small source project without an index.
@@ -40,6 +44,7 @@ fn run_cli(cwd: &Path, args: &[&str]) -> std::process::Output {
     Command::new(bin())
         .args(args)
         .current_dir(cwd)
+        .env("CODEGRAPH_HOME", TEST_HOME)
         .stdin(Stdio::null())
         .output()
         .expect("run CLI")

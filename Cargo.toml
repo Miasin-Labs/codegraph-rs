@@ -45,6 +45,9 @@ cudarc = { version = "0.16", features = ["std", "driver", "nvrtc", "dynamic-load
 dirs = "6"
 libc = "0.2"
 jsonc-parser = { version = "0.32", features = ["cst"] }
+# Span-carrying TOML parse (`toml::de::DeTable`) for the atlas's Cargo.toml
+# link evidence (manifest + line).
+toml = { version = "1", default-features = false, features = ["std", "parse"] }
 
 # tree-sitter core + grammars (native — replaces web-tree-sitter + wasm files)
 tree-sitter = "0.26"

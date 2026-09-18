@@ -65,6 +65,7 @@ pub(crate) async fn cmd_init(path_arg: Option<&str>, force: bool, verbose: bool)
             // try { offerWatchFallback } catch { /* non-fatal */ }
             offer_watch_fallback(&project_path, false);
             clack_outro("");
+            super::super::projects::register_after_write(&project_path, false);
             return Ok(());
         }
 
@@ -82,6 +83,7 @@ pub(crate) async fn cmd_init(path_arg: Option<&str>, force: bool, verbose: bool)
 
         clack_outro("Done");
         cg.close();
+        super::super::projects::register_after_write(&project_path, false);
         Ok::<(), String>(())
     };
 
@@ -206,6 +208,7 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
                 process::exit(1);
             }
             cg.close();
+            super::super::projects::register_after_write(&project_path, true);
             return Ok(());
         }
 
@@ -233,6 +236,7 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
 
         clack_outro("Done");
         cg.close();
+        super::super::projects::register_after_write(&project_path, false);
         Ok::<(), String>(())
     };
 
@@ -269,6 +273,7 @@ pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
                 .await
                 .map_err(|e| e.to_string())?;
             cg.close();
+            super::super::projects::register_after_write(&project_path, true);
             return Ok(());
         }
 
@@ -328,6 +333,7 @@ pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
 
         clack_outro("Done");
         cg.close();
+        super::super::projects::register_after_write(&project_path, false);
         Ok::<(), String>(())
     };
 

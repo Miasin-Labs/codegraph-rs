@@ -21,6 +21,10 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_codegraph")
 }
 
+/// Machine-wide state (the atlas) for the spawned CLI, kept out of the
+/// developer's home.
+const TEST_HOME: &str = concat!(env!("CARGO_TARGET_TMPDIR"), "/codegraph-home");
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -34,6 +38,7 @@ fn run_cli(cwd: &Path, args: &[&str]) -> Output {
     Command::new(bin())
         .args(args)
         .current_dir(cwd)
+        .env("CODEGRAPH_HOME", TEST_HOME)
         .env("CODEGRAPH_NO_DAEMON", "1")
         .stdin(Stdio::null())
         .output()

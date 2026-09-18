@@ -116,6 +116,9 @@ impl ToolHandler {
 
         // Open and cache under both paths
         let cg = Rc::new(CodeGraph::open_sync(&resolved_root)?);
+        // Once per opened project: a read-only atlas lookup, and a detached
+        // registration when the atlas doesn't know it (never written here).
+        let _ = crate::atlas::background::register_in_background(&resolved_root);
         self.project_cache
             .borrow_mut()
             .insert(resolved_key.clone(), Rc::clone(&cg));

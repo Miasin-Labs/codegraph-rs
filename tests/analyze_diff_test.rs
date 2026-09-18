@@ -24,6 +24,10 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_codegraph")
 }
 
+/// Machine-wide state (the atlas) for the spawned CLI, kept out of the
+/// developer's home.
+const TEST_HOME: &str = concat!(env!("CARGO_TARGET_TMPDIR"), "/codegraph-home");
+
 /// Run the built binary with `cwd`, stdin closed, `CODEGRAPH_NO_DAEMON=1`
 /// pinned like the rest of the CLI suite, and any ambient cache-dir
 /// override stripped (these tests reason about exact cache locations).
@@ -31,6 +35,7 @@ fn run_cli(cwd: &Path, args: &[&str]) -> Output {
     Command::new(bin())
         .args(args)
         .current_dir(cwd)
+        .env("CODEGRAPH_HOME", TEST_HOME)
         .env("CODEGRAPH_NO_DAEMON", "1")
         .env_remove("CODEGRAPH_ANALYSIS_CACHE_DIR")
         .stdin(Stdio::null())

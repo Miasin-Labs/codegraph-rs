@@ -77,6 +77,12 @@ fn spawn_server(cwd: &Path, args: &[&str], no_daemon: bool) -> ServerProc {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_codegraph-mcp-server"));
     cmd.args(args)
         .current_dir(cwd)
+        // Detached work the server starts (atlas registration) stays out of
+        // the developer's home.
+        .env(
+            "CODEGRAPH_HOME",
+            concat!(env!("CARGO_TARGET_TMPDIR"), "/codegraph-home"),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

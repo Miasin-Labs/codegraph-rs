@@ -2,9 +2,11 @@ use super::{Parser, Subcommand};
 
 mod analyze;
 mod history;
+mod projects;
 
 pub(crate) use analyze::AnalyzeCommands;
 pub(crate) use history::HistoryCommands;
+pub(crate) use projects::ProjectsCommands;
 
 #[derive(Parser)]
 #[command(
@@ -328,6 +330,14 @@ pub(crate) enum Commands {
     History {
         #[command(subcommand)]
         command: HistoryCommands,
+    },
+    /// The atlas of indexed projects: list, show, links, scan, prune, graph
+    Projects {
+        #[command(subcommand)]
+        command: Option<ProjectsCommands>,
+        /// Output as JSON
+        #[arg(short = 'j', long, global = true)]
+        json: bool,
     },
     /// Show or change anonymous usage telemetry (status, on, off)
     Telemetry {

@@ -390,6 +390,11 @@ fn run_cli(cwd: &Path, args: &[&str]) -> std::process::Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_codegraph"))
         .args(args)
         .current_dir(cwd)
+        // The atlas (machine-wide state) stays out of the developer's home.
+        .env(
+            "CODEGRAPH_HOME",
+            concat!(env!("CARGO_TARGET_TMPDIR"), "/codegraph-home"),
+        )
         .env("CODEGRAPH_NO_DAEMON", "1")
         .env_remove("CODEGRAPH_ANALYSIS_FIELDS")
         .stdin(std::process::Stdio::null())

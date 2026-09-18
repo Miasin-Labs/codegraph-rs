@@ -230,3 +230,43 @@ cargo test --workspace
   first prompt. Ingest is always a detached, budgeted `codegraph history
   ingest --incremental` (single-writer lock); the hook and MCP only ever read.
   `CODEGRAPH_HISTORY=0` turns the digest and background ingest off.
+
+## Atlas (federated project graph, phase 1)
+
+`src/atlas/` keeps `codegraph_home()/atlas.db` (0600, WAL, `PRAGMA
+user_version` migrations in `atlas/schema.rs`): a small global graph *about*
+the per-checkout indexes, which stay the write-local shards (one global
+writer would serialize every watcher and migration). `deps/` (shared
+dependency graphs + `deps/registry.db`) is a separate module; the join key
+between them is the project's canonical root (`atlas::canonical_root`).
+
+- **Rows.** `projects` = one row per indexed checkout (no separate
+  checkouts table): git facts read from `.git` files only (normalized remote,
+  credentials stripped + redacted — `atlas/remote.rs`; branch/head; linked
+  worktrees share `repo_root`, separate clones share `remote`), index stats,
+  status `ok|missing|stale-schema|unreadable`. `project_links` = `from →
+  to_path` + `LinkKind` + evidence (manifest, line); `to_project` is the
+  nearest registered root at/above `to_path`, re-resolved on every write
+  (`relink`), and `same_remote`/`nested_workspace` are derived from the rows.
+  Manifests (`atlas/manifest/`): Cargo path deps/`[patch]`/workspace members,
+  npm/pnpm workspaces and `file:`/`link:`/`workspace:` deps, go.mod local
+  `replace` — never lockfiles or registry versions (that is `deps/`).
+- **Writers.** CLI `init`/`index`/`sync` register after success
+  (`register_after_write`, silent unless it fails; git hooks' `sync --quiet`
+  keeps the atlas fresh); `codegraph projects scan|register|prune`. Facts are
+  gathered first; the write is one `BEGIN IMMEDIATE` transaction with a
+  1.5 s busy timeout, and contention is skipped and reported, never waited
+  out. MCP never writes it: opening a project does one read-only lookup and,
+  if unknown or >24 h old, spawns a detached `codegraph projects register`
+  (`atlas/background.rs`; `CODEGRAPH_NO_BACKGROUND_SYNC=1` disables).
+  `CODEGRAPH_ATLAS=0` turns registration off.
+- **Never write another project's `.codegraph/`.** Index stats open the
+  project DB through `atlas/ro.rs`: `mode=ro` only when its `-wal` and `-shm`
+  already exist, else `immutable=1` (a plain read-only open of a WAL DB
+  *creates* those files). Exact node/edge `COUNT(*)` runs under an interrupt
+  deadline and falls back to `files.node_count`/`sqlite_stat1` estimates
+  (`countsExact: false`). Readers (`Atlas::open_read_only`) create nothing.
+- **Tests.** Every test that spawns the `codegraph` or MCP binary sets
+  `CODEGRAPH_HOME` (under `CARGO_TARGET_TMPDIR`) so registrations never touch
+  the developer's atlas; lib tests use explicit atlas paths (the
+  `directory.rs` test owns the `CODEGRAPH_HOME` env var in that binary).
