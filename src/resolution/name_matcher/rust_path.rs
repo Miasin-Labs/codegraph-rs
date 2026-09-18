@@ -71,6 +71,27 @@ fn module_location(file_path: &str) -> ModuleLocation {
     }
 }
 
+/// Inline `mod` blocks enclosing an item, read from its qualified name: the
+/// leading lower-case segments (`tests::case` -> `tests`, `a::b::Type::m` ->
+/// `a::b`). Rust names modules in snake_case and types in UpperCamelCase, so
+/// the first capitalised segment is where the owner type begins.
+fn inline_modules(qualified_name: &str) -> Vec<String> {
+    let segments: Vec<&str> = qualified_name.split("::").collect();
+    let Some((_item, scope)) = segments.split_last() else {
+        return Vec::new();
+    };
+    scope
+        .iter()
+        .take_while(|segment| {
+            segment
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        })
+        .map(|segment| (*segment).to_string())
+        .collect()
+}
+
 /// Split a path, dropping generic arguments (`Vec::<u8>::new` -> `Vec::new`).
 fn segments(path: &str) -> Vec<&str> {
     path.split("::")
@@ -152,11 +173,21 @@ fn resolve_module_path(
     context: &dyn ResolutionContext,
 ) -> Option<ResolvedRef> {
     let here = module_location(&reference.file_path);
+    // The current module is the file's module plus any inline `mod` blocks
+    // around the caller — `super::f` inside `mod tests { … }` in lib.rs means
+    // the crate root, not "above the crate root".
+    let current = || {
+        let mut module = here.module.clone();
+        if let Some(from) = context.get_node_by_id(&reference.from_node_id) {
+            module.extend(inline_modules(&from.qualified_name));
+        }
+        module
+    };
     let mut base: Vec<String> = match head {
         "crate" => Vec::new(),
-        "self" => here.module.clone(),
+        "self" => current(),
         "super" => {
-            let mut module = here.module.clone();
+            let mut module = current();
             module.pop()?;
             module
         }
@@ -279,6 +310,15 @@ mod tests {
         let nested = at("src/tools/clippy/clippy_lints/src/methods/chars_cmp.rs");
         assert_eq!(nested.crate_key, "src/tools/clippy/clippy_lints/src");
         assert_eq!(nested.module, ["methods", "chars_cmp"]);
+    }
+
+    #[test]
+    fn reads_inline_modules_from_qualified_names() {
+        assert_eq!(inline_modules("tests::case"), ["tests"]);
+        assert_eq!(inline_modules("outer::inner::f"), ["outer", "inner"]);
+        assert_eq!(inline_modules("tests::Fixture::read"), ["tests"]);
+        assert!(inline_modules("Type::method").is_empty());
+        assert!(inline_modules("free_fn").is_empty());
     }
 
     #[test]

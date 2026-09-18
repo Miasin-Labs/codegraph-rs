@@ -19,6 +19,8 @@ pub use query_utils::{
     get_stem_variants,
     is_distinctive_identifier,
     is_test_file,
+    is_test_source_file,
+    is_test_symbol,
     kind_bonus,
     name_match_bonus,
     score_path_relevance,

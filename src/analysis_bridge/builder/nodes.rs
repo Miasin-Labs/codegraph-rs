@@ -93,6 +93,15 @@ impl NodeInsert<'_> {
         if let Some(sig) = &node.signature {
             metadata.insert("signature".to_string(), sig.clone());
         }
+        // `classify_entrypoints` treats a `test` flag as a Test entrypoint; no
+        // one set it, so the DSL's `entrypoints Test` matched nothing.
+        if matches!(
+            node.kind,
+            crate::types::NodeKind::Function | crate::types::NodeKind::Method
+        ) && crate::search::is_test_symbol(&node.file_path, &node.qualified_name)
+        {
+            metadata.insert("test".to_string(), "true".to_string());
+        }
         if let Some(set) = self.enrichment.fields.get(aid) {
             if !self.enrichment.engine_fields.contains_key(aid) {
                 let arr: Vec<&String> = set.iter().collect();

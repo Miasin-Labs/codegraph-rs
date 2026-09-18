@@ -854,3 +854,41 @@ async fn index_fingerprint_incorporates_schema_version() {
         "schema version must be part of the snapshot-cache fingerprint (v4→v5 invalidation)"
     );
 }
+
+/// Test functions reach the analysis graph flagged as tests, so the DSL's
+/// `entrypoints Test` (which reads that flag) has something to find.
+#[tokio::test(flavor = "current_thread")]
+async fn bridge_flags_test_functions_for_entrypoint_classification() {
+    let dir = tempfile::TempDir::new().unwrap();
+    write(
+        &dir.path().join("src/lib.rs"),
+        "pub fn answer() -> u32 { 1 }\n\
+         #[cfg(test)]\n\
+         mod tests {\n    #[test]\n    fn verifies_it() { let value = super::answer(); assert!(value > 0); }\n}\n",
+    );
+    write(
+        &dir.path().join("tests/api.rs"),
+        "#[test]\nfn integration_case() { assert!(true); }\n",
+    );
+    index_fixture(dir.path()).await;
+    let result = bridge(dir.path());
+    let flag = |name: &str| {
+        let id = node_id_by_name(&result, name, ANodeKind::Function);
+        result
+            .graph
+            .get_node(&id)
+            .and_then(|node| node.metadata.get("test").cloned())
+    };
+    assert_eq!(flag("verifies_it").as_deref(), Some("true"));
+    assert_eq!(flag("integration_case").as_deref(), Some("true"));
+    assert_eq!(flag("answer"), None);
+    // `super::answer()` inside the inline test module resolves to the
+    // crate-root fn, so the test reaches production code in the graph.
+    let (_conn, qb) = open_queries(dir.path());
+    let prod = db_node_id(&qb, "answer", NodeKind::Function);
+    let callers = qb.get_incoming_edges(&prod, None).expect("incoming edges");
+    assert!(
+        callers.iter().any(|edge| edge.kind == EdgeKind::Calls),
+        "no call edge from the inline test module: {callers:?}"
+    );
+}

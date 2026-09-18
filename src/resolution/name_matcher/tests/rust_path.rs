@@ -230,3 +230,20 @@ fn cfg_variants_of_one_item_are_not_ambiguous() {
         "alive-unix"
     );
 }
+
+#[test]
+fn super_inside_an_inline_test_module_reaches_the_file_module() {
+    // `mod tests { fn case() { super::production(); } }` in src/lib.rs.
+    let ctx = Fixture::new(vec![
+        func("case", "case", "tests::case", "src/lib.rs"),
+        func("prod", "production", "production", "src/lib.rs"),
+        func("decoy", "production", "production", "src/other.rs"),
+    ]);
+    let r = rust_ref("case", "super::production", "src/lib.rs");
+    assert_eq!(
+        match_reference(&r, &ctx)
+            .expect("super:: from inline mod")
+            .target_node_id,
+        "prod"
+    );
+}

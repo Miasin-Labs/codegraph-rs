@@ -16,33 +16,10 @@ use crate::error::Result;
 use crate::types::{Node, NodeKind};
 use crate::utils::clamp;
 
-/// Test code by the conventions of the languages codegraph indexes: test
-/// directories, test file suffixes/prefixes, Rust inline `mod tests`, and
-/// Go/Python/xUnit test-function names.
+/// Test functions and methods, by the crate-wide test predicate.
 pub(super) fn is_test_node(node: &Node) -> bool {
-    if !matches!(node.kind, NodeKind::Function | NodeKind::Method) {
-        return false;
-    }
-    let path = node.file_path.replace('\\', "/").to_lowercase();
-    let file = path.rsplit('/').next().unwrap_or(&path);
-    let in_test_dir = ["tests/", "test/", "__tests__/", "spec/", "testing/"]
-        .iter()
-        .any(|dir| path.starts_with(dir) || path.contains(&format!("/{dir}")));
-    let test_file = file.contains(".test.")
-        || file.contains(".spec.")
-        || file.contains("_test.")
-        || file.contains("_spec.")
-        || file.starts_with("test_")
-        || file.ends_with("test.java")
-        || file.ends_with("tests.java")
-        || file.ends_with("tests.cs")
-        || file.ends_with("test.kt");
-    let inline_rust =
-        node.qualified_name.contains("::tests::") || node.qualified_name.contains("::test::");
-    let test_name = node.name.starts_with("test_")
-        || (node.name.starts_with("Test") && node.name.len() > 4)
-        || node.name.starts_with("should_");
-    in_test_dir || test_file || inline_rust || test_name
+    matches!(node.kind, NodeKind::Function | NodeKind::Method)
+        && crate::search::is_test_symbol(&node.file_path, &node.qualified_name)
 }
 
 impl ToolHandler {

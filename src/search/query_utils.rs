@@ -419,8 +419,33 @@ pub fn score_path_relevance(file_path: &str, query: &str) -> i32 {
     score
 }
 
-/// Check if a file path looks like a test file
+/// Check if a file path looks like a test file — test source plus the
+/// non-production directories (examples, samples, benchmarks, fixtures) that
+/// search ranking demotes alongside tests.
 pub fn is_test_file(file_path: &str) -> bool {
+    is_test_source_file(file_path) || matches_non_production_dir(&file_path.to_lowercase())
+}
+
+/// A symbol that is test code: defined in a test source file, in a Rust
+/// `tests.rs`/`test.rs` module file, or inside an inline Rust `mod tests` /
+/// `mod test` (whose qualified names carry the module: `tests::case`).
+///
+/// The one test predicate for "is this a test?" questions — the analysis
+/// bridge's `test` entrypoint flag and `codegraph_tests` both use it. Unlike
+/// [`is_test_file`] it does not count examples or benchmarks as tests.
+pub fn is_test_symbol(file_path: &str, qualified_name: &str) -> bool {
+    let inline_module = ["tests::", "test::"]
+        .iter()
+        .any(|module| qualified_name.starts_with(module))
+        || qualified_name.contains("::tests::")
+        || qualified_name.contains("::test::");
+    let rust_module_file = matches!(basename(file_path), "tests.rs" | "test.rs");
+    inline_module || rust_module_file || is_test_source_file(file_path)
+}
+
+/// Test source by file name or test directory, excluding the example/sample/
+/// benchmark directories [`is_test_file`] also matches.
+pub fn is_test_source_file(file_path: &str) -> bool {
     let lower = file_path.to_lowercase();
     let file_name = basename(file_path); // original case — needed for camelCase boundaries
     let lower_name = file_name.to_lowercase();
@@ -457,11 +482,7 @@ pub fn is_test_file(file_path: &str) -> bool {
     {
         return true;
     }
-
-    // Non-production directories: examples, samples, benchmarks, fixtures, demos.
-    // Check both mid-path (/integration/) and start-of-path (integration/) since
-    // file paths may be stored as relative paths without a leading slash.
-    matches_non_production_dir(&lower)
+    false
 }
 
 /// Check if a path is in a non-production directory (integration, sample, example, etc.)
@@ -754,6 +775,28 @@ mod tests {
             score_path_relevance("src/cache/builder.ts", "the of and"),
             0
         );
+    }
+
+    #[test]
+    fn test_symbols_cover_inline_rust_tests_but_not_examples() {
+        // Inline `mod tests` items carry the module in their qualified name.
+        assert!(is_test_symbol(
+            "src/resolution/rust_path.rs",
+            "tests::maps_files"
+        ));
+        assert!(is_test_symbol("src/a.rs", "outer::tests::case"));
+        // `mod tests;` backed by a sibling file.
+        assert!(is_test_symbol(
+            "src/mcp/explore_session/tests.rs",
+            "records"
+        ));
+        assert!(is_test_symbol("tests/session.test.ts", "testLogin"));
+        assert!(!is_test_symbol("src/graph/cancel.rs", "check"));
+        assert!(!is_test_symbol("src/contest.rs", "attestation"));
+        // Examples and benchmarks are demoted in search but are not tests.
+        assert!(is_test_file("examples/demo.rs"));
+        assert!(!is_test_source_file("examples/demo.rs"));
+        assert!(!is_test_symbol("benches/throughput.rs", "bench_insert"));
     }
 
     #[test]
