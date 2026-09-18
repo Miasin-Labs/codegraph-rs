@@ -302,8 +302,8 @@ mod tests {
                 checked += 1;
             }
         }
-        // search, node (symbol + file view), files, status, explore.
-        assert_eq!(checked, 6);
+        // search, node (symbol + file view), files, status, explore, grep.
+        assert_eq!(checked, 7);
     }
 
     #[test]

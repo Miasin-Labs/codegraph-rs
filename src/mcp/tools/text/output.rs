@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::super::format::json_len;
-use super::super::output::success_or_error;
+use super::super::output::{notices_schema, success_or_error};
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -195,6 +195,7 @@ pub(in crate::mcp::tools) fn grep_output_schema() -> Value {
         "properties": {
             "schemaVersion": { "type": "integer" },
             "kind": { "const": "grep" },
+            "notices": notices_schema(),
             "files": { "type": "array", "items": {
                 "type": "object",
                 "additionalProperties": false,

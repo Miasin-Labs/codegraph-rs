@@ -16,8 +16,12 @@ use crate::types::{GraphStats, SearchResult};
 
 mod notices;
 mod rows;
-use notices::notices_schema;
-pub(in crate::mcp::tools) use notices::{attach_notices, notice_banner, notice_outputs};
+pub(in crate::mcp::tools) use notices::{
+    attach_notices,
+    notice_banner,
+    notice_outputs,
+    notices_schema,
+};
 pub(in crate::mcp::tools) use rows::{SymbolRef, SymbolRow};
 use rows::{symbol_ref_schema, symbol_row_properties, symbol_row_required};
 
