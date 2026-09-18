@@ -28,7 +28,7 @@ use crate::edges::EdgeKind;
 use crate::graph::CodeGraph;
 use crate::ir::IrFunction;
 use crate::nodes::NodeId;
-use crate::points_to::{PointsToTable, analyze_interprocedural};
+use crate::points_to::{AbstractLocation, PointsToTable, analyze_interprocedural};
 
 /// Pluggable dataflow source: provides def-use and use-def relationships
 /// over [`NodeId`]s.
@@ -99,20 +99,28 @@ impl PointsToOracle {
         }
     }
 
-    /// Check whether two functions share aliased parameter/return flow.
+    /// `false` if any function's points-to solve stopped at its fact budget
+    /// before the fixpoint, so slices over this oracle may miss edges.
+    pub fn converged(&self) -> bool {
+        self.tables.values().all(|table| table.converged)
+    }
+
+    /// Check whether two functions share aliased parameter/return flow:
+    /// some variable of `from` and some variable of `to` may point to the
+    /// same location. Locations are owned by the function that created them,
+    /// so a shared one really flowed between the two (or reached both from
+    /// a common caller/callee) — same-named parameters or same-index
+    /// allocation sites in unrelated functions never match.
     fn has_alias_flow(&self, from: &NodeId, to: &NodeId) -> bool {
         let (Some(from_pts), Some(to_pts)) = (self.tables.get(from), self.tables.get(to)) else {
             return false;
         };
-        // Check if any variable in `from` shares locations with any param in `to`.
-        for from_set in from_pts.vars.values() {
-            for to_set in to_pts.vars.values() {
-                if from_set.intersection(to_set).next().is_some() {
-                    return true;
-                }
-            }
-        }
-        false
+        let reached: BTreeSet<&AbstractLocation> = from_pts.vars.values().flatten().collect();
+        to_pts
+            .vars
+            .values()
+            .flatten()
+            .any(|loc| reached.contains(loc))
     }
 }
 
@@ -600,5 +608,61 @@ mod tests {
             "backward slice from sink should include main, got {:?}",
             bwd,
         );
+    }
+
+    /// `main` calls `sink()` with no arguments and ignores its result: no
+    /// value flows either way, so neither slice may cross the call edge.
+    fn assert_no_flow_between(main_ir: IrFunction, sink_ir: IrFunction) {
+        let (mut graph, ids) = graph_with(&["main", "sink"]);
+        let (main_id, sink_id) = (ids[0].clone(), ids[1].clone());
+        graph.add_edge(&main_id, &sink_id, calls_edge()).unwrap();
+
+        let mut ir_map: HashMap<NodeId, IrFunction> = HashMap::new();
+        ir_map.insert(main_id.clone(), main_ir);
+        ir_map.insert(sink_id.clone(), sink_ir);
+
+        let oracle = super::PointsToOracle::build(&graph, &ir_map);
+        assert!(oracle.converged());
+        let fwd = forward_slice(&graph, &oracle, &main_id, 10);
+        assert_eq!(fwd, BTreeSet::from([main_id]), "forward slice from main");
+        let bwd = backward_slice(&graph, &oracle, &sink_id, 10);
+        assert_eq!(bwd, BTreeSet::from([sink_id]), "backward slice from sink");
+    }
+
+    #[test]
+    fn points_to_oracle_same_index_literals_do_not_link_functions() {
+        // main: x = "a"; sink();    sink: z = 1;
+        // Both literals are op 0 of their function; they are still distinct.
+        let mut main_ir = IrFunction::new("main");
+        main_ir.push(IrOp::Assign {
+            dst: Var::new("x"),
+            src: Operand::constant("\"a\""),
+        });
+        main_ir.push(IrOp::Call {
+            dst: None,
+            callee: "sink".into(),
+            args: vec![],
+        });
+        let mut sink_ir = IrFunction::new("sink");
+        sink_ir.push(IrOp::Assign {
+            dst: Var::new("z"),
+            src: Operand::constant("1"),
+        });
+        assert_no_flow_between(main_ir, sink_ir);
+    }
+
+    #[test]
+    fn points_to_oracle_same_named_params_do_not_link_functions() {
+        // main(data) { sink(); }    sink(data) {}
+        let mut main_ir = IrFunction::new("main");
+        main_ir.params.push(Var::new("data"));
+        main_ir.push(IrOp::Call {
+            dst: None,
+            callee: "sink".into(),
+            args: vec![],
+        });
+        let mut sink_ir = IrFunction::new("sink");
+        sink_ir.params.push(Var::new("data"));
+        assert_no_flow_between(main_ir, sink_ir);
     }
 }
