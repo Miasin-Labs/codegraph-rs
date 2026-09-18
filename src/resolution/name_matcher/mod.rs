@@ -16,6 +16,7 @@ mod method;
 mod qualified;
 mod razor;
 mod receiver;
+mod rust_path;
 mod support;
 
 #[cfg(test)]
@@ -34,6 +35,7 @@ pub use method::{match_method_call, match_method_call_hinted};
 pub use qualified::match_by_qualified_name;
 use qualified::match_by_qualified_name as qualified_name;
 pub(crate) use receiver::{infer_receiver_type_from_declaration, resolve_method_on_type};
+pub use rust_path::match_rust_path;
 
 use crate::resolution::types::{ResolutionContext, ResolvedRef, UnresolvedRef};
 use crate::types::Node;
@@ -92,6 +94,12 @@ pub fn match_reference_full_hints(
 
     // 0. File path match (e.g., "snippets/drawer-menu.liquid" → file node)
     if let Some(result) = file_path(reference, context) {
+        return Some(result);
+    }
+
+    // 1a. Rust `crate::`/`self::`/`super::`/`Self::` paths, resolved against
+    // the crate/module layout (qualified names do not carry module paths).
+    if let Some(result) = match_rust_path(reference, context) {
         return Some(result);
     }
 

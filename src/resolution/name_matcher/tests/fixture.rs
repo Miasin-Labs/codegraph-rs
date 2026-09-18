@@ -70,6 +70,9 @@ impl ResolutionContext for Fixture {
     fn get_import_mappings(&self, _file_path: &str, _language: Language) -> Vec<ImportMapping> {
         self.imports.clone()
     }
+    fn get_node_by_id(&self, id: &str) -> Option<Node> {
+        self.nodes.iter().find(|n| n.id == id).cloned()
+    }
 }
 
 pub(super) fn node(

@@ -45,6 +45,16 @@ pub(in crate::resolution::resolver) fn has_any_possible_match_in(
             if known.contains(receiver) || known.contains(member) {
                 return true;
             }
+            // Rust relative paths name the item last (`crate::a::b::item`).
+            // Only these heads get the tail check, so external paths like
+            // `std::collections::HashMap::new` stay filtered.
+            if matches!(receiver, "crate" | "self" | "super" | "Self") {
+                if let Some((_, tail)) = name.rsplit_once("::") {
+                    if !tail.is_empty() && known.contains(tail) {
+                        return true;
+                    }
+                }
+            }
         }
     }
 

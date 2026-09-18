@@ -5,6 +5,7 @@ mod fixture;
 mod fuzzy;
 mod qualified;
 mod receiver;
+mod rust_path;
 
 use fixture::{Fixture, make_ref, node};
 
