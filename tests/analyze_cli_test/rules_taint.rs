@@ -120,3 +120,120 @@ examples:
         "{text}"
     );
 }
+
+/// The servlet: its input goes to another file's method, which runs the
+/// SQL, and to one that ignores it; a name comes back from a helper.
+const WEB: &str = r#"package app;
+
+public class Web {
+    public void doPost(HttpServletRequest request, java.sql.Connection conn) throws Exception {
+        String id = request.getParameter("id");
+        Dao dao = new Dao();
+        dao.find(conn, id);
+        dao.findSafe(conn, id);
+        String name = Params.name(request);
+        conn.createStatement().execute("DELETE FROM t WHERE name='" + name + "'");
+    }
+}
+"#;
+
+const DAO: &str = r#"package app;
+
+public class Dao {
+    public void find(java.sql.Connection conn, String id) throws Exception {
+        String sql = "SELECT * FROM users WHERE id='" + id + "'";
+        conn.createStatement().executeQuery(sql);
+    }
+
+    public void findSafe(java.sql.Connection conn, String id) throws Exception {
+        String sql = "SELECT * FROM users WHERE id='42'";
+        conn.createStatement().executeQuery(sql);
+    }
+}
+
+class Params {
+    static String name(HttpServletRequest request) {
+        return request.getParameter("name");
+    }
+}
+"#;
+
+#[test]
+fn analyze_rules_taint_follows_data_across_methods_and_files() {
+    let (_dir, root) = temp_project();
+    support::write(&root.join("src/app/Web.java"), WEB);
+    support::write(&root.join("src/app/Dao.java"), DAO);
+    init_fixture_files_only(&root);
+
+    let report = run_analyze_json(&root, &["rules", "--builtin", "--tests"]);
+    let mut findings: Vec<&serde_json::Value> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule"] == "java-sql-injection")
+        .collect();
+    findings.sort_by_key(|f| (f["file"].as_str().unwrap().to_string(), f["line"].as_u64()));
+    let places: Vec<(&str, u64)> = findings
+        .iter()
+        .map(|f| (f["file"].as_str().unwrap(), f["line"].as_u64().unwrap()))
+        .collect();
+    // The sink `find` runs, and the sink the helper's source reaches; not
+    // `findSafe`, which ignores its input.
+    assert_eq!(
+        places,
+        vec![("src/app/Dao.java", 6), ("src/app/Web.java", 10)],
+        "{report}"
+    );
+    let evidence = |finding: &serde_json::Value| -> Vec<(String, u64, String)> {
+        finding["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["file"].as_str().unwrap().to_string(),
+                    e["line"].as_u64().unwrap(),
+                    e["note"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    // Source in Web.java, the call, the callee's steps, the sink in Dao.java.
+    let into_dao = evidence(findings[0]);
+    assert_eq!(
+        (into_dao[0].0.as_str(), into_dao[0].1),
+        ("src/app/Web.java", 5),
+        "{into_dao:?}"
+    );
+    assert!(into_dao[0].2.starts_with("source: `request.getParameter(\"id\")`"), "{into_dao:?}");
+    assert!(
+        into_dao.iter().any(|(file, line, note)| file == "src/app/Web.java"
+            && *line == 7
+            && note.starts_with("flows through `dao.find(conn, id);`")),
+        "{into_dao:?}"
+    );
+    assert!(
+        into_dao.iter().any(|(file, line, _)| file == "src/app/Dao.java" && *line == 5),
+        "{into_dao:?}"
+    );
+    let last = into_dao.last().unwrap();
+    assert_eq!((last.0.as_str(), last.1), ("src/app/Dao.java", 6), "{into_dao:?}");
+    assert!(last.2.starts_with("sink: `conn.createStatement().executeQuery(sql);`"), "{into_dao:?}");
+    // The helper's source: from Dao.java back into Web.java.
+    let from_helper = evidence(findings[1]);
+    assert_eq!(
+        (from_helper[0].0.as_str(), from_helper[0].1),
+        ("src/app/Dao.java", 17),
+        "{from_helper:?}"
+    );
+    assert!(
+        from_helper[0].2.starts_with("source: `request.getParameter(\"name\")`"),
+        "{from_helper:?}"
+    );
+    assert!(
+        from_helper
+            .iter()
+            .any(|(file, line, _)| file == "src/app/Web.java" && *line == 9),
+        "{from_helper:?}"
+    );
+}
