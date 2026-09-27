@@ -42,7 +42,10 @@ pub(in crate::mcp::tools::registry) fn push_rules_tool(out: &mut Vec<ToolDefinit
              predicates resolves-to / not-resolves-to / regex / not-regex / inside / not-inside \
              / enclosing-function {calls, calls-not, name-regex, is-test}), ignore-patterns, \
              message ({capture}, {function}) and examples {bad, good}; an example may map \
-             `resolves: {callee-as-written: qualified-name}`.",
+             `resolves: {callee-as-written: qualified-name}`. Or `taint` instead of \
+             check-patterns: sources/sanitizers (`value` capture), sinks (`argument`), \
+             propagators (`from`, `to`), guards (`value`, `check`, `safe`) — flows are followed \
+             across calls and files, every step as evidence.",
         ),
     );
     props.insert(

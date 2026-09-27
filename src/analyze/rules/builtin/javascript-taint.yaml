@@ -1,5 +1,5 @@
 # JavaScript/TypeScript taint rules: Express request input reaching SQL,
-# a shell, eval, a redirect or a file path in the same function.
+# a shell, eval, a redirect or a file path, in a function or through calls.
 - id: js-sql-injection
   description: Request input reaches a SQL query built as a string (CWE-89).
   severity: high

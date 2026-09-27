@@ -1,6 +1,6 @@
 # Python taint rules: web request input (Flask, Django), `input()` and
-# `sys.argv` reaching SQL, a shell, eval, templates or file paths in the
-# same function (or a script's top-level code).
+# `sys.argv` reaching SQL, a shell, eval, templates or file paths in a
+# function, a script's top-level code, or through calls.
 - id: py-sql-injection
   description: Request input reaches a SQL statement built as a string (CWE-89).
   severity: high

@@ -1,6 +1,6 @@
 # C/C++ taint rules: external input (environment, console, files, sockets)
 # reaching a command, a format string, a file path, an LDAP filter or
-# arithmetic in the same function. Input read into a buffer (`fgets(buf,
+# arithmetic, in a function or through the calls between functions and files. Input read into a buffer (`fgets(buf,
 # …)`, `recv(s, buf, …)`, `fscanf(f, "%d", &n)`) taints that buffer from
 # the call on; string copies (`strcpy`, `strncat`, `snprintf`…) carry it
 # into their destination.

@@ -1,7 +1,8 @@
 # Java taint rules: untrusted input (servlet requests, environment,
 # console/socket/file lines, property files, database rows) reaching an
-# injection sink in the same method. One list document, so the sources are
-# shared through YAML anchors.
+# injection sink, in the same method or through the calls between methods
+# and files. One list document, so the sources are shared through YAML
+# anchors.
 - id: java-sql-injection
   description: >-
     Untrusted input reaches a SQL statement (JDBC execute/prepare, Spring

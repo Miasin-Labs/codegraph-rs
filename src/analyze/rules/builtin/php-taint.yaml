@@ -1,6 +1,6 @@
 # PHP taint rules: request input ($_GET, $_POST, $_REQUEST, $_COOKIE,
-# $_SERVER, $_FILES) reaching SQL, a shell, the page or an include, in the
-# same function or in a script's top-level code.
+# $_SERVER, $_FILES) reaching SQL, a shell, the page or an include, in a
+# function, a script's top-level code, or through calls.
 - id: php-sql-injection
   description: Request input reaches a SQL query without escaping or binding (CWE-89).
   severity: high
