@@ -8,12 +8,14 @@
 //!
 //! Ported from `src/extraction/liquid-extractor.ts`.
 
+use std::cell::OnceCell;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 
 use crate::extraction::tree_sitter_helpers::generate_node_id;
+use crate::resolution::line_index::LineStarts;
 use crate::types::{
     Edge,
     EdgeKind,
@@ -72,6 +74,8 @@ pub struct LiquidExtractor<'a> {
     edges: Vec<Edge>,
     unresolved_references: Vec<UnresolvedReference>,
     errors: Vec<ExtractionError>,
+    /// Line boundaries, read once: every tag asks for its line and column.
+    line_starts: OnceCell<LineStarts>,
 }
 
 impl<'a> LiquidExtractor<'a> {
@@ -83,6 +87,7 @@ impl<'a> LiquidExtractor<'a> {
             edges: Vec::new(),
             unresolved_references: Vec::new(),
             errors: Vec::new(),
+            line_starts: OnceCell::new(),
         }
     }
 
@@ -418,19 +423,17 @@ impl<'a> LiquidExtractor<'a> {
 
     /// Get the line number for a character index
     fn get_line_number(&self, index: usize) -> u32 {
-        (self.source[..index].matches('\n').count() + 1) as u32
+        self.line_starts().line_of(index)
     }
 
     /// Get the character index of the start of a line
     fn get_line_start(&self, line_number: u32) -> usize {
-        let lines: Vec<&str> = self.source.split('\n').collect();
-        let mut index = 0;
-        let mut i = 0usize;
-        while i + 1 < line_number as usize && i < lines.len() {
-            index += lines[i].len() + 1; // +1 for newline
-            i += 1;
-        }
-        index
+        self.line_starts().line_start(line_number)
+    }
+
+    fn line_starts(&self) -> &LineStarts {
+        self.line_starts
+            .get_or_init(|| LineStarts::new(self.source))
     }
 }
 

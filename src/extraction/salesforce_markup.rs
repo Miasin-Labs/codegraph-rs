@@ -22,6 +22,7 @@
 //!
 //! Everything hangs off a file node (MyBatis-extractor pattern).
 
+use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,6 +30,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use regex::Regex;
 
 use crate::extraction::tree_sitter_helpers::generate_node_id;
+use crate::resolution::line_index::LineStarts;
 use crate::types::{EdgeKind, ExtractionResult, Language, Node, NodeKind, UnresolvedReference};
 
 /// `controller="X"` on the root VF/Aura tag.
@@ -68,6 +70,8 @@ pub struct SalesforceMarkupExtractor<'a> {
     file_path: String,
     source: &'a str,
     language: Language,
+    /// Line boundaries, read once: every reference asks for its line.
+    line_starts: OnceCell<LineStarts>,
 }
 
 impl<'a> SalesforceMarkupExtractor<'a> {
@@ -76,6 +80,7 @@ impl<'a> SalesforceMarkupExtractor<'a> {
             file_path: file_path.into(),
             source,
             language,
+            line_starts: OnceCell::new(),
         }
     }
 
@@ -124,11 +129,9 @@ impl<'a> SalesforceMarkupExtractor<'a> {
     }
 
     fn line_of(&self, offset: usize) -> u32 {
-        self.source[..offset]
-            .bytes()
-            .filter(|&b| b == b'\n')
-            .count() as u32
-            + 1
+        self.line_starts
+            .get_or_init(|| LineStarts::new(self.source))
+            .line_of(offset)
     }
 
     fn push_ref(

@@ -205,20 +205,38 @@ impl<'a> LineSpan<'a> {
 /// line numbers: build once per text, then each lookup is a binary search.
 /// Counting newlines from the start per match (`line_of`) was quadratic in
 /// matches × file size on bundled files.
-pub(crate) struct LineStarts(Vec<usize>);
+pub(crate) struct LineStarts {
+    starts: Vec<usize>,
+    len: usize,
+}
 
 impl LineStarts {
     pub(crate) fn new(text: &str) -> Self {
-        Self(
-            std::iter::once(0)
+        Self {
+            starts: std::iter::once(0)
                 .chain(text.match_indices('\n').map(|(at, _)| at + 1))
                 .collect(),
-        )
+            len: text.len(),
+        }
     }
 
     /// The 1-based line of byte `offset`: `text[..offset].split('\n').count()`.
     pub(crate) fn line_of(&self, offset: usize) -> u32 {
-        self.0.partition_point(|&start| start <= offset) as u32
+        self.starts.partition_point(|&start| start <= offset) as u32
+    }
+
+    /// Where 1-based `line` starts: the lengths of the lines before it, each
+    /// with its `\n` (`0` for line 0 or 1; one past the end for a line past
+    /// the last).
+    pub(crate) fn line_start(&self, line: u32) -> usize {
+        match line {
+            0 => 0,
+            _ => self
+                .starts
+                .get(line as usize - 1)
+                .copied()
+                .unwrap_or(self.len + 1),
+        }
     }
 
     /// How many `\n` precede byte `offset`.
@@ -343,6 +361,16 @@ mod tests {
             let expected = text[..offset].split('\n').count() as u32;
             assert_eq!(starts.line_of(offset), expected, "offset {offset}");
             assert_eq!(starts.newlines_before(offset), expected - 1);
+        }
+        // line_start sums the lengths of the lines before, each with its \n.
+        let lines: Vec<&str> = text.split('\n').collect();
+        for line in 0..lines.len() as u32 + 3 {
+            let expected: usize = lines
+                .iter()
+                .take((line as usize).saturating_sub(1))
+                .map(|l| l.len() + 1)
+                .sum();
+            assert_eq!(starts.line_start(line), expected, "line {line}");
         }
     }
 }
