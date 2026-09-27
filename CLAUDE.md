@@ -202,6 +202,11 @@ cargo test --workspace
   (`name_matcher/dependency_names.rs`; `recv.m()` needs exactly one such
   method): `node.walk()` in a file that never names `ModuleLocation` stays
   unresolved, `tile.window()` next to `Tile` still resolves.
+- **`new X(…).m()` resolves to `X::m`** (`name_matcher/constructed.rs`;
+  Java/Kotlin/C#/JS/TS/PHP): the one method of project class `X`, the
+  caller's file first, then the imported class; else nothing (older
+  strategies still run). Old-vs-new: OWASP +880, Juliet Java CWE89 +976
+  call edges, none lost.
 - **Rust `recv.m()` resolves on the receiver's inferred type, `Type::m()` only
   on a project type named `Type`** (`name_matcher/rust_method.rs`, inference
   in `name_matcher/receiver/rust/`). A type the project doesn't define runs no
@@ -275,14 +280,28 @@ cargo test --workspace
   their bespoke lowerers; Java/C/C++/PHP (and taint for Python/JS) use the
   rules-driven lowering (`ir/lower/`, tables `ir_rules.rs` + `cfg_rules.rs`),
   which also records every expression's value (`values`) and each call's
-  argument places (`call_places`, for out-parameters). Unknown syntax
-  becomes a synthetic `<kind>(children…)` call, never dropped.
+  argument places (`call_places`, for out-parameters), declared `locals`
+  and C++ `reference_params`. Unknown syntax becomes a synthetic
+  `<kind>(children…)` call, never dropped. `ir::shared::canonicalize`
+  renames every spelling of a field/global (`data`, `this.data`,
+  `Cls.data`) to one `@Cls.data` variable, one op for one op.
   `reaching_defs/` is flow-sensitive over IR blocks: access paths ≤3 deep,
   strong writes kill the place and below, constant branches prune
   (`consts.rs`). `taint_flow/` marks rule captures onto it and searches
   backward from sinks; library propagation is the static
-  `propagation_rules.rs`, and a call into project code (index-resolved, or
-  a name the file defines) propagates nothing in phase 1.
+  `propagation_rules.rs` (plus position-aware local lists, `lists.rs`);
+  validation guards clean what their safe edge dominates (`guards.rs`).
+  **Interprocedural** (`taint_flow/program.rs`): each function gets a
+  `Summary` over its inputs (param/receiver/`Global(key)` + field path):
+  what reaches its return, what it writes callers see, which inputs reach a
+  sink, which sources it returns — every fact with its cross-function
+  path. Bottom-up over SCCs, recursion a ≤4-round fixpoint; per rule for
+  functions the rule touches (sanitizers cut paths, so a rule-free summary
+  can't be reused there), a *pure* no-marks summary shared by all rules
+  elsewhere. A call into project code without a summary carries nothing;
+  several targets are a union flagged `guessed`. Shared storage written
+  with a source reaches sinks of functions nothing calls (dtors, handlers)
+  — also `guessed`.
 - **SQLite schema is versioned** (`src/db/schema.sql` + `src/db/migrations.rs`,
   currently through v10: `external_edges`). A schema change must bump
   `schema_versions`, add an idempotent migration, treat new columns as
@@ -411,18 +430,40 @@ cargo test --workspace
   since Juliet's "good" twins of other CWEs leak and skip NULL checks on
   purpose.
   A rule may be `taint:` instead of
-  `check-patterns` (`rules/taint.rs`): `sources`/`sanitizers` name a
-  `value` capture, `sinks` an `argument`, `propagators` `from`/`to`; a
-  finding is a sink reached by a source in the same function (or a
-  script's top level), with source/hop/sink lines as evidence. Only
-  functions holding both are lowered (cached per file); IR call ops join
-  the index by line/col + last name (`Semantics::call_at`); object-like
-  C macros naming a variable read as it (`macro_aliases`). `*-taint.yaml`
-  cover OWASP/Juliet injection classes (Java, C/C++, Python/JS/PHP).
-  Measured with `tools/bugbench/` (2026-09, with taint: OWASP 79.6% P /
-  53.5% R, juliet-java 98.6% / 18.1%, juliet-c 60.1% / 24.4%; before:
-  76.3/38.2, 97.3/9.2, 55.7/21.8). Most remaining OWASP/Juliet misses are
-  interprocedural (helper methods, `badSink(data)`): phase 2 summaries.
+  `check-patterns` (`rules/taint/`): `sources`/`sanitizers` name a
+  `value` capture, `sinks` an `argument`, `propagators` `from`/`to`,
+  `guards` `value` + `check` (+ `safe: when-true|when-false`); a finding is
+  a sink a source reaches — in one function or across calls and files —
+  reported at the sink with every step (each in its file) as evidence.
+  Taint rules run once per sweep over all their files together (not file
+  by file; `only_files` narrows findings, not the program): the functions
+  holding marks, the rest of their files, and everything they call are
+  lowered once (`taint/program.rs`). Call targets: the index's edges
+  (`Semantics::callee_functions`, line/col + last name), corrected for
+  C/C++ by the caller's file then namespace (the index keys C++ functions
+  without their namespace); with no edge or a bodyless target, syntax
+  fallbacks that never pick among many — constructor, receiver allocation
+  (`new X().m()`, `Base b = new X()`), interface implementations (≤4,
+  `guessed`: confidence ×0.8), C function pointers, the caller's class,
+  the file's one same-named function (prefer the caller's file among
+  same-named classes). Fields/globals/supertypes come from syntax
+  (`taint/facts.rs`), so `--check` examples resolve the same way; C/C++
+  read macros of included local headers. Role matches are shared across
+  rules with equal patterns (`Pattern::key`). Bounded per sweep: 4M lowered
+  ops, 50M search steps, 32 MiB source kept, a deadline over matching,
+  lowering and search (`BugsOptions::taint_budget`: 60 s, MCP `rules run`
+  20 s); spent → partial results + a `skipped` note.
+  `CODEGRAPH_TAINT_TRACE=1` prints the program and phase timings.
+  `*-taint.yaml` cover OWASP/Juliet injection classes (Java, C/C++,
+  Python/JS/PHP). Measured with `tools/bugbench/` (2026-09, phase 2 →
+  before it): OWASP 89.2% P / 94.8% R (79.6/53.5; every injection
+  category 100% R, no safe case flagged by a taint rule — the 195 FPs are
+  `java-catch-generic-exception`); juliet-java 99.1/27.9 (98.6/18.1),
+  juliet-c 67.4/28.3 (62.8/24.0) on the default sample; on the injection
+  CWEs (60 testcases each) testcases caught java 48.5% → 93.1%, C 55.2% →
+  91.4%. Left out: `System.getProperty` is not a Java source (OWASP uses it
+  for config), Juliet 75 (values through object streams), C 3x (aliasing
+  through pointers/unions in one function).
   **The authoring loop** (skill: `.claude/skills/rule-author/SKILL.md`):
   a project's **saved rules** (`.codegraph/rules/*.yaml`, `saved.rs`) run on
   every `analyze rules` sweep (and `--check` with no rules named) unless
