@@ -217,6 +217,36 @@ annotate the graph before the query runs (see `analyze coverage`).")]
         #[arg(short = 'j', long)]
         json: bool,
     },
+    /// Change risk: the functions changed since a git base, ranked by how
+    /// much depends on them and how few tests reach them
+    #[command(
+        after_help = "Compares the working tree with --base (committed and uncommitted \
+changes, plus untracked files). Tests are found through the call graph, no coverage run \
+needed: `codegraph analyze risk --base origin/master --untested`."
+    )]
+    Risk {
+        /// Git revision to compare the working tree with
+        #[arg(long, value_name = "rev", default_value = "HEAD")]
+        base: String,
+        /// Impact depth counted as a function's dependents
+        #[arg(short = 'd', long, value_name = "number", default_value = "2")]
+        depth: String,
+        /// How many caller hops to search for tests
+        #[arg(long = "test-depth", value_name = "number", default_value = "4")]
+        test_depth: String,
+        /// List only functions no test reaches
+        #[arg(long)]
+        untested: bool,
+        /// Show at most N functions
+        #[arg(short = 't', long, value_name = "number", default_value = "30")]
+        top: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
     /// Map LCOV coverage onto functions; find untested code
     #[command(
         after_help = "Annotating coverage also enables the analysis DSL's `untested` \

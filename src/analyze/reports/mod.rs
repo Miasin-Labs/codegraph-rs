@@ -129,6 +129,7 @@ mod generics;
 mod impact;
 mod oracle;
 mod query;
+mod risk;
 mod schema;
 mod shared;
 mod slicing;
@@ -159,6 +160,7 @@ pub use generics::*;
 pub use impact::*;
 pub use oracle::CallGraphOracle;
 pub use query::*;
+pub use risk::*;
 pub use schema::*;
 pub use shared::{SourceReportCoverage, SymbolRef};
 pub(crate) use shared::{
