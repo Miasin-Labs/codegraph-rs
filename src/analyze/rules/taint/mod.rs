@@ -188,8 +188,7 @@ pub(super) fn run_files(
             marked_files.insert(m.file);
         }
     }
-    for candidate in 0..table.candidates.len() {
-        let c = &table.candidates[candidate];
+    for (candidate, c) in table.candidates.iter().enumerate() {
         if !c.top_level && marked_files.contains(&c.file) && seen.insert(candidate) {
             seeds.push(candidate);
         }
