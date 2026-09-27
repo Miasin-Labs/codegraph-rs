@@ -296,6 +296,9 @@ pub struct IrFunction {
     pub values: Vec<ExprValue>,
     /// Where each parameter is declared (parallel to `params`, when known).
     pub param_spans: Vec<Span>,
+    /// Parameters bound by reference (C++ `T &p`): assigning one assigns
+    /// the caller's variable. Indices into `params`.
+    pub reference_params: Vec<usize>,
     /// Receiver/argument places of each call, when the lowerer records them.
     pub call_places: Vec<CallPlaces>,
     /// Names the function declares (locals, loop and `catch` bindings),

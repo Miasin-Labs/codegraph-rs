@@ -155,8 +155,55 @@ impl<'p> Solver<'p> {
                 }
             }
         }
+        self.entry_flows(&summaries, &mut solution);
         solution.partial |= budget.is_exhausted();
         solution
+    }
+
+    /// Shared storage one function writes a source into reaches the sinks
+    /// of the functions nothing in the program calls — handlers,
+    /// destructors, callbacks — which may run after it (a C++ constructor
+    /// storing input in a member its destructor uses). A function that has
+    /// callers is only ever given what they store (its calls decide), so
+    /// this adds nothing for it. Flagged as guesses: the order is assumed.
+    fn entry_flows(&self, summaries: &[Option<Arc<Summary>>], solution: &mut Solution) {
+        let mut written: HashMap<&str, &super::SourceFact> = HashMap::new();
+        for summary in summaries.iter().flatten() {
+            for (target, output) in &summary.writes {
+                if let (super::Slot::Global(key), Some(fact)) =
+                    (&target.slot, output.sources.first())
+                {
+                    written.entry(key.as_str()).or_insert(fact);
+                }
+            }
+        }
+        if written.is_empty() {
+            return;
+        }
+        for (id, summary) in summaries.iter().enumerate() {
+            let Some(summary) = summary else {
+                continue;
+            };
+            if !self.callers[id].is_empty() {
+                continue;
+            }
+            for (input, sink) in &summary.sinks {
+                let super::Slot::Global(key) = &input.slot else {
+                    continue;
+                };
+                let Some(fact) = written.get(key.as_str()) else {
+                    continue;
+                };
+                let mut path: Vec<super::Step> = fact.path.to_vec();
+                path.extend(sink.path.iter().copied());
+                solution.guessed.insert(solution.flows.len());
+                solution.flows.push(InterFlow {
+                    source: fact.source,
+                    sink: sink.sink,
+                    path,
+                });
+            }
+        }
     }
 
     fn calls_itself(&self, id: FuncId) -> bool {

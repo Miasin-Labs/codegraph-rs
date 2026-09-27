@@ -139,6 +139,27 @@ fn function_name(node: Node<'_>, source: &str) -> String {
     "<anon>".to_string()
 }
 
+/// Whether a parameter declares a reference (C++ `int &data`, `char *&p`):
+/// a `reference_declarator` between the parameter and its name.
+fn is_reference(param: Node<'_>) -> bool {
+    let mut current = param;
+    for _ in 0..8 {
+        if current.kind() == "reference_declarator" {
+            return true;
+        }
+        match current.child_by_field_name("declarator") {
+            Some(next) => current = next,
+            None => {
+                let mut cursor = current.walk();
+                return current
+                    .named_children(&mut cursor)
+                    .any(|child| child.kind() == "reference_declarator");
+            }
+        }
+    }
+    false
+}
+
 fn text<'s>(node: Node<'_>, source: &'s str) -> &'s str {
     source.get(node.byte_range()).unwrap_or_default()
 }
@@ -294,6 +315,9 @@ impl<'s> Lowerer<'_, 's> {
                     continue;
                 }
                 if let Some(name) = self.declared_name(param, self.rules.parameter_name) {
+                    if is_reference(param) {
+                        self.func.reference_params.push(self.func.params.len());
+                    }
                     self.func.params.push(Var::new(self.text(name)));
                     self.func.param_spans.push(Span::of(name));
                 }

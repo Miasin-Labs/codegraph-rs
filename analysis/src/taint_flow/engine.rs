@@ -1238,7 +1238,15 @@ impl<'f> Engine<'f> {
     /// on some path to an exit: its writes then no longer reach the
     /// caller's object. Shared variables are the storage itself.
     fn rebound_at_exit(&mut self, place: &Place, exits: &[usize]) -> bool {
-        if shared_key(&place.base).is_some() {
+        // Shared storage is the storage itself; a reference parameter
+        // assigned assigns the caller's variable.
+        let by_reference = self
+            .func
+            .params
+            .iter()
+            .position(|param| *param == place.base)
+            .is_some_and(|index| self.func.reference_params.contains(&index));
+        if shared_key(&place.base).is_some() || by_reference {
             return false;
         }
         exits.iter().any(|&at| {

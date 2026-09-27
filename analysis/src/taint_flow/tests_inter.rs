@@ -48,10 +48,17 @@ fn text<'a>(node: tree_sitter::Node<'_>, src: &'a str) -> &'a str {
 }
 
 fn methods(src: &str) -> Methods {
+    program("java", src)
+}
+
+/// The functions of a Java or C++ source, lowered, calls resolved by name.
+fn program(lang: &'static str, src: &str) -> Methods {
     let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&tree_sitter_java::LANGUAGE.into())
-        .expect("java grammar");
+    let grammar: tree_sitter::Language = match lang {
+        "cpp" => tree_sitter_cpp::LANGUAGE.into(),
+        _ => tree_sitter_java::LANGUAGE.into(),
+    };
+    parser.set_language(&grammar).expect("grammar");
     let tree = parser.parse(src, None).expect("parse");
     let mut fields = Vec::new();
     let mut found = Vec::new();
@@ -74,7 +81,11 @@ fn methods(src: &str) -> Methods {
                 }
             }
         }
-        if node.kind() == "method_declaration" && node.child_by_field_name("body").is_some() {
+        if matches!(
+            node.kind(),
+            "method_declaration" | "constructor_declaration" | "function_definition"
+        ) && node.child_by_field_name("body").is_some()
+        {
             found.push((node, class.clone()));
         }
         let mut cursor = node.walk();
@@ -90,7 +101,7 @@ fn methods(src: &str) -> Methods {
         functions: Vec::new(),
     };
     for (node, class) in &found {
-        let mut ir = lower_with_rules("java", *node, src).expect("lowers");
+        let mut ir = lower_with_rules(lang, *node, src).expect("lowers");
         shared::canonicalize(
             &mut ir,
             &Fields {
@@ -102,7 +113,7 @@ fn methods(src: &str) -> Methods {
         out.names.push(ir.name.clone());
         out.functions.push(Function {
             ir: Arc::new(ir),
-            language: "java",
+            language: lang,
             calls: HashMap::new(),
         });
     }
@@ -113,7 +124,7 @@ fn methods(src: &str) -> Methods {
             let IrOp::Call { callee, .. } = ir_op else {
                 continue;
             };
-            let last = callee.rsplit('.').next().unwrap_or(callee);
+            let last = callee.rsplit(['.', ':']).next().unwrap_or(callee);
             let targets: Vec<FuncId> = names
                 .iter()
                 .enumerate()
@@ -613,4 +624,84 @@ fn a_list_read_at_a_known_position_is_that_element() {
     let tainted = src.replace("valuesList.get(1)", "valuesList.get(0)");
     let methods = self::methods(&tainted);
     assert_eq!(solve(&methods, &specs(&methods, &marks)).flows.len(), 1);
+}
+
+#[test]
+fn a_field_stored_by_one_method_reaches_a_method_nothing_calls() {
+    // A constructor stores input in a field its destructor-like `close`
+    // uses; nothing calls `close`, so it may run after the constructor.
+    let src = "class A {\n\
+      private String data;\n\
+      A(HttpServletRequest req) {\n\
+        data = req.getParameter(\"a\");\n\
+      }\n\
+      void close() {\n\
+        Runtime.getRuntime().exec(data);\n\
+      }\n\
+      void store() {\n\
+        data = \"x\";\n\
+        use();\n\
+      }\n\
+      void use() {\n\
+        Runtime.getRuntime().exec(data);\n\
+      }\n\
+    }";
+    let methods = methods(src);
+    let specs = specs(
+        &methods,
+        &[
+            ("source", "req.getParameter(\"a\")", 0),
+            ("sink", "exec(data)|data", 0),
+            ("sink", "exec(data)|data", 1),
+        ],
+    );
+    let solution = solve(&methods, &specs);
+    let sinks: Vec<&str> = solution
+        .flows
+        .iter()
+        .map(|flow| methods.names[flow.sink.func as usize].as_str())
+        .collect();
+    assert_eq!(
+        sinks,
+        vec!["close"],
+        "`use` is only ever given what its caller stores"
+    );
+    assert!(solution.guessed.contains(&0), "the order is assumed");
+}
+
+#[test]
+fn a_reference_parameter_assigned_assigns_the_callers_variable() {
+    let src = "void badSource(int &data) {\n\
+        data = rand();\n\
+    }\n\
+    void copySource(int data) {\n\
+        data = rand();\n\
+    }\n\
+    void bad() {\n\
+        int data = 0;\n\
+        badSource(data);\n\
+        sink(data + 1);\n\
+    }\n\
+    void good() {\n\
+        int data = 0;\n\
+        copySource(data);\n\
+        sink(data + 2);\n\
+    }\n";
+    let methods = program("cpp", src);
+    let specs = specs(
+        &methods,
+        &[
+            ("source", "rand()", 0),
+            ("source", "rand()", 1),
+            ("sink", "data + 1", 0),
+            ("sink", "data + 2", 0),
+        ],
+    );
+    let solution = solve(&methods, &specs);
+    let sinks: Vec<&str> = solution
+        .flows
+        .iter()
+        .map(|flow| methods.names[flow.sink.func as usize].as_str())
+        .collect();
+    assert_eq!(sinks, vec!["bad"], "a by-value parameter is a copy");
 }
