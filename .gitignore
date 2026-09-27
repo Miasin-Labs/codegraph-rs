@@ -20,3 +20,6 @@
 # the re-importable suite (testsprite_tests/mcp-suite.json) is tracked.
 testsprite_tests/*
 !testsprite_tests/mcp-suite.json
+
+# IDE (Jython/PyCharm) package index cache — machine-local
+/.jython_cache/
