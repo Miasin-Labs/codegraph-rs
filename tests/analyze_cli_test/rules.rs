@@ -203,3 +203,264 @@ fn analyze_rules_json_is_unbounded_unless_top_is_given() {
     assert!(text.contains("Rule findings: 50 of 60"), "{text}");
     assert!(text.contains("10 more (raise --top)"), "{text}");
 }
+
+/// A tiny labeled corpus: six functions that `eval` their input (bad), six
+/// that parse it (good), and one more `eval` outside every row.
+fn write_score_corpus(root: &std::path::Path) {
+    let mut source = String::new();
+    let mut rows = String::new();
+    for (label, body) in [("bad", "eval(data)"), ("good", "int(data)")] {
+        for i in 0..6 {
+            let line = source.lines().count() + 1;
+            source.push_str(&format!("def {label}_{i}(data):\n    return {body}\n\n"));
+            rows.push_str(&format!(
+                "{{\"file\": \"app.py\", \"label\": \"{label}\", \"granularity\": \"function\", \
+                 \"line_start\": {line}, \"line_end\": {}, \"cwe\": \"CWE-95\"}}\n",
+                line + 1
+            ));
+        }
+    }
+    source.push_str("print(eval('1'))\n");
+    support::write(&root.join("app.py"), &source);
+    support::write(&root.join("ground_truth.jsonl"), &rows);
+}
+
+const SCORE_RULES: &str = r#"id: py-eval
+language: python
+check-patterns:
+  - query: |
+      ((call function: (identifier) @f) @call (#eq? @f "eval"))
+examples:
+  bad: ["eval(x)"]
+  good: ["int(x)"]
+---
+id: py-int
+language: python
+check-patterns:
+  - query: |
+      ((call function: (identifier) @f) @call (#eq? @f "int"))
+examples:
+  bad: ["int(x)"]
+  good: ["eval(x)"]
+"#;
+
+#[test]
+fn analyze_rules_score_judges_rules_against_ground_truth() {
+    let (_dir, root) = temp_project();
+    write_score_corpus(&root.join("corpus"));
+    support::write(&root.join("rules.yaml"), SCORE_RULES);
+    let score = |extra: &[&str]| {
+        let mut args = vec![
+            "rules",
+            "rules.yaml",
+            "--no-saved",
+            "--score",
+            "corpus",
+            "--work",
+            "work",
+        ];
+        args.extend_from_slice(extra);
+        run_analyze_envelope(&root, &args)
+    };
+
+    // The unit is staged and indexed under --work, then scored.
+    let report = score(&[]);
+    assert_eq!(report["kind"], "rules-score");
+    let data = &report["data"];
+    assert_eq!(data["complete"], true, "{data}");
+    assert_eq!(data["units"]["indexed"], 1);
+    assert_eq!(data["baseRate"], 0.5);
+    assert_eq!(data["positives"], 6);
+    let rules = data["rules"].as_array().unwrap();
+    let eval = rules.iter().find(|r| r["id"] == "py-eval").unwrap();
+    assert_eq!(eval["findings"], 7);
+    assert_eq!(
+        (eval["tp"].as_u64(), eval["fp"].as_u64()),
+        (Some(6), Some(0))
+    );
+    assert_eq!(eval["unlabeled"], 1);
+    assert_eq!(eval["verdict"], "keep", "{eval}");
+    let int = rules.iter().find(|r| r["id"] == "py-int").unwrap();
+    assert_eq!(int["verdict"], "discard", "{int}");
+    // bugbench's metrics shape rides along for comparison with score.py.
+    let metrics = &data["metrics"];
+    assert_eq!(metrics["rows"]["bad"], 6);
+    assert_eq!(metrics["per_rule"]["py-eval"]["precision"], 1.0);
+    assert_eq!(metrics["per_rule"]["py-int"]["good_flag_rate"], 1.0);
+    assert_eq!(metrics["slack"], 3);
+    assert!(root.join("work/home").is_dir(), "indexed under a scratch home");
+    assert!(
+        !root.join("corpus/.codegraph").exists(),
+        "the corpus is never indexed in place"
+    );
+
+    // Rerun: the fresh index is reused; human output gives the verdicts.
+    let again = score(&[]);
+    assert_eq!(again["data"]["units"]["indexed"], 0);
+    let out = run_cli(
+        &root,
+        &[
+            "analyze",
+            "rules",
+            "rules.yaml",
+            "--no-saved",
+            "--score",
+            "corpus",
+            "--work",
+            "work",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr_str(&out));
+    let text = stdout_str(&out);
+    assert!(text.contains("KEEP"), "{text}");
+    assert!(text.contains("DISCARD"), "{text}");
+
+}
+
+/// A tiny RustSec-style corpus: two advisories, each a `vuln/` version that
+/// `eval`s in `run` and a `fixed/` one that parses, with the fix region on
+/// `run` in `vuln/`.
+fn write_pairs_corpus(root: &std::path::Path) {
+    let mut advisories = String::new();
+    let mut rows = String::new();
+    for id in ["RUSTSEC-0001", "RUSTSEC-0002"] {
+        advisories.push_str(&format!(
+            "{{\"advisory\": \"{id}\", \"vuln_dir\": \"{id}/vuln\", \"fixed_dir\": \"{id}/fixed\", \
+             \"diff_tightness\": \"tight\", \"localization\": \"fix_commit\", \"categories\": [\"code-execution\"]}}\n"
+        ));
+        support::write(
+            &root.join(format!("{id}/vuln/app.py")),
+            "def run(data):\n    return eval(data)\n\n\ndef other(data):\n    return eval('1')\n",
+        );
+        support::write(
+            &root.join(format!("{id}/fixed/app.py")),
+            "def run(data):\n    return int(data)\n\n\ndef other(data):\n    return eval('1')\n",
+        );
+        rows.push_str(&format!(
+            "{{\"file\": \"{id}/vuln/app.py\", \"label\": \"bad\", \"granularity\": \"function\", \
+             \"line_start\": 1, \"line_end\": 2, \"function\": \"run\"}}\n"
+        ));
+    }
+    support::write(&root.join("advisories.jsonl"), &advisories);
+    support::write(&root.join("ground_truth.jsonl"), &rows);
+}
+
+#[test]
+fn analyze_rules_score_is_differential_on_pairs_and_resumes() {
+    let (_dir, root) = temp_project();
+    write_pairs_corpus(&root.join("pairs"));
+    support::write(&root.join("rules.yaml"), SCORE_RULES);
+    let score = |extra: &[&str]| {
+        let mut args = vec![
+            "rules",
+            "rules.yaml",
+            "--no-saved",
+            "--score",
+            "pairs",
+            "--work",
+            "work",
+            "--jobs",
+            "1",
+        ];
+        args.extend_from_slice(extra);
+        run_analyze_json(&root, &args)
+    };
+
+    // A deadline of 0 still scores one unit (every call makes progress),
+    // then hands back a cursor at the first unit left.
+    let cut = score(&["--deadline", "0"]);
+    assert_eq!(cut["scoring"], "differential");
+    assert_eq!(cut["complete"], false, "{cut}");
+    assert_eq!(cut["units"]["done"], 1, "{cut}");
+    assert_eq!(cut["units"]["pending"], 3);
+    let cursor = cut["nextCursor"].as_str().unwrap().to_string();
+    assert!(cursor.starts_with("1:"), "{cursor}");
+
+    // Resumed to the end: the `eval` in `run` is gone after each fix (a
+    // catch in the fix region), the one in `other` stays (background).
+    let mut data = score(&["--cursor", &cursor]);
+    while data["complete"] == false {
+        let cursor = data["nextCursor"].as_str().unwrap().to_string();
+        data = score(&["--deadline", "0", "--cursor", &cursor]);
+    }
+    assert_eq!(data["units"]["done"], 4, "{data}");
+    assert_eq!(data["positives"], 2, "two scoreable pairs");
+    let eval = data["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "py-eval")
+        .unwrap()
+        .clone();
+    assert_eq!(eval["tp"], 2, "{eval}");
+    assert_eq!(eval["background"], 2, "{eval}");
+    assert_eq!(eval["offFix"], 0, "{eval}");
+    assert_eq!(eval["precision"], 1.0, "{eval}");
+    assert_eq!(eval["recall"], 1.0, "{eval}");
+    assert_eq!(data["metrics"]["overall"]["pairs_detected"], 2);
+    assert_eq!(data["metrics"]["slack"], 5);
+    // Too few differential findings to keep, however precise.
+    assert_eq!(eval["verdict"], "discard", "{eval}");
+
+    // A cursor from other rules is refused.
+    let out = run_cli(
+        &root,
+        &[
+            "analyze",
+            "rules",
+            "--builtin",
+            "--no-saved",
+            "--score",
+            "pairs",
+            "--work",
+            "work",
+            "--cursor",
+            &cursor,
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr_str(&out).contains("other rules"),
+        "{}",
+        stderr_str(&out)
+    );
+}
+
+#[test]
+fn analyze_rules_runs_the_projects_saved_rules() {
+    let (_dir, root) = temp_project();
+    support::write(
+        &root.join("src/lib.rs"),
+        "pub struct Client;\nimpl Client {\n    pub fn send(&self) -> u32 {\n        1\n    }\n}\npub fn post(c: &Client) -> u32 {\n    c.send()\n}\n",
+    );
+    init_fixture_files_only(&root);
+    let out = run_cli(&root, &["analyze", "rules"]);
+    assert!(!out.status.success(), "no rules at all is an error");
+    support::write(&root.join(".codegraph/rules/client.yaml"), CLIENT_SEND_RULE);
+
+    let report = run_analyze_json(&root, &["rules"]);
+    assert_eq!(
+        report["byRule"]["client-send-unvalidated"], 1,
+        "{report}"
+    );
+    let report = run_analyze_json(&root, &["rules", "--builtin", "--no-saved"]);
+    assert!(
+        report["byRule"].get("client-send-unvalidated").is_none(),
+        "{report}"
+    );
+    // A rule passed by name shadows the saved rule of its id.
+    let shadow = CLIENT_SEND_RULE.replace("^Client::send$", "^Nothing$");
+    support::write(&root.join("edited.yaml"), &shadow);
+    let report = run_analyze_json(&root, &["rules", "edited.yaml"]);
+    assert!(
+        report["byRule"].get("client-send-unvalidated").is_none(),
+        "{report}"
+    );
+    let out = run_cli(&root, &["analyze", "rules", "--check"]);
+    assert!(out.status.success(), "{}", stdout_str(&out));
+    let text = stdout_str(&out);
+    assert!(
+        text.contains(".codegraph/rules/client.yaml") && text.contains("1 passed, 0 failed"),
+        "{text}"
+    );
+}

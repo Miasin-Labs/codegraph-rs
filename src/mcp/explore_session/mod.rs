@@ -134,7 +134,10 @@ impl ExploreSessionState {
             self.record_grep(project_root, payload);
             return;
         }
-        if !matches!(kind, Some("explore") | Some("file") | Some("node")) {
+        if !matches!(
+            kind,
+            Some("explore") | Some("file") | Some("node") | Some("ruleVariant")
+        ) {
             return;
         }
         let files = emissions(project_root, payload);
@@ -253,6 +256,17 @@ fn file_view_emission(root: &Path, payload: &Value) -> Option<FileEmission> {
     emission(root, payload["path"].as_str()?, &[span])
 }
 
+/// `rules` `variant` emits the enclosing function's window (numbered lines).
+fn variant_emission(root: &Path, payload: &Value) -> Option<FileEmission> {
+    let function = payload.get("function")?;
+    let span = (
+        function["startLine"].as_u64()?,
+        function["endLine"].as_u64()?,
+        function["source"].as_str()?,
+    );
+    emission(root, payload["file"].as_str()?, &[span])
+}
+
 /// `node` symbol reads emit each match's `code`, which starts at
 /// `codeStartLine` when present and at the symbol's `line` otherwise.
 fn symbol_emissions(root: &Path, payload: &Value) -> Vec<FileEmission> {
@@ -283,6 +297,7 @@ fn emissions(root: &Path, payload: &Value) -> Vec<FileEmission> {
     let mut files = match payload.get("kind").and_then(Value::as_str) {
         Some("file") => file_view_emission(root, payload).into_iter().collect(),
         Some("node") => symbol_emissions(root, payload),
+        Some("ruleVariant") => variant_emission(root, payload).into_iter().collect(),
         _ => payload["sourceFiles"]
             .as_array()
             .into_iter()

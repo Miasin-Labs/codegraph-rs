@@ -87,7 +87,8 @@ without full context.
 
 Advanced tools (arch, xref, paths) can be enabled via the `CODEGRAPH_MCP_TOOLS`
 environment variable — see project documentation — as can `projects` (the
-indexed projects on this machine, their links and dependencies).
+indexed projects on this machine, their links and dependencies) and `rules`
+(write bug rules from a found bug, check and score them, save the keepers).
 
 ## Anti-patterns
 

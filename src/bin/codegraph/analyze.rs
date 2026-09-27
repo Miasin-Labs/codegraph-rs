@@ -74,7 +74,7 @@ mod validate;
 
 use boundaries::cmd_analyze_boundaries;
 pub(crate) use bridge::{bridge_project_with_options, print_json, *};
-use bugs::{RuleSources, cmd_analyze_bugs, cmd_analyze_review, cmd_analyze_rules};
+use bugs::{RuleSources, ScoreArgs, cmd_analyze_bugs, cmd_analyze_review, cmd_analyze_rules};
 use capabilities::cmd_analyze_capabilities;
 use centrality::cmd_analyze_centrality;
 use cfg::cmd_analyze_cfg;

@@ -56,12 +56,17 @@ cargo test --workspace
   status, files, history, tests, diagnostics, grep`), listed on every project
   regardless of size — there is no small-repo gating. `arch, xref, paths` are
   opt-in through the `CODEGRAPH_MCP_TOOLS` allowlist (comma-separated short
-  names), as are `recall` (cross-session memory, opt-in until measured) and
-  `projects` (the atlas's projects, links and dependencies), for 17 in all. `diagnostics` (`src/diagnostics/`) is the one tool
-  that is not read-only: it runs `cargo check|clippy --offline` or the
+  names), as are `recall` (cross-session memory, opt-in until measured),
+  `projects` (the atlas's projects, links and dependencies) and `rules`
+  (bug-rule authoring, `src/mcp/tools/rules/`; see "Rules engine"), for 18
+  in all. `diagnostics` (`src/diagnostics/`) and `rules` are the tools that
+  are not read-only. `diagnostics` runs `cargo check|clippy --offline` or the
   project's own `node_modules/.bin/tsc`, detached with output under
   `.codegraph/diagnostics/`, waits at most `wait` seconds, and a later call
-  picks up a run still going — never an unbounded block. `grep`
+  picks up a run still going — never an unbounded block. `rules` writes
+  `.codegraph/rules/` (`save`) and a score's work dir (`score`: at most
+  `wait` ≤ 55 s, an index the deadline cuts finishes in the background,
+  `nextCursor` resumes). `grep`
   (`src/mcp/tools/text/`) is text search over the *indexed* files read fresh
   from disk (so the indexer's ignore rules hold): Rust/ripgrep regex syntax
   (grep's `\|` also alternates), `-i`/`-w`/`-F`, file/dir/glob scope, and
@@ -82,7 +87,8 @@ cargo test --workspace
   `search`/`node` take a `symbols` batch (agents otherwise grep `a|b|c`),
   `search` takes `projectPaths` for several indexes in one call, and every
   tool that emits source (`LEDGER_TOOLS` in `service/execution.rs`: explore,
-  node — file view AND symbol `code`) gets the per-connection ledger
+  node — file view AND symbol `code`, rules — `variant`'s function window,
+  `kind: ruleVariant`) gets the per-connection ledger
   (`explore_session`) injected and records into it, so a re-read of
   unchanged lines returns `alreadySent`. `grep` is a ledger tool too, but
   its one-line (possibly clipped) hits are recorded apart
@@ -377,6 +383,35 @@ cargo test --workspace
   reported spans, 2026-09); score a C rule on its own CWE too (`--cwe`),
   since Juliet's "good" twins of other CWEs leak and skip NULL checks on
   purpose.
+  **The authoring loop** (skill: `.claude/skills/rule-author/SKILL.md`):
+  a project's **saved rules** (`.codegraph/rules/*.yaml`, `saved.rs`) run on
+  every `analyze rules` sweep (and `--check` with no rules named) unless
+  `--no-saved`; a rule passed explicitly shadows the saved one of its id
+  (`RuleSet::add_shadowed`). **`variant`** (`variant.rs`) turns a bug's
+  `file:line` into rule material: the enclosing function, the statement's
+  compact s-expression (field names, leaf text as `;` comments, depth/width
+  trimmed), its calls and what `IndexSemantics` resolves them to, detector
+  findings there, and a skeleton rule that must pass `check` (a query for
+  the first resolved call, `resolves-to` its qualified name, `inside` the
+  statement kind, the statement wrapped per language — `lang.rs`
+  `example_wrapper` — as its `bad` example with a `resolves` map).
+  **`--score <corpus>`** (`score/`) ports `tools/bugbench` — unit
+  enumeration and sampling (CPython's MT19937 `random.sample`, bit for bit:
+  same seed, same units), staging, indexing with bugbench's isolation env,
+  labeled and differential scoring — so the metrics equal `score.py`'s on
+  the same input (pinned by `score/tests.rs`, re-run live against the
+  Python when `python3` exists). Per rule it adds a verdict: `keep` needs
+  ≥5 scored findings, precision ≥ base rate + 10 pts, and a one-sided 95%
+  Wilson lower bound above the base rate (pairs' base rate = share of the
+  functions a fix changed — any `vuln/` row — that lie in its fix region;
+  score.py has none). Staged units are
+  kept under `--work` with a stamp (sources' size/mtime + extractor/schema
+  version) and reused while fresh; findings are cached per unit under the
+  rules' hash (+ binary), which is what makes a deadline-cut run resume
+  (`nextCursor`). A deadline never throws an index away (CLI: the running
+  ones finish; MCP: they finish on a watcher thread), and every call scores
+  at least one unit. MCP: `codegraph_rules` actions `check|run|variant|save|
+  score`.
 - **Concurrency lint** (`analysis/src/concurrency.rs`, per-language rules in
   `concurrency_rules.rs`): flags lossy best-effort sends. Library-only since
   the vuln engine (its sole CLI surface) was deleted.

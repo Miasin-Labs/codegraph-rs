@@ -251,3 +251,37 @@ fn a_foreign_definition_is_held_under_its_absolute_path() {
     assert!(range_already_sent(&view, root.path(), &foreign, 1, 1));
     assert!(!range_already_sent(&view, root.path(), "lib.rs", 1, 1));
 }
+
+/// `rules` `variant` sends the enclosing function's window: it is recorded
+/// (so a later read of those lines is `alreadySent`), and a variant whose
+/// window was already held (no `source`) records nothing.
+#[test]
+fn rule_variant_windows_are_recorded() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("a.rs"), "fn a() {\n    b();\n}\n").unwrap();
+    let variant = |function: serde_json::Value| ToolResult {
+        content: Vec::new(),
+        structured_content: Some(json!({
+            "kind": "ruleVariant",
+            "file": "a.rs",
+            "function": function,
+        })),
+        meta: None,
+        is_error: None,
+    };
+    let mut state = ExploreSessionState::default();
+    state.record(
+        root.path(),
+        &variant(json!({ "name": "a", "startLine": 1, "endLine": 3, "alreadySent": true })),
+    );
+    assert_eq!(state.view_for(root.path()).call_count, 0);
+    state.record(
+        root.path(),
+        &variant(json!({
+            "name": "a", "startLine": 1, "endLine": 3,
+            "source": "1\tfn a() {\n2\t    b();\n3\t}"
+        })),
+    );
+    let prior = state.view_for(root.path());
+    assert!(range_already_sent(&prior, root.path(), "a.rs", 1, 3));
+}

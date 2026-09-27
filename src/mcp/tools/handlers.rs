@@ -168,6 +168,7 @@ mod tests {
             "codegraph_paths",
             "codegraph_recall",
             "codegraph_projects",
+            "codegraph_rules",
         ];
         assert_eq!(defs.len(), expected.len());
         assert_eq!(names, expected);
@@ -306,9 +307,10 @@ mod tests {
                 checked += 1;
             }
         }
-        // One success branch per tool, plus node's file view and projects'
-        // one-project view (opt-in tools' schemas are served when enabled).
-        assert_eq!(checked, 19);
+        // One success branch per tool, plus node's file view, projects'
+        // one-project view and a branch per `rules` action beyond the first
+        // (opt-in tools' schemas are served when enabled).
+        assert_eq!(checked, 24);
     }
 
     #[test]

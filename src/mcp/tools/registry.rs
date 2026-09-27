@@ -8,6 +8,7 @@ mod insight;
 mod lookup;
 mod memory;
 mod navigation;
+mod rules;
 mod schema_builder;
 mod text;
 

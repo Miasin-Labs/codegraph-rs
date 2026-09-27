@@ -18,3 +18,4 @@ include!("mcp_tools_test/insight.rs");
 include!("mcp_tools_test/diagnostics.rs");
 include!("mcp_tools_test/grep.rs");
 include!("mcp_tools_test/recall.rs");
+include!("mcp_tools_test/rules.rs");

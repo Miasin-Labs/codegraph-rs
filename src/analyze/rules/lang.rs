@@ -367,3 +367,116 @@ pub(super) fn text(node: Node, source: &str) -> String {
         .unwrap_or_default()
         .to_string()
 }
+
+/// How a statement taken from real code is made a file that parses, for a
+/// rule example written from it (`variant`): wrapped in a function.
+pub(super) struct ExampleWrapper {
+    pub prefix: &'static str,
+    pub suffix: &'static str,
+    /// Indent of the body lines.
+    pub indent: &'static str,
+    /// A body that does nothing (a placeholder `good` example).
+    pub empty: &'static str,
+}
+
+const fn wrapper(
+    prefix: &'static str,
+    suffix: &'static str,
+    indent: &'static str,
+    empty: &'static str,
+) -> ExampleWrapper {
+    ExampleWrapper {
+        prefix,
+        suffix,
+        indent,
+        empty,
+    }
+}
+
+static WRAPPERS: &[(Language, ExampleWrapper)] = &[
+    (
+        Language::Rust,
+        wrapper("fn variant_example() {\n", "}\n", "    ", ""),
+    ),
+    (
+        Language::C,
+        wrapper("void variant_example(void) {\n", "}\n", "    ", ""),
+    ),
+    (
+        Language::Cpp,
+        wrapper("void variant_example() {\n", "}\n", "    ", ""),
+    ),
+    (
+        Language::Go,
+        wrapper("package main\n\nfunc variantExample() {\n", "}\n", "\t", ""),
+    ),
+    (
+        Language::Python,
+        wrapper("def variant_example():\n", "", "    ", "pass"),
+    ),
+    (
+        Language::Javascript,
+        wrapper("function variantExample() {\n", "}\n", "  ", ""),
+    ),
+    (
+        Language::Jsx,
+        wrapper("function variantExample() {\n", "}\n", "  ", ""),
+    ),
+    (
+        Language::Typescript,
+        wrapper("function variantExample() {\n", "}\n", "  ", ""),
+    ),
+    (
+        Language::Tsx,
+        wrapper("function variantExample() {\n", "}\n", "  ", ""),
+    ),
+    (
+        Language::Java,
+        wrapper(
+            "class VariantExample {\n    void variantExample() {\n",
+            "    }\n}\n",
+            "        ",
+            "",
+        ),
+    ),
+    (
+        Language::Csharp,
+        wrapper(
+            "class VariantExample {\n    void VariantExample() {\n",
+            "    }\n}\n",
+            "        ",
+            "",
+        ),
+    ),
+    (
+        Language::Php,
+        wrapper("<?php\nfunction variant_example() {\n", "}\n", "    ", ""),
+    ),
+    (
+        Language::Ruby,
+        wrapper("def variant_example\n", "end\n", "  ", ""),
+    ),
+];
+
+/// The wrapper of `language`, if it has one.
+pub(super) fn example_wrapper(language: Language) -> Option<&'static ExampleWrapper> {
+    WRAPPERS
+        .iter()
+        .find(|(lang, _)| *lang == language)
+        .map(|(_, wrapper)| wrapper)
+}
+
+/// Node kinds whose children are statements, across the grammars: a
+/// statement snippet is the child of one of these.
+pub(super) const STATEMENT_CONTAINERS: &[&str] = &[
+    "block",
+    "compound_statement",
+    "statement_block",
+    "statement_list",
+    "constructor_body",
+    "body_statement",
+    "source_file",
+    "program",
+    "module",
+    "translation_unit",
+];
