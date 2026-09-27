@@ -225,6 +225,12 @@
            (#match? @m "^(print|println|write|format|printf|append)$")
            (#match? @o "(getWriter|getOutputStream)\\(\\)$"))
         argument: arg
+      - name: response-writer-variable
+        query: |
+          ((method_invocation object: (identifier) @o name: (identifier) @m arguments: (argument_list (_) @arg))
+           (#match? @m "^(print|println|write|format|printf|append)$")
+           (#match? @o "^(out|writer|pw|printWriter)$"))
+        argument: arg
       - name: send-error
         query: |
           ((method_invocation name: (identifier) @m arguments: (argument_list . (_) . (_) @arg))
@@ -241,6 +247,12 @@
         class A { void f(HttpServletRequest request, HttpServletResponse response) throws Exception {
           String p = request.getParameter("q");
           response.getWriter().println("<p>" + p + "</p>");
+        } }
+      - |
+        class A { void f(HttpServletRequest request, HttpServletResponse response) throws Exception {
+          Object[] obj = {"a", request.getParameter("q")};
+          java.io.PrintWriter out = response.getWriter();
+          out.format(java.util.Locale.US, "Formatted like: %1$s and %2$s.", obj);
         } }
     good:
       - |
