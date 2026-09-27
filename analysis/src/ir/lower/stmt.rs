@@ -86,10 +86,17 @@ impl Lowerer<'_, '_> {
         if let Some(shape) = self.rules.declaration(node.kind()) {
             for child in self.named_children(node) {
                 if !shape.declarators.contains(&child.kind()) {
+                    // `int x;`, `char *p;`, `int a[10];`: declared, no value.
+                    if let Some(name) = self.declared_name(child, shape.name) {
+                        self.declare(name);
+                    }
                     continue;
                 }
                 let value = child.child_by_field_name(shape.value);
                 let name = self.declared_name(child, shape.name);
+                if let Some(name) = name {
+                    self.declare(name);
+                }
                 if let (Some(name), Some(value)) = (name, value) {
                     let value = self.expr(value);
                     self.func.push(IrOp::Assign {
@@ -229,6 +236,7 @@ impl Lowerer<'_, '_> {
                 });
                 self.record_call(iterable.place, Vec::new());
                 if let Some(binding) = self.slot(node, shape.binding) {
+                    self.declare_all(binding);
                     self.write(binding, Operand::Var(element));
                 }
                 Operand::Const("<has-next>".into())
@@ -411,6 +419,7 @@ impl Lowerer<'_, '_> {
                 }
                 // The caught exception binds the clause's parameter names.
                 let exception = Value::of(Operand::Const("<exception>".into()));
+                self.declare_all(child);
                 self.write(child, exception.operand);
             }
             if let Some(catch_body) = catch_body {

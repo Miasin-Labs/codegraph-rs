@@ -247,10 +247,15 @@ impl<'s> Lowerer<'_, 's> {
             {
                 Some(next) => current = next,
                 None => {
-                    return self
-                        .named_children(current)
-                        .into_iter()
-                        .find(|child| self.is_identifier(*child));
+                    let children = self.named_children(current);
+                    if let Some(name) = children.iter().find(|child| self.is_identifier(**child)) {
+                        return Some(*name);
+                    }
+                    // `(*f)` in `void (*f)(char *)`: a declarator without
+                    // a field around the one that names it.
+                    current = *children
+                        .iter()
+                        .find(|child| child.kind().ends_with("_declarator"))?;
                 }
             }
         }
@@ -293,6 +298,31 @@ impl<'s> Lowerer<'_, 's> {
                     self.func.param_spans.push(Span::of(name));
                 }
             }
+        }
+    }
+
+    /// Record the identifier `name` as a name the function declares.
+    fn declare(&mut self, name: Node<'_>) {
+        let var = Var::new(self.text(name));
+        if !self.func.locals.contains(&var) {
+            self.func.locals.push(var);
+        }
+    }
+
+    /// Declare every identifier in a binding (`x`, `(a, b)`, a `catch`
+    /// clause's `Exception e`): the identifiers of its named descendants,
+    /// types left out. Iterative: depth is bounded by the input.
+    fn declare_all(&mut self, binding: Node<'_>) {
+        let mut stack = vec![binding];
+        while let Some(node) = stack.pop() {
+            if self.is_identifier(node) {
+                self.declare(node);
+                continue;
+            }
+            if node.kind().ends_with("type") || node.kind().contains("type_") {
+                continue;
+            }
+            stack.extend(self.named_children(node));
         }
     }
 

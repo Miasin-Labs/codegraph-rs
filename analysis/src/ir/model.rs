@@ -298,6 +298,10 @@ pub struct IrFunction {
     pub param_spans: Vec<Span>,
     /// Receiver/argument places of each call, when the lowerer records them.
     pub call_places: Vec<CallPlaces>,
+    /// Names the function declares (locals, loop and `catch` bindings),
+    /// when the lowerer records them: a name that is none of these nor a
+    /// parameter is a field or global.
+    pub locals: Vec<Var>,
     current: Span,
 }
 

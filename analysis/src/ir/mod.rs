@@ -1,6 +1,7 @@
 mod call;
 mod lower;
 mod model;
+pub mod shared;
 mod signature;
 
 #[cfg(test)]
