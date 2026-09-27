@@ -62,6 +62,7 @@ pub mod incremental;
 pub(crate) mod index;
 pub mod ir;
 pub mod ir_map;
+pub mod ir_rules;
 pub mod kind_specific;
 pub mod label_reachability;
 pub mod monomorphize;
