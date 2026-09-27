@@ -175,6 +175,28 @@ impl RustType {
         fields.first().copied()
     }
 
+    /// The project's `struct` declaration of this type: the one nearest the
+    /// reference, `None` when none is or two tie.
+    pub(super) fn struct_declaration<'a>(
+        &self,
+        nodes: &'a [Node],
+        reference: &UnresolvedRef,
+    ) -> Option<&'a Node> {
+        let suffix = format!("::{}", self.name);
+        let structs: Vec<&Node> = nodes
+            .iter()
+            .filter(|node| {
+                node.language == Language::Rust
+                    && node.kind == NodeKind::Struct
+                    && (node.qualified_name == self.name || node.qualified_name.ends_with(&suffix))
+            })
+            .collect();
+        match self.nearest(structs, reference).as_slice() {
+            [declaration] => Some(declaration),
+            _ => None,
+        }
+    }
+
     /// Sort `nodes` (definitions named like this type or its members) by
     /// how well they match its home, then by nearness to `reference`.
     fn sort_by_home(&self, nodes: &mut [&Node], reference: &UnresolvedRef) {

@@ -7,6 +7,7 @@ mod qualified;
 mod receiver;
 mod rust_call;
 mod rust_chain;
+mod rust_newtype;
 mod rust_path;
 mod rust_receiver;
 mod rust_type_inference;

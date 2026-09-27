@@ -11,6 +11,8 @@
 //!   (`Foo::new(..)`, `Foo::open(p)?`, `load_graph()`), followed by links
 //!   whose types are known (see below);
 //! - `let Some(x) = …` / `if let Ok(x) = …` over such an initializer;
+//! - a single-field tuple-struct pattern with a written type, such as an
+//!   axum handler's `State(state): State<AppState>` ([`newtypes`]);
 //! - another local it copies or borrows (`let y = &x;`).
 //!
 //! A nearer binding that does not spell the type (`for x in …`, `|x|`,
@@ -40,6 +42,7 @@ mod items;
 mod links;
 mod locals;
 mod lookup;
+mod newtypes;
 mod types;
 mod variants;
 
@@ -77,7 +80,7 @@ pub(in crate::resolution::name_matcher) fn infer_rust_receiver_type(
 ) -> Option<RustType> {
     with_inference(reference, context, |inference, site| {
         let value = inference.local_value(receiver, site.line, site.column, 0)?;
-        inference.resolve_link(value)
+        inference.resolve_link(through_guard(value, &reference.reference_name))
     })
 }
 
@@ -92,8 +95,56 @@ pub(in crate::resolution::name_matcher) fn infer_rust_chain_type(
 ) -> Option<RustType> {
     with_inference(reference, context, |inference, site| {
         let value = inference.expression_value(receiver, site, 0)?;
-        inference.resolve_link(value)
+        inference.resolve_link(through_guard(value, &reference.reference_name))
     })
+}
+
+/// The receiver a call of `called` (`m`, `recv.m`) runs on when the
+/// receiver's value is a lock result (`m.lock()`): the guarded `T`, as a
+/// chain link would take it — a `parking_lot`/`tokio` guard hands back the
+/// value itself — unless the method is one a `LockResult` answers (std's
+/// `m.lock().unwrap()`).
+fn through_guard(value: Value, called: &str) -> Value {
+    const RESULT_METHODS: &[&str] = &[
+        "and_then",
+        "as_mut",
+        "as_ref",
+        "err",
+        "expect",
+        "expect_err",
+        "into_inner",
+        "is_err",
+        "is_ok",
+        "map",
+        "map_err",
+        "ok",
+        "or_else",
+        "unwrap",
+        "unwrap_err",
+        "unwrap_or",
+        "unwrap_or_default",
+        "unwrap_or_else",
+    ];
+    let method = called.rsplit(['.', ':']).next().unwrap_or(called);
+    match value {
+        Value::Written {
+            text,
+            self_ty,
+            file,
+        } if !RESULT_METHODS.contains(&method) => match adaptors::guarded(&text) {
+            Some(inner) => Value::Written {
+                text: inner.to_string(),
+                self_ty,
+                file,
+            },
+            None => Value::Written {
+                text,
+                self_ty,
+                file,
+            },
+        },
+        value => value,
+    }
 }
 
 /// Run `infer` with the inference state for `reference`'s call site, and
@@ -298,6 +349,9 @@ impl Inference<'_> {
         if let Some(param) = self.param(name) {
             return Some(self.here(param));
         }
+        if let Some(found) = self.pattern_param(name) {
+            return found;
+        }
         self.item_value(name)
     }
 
@@ -330,6 +384,10 @@ impl Inference<'_> {
                 None => continue,
                 Some(Binding::Opaque) => None,
                 Some(Binding::Typed(written)) => Some(self.here(written.into_owned())),
+                Some(Binding::Newtype {
+                    constructor,
+                    written,
+                }) => self.newtype_field(constructor, &written),
                 Some(Binding::Let { annotation, init }) => {
                     // `let x = x.len();`: the new `x` is not in scope in its
                     // own initializer.
@@ -451,6 +509,19 @@ impl Inference<'_> {
             .into_iter()
             .find(|(pattern, _)| *pattern == name)
             .map(|(_, written)| written)
+    }
+
+    /// The type of `name` when a parameter pattern of the enclosing fn binds
+    /// it: `Some(None)` unless the pattern is one [`newtypes`] types
+    /// (`State(state): State<AppState>`).
+    fn pattern_param(&self, name: &str) -> Option<Option<Value>> {
+        let (pattern, written) = signature_params(self.signature?)
+            .into_iter()
+            .find(|(pattern, _)| bindings::binds(pattern, name))?;
+        Some(
+            newtypes::newtype_constructor(pattern, name)
+                .and_then(|constructor| self.newtype_field(constructor, written)),
+        )
     }
 
     /// The statement text from byte `offset` of line `index` to its `;`.

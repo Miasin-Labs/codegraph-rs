@@ -76,15 +76,21 @@ fn field_type(line: &str, name: &str, position: usize) -> Option<String> {
     let at = line.find(&format!("{name}("))?;
     let fields = &line[at + name.len()..];
     let close = matching_paren(fields)?;
-    let field = *split_top_level(&fields[1..close], b',').get(position)?;
-    // `pub`, `pub(crate)`, `pub(in a::b)`.
-    let field = match field.strip_prefix("pub") {
-        Some(rest) if rest.starts_with('(') => &rest[matching_paren(rest)? + 1..],
-        Some(rest) if rest.starts_with(char::is_whitespace) => rest,
-        _ => field,
-    }
-    .trim();
+    let field = without_visibility(split_top_level(&fields[1..close], b',').get(position)?)?;
     (!field.is_empty()).then(|| field.to_string())
+}
+
+/// A tuple field's type without its `pub`, `pub(crate)`, `pub(in a::b)`.
+pub(super) fn without_visibility(field: &str) -> Option<&str> {
+    let field = field.trim();
+    Some(
+        match field.strip_prefix("pub") {
+            Some(rest) if rest.starts_with('(') => &rest[matching_paren(rest)? + 1..],
+            Some(rest) if rest.starts_with(char::is_whitespace) => rest,
+            _ => field,
+        }
+        .trim(),
+    )
 }
 
 #[cfg(test)]

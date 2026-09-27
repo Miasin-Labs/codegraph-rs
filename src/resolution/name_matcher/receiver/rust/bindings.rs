@@ -9,6 +9,7 @@
 
 use std::borrow::Cow;
 
+use super::newtypes::newtype_constructor;
 use super::types::{is_ident_byte, split_top_level, type_colon};
 
 /// How many lines a closure's parameter list may span.
@@ -53,6 +54,12 @@ pub(super) enum Binding<'a> {
     },
     /// `|x: T|`.
     Typed(Cow<'a, str>),
+    /// `let W(x): W<T> = …` or `|W(x): W<T>|`: the one field of the tuple
+    /// struct `constructor` as the type `written` instantiates it.
+    Newtype {
+        constructor: &'a str,
+        written: Cow<'a, str>,
+    },
     /// A binding whose type the line does not spell.
     Opaque,
 }
@@ -164,6 +171,13 @@ fn let_binding<'a>(line: &'a str, keyword_end: usize, name: &str) -> Option<Bind
             init,
         });
     }
+    let annotation = annotation.filter(|text| !text.is_empty());
+    if let (Some(written), Some(constructor)) = (annotation, newtype_constructor(pattern, name)) {
+        return Some(Binding::Newtype {
+            constructor,
+            written: Cow::Borrowed(written),
+        });
+    }
     let unwrapped = ["Some", "Ok"].iter().any(|variant| {
         pattern
             .strip_prefix(variant)
@@ -180,7 +194,7 @@ fn let_binding<'a>(line: &'a str, keyword_end: usize, name: &str) -> Option<Bind
         Some(init) if unwrapped && annotation.is_none() => Some(Binding::Unwrapped { init }),
         Some(init) => match tuple_position(pattern, name) {
             Some(position) => Some(Binding::Tuple {
-                annotation: annotation.filter(|text| !text.is_empty()),
+                annotation,
                 init,
                 position,
             }),
@@ -335,6 +349,7 @@ fn closure_binding<'a>(params: Cow<'a, str>, name: &str) -> Option<Binding<'a>> 
         Cow::Borrowed(params) => param_binding(params, name),
         Cow::Owned(params) => param_binding(&params, name).map(|binding| match binding {
             Binding::Typed(annotation) => Binding::Typed(Cow::Owned(annotation.into_owned())),
+            Binding::Newtype { .. } => Binding::Opaque,
             Binding::Param {
                 open,
                 param,
@@ -370,6 +385,14 @@ fn param_binding<'a>(params: &'a str, name: &str) -> Option<Binding<'a>> {
                 return Some(annotation.map_or(untyped(None), |annotation| {
                     Binding::Typed(Cow::Borrowed(annotation))
                 }));
+            }
+            if let (Some(written), Some(constructor)) =
+                (annotation, newtype_constructor(pattern, name))
+            {
+                return Some(Binding::Newtype {
+                    constructor,
+                    written: Cow::Borrowed(written),
+                });
             }
             if annotation.is_none() {
                 if let Some(position) = tuple_position(pattern, name) {

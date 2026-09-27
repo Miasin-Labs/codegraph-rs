@@ -28,7 +28,7 @@ pub(super) fn rust_node(kind: NodeKind, qualified: &str, file: &str, line: u32) 
 }
 
 /// A `use` declaration of `file`, as the index stores it.
-fn use_decl(file: &str, text: &str, line: u32) -> Node {
+pub(super) fn use_decl(file: &str, text: &str, line: u32) -> Node {
     let mut import = rust_node(NodeKind::Import, &format!("use_{line}"), file, line);
     import.signature = Some(text.into());
     import
