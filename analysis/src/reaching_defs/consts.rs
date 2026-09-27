@@ -1,7 +1,9 @@
-//! Constant branch conditions: `if (true)`, `if (5 == 5)`, `while (1)`, and
+//! Constant branch conditions: `if (true)`, `if (5 == 5)`, `while (1)`,
 //! arithmetic over locals assigned exactly once from constants
-//! (`int num = 86; if ((7 * 42) - num > 200)`). Anything else — a field, a
-//! parameter, a call, a variable assigned twice — is unknown.
+//! (`int num = 86; if ((7 * 42) - num > 200)`), and a switch on a character
+//! of a constant string (`"ABC".charAt(1)` against `case 'B'`). Anything
+//! else — a field, a parameter, another call, a variable assigned twice —
+//! is unknown.
 
 use std::collections::HashMap;
 
@@ -14,7 +16,10 @@ pub fn branch_outcomes(func: &IrFunction) -> HashMap<usize, bool> {
         .iter()
         .enumerate()
         .filter_map(|(index, op)| match op {
-            IrOp::Branch { cond, .. } => folder.operand(cond, 0).map(|value| (index, value != 0)),
+            IrOp::Branch { cond, .. } => match folder.operand(cond, 0)? {
+                Value::Int(value) => Some((index, value != 0)),
+                Value::Str(_) => None,
+            },
             _ => None,
         })
         .collect()
@@ -22,6 +27,16 @@ pub fn branch_outcomes(func: &IrFunction) -> HashMap<usize, bool> {
 
 /// Nesting a folded expression may have (temporaries chain one op each).
 const MAX_DEPTH: usize = 32;
+
+/// Methods that pick a character of a string by index; the fold of
+/// `s.m(i)` on a constant `s` and `i` is that character's code.
+const CHAR_AT: &[&str] = &["charAt", "codePointAt", "charCodeAt"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Value {
+    Int(i64),
+    Str(String),
+}
 
 struct Folder<'f> {
     func: &'f IrFunction,
@@ -55,7 +70,7 @@ impl<'f> Folder<'f> {
         Self { func, single }
     }
 
-    fn operand(&self, operand: &Operand, depth: usize) -> Option<i64> {
+    fn operand(&self, operand: &Operand, depth: usize) -> Option<Value> {
         if depth > MAX_DEPTH {
             return None;
         }
@@ -70,6 +85,21 @@ impl<'f> Folder<'f> {
                         let rhs = self.operand(rhs, depth + 1)?;
                         apply(*op, lhs, rhs)
                     }
+                    IrOp::Call {
+                        callee,
+                        receiver: Some(receiver),
+                        args,
+                        ..
+                    } if args.len() == 1 && CHAR_AT.iter().any(|m| callee.ends_with(m)) => {
+                        let Value::Str(text) = self.operand(receiver, depth + 1)? else {
+                            return None;
+                        };
+                        let Value::Int(index) = self.operand(&args[0], depth + 1)? else {
+                            return None;
+                        };
+                        let index = usize::try_from(index).ok()?;
+                        text.chars().nth(index).map(|c| Value::Int(c as i64))
+                    }
                     _ => None,
                 }
             }
@@ -78,27 +108,49 @@ impl<'f> Folder<'f> {
     }
 }
 
-/// An integer or boolean literal as written (`42`, `0x10`, `7L`, `true`).
-fn literal(text: &str) -> Option<i64> {
+/// A literal as written: an integer (`42`, `0x10`, `7L`), a boolean, a
+/// character (`'C'`) or a plain double-quoted string.
+fn literal(text: &str) -> Option<Value> {
     let text = text.trim();
     match text {
-        "true" | "True" | "TRUE" => return Some(1),
-        "false" | "False" | "FALSE" => return Some(0),
+        "true" | "True" | "TRUE" => return Some(Value::Int(1)),
+        "false" | "False" | "FALSE" => return Some(Value::Int(0)),
         _ => {}
+    }
+    if let Some(inner) = text.strip_prefix('\'').and_then(|t| t.strip_suffix('\'')) {
+        let mut chars = inner.chars();
+        return match (chars.next(), chars.next()) {
+            (Some(c), None) if c != '\\' => Some(Value::Int(c as i64)),
+            _ => None,
+        };
+    }
+    if let Some(inner) = text.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
+        return (!inner.contains(['\\', '"'])).then(|| Value::Str(inner.to_string()));
     }
     let digits = text.trim_end_matches(['l', 'L', 'u', 'U']);
     if let Some(hex) = digits
         .strip_prefix("0x")
         .or_else(|| digits.strip_prefix("0X"))
     {
-        return i64::from_str_radix(hex, 16).ok();
+        return i64::from_str_radix(hex, 16).ok().map(Value::Int);
     }
-    digits.parse::<i64>().ok()
+    digits.parse::<i64>().ok().map(Value::Int)
 }
 
-fn apply(op: BinOpKind, lhs: i64, rhs: i64) -> Option<i64> {
+fn apply(op: BinOpKind, lhs: Value, rhs: Value) -> Option<Value> {
+    let (lhs, rhs) = match (lhs, rhs) {
+        (Value::Int(lhs), Value::Int(rhs)) => (lhs, rhs),
+        (Value::Str(lhs), Value::Str(rhs)) => {
+            return match op {
+                BinOpKind::Eq => Some(Value::Int(i64::from(lhs == rhs))),
+                BinOpKind::Ne => Some(Value::Int(i64::from(lhs != rhs))),
+                _ => None,
+            };
+        }
+        _ => return None,
+    };
     let bool_of = |b: bool| i64::from(b);
-    Some(match op {
+    Some(Value::Int(match op {
         BinOpKind::Add => lhs.checked_add(rhs)?,
         BinOpKind::Sub => lhs.checked_sub(rhs)?,
         BinOpKind::Mul => lhs.checked_mul(rhs)?,
@@ -117,5 +169,5 @@ fn apply(op: BinOpKind, lhs: i64, rhs: i64) -> Option<i64> {
         BinOpKind::BitXor => lhs ^ rhs,
         BinOpKind::Shl => lhs.checked_shl(u32::try_from(rhs).ok()?)?,
         BinOpKind::Shr => lhs.checked_shr(u32::try_from(rhs).ok()?)?,
-    })
+    }))
 }

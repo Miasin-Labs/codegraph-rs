@@ -22,7 +22,16 @@ impl Lowerer<'_, '_> {
         let kind = node.kind();
         let rules = self.rules;
         if self.is_identifier(node) {
-            let var = Var::new(self.text(node));
+            let mut name = self.text(node);
+            if let Some(stands_for) = self.macros.get(name) {
+                if stands_for.starts_with('"')
+                    || stands_for.starts_with(|c: char| c.is_ascii_digit())
+                {
+                    return Value::constant(stands_for.clone());
+                }
+                name = stands_for;
+            }
+            let var = Var::new(name);
             return Value {
                 operand: Operand::Var(var.clone()),
                 place: Some(Place::var(var)),

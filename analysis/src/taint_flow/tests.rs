@@ -18,7 +18,7 @@ fn mark(src: &str, context: &str, needle: &str) -> Mark {
 
 fn run(lang: &str, src: &str, spec: &TaintSpec) -> Vec<Flow> {
     let func = lower(lang, src);
-    analyze(&func, lang, spec, &|_| Vec::new())
+    analyze(&func, lang, spec, &|_| CallResolution::default())
 }
 
 fn lines(src: &str, flow: &Flow) -> Vec<u32> {
@@ -282,6 +282,41 @@ fn interpolated_strings_carry_taint() {
 }
 
 #[test]
+fn a_source_that_reads_storage_taints_what_is_below_it() {
+    let py = "def f(cur):\n    q = request.args['a']\n    cur.execute(q)\n";
+    let spec = TaintSpec {
+        sources: vec![mark(py, "request.args['a']", "request.args")],
+        sinks: vec![mark(py, "execute(q)", "q")],
+        ..TaintSpec::default()
+    };
+    assert_eq!(run("python", py, &spec).len(), 1);
+}
+
+#[test]
+fn a_source_below_a_parameter_or_in_a_receiver_holds() {
+    let js =
+        "function f(req, res) {\n  const id = req.query.id;\n  db.query(\"S '\" + id + \"'\");\n}";
+    let spec = TaintSpec {
+        sources: vec![mark(js, "req.query.id", "req.query")],
+        sinks: vec![mark(
+            js,
+            "db.query(\"S '\" + id + \"'\")",
+            "\"S '\" + id + \"'\"",
+        )],
+        ..TaintSpec::default()
+    };
+    assert_eq!(run("javascript", js, &spec).len(), 1);
+    // The receiver of a call is not an argument written by it.
+    let py = "def f(request, cur):\n    name = request.POST.get('name')\n    cur.execute(\"S '%s'\" % name)\n";
+    let spec = TaintSpec {
+        sources: vec![mark(py, "request.POST.get", "request.POST")],
+        sinks: vec![mark(py, "execute(\"S '%s'\" % name)", "\"S '%s'\" % name")],
+        ..TaintSpec::default()
+    };
+    assert_eq!(run("python", py, &spec).len(), 1);
+}
+
+#[test]
 fn unreachable_sinks_are_not_reported() {
     let src = "class A { void f(HttpServletRequest req, Statement stmt) {\n\
         String p = req.getParameter(\"a\");\n\
@@ -317,19 +352,52 @@ fn resolved_names_select_library_models() {
         ..TaintSpec::default()
     };
     let func = lower("java", src);
-    let default = analyze(&func, "java", &spec, &|_| Vec::new());
+    let default = analyze(&func, "java", &spec, &|_| CallResolution::default());
     assert_eq!(default.len(), 1, "an unknown call carries its receiver");
     let fetch = func
         .body
         .iter()
         .position(|op| matches!(op, IrOp::Call { callee, .. } if callee == "m.fetch"))
         .unwrap();
-    let resolved = analyze(&func, "java", &spec, &|op| {
-        if op == fetch {
+    let resolved = analyze(&func, "java", &spec, &|op| CallResolution {
+        names: if op == fetch {
             vec!["java.util.Map::get".to_string()]
         } else {
             Vec::new()
-        }
+        },
+        in_project: false,
     });
     assert!(resolved.is_empty(), "a keyed read of another key");
+}
+
+#[test]
+fn project_calls_are_not_guessed_through() {
+    let src = "class A { void f(HttpServletRequest req, Statement stmt) {\n\
+        String p = req.getParameter(\"a\");\n\
+        String bar = new Test().doSomething(req, p);\n\
+        stmt.executeQuery(bar);\n\
+    } }";
+    let spec = TaintSpec {
+        sources: vec![mark(
+            src,
+            "req.getParameter(\"a\")",
+            "req.getParameter(\"a\")",
+        )],
+        sinks: vec![mark(src, "executeQuery(bar)", "bar")],
+        ..TaintSpec::default()
+    };
+    let func = lower("java", src);
+    assert_eq!(
+        analyze(&func, "java", &spec, &|_| CallResolution::default()).len(),
+        1,
+        "a library call carries its arguments"
+    );
+    let project = analyze(&func, "java", &spec, &|op| CallResolution {
+        names: Vec::new(),
+        in_project: matches!(&func.body[op], IrOp::Call { callee, .. } if callee.ends_with("doSomething")),
+    });
+    assert!(
+        project.is_empty(),
+        "phase 1 does not look into project code"
+    );
 }

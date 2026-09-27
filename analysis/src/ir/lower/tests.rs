@@ -216,6 +216,28 @@ fn c_address_of_designates_its_operand() {
 }
 
 #[test]
+fn object_like_macros_read_as_what_they_stand_for() {
+    let src = "#define ARG3 data\n#define ARG1 \"-c\"\n#ifdef W\n#define PATH \"a\"\n#else\n#define PATH \"b\"\n#endif\nvoid f(char *data) { execl(PATH, ARG1, ARG3, NULL); }";
+    let tree = parse("c", src);
+    let macros = crate::ir::macro_aliases("c", tree.root_node(), src);
+    assert_eq!(macros.get("ARG3").map(String::as_str), Some("data"));
+    assert_eq!(macros.get("ARG1").map(String::as_str), Some("\"-c\""));
+    assert!(!macros.contains_key("PATH"), "defined two ways");
+    let function = first_function("c", tree.root_node()).unwrap();
+    let ir = crate::ir::lower_with_macros("c", function, src, &macros).unwrap();
+    let args = ir
+        .body
+        .iter()
+        .find_map(|op| match op {
+            IrOp::Call { args, .. } => Some(args.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(args[1], Operand::constant("\"-c\""));
+    assert_eq!(args[2], Operand::var("data"));
+}
+
+#[test]
 fn python_js_php_strings_interpolate() {
     let py = lower("python", "def f(a):\n    q = f\"select {a}\"\n    run(q)\n");
     assert!(calls(&py).contains(&"<concat>"), "{:?}", calls(&py));
@@ -233,6 +255,15 @@ fn python_js_php_strings_interpolate() {
     // A plain string stays a constant.
     let plain = lower("python", "def f():\n    q = \"select 1\"\n");
     assert!(!calls(&plain).contains(&"<concat>"));
+}
+
+#[test]
+fn top_level_code_lowers_without_its_functions() {
+    let src = "<?php\n$id = $_GET['id'];\nfunction g($x) { return h($x); }\n$r = mysqli_query($c, \"q $id\");\n";
+    let tree = parse("php", src);
+    let ir = lower_with_rules("php", tree.root_node(), src).expect("top level");
+    assert_eq!(assigned(&ir), vec!["$id", "$r"]);
+    assert!(!calls(&ir).contains(&"h"), "function bodies are their own");
 }
 
 #[test]

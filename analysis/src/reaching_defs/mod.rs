@@ -85,8 +85,12 @@ pub struct ReachingDefs {
     entry_defs: Vec<DefId>,
     /// Temporaries that name a place (`__t3 = a.b` names `a.b`).
     temp_places: HashMap<Var, Place>,
-    /// Per base variable: its definitions (for kills).
+    /// Per base variable: its definitions (for overlap queries).
     by_base: HashMap<Var, Vec<DefId>>,
+    /// Per strong definition: index into `kill_sets` of the definitions
+    /// its place covers (one set per distinct place, built once).
+    kill_of: Vec<Option<usize>>,
+    kill_sets: Vec<BitSet>,
     ins: Vec<BitSet>,
 }
 
@@ -131,6 +135,28 @@ impl ReachingDefs {
         for (id, def) in defs.iter().enumerate() {
             by_base.entry(def.place.base.clone()).or_default().push(id);
         }
+        // A strong write kills every definition its place covers: one bit
+        // set per distinct written place, so a kill costs a word-wise
+        // difference rather than a scan of the variable's definitions.
+        let mut kill_index: HashMap<&Place, usize> = HashMap::new();
+        let mut kill_sets: Vec<BitSet> = Vec::new();
+        let mut kill_of: Vec<Option<usize>> = vec![None; defs.len()];
+        for (id, def) in defs.iter().enumerate() {
+            if !def.strong {
+                continue;
+            }
+            let index = *kill_index.entry(&def.place).or_insert_with(|| {
+                let mut set = BitSet::new(defs.len());
+                for &other in &by_base[&def.place.base] {
+                    if def.place.covers(&defs[other].place) {
+                        set.insert(other);
+                    }
+                }
+                kill_sets.push(set);
+                kill_sets.len() - 1
+            });
+            kill_of[id] = Some(index);
+        }
 
         let constants = if options.prune_constant_branches {
             consts::branch_outcomes(func)
@@ -146,6 +172,8 @@ impl ReachingDefs {
             entry_defs,
             temp_places,
             by_base,
+            kill_of,
+            kill_sets,
         };
         solver.solve();
         solver
@@ -208,15 +236,8 @@ impl ReachingDefs {
     }
 
     fn gen_def(&self, state: &mut BitSet, id: DefId) {
-        let def = &self.defs[id];
-        if def.strong {
-            if let Some(same_base) = self.by_base.get(&def.place.base) {
-                for &other in same_base {
-                    if def.place.covers(&self.defs[other].place) {
-                        state.remove(other);
-                    }
-                }
-            }
+        if let Some(kills) = self.kill_of[id] {
+            state.difference_with(&self.kill_sets[kills]);
         }
         state.insert(id);
     }
@@ -415,6 +436,12 @@ impl BitSet {
         self.words
             .get(index / 64)
             .is_some_and(|word| word & (1 << (index % 64)) != 0)
+    }
+
+    pub fn difference_with(&mut self, other: &BitSet) {
+        for (word, other) in self.words.iter_mut().zip(&other.words) {
+            *word &= !other;
+        }
     }
 
     pub fn union_with(&mut self, other: &BitSet) {

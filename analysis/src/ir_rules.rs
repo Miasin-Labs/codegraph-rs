@@ -133,9 +133,16 @@ pub struct IrRules {
     pub foreach: &'static [ForEachShape],
     /// Loops that run their body before testing their condition.
     pub do_loops: &'static [&'static str],
+    /// Children of a switch arm holding its case values (Java
+    /// `switch_label`); else the arm's `value` field holds the one value.
+    pub case_labels: &'static [&'static str],
     /// Nodes never lowered (types, annotations, comments): skipped as
     /// statements and constant as expressions.
     pub ignored: &'static [&'static str],
+    /// Object-like macro definitions (fields `name`, `value`): one whose
+    /// body is a single name or literal is lowered as what it stands for
+    /// (`#define ARG data` makes `ARG` read `data`).
+    pub macro_definitions: &'static [&'static str],
 }
 
 impl IrRules {
@@ -264,6 +271,7 @@ static JAVA: IrRules = IrRules {
         iterable: Slot::Field("value"),
     }],
     do_loops: &["do_statement"],
+    case_labels: &["switch_label"],
     ignored: &[
         "comment",
         "line_comment",
@@ -281,6 +289,7 @@ static JAVA: IrRules = IrRules {
         "empty_statement",
         "assert_statement",
     ],
+    macro_definitions: &[],
 };
 
 // ─── C / C++ ─────────────────────────────────────────────────────────────────
@@ -361,6 +370,7 @@ static C: IrRules = IrRules {
     collections: &["initializer_list", "compound_literal_expression"],
     foreach: &[],
     do_loops: &["do_statement"],
+    case_labels: &[],
     ignored: &[
         "comment",
         "type_definition",
@@ -372,6 +382,7 @@ static C: IrRules = IrRules {
         "goto_statement",
         "gnu_asm_expression",
     ],
+    macro_definitions: &["preproc_def"],
 };
 
 static CPP: IrRules = IrRules {
@@ -424,6 +435,7 @@ static CPP: IrRules = IrRules {
         iterable: Slot::Field("right"),
     }],
     do_loops: &["do_statement"],
+    case_labels: &[],
     ignored: &[
         "comment",
         "type_definition",
@@ -438,6 +450,7 @@ static CPP: IrRules = IrRules {
         "using_declaration",
         "alias_declaration",
     ],
+    macro_definitions: &["preproc_def"],
 };
 
 // ─── PHP ─────────────────────────────────────────────────────────────────────
@@ -590,6 +603,7 @@ static PHP: IrRules = IrRules {
         iterable: Slot::Child(0),
     }],
     do_loops: &["do_statement"],
+    case_labels: &[],
     ignored: &[
         "comment",
         "text_interpolation",
@@ -600,6 +614,7 @@ static PHP: IrRules = IrRules {
         "empty_statement",
         "global_declaration",
     ],
+    macro_definitions: &[],
 };
 
 // ─── Python ──────────────────────────────────────────────────────────────────
@@ -672,6 +687,7 @@ static PYTHON: IrRules = IrRules {
         iterable: Slot::Field("right"),
     }],
     do_loops: &[],
+    case_labels: &[],
     ignored: &[
         "comment",
         "pass_statement",
@@ -684,6 +700,7 @@ static PYTHON: IrRules = IrRules {
         "global_statement",
         "nonlocal_statement",
     ],
+    macro_definitions: &[],
 };
 
 // ─── JavaScript / TypeScript ─────────────────────────────────────────────────
@@ -779,6 +796,7 @@ static JS: IrRules = IrRules {
         iterable: Slot::Field("right"),
     }],
     do_loops: &["do_statement"],
+    case_labels: &[],
     ignored: &[
         "comment",
         "empty_statement",
@@ -793,6 +811,7 @@ static JS: IrRules = IrRules {
         "type_alias_declaration",
         "interface_declaration",
     ],
+    macro_definitions: &[],
 };
 
 #[cfg(test)]

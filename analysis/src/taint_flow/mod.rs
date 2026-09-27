@@ -21,7 +21,9 @@
 //!
 //! Calls the library table does not model propagate by default: the result
 //! carries the receiver's and arguments' data, and nothing else is
-//! written. Phase 2 replaces that guess with summaries of the callee.
+//! written. A call the index resolved into the project's own code is not
+//! guessed at: its result carries nothing (phase 2 replaces both with
+//! summaries of the callee).
 
 #[cfg(test)]
 mod tests;
@@ -79,20 +81,30 @@ pub struct Flow {
     pub hops: Vec<Hop>,
 }
 
-/// Run `spec` over `func`. `call_names(op)` names what the `Call` op at
-/// `op` resolves to (qualified names from the index; empty when it does
-/// not know), used with the callee as written to find library models.
+/// What a `Call` op resolves to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CallResolution {
+    /// Qualified names of its targets (empty when unknown); with the
+    /// callee as written, they select the library model.
+    pub names: Vec<String>,
+    /// It runs the project's own code, which phase 1 does not look into:
+    /// nothing is assumed to flow through it.
+    pub in_project: bool,
+}
+
+/// Run `spec` over `func`. `resolve(op)` says what the `Call` op at `op`
+/// resolves to.
 pub fn analyze(
     func: &IrFunction,
     language: &str,
     spec: &TaintSpec,
-    call_names: &dyn Fn(usize) -> Vec<String>,
+    resolve: &dyn Fn(usize) -> CallResolution,
 ) -> Vec<Flow> {
     if func.body.len() > MAX_OPS || spec.sources.is_empty() || spec.sinks.is_empty() {
         return Vec::new();
     }
     let rules = PropagationRules::for_language(language);
-    let mut engine = Engine::new(func, rules, call_names);
+    let mut engine = Engine::new(func, rules, resolve);
     engine.mark(spec);
     engine.solve(spec)
 }
@@ -104,6 +116,8 @@ enum ResultRule {
     Default,
     /// Nothing.
     Clean,
+    /// Nothing phase 1 can know (the project's own code).
+    Opaque,
     /// The receiver's element under a constant key (or the whole receiver).
     KeyedRead(Option<String>),
 }
@@ -160,6 +174,10 @@ struct Engine<'f> {
     sinks: Vec<(usize, Operand, usize)>,
     rd: Option<ReachingDefs>,
     live: HashMap<usize, BitSet>,
+    /// Recorded values by their byte range.
+    by_range: HashMap<(usize, usize), Vec<usize>>,
+    /// `Call` ops by the operands they take as arguments.
+    calls_taking: HashMap<&'f Operand, Vec<usize>>,
 }
 
 /// The last name of a callee or qualified name (`a.b.c` → `c`,
@@ -183,7 +201,7 @@ impl<'f> Engine<'f> {
     fn new(
         func: &'f IrFunction,
         rules: &PropagationRules,
-        call_names: &dyn Fn(usize) -> Vec<String>,
+        resolve: &dyn Fn(usize) -> CallResolution,
     ) -> Self {
         let mut temp_defs = HashMap::new();
         let mut models = HashMap::new();
@@ -208,7 +226,18 @@ impl<'f> Engine<'f> {
                     if let Some(dst) = dst.as_ref().filter(|dst| is_temp(dst)) {
                         temp_defs.insert(dst, index);
                     }
-                    let mut names = call_names(index);
+                    let resolution = resolve(index);
+                    if resolution.in_project {
+                        models.insert(
+                            index,
+                            CallModel {
+                                result: ResultRule::Opaque,
+                                receiver_from_args: false,
+                            },
+                        );
+                        continue;
+                    }
+                    let mut names = resolution.names;
                     names.push(callee.clone());
                     let names: Vec<&str> = names.iter().map(|name| last_name(name)).collect();
                     let find = |test: &dyn Fn(&str) -> bool| names.iter().any(|name| test(name));
@@ -296,7 +325,24 @@ impl<'f> Engine<'f> {
                 _ => {}
             }
         }
+        let mut by_range: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+        for (index, value) in func.values.iter().enumerate() {
+            by_range
+                .entry((value.span.start_byte, value.span.end_byte))
+                .or_default()
+                .push(index);
+        }
+        let mut calls_taking: HashMap<&Operand, Vec<usize>> = HashMap::new();
+        for (index, op) in func.body.iter().enumerate() {
+            if let IrOp::Call { args, .. } = op {
+                for arg in args {
+                    calls_taking.entry(arg).or_default().push(index);
+                }
+            }
+        }
         Self {
+            by_range,
+            calls_taking,
             func,
             models,
             temp_defs,
@@ -316,10 +362,11 @@ impl<'f> Engine<'f> {
     /// around it.
     fn locate(&self, mark: &Mark) -> Option<&'f ExprValue> {
         let values = &self.func.values;
-        let exact: Vec<&ExprValue> = values
-            .iter()
-            .filter(|v| v.span.start_byte == mark.start_byte && v.span.end_byte == mark.end_byte)
-            .collect();
+        let exact: Vec<&ExprValue> = self
+            .by_range
+            .get(&(mark.start_byte, mark.end_byte))
+            .map(|indices| indices.iter().map(|&i| &values[i]).collect())
+            .unwrap_or_default();
         if let Some(kind) = mark.kind {
             if let Some(value) = exact.iter().rev().find(|v| v.kind == kind) {
                 return Some(value);
@@ -342,21 +389,17 @@ impl<'f> Engine<'f> {
         }
     }
 
-    /// The call `value` is an argument (or receiver) of: the smallest
-    /// value around it that a `Call` op computes.
+    /// The call `value` is an argument of: the smallest value around it
+    /// that a `Call` op computes with `value` among its arguments.
     fn enclosing_call(&self, value: &ExprValue) -> Option<usize> {
-        self.func
-            .values
+        // Passed as an argument (a receiver is not written): the calls
+        // taking its operand, the innermost around it.
+        self.calls_taking
+            .get(&value.operand)?
             .iter()
-            .filter(|v| {
-                v.span.contains(&value.span) && (v.span != value.span || v.kind != value.kind)
-            })
-            .filter_map(|v| {
-                let op = self.defining_op(&v.operand)?;
-                matches!(self.func.body[op], IrOp::Call { .. })
-                    .then_some((v.span.end_byte - v.span.start_byte, op))
-            })
-            .min()
+            .map(|&op| (self.func.span(op), op))
+            .filter(|(span, _)| span.line > 0 && span.contains(&value.span))
+            .max_by_key(|(span, _)| span.start_byte)
             .map(|(_, op)| op)
     }
 
@@ -388,9 +431,24 @@ impl<'f> Engine<'f> {
         Some(Target::Storage(value.at.checked_sub(1), place))
     }
 
+    /// Where a source's value is defined. A source that reads storage
+    /// (`request.args`, `$_GET['q']`, `req.query`) makes that storage
+    /// untrusted from entry, so every read of it or below it is tainted.
+    fn source_target(&self, mark: &Mark) -> Option<Target> {
+        let target = self.target(mark)?;
+        if let Target::Op(op) = target {
+            if matches!(self.func.body[op], IrOp::FieldRead { .. }) {
+                if let Some(place) = self.locate(mark).and_then(|value| value.place.clone()) {
+                    return Some(Target::Storage(None, place));
+                }
+            }
+        }
+        Some(target)
+    }
+
     fn mark(&mut self, spec: &TaintSpec) {
         for (index, mark) in spec.sources.iter().enumerate() {
-            match self.target(mark) {
+            match self.source_target(mark) {
                 Some(Target::Op(op)) => {
                     self.source_ops.insert(op, index);
                 }
@@ -520,7 +578,7 @@ impl<'f> Engine<'f> {
                     .is_some_and(|dst| the_def.place == Place::var(dst.clone()));
                 if is_result {
                     match model.map(|m| &m.result) {
-                        Some(ResultRule::Clean) => Vec::new(),
+                        Some(ResultRule::Clean | ResultRule::Opaque) => Vec::new(),
                         Some(ResultRule::KeyedRead(key)) => {
                             let receiver_place = self
                                 .func

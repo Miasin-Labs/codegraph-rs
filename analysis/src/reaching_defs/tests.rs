@@ -197,6 +197,39 @@ fn constant_conditions_prune_dead_branches() {
 }
 
 #[test]
+fn a_switch_on_a_constant_takes_one_arm() {
+    let (func, rd) = solve(
+        "class A { void f(String param) {\n\
+         String bar;\n\
+         String guess = \"ABC\";\n\
+         char target = guess.charAt(1);\n\
+         switch (target) {\n\
+           case 'A': bar = param; break;\n\
+           case 'B': bar = \"bob\"; break;\n\
+           case 'C':\n\
+           case 'D': bar = param; break;\n\
+           default: bar = \"uncle\"; break;\n\
+         }\n\
+         sink(bar);\n\
+         } }",
+    );
+    assert_eq!(reaching_lines(&func, &rd, "sink", "bar"), vec![7]);
+    // An unknown scrutinee may take any arm, the default included.
+    let (func, rd) = solve(
+        "class A { void f(String param, char target) {\n\
+         String bar;\n\
+         switch (target) {\n\
+           case 'A': bar = param; break;\n\
+           case 'B': bar = \"bob\"; break;\n\
+           default: bar = \"uncle\"; break;\n\
+         }\n\
+         sink(bar);\n\
+         } }",
+    );
+    assert_eq!(reaching_lines(&func, &rd, "sink", "bar"), vec![4, 5, 6]);
+}
+
+#[test]
 fn dead_code_is_unreachable() {
     let (func, rd) = solve(
         "class A { void f(String p) {\n\

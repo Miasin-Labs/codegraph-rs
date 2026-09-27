@@ -12,18 +12,38 @@
 mod expr;
 mod stmt;
 
+use std::collections::HashMap;
+
 use tree_sitter::Node;
 
 use super::model::{CallPlaces, ExprValue, IrFunction, IrOp, Label, Operand, Place, Span, Var};
 use crate::cfg_rules::CfgRules;
 use crate::ir_rules::{IrRules, Slot};
 
-/// Lower `node` (a function-like node with a body) of language `lang` with
-/// the rules tables, or `None` when a table is missing or it has no body.
+/// Lower `node` (a function-like node with a body, or a file's root: its
+/// top-level code) of language `lang` with the rules tables, or `None`
+/// when a table is missing or it has no body.
 pub fn lower_with_rules(lang: &str, node: Node<'_>, source: &str) -> Option<IrFunction> {
+    lower_with_macros(lang, node, source, &HashMap::new())
+}
+
+/// [`lower_with_rules`], reading a name in `macros` (from
+/// [`macro_aliases`] of the function's file) as what the macro stands for.
+pub fn lower_with_macros(
+    lang: &str,
+    node: Node<'_>,
+    source: &str,
+    macros: &HashMap<String, String>,
+) -> Option<IrFunction> {
     let rules = IrRules::for_language(lang)?;
     let cfg = CfgRules::for_language(lang)?;
-    let body = node.child_by_field_name(cfg.body_field)?;
+    // A script's top-level code (PHP, Python, JS) is the root's statements.
+    let top_level = node.parent().is_none();
+    let body = if top_level {
+        node
+    } else {
+        node.child_by_field_name(cfg.body_field)?
+    };
     let mut lowerer = Lowerer {
         rules,
         cfg,
@@ -33,11 +53,16 @@ pub fn lower_with_rules(lang: &str, node: Node<'_>, source: &str) -> Option<IrFu
         next_temp: 0,
         breaks: Vec::new(),
         continues: Vec::new(),
+        macros,
     };
     lowerer.params(node);
     let exit = lowerer.fresh_label();
     lowerer.func.set_span(Span::of(node));
-    if cfg.classify(body.kind()) == crate::cfg_rules::Construct::Block {
+    if top_level {
+        for child in lowerer.named_children(body) {
+            lowerer.stmt(child);
+        }
+    } else if cfg.classify(body.kind()) == crate::cfg_rules::Construct::Block {
         lowerer.stmt(body);
     } else {
         // An expression body (`x => x + 1`).
@@ -49,6 +74,50 @@ pub fn lower_with_rules(lang: &str, node: Node<'_>, source: &str) -> Option<IrFu
     lowerer.func.set_span(Span::of(node));
     lowerer.func.push(IrOp::Label(exit));
     Some(lowerer.func)
+}
+
+/// The object-like macros of a file (walked once, from its `root`) whose
+/// body is one name or literal, by name. A macro defined twice with
+/// different bodies (`#ifdef` branches) stands for nothing.
+pub fn macro_aliases(lang: &str, root: Node<'_>, source: &str) -> HashMap<String, String> {
+    let Some(rules) = IrRules::for_language(lang) else {
+        return HashMap::new();
+    };
+    if rules.macro_definitions.is_empty() {
+        return HashMap::new();
+    }
+    let mut aliases: HashMap<String, Option<String>> = HashMap::new();
+    // Iterative walk: depth is bounded by the input.
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if rules.macro_definitions.contains(&node.kind()) {
+            let name = node.child_by_field_name("name").map(|n| text(n, source));
+            let value = node
+                .child_by_field_name("value")
+                .map(|n| text(n, source).trim());
+            if let (Some(name), Some(value)) = (name, value) {
+                let simple = !value.is_empty()
+                    && (value.chars().all(|c| c.is_alphanumeric() || c == '_')
+                        || (value.starts_with('"')
+                            && value.ends_with('"')
+                            && value.len() >= 2
+                            && !value[1..value.len() - 1].contains('"')));
+                let entry = aliases
+                    .entry(name.to_string())
+                    .or_insert_with(|| simple.then(|| value.to_string()));
+                if entry.as_deref() != Some(value) {
+                    *entry = None;
+                }
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    aliases
+        .into_iter()
+        .filter_map(|(name, value)| Some((name, value?)))
+        .collect()
 }
 
 /// The name a function node declares: its `name` field, or the identifier
@@ -123,6 +192,8 @@ struct Lowerer<'r, 's> {
     breaks: Vec<Label>,
     /// Where `continue` goes: the innermost loop's next iteration.
     continues: Vec<Label>,
+    /// Object-like macros read as what they stand for.
+    macros: &'r HashMap<String, String>,
 }
 
 impl<'s> Lowerer<'_, 's> {

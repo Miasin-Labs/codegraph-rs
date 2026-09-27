@@ -10,7 +10,7 @@ use tree_sitter::Node;
 
 use super::{Lowerer, Value};
 use crate::cfg_rules::Construct;
-use crate::ir::model::{IrOp, Label, Operand, Span, Var};
+use crate::ir::model::{BinOpKind, IrOp, Label, Operand, Span, Var};
 
 /// Fields holding a conditional's taken branch.
 const CONSEQUENCE_FIELDS: &[&str] = &["consequence", "body"];
@@ -282,10 +282,8 @@ impl Lowerer<'_, '_> {
         let scrutinee = node
             .child_by_field_name("condition")
             .or_else(|| node.child_by_field_name("value"))
-            .or_else(|| node.child_by_field_name("subject"));
-        if let Some(scrutinee) = scrutinee {
-            drop(self.expr(scrutinee));
-        }
+            .or_else(|| node.child_by_field_name("subject"))
+            .map(|scrutinee| self.expr(scrutinee).operand);
         let container = node.child_by_field_name("body").unwrap_or(node);
         let arms: Vec<Node<'_>> = self
             .named_children(container)
@@ -294,13 +292,47 @@ impl Lowerer<'_, '_> {
             .collect();
         let labels: Vec<_> = arms.iter().map(|_| self.fresh_label()).collect();
         let end = self.fresh_label();
-        for &label in &labels {
-            self.func.push(IrOp::Branch {
-                cond: Operand::Const("<case>".into()),
-                target: label,
-            });
+        // Each arm is taken when the scrutinee equals one of its values
+        // (a pattern or an unknown scrutinee: maybe); no match goes to the
+        // default arm, else past the switch.
+        let mut default = None;
+        for (arm, &label) in arms.iter().zip(&labels) {
+            let values = self.case_values(*arm);
+            if values.is_empty() {
+                if self.cfg.is_default_arm(self.text(*arm)) {
+                    default = Some(label);
+                } else {
+                    self.func.push(IrOp::Branch {
+                        cond: Operand::Const("<case>".into()),
+                        target: label,
+                    });
+                }
+                continue;
+            }
+            for value in values {
+                let value = self.expr(value).operand;
+                let cond = match &scrutinee {
+                    Some(scrutinee) => {
+                        let test = self.fresh_temp();
+                        self.func.push(IrOp::BinOp {
+                            dst: test.clone(),
+                            lhs: scrutinee.clone(),
+                            op: BinOpKind::Eq,
+                            rhs: value,
+                        });
+                        Operand::Var(test)
+                    }
+                    None => Operand::Const("<case>".into()),
+                };
+                self.func.push(IrOp::Branch {
+                    cond,
+                    target: label,
+                });
+            }
         }
-        self.func.push(IrOp::Jump { target: end });
+        self.func.push(IrOp::Jump {
+            target: default.unwrap_or(end),
+        });
         let tracks_breaks = self.cfg.break_exits_switch;
         if tracks_breaks {
             self.breaks.push(end);
@@ -309,7 +341,7 @@ impl Lowerer<'_, '_> {
             self.func.push(IrOp::Label(label));
             let value = arm.child_by_field_name("value");
             for child in self.named_children(*arm) {
-                if Some(child) != value {
+                if Some(child) != value && !self.rules.case_labels.contains(&child.kind()) {
                     self.stmt_or_expr(child);
                 }
             }
@@ -321,6 +353,18 @@ impl Lowerer<'_, '_> {
             self.breaks.pop();
         }
         self.func.push(IrOp::Label(end));
+    }
+
+    /// The values a switch arm matches (none: a default or a pattern).
+    fn case_values<'t>(&self, arm: Node<'t>) -> Vec<Node<'t>> {
+        if let Some(value) = arm.child_by_field_name("value") {
+            return vec![value];
+        }
+        self.named_children(arm)
+            .into_iter()
+            .filter(|child| self.rules.case_labels.contains(&child.kind()))
+            .flat_map(|label| self.named_children(label))
+            .collect()
     }
 
     fn try_stmt(&mut self, node: Node<'_>) {
