@@ -1,0 +1,244 @@
+//! Per-language library models for taint propagation: how data moves
+//! through common library calls the analysis cannot see into. A deliberately
+//! small, declarative table — string building and containers — until
+//! interprocedural summaries replace it.
+//!
+//! Every call not named here propagates by the default rule of
+//! [`crate::taint_flow`]: its result carries the data of its receiver and
+//! arguments, and it writes nothing. Concatenation (`+`, `.`, `+=`),
+//! f-strings and template literals are IR operations, so they need no
+//! entry. Methods are matched by their last name (`sb.append`,
+//! `java.lang.StringBuilder::append` → `append`).
+
+/// How one language's library calls move data.
+pub struct PropagationRules {
+    /// Methods that store their arguments' data in their receiver
+    /// (`sb.append(x)`, `list.add(x)`).
+    pub receiver_from_args: &'static [&'static str],
+    /// Keyed writes: `(method, key argument, value argument)` —
+    /// `map.put("k", v)` stores `v` under `map["k"]` when the key is a
+    /// constant, else in the whole `map`.
+    pub keyed_writes: &'static [(&'static str, usize, usize)],
+    /// Keyed reads: `(method, key argument)` — `map.get("k")` reads
+    /// `map["k"]` when the key is a constant.
+    pub keyed_reads: &'static [(&'static str, usize)],
+    /// Functions that write data into an argument:
+    /// `(function, destination argument, first source argument)` —
+    /// `strcpy(dst, src)`, `sprintf(dst, fmt, …)` (every argument from the
+    /// first source on flows into the destination).
+    pub argument_writes: &'static [(&'static str, usize, usize)],
+    /// Calls whose result carries none of their inputs' data: lengths,
+    /// comparisons, predicates.
+    pub clean_results: &'static [&'static str],
+}
+
+impl PropagationRules {
+    pub fn for_language(lang: &str) -> &'static PropagationRules {
+        match lang {
+            "java" => &JAVA,
+            "c" | "cpp" => &C,
+            "python" => &PYTHON,
+            "javascript" | "typescript" | "tsx" | "jsx" => &JS,
+            "php" => &PHP,
+            _ => &NONE,
+        }
+    }
+
+    pub fn is_receiver_write(&self, name: &str) -> bool {
+        self.receiver_from_args.contains(&name)
+    }
+
+    pub fn keyed_write(&self, name: &str) -> Option<(usize, usize)> {
+        self.keyed_writes
+            .iter()
+            .find(|(method, _, _)| *method == name)
+            .map(|&(_, key, value)| (key, value))
+    }
+
+    pub fn keyed_read(&self, name: &str) -> Option<usize> {
+        self.keyed_reads
+            .iter()
+            .find(|(method, _)| *method == name)
+            .map(|&(_, key)| key)
+    }
+
+    pub fn argument_write(&self, name: &str) -> Option<(usize, usize)> {
+        self.argument_writes
+            .iter()
+            .find(|(function, _, _)| *function == name)
+            .map(|&(_, dst, src)| (dst, src))
+    }
+
+    pub fn is_clean_result(&self, name: &str) -> bool {
+        self.clean_results.contains(&name)
+    }
+}
+
+static NONE: PropagationRules = PropagationRules {
+    receiver_from_args: &[],
+    keyed_writes: &[],
+    keyed_reads: &[],
+    argument_writes: &[],
+    clean_results: &[],
+};
+
+static JAVA: PropagationRules = PropagationRules {
+    receiver_from_args: &[
+        "append",
+        "insert",
+        "add",
+        "addAll",
+        "addElement",
+        "addFirst",
+        "addLast",
+        "push",
+        "offer",
+        "putAll",
+        "write",
+    ],
+    keyed_writes: &[
+        ("put", 0, 1),
+        ("putIfAbsent", 0, 1),
+        ("setProperty", 0, 1),
+        ("set", 0, 1),
+    ],
+    keyed_reads: &[("get", 0), ("getProperty", 0), ("getOrDefault", 0)],
+    argument_writes: &[("arraycopy", 2, 0), ("getChars", 2, 0)],
+    clean_results: &[
+        "length",
+        "size",
+        "isEmpty",
+        "equals",
+        "equalsIgnoreCase",
+        "contains",
+        "containsKey",
+        "containsValue",
+        "startsWith",
+        "endsWith",
+        "indexOf",
+        "lastIndexOf",
+        "hashCode",
+        "compareTo",
+        "compareToIgnoreCase",
+        "matches",
+        "hasNext",
+        "hasMoreElements",
+        "hasMoreTokens",
+        "exists",
+        "isFile",
+        "isDirectory",
+        "getClass",
+        "countTokens",
+    ],
+};
+
+static C: PropagationRules = PropagationRules {
+    receiver_from_args: &["append", "push_back", "insert", "assign"],
+    keyed_writes: &[],
+    keyed_reads: &[],
+    argument_writes: &[
+        ("strcpy", 0, 1),
+        ("strncpy", 0, 1),
+        ("strcat", 0, 1),
+        ("strncat", 0, 1),
+        ("strlcpy", 0, 1),
+        ("strlcat", 0, 1),
+        ("wcscpy", 0, 1),
+        ("wcsncpy", 0, 1),
+        ("wcscat", 0, 1),
+        ("wcsncat", 0, 1),
+        ("memcpy", 0, 1),
+        ("memmove", 0, 1),
+        ("wmemcpy", 0, 1),
+        ("wmemmove", 0, 1),
+        ("sprintf", 0, 1),
+        ("vsprintf", 0, 1),
+        ("swprintf", 0, 2),
+        ("snprintf", 0, 2),
+        ("vsnprintf", 0, 2),
+        ("_snprintf", 0, 2),
+        ("_snwprintf", 0, 2),
+        ("sscanf", 2, 0),
+        ("swscanf", 2, 0),
+    ],
+    clean_results: &[
+        "strlen",
+        "wcslen",
+        "strnlen",
+        "strcmp",
+        "strncmp",
+        "wcscmp",
+        "memcmp",
+        "strcasecmp",
+        "isdigit",
+        "isalpha",
+        "isalnum",
+        "isspace",
+        "size",
+        "length",
+        "empty",
+    ],
+};
+
+static PYTHON: PropagationRules = PropagationRules {
+    receiver_from_args: &["append", "extend", "insert", "add", "update", "write"],
+    keyed_writes: &[("setdefault", 0, 1)],
+    keyed_reads: &[("get", 0), ("getlist", 0)],
+    argument_writes: &[],
+    clean_results: &[
+        "len",
+        "isinstance",
+        "startswith",
+        "endswith",
+        "isdigit",
+        "isnumeric",
+        "isalpha",
+        "isalnum",
+        "exists",
+        "isfile",
+        "isdir",
+    ],
+};
+
+static JS: PropagationRules = PropagationRules {
+    receiver_from_args: &["push", "unshift", "append", "add", "write"],
+    keyed_writes: &[("set", 0, 1), ("setItem", 0, 1)],
+    keyed_reads: &[("get", 0), ("getItem", 0)],
+    argument_writes: &[],
+    clean_results: &[
+        "includes",
+        "indexOf",
+        "lastIndexOf",
+        "startsWith",
+        "endsWith",
+        "test",
+        "has",
+        "isArray",
+        "isNaN",
+        "existsSync",
+    ],
+};
+
+static PHP: PropagationRules = PropagationRules {
+    receiver_from_args: &["append", "add", "push"],
+    keyed_writes: &[],
+    keyed_reads: &[],
+    argument_writes: &[("array_push", 0, 1), ("array_unshift", 0, 1)],
+    clean_results: &[
+        "strlen",
+        "count",
+        "isset",
+        "empty",
+        "is_numeric",
+        "is_int",
+        "ctype_digit",
+        "ctype_alpha",
+        "ctype_alnum",
+        "in_array",
+        "array_key_exists",
+        "file_exists",
+        "is_file",
+        "strcmp",
+        "preg_match",
+    ],
+};
