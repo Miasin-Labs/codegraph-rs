@@ -85,8 +85,10 @@ def spread(items: Scored, n: int) -> Scored:
 def labeled_scorer(paths: Paths, corpus: str, units: list[Unit], ok: set[str], slack: int) -> Scorer:
     whole = any(u.sources == ["."] for u in units)
     staged = {s for u in units if u.name in ok for s in u.sources}
+    # a staged source is a file, or a directory whose files all count
     rows: list[GtRow] = load_rows(paths.bench / corpus / "ground_truth.jsonl",
-                                  None if whole else staged.__contains__)
+                                  None if whole else
+                                  lambda f: f in staged or f.split("/", 1)[0] in staged)
 
     def score(by_unit: dict[str, list[Finding]]) -> tuple[dict[str, Any], Scored]:
         metrics = score_labeled([f for fs in by_unit.values() for f in fs], rows, slack)
@@ -193,7 +195,8 @@ def main() -> int:
     for name in args.corpus:
         for corpus in expand_corpus(name):
             run_summary = json.loads((paths.corpus_results(corpus) / "run_summary.json").read_text())
-            units = enumerate_units(paths.bench, corpus, run_summary.get("sample"), run_summary.get("seed", 1))
+            units = enumerate_units(paths.bench, corpus, run_summary.get("sample"), run_summary.get("seed", 1),
+                                    run_summary.get("cwes"))
             result = score_corpus(paths, corpus, units, list(run_summary["commands"]), args.slack, args.samples)
             for tool, m in result["tools"].items():
                 print(f"[{corpus} {tool}] {json.dumps(m['overall'])}", file=sys.stderr)

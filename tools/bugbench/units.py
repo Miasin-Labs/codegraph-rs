@@ -64,21 +64,26 @@ def expand_corpus(corpus: str) -> list[str]:
     return [corpus]
 
 
-def enumerate_units(bench: Path, corpus: str, sample: int | None, seed: int) -> list[Unit]:
+def enumerate_units(bench: Path, corpus: str, sample: int | None, seed: int,
+                    cwes: list[str] | None = None) -> list[Unit]:
     if corpus in JULIET_TESTCASES:
-        return juliet_units(bench, corpus, sample or 40, seed)
+        return juliet_units(bench, corpus, sample or 40, seed, cwes)
     if corpus == "rustsec-adjacent":
         return rustsec_units(bench, corpus, sample, seed)
+    if corpus == "rudra":
+        return rudra_units(bench, corpus)
     if corpus == "owasp-benchmark-java" or corpus.startswith("webapps/"):
         return [Unit(corpus, "all", corpus, "", ["."])]
     raise SystemExit(f"unknown corpus {corpus!r}")
 
 
-def juliet_units(bench: Path, corpus: str, per_cwe: int, seed: int) -> list[Unit]:
-    """One unit per sampled CWE: up to `per_cwe` whole testcases + support."""
+def juliet_units(bench: Path, corpus: str, per_cwe: int, seed: int,
+                 cwes: list[str] | None = None) -> list[Unit]:
+    """One unit per sampled CWE (`cwes`, else the default list): up to
+    `per_cwe` whole testcases + support."""
     root = bench / corpus
     testcases = root / JULIET_TESTCASES[corpus]
-    wanted = JULIET_C_CWES if corpus == "juliet-c" else JULIET_JAVA_CWES
+    wanted = cwes or (JULIET_C_CWES if corpus == "juliet-c" else JULIET_JAVA_CWES)
     support_dir, support_names = JULIET_SUPPORT[corpus]
     support = sorted(
         str(p.relative_to(root))
@@ -102,6 +107,13 @@ def juliet_units(bench: Path, corpus: str, per_cwe: int, seed: int) -> list[Unit
                           {"cwe": cwe_dir.name.split("_")[0], "testcases": chosen,
                            "testcases_total": len(ids)}))
     return units
+
+
+def rudra_units(bench: Path, corpus: str) -> list[Unit]:
+    """One unit per crate version; its ground truth is positives only."""
+    root = bench / corpus
+    return [Unit(corpus, d.name, corpus, d.name + "/", [d.name])
+            for d in sorted(root.iterdir()) if d.is_dir()]
 
 
 def load_advisories(bench: Path) -> list[dict[str, Any]]:

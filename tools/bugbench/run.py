@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Index each unit of a corpus and store the detectors' raw JSON.
 
-    run.py <corpus> [--sample N] [--seed S] [--jobs J] [--cmd 'rules=analyze rules --builtin']
+    run.py <corpus> [--sample N] [--seed S] [--cwe CWE690]... [--jobs J] [--cmd 'rules=analyze rules --builtin']
 
-Corpora: rustsec-adjacent, juliet-c, juliet-java, owasp-benchmark-java,
+Corpora: rustsec-adjacent, rudra, juliet-c, juliet-java, owasp-benchmark-java,
 webapps (= webapps/<app> for each app), or one webapps/<app>.
 Writes <bench>/results/<corpus>/raw/<unit>/{run.json,<label>.json} and
 <bench>/results/<corpus>/runs.jsonl.
@@ -47,6 +47,8 @@ def main() -> int:
     ap.add_argument("--binary", type=Path, help="codegraph binary (else target/{release,debug})")
     ap.add_argument("--sample", type=int, help="juliet: testcases per CWE (40); rustsec: pairs")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--cwe", action="append", help="juliet: sample this CWE (e.g. CWE690; repeatable) "
+                    "instead of the default list")
     ap.add_argument("--jobs", type=int, default=6)
     ap.add_argument("--timeout", type=float, default=900.0, help="seconds per codegraph call")
     ap.add_argument("--cmd", action="append", help="extra command 'label=analyze …' (repeatable)")
@@ -62,7 +64,7 @@ def main() -> int:
 
     status = 0
     for corpus in expand_corpus(args.corpus):
-        units = enumerate_units(paths.bench, corpus, args.sample, args.seed)
+        units = enumerate_units(paths.bench, corpus, args.sample, args.seed, args.cwe)
         before = corpus_fingerprint(paths.bench, units)
         out = paths.corpus_results(corpus)
         out.mkdir(parents=True, exist_ok=True)
@@ -88,6 +90,7 @@ def main() -> int:
         summary = {
             "corpus": corpus, "units": len(units), "wall_s": round(wall, 1),
             "binary": str(binary), "commands": commands, "seed": args.seed, "sample": args.sample,
+            "cwes": args.cwe,
             "status": {s: sum(r.status == s for r in runs) for s in sorted({r.status for r in runs})},
             "corpus_untouched": before == after,
             "unit_meta": {u.name: u.meta for u in units},

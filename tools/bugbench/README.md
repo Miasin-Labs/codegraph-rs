@@ -16,6 +16,12 @@ python3 tools/bugbench/run.py rustsec-adjacent --jobs 8 \
 python3 tools/bugbench/score.py rustsec-adjacent
 ```
 
+`rudra` (Rudra's reported soundness bugs, positives only) scores like the
+labeled corpora: a finding on a reported span is a TP, anything else
+unlabeled. Juliet samples `--sample N` testcases per CWE (40) of a default
+CWE list; `--cwe CWE690 --cwe CWE401` samples those CWEs instead, to score
+a rule on its own CWE.
+
 Every run indexes a copy of each unit under a scratch `CODEGRAPH_HOME` with
 the atlas, dependency graphs and background work turned off, so nothing
 touches `~/.codegraph` or the corpora.
