@@ -14,6 +14,7 @@ use serde_json::{Map, Value};
 use super::super::context::ToolHandler;
 use super::super::format::{mcp_output_budget, num_or};
 use super::super::output::{
+    CallRow,
     CallsOutput,
     CrossCallersOutput,
     ExternalRef,
@@ -114,10 +115,13 @@ impl ToolHandler {
             };
         };
 
-        // Aggregate across all matching symbols.
+        // Aggregate across all matching symbols, remembering which definition
+        // each row reaches (a caller of two of them is listed once, under the
+        // first).
         let mut seen: HashSet<String> = HashSet::new();
         let mut related: Vec<Node> = Vec::new();
-        for node in &all_matches.nodes {
+        let mut reaches: Vec<usize> = Vec::new();
+        for (index, node) in all_matches.nodes.iter().enumerate() {
             let refs = match direction {
                 Direction::Callers => cg.get_callers(&node.id, None)?,
                 Direction::Callees => cg.get_callees(&node.id, None)?,
@@ -125,6 +129,7 @@ impl ToolHandler {
             for r in refs {
                 if seen.insert(r.node.id.clone()) {
                     related.push(r.node);
+                    reaches.push(index);
                 }
             }
         }
@@ -132,7 +137,15 @@ impl ToolHandler {
         output.count = related.len();
         output.results_omitted = related.len().saturating_sub(limit);
         related.truncate(limit);
-        output.results = related.iter().map(SymbolRef::from).collect();
+        let targets = target_labels(&all_matches.nodes);
+        output.results = related
+            .iter()
+            .zip(&reaches)
+            .map(|(node, &index)| CallRow {
+                symbol: SymbolRef::from(node),
+                target: targets.as_ref().map(|labels| labels[index].clone()),
+            })
+            .collect();
         if all_matches.nodes.len() > 1 {
             output.matches = all_matches.nodes.iter().map(SymbolRef::from).collect();
         }
@@ -207,6 +220,34 @@ impl ToolHandler {
 
     // =========================================================================
     // codegraph_impact
+}
+
+/// How each matched definition is named in a row's `target`: its qualified
+/// name, or with its place when two share one. `None` for a single match.
+fn target_labels(matches: &[Node]) -> Option<Vec<String>> {
+    if matches.len() < 2 {
+        return None;
+    }
+    Some(
+        matches
+            .iter()
+            .map(|node| {
+                let shared = matches
+                    .iter()
+                    .filter(|other| other.qualified_name == node.qualified_name)
+                    .count()
+                    > 1;
+                if shared {
+                    format!(
+                        "{} ({}:{})",
+                        node.qualified_name, node.file_path, node.start_line
+                    )
+                } else {
+                    node.qualified_name.clone()
+                }
+            })
+            .collect(),
+    )
 }
 
 fn not_found(symbol: &str, graph: Option<&str>) -> String {

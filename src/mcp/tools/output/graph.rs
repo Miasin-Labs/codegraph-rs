@@ -89,6 +89,17 @@ pub(in crate::mcp::tools) fn group_by_file<'a>(
     groups
 }
 
+/// A caller or callee; `target` is the definition it reaches, given only when
+/// the name matched several (`sync` on two types): without it the rows of
+/// unrelated same-named definitions read as one list.
+#[derive(Debug, Clone, Serialize)]
+pub(in crate::mcp::tools) struct CallRow {
+    #[serde(flatten)]
+    pub symbol: SymbolRef,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
 /// A caller in another project; `target` names which of several items it
 /// reaches (absent when there is one).
 #[derive(Debug, Clone, Serialize)]
@@ -261,11 +272,11 @@ pub(in crate::mcp::tools) struct CallsOutput {
     /// 20-row list that the markdown's "(20 found)" header had spelled out.
     pub count: usize,
     /// In this project.
-    pub results: Vec<SymbolRef>,
+    pub results: Vec<CallRow>,
     #[serde(skip_serializing_if = "is_zero")]
     pub results_omitted: usize,
-    /// The definitions the name matched, when there were several (the
-    /// results are theirs together).
+    /// The definitions the name matched, when there were several (each
+    /// result's `target` says which one it belongs to).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub matches: Vec<SymbolRef>,
     /// Callees in other graphs (dependencies, linked projects).
@@ -562,13 +573,15 @@ pub(in crate::mcp::tools) fn calls_output_schema(kind: &str) -> Value {
     foreign.insert("results".into(), refs.clone());
     foreign.insert("resultsOmitted".into(), json!({ "type": "integer" }));
 
+    let mut call_row = symbol_ref_schema();
+    call_row["properties"]["target"] = json!({ "type": "string" });
     let mut properties = cross_callers_properties();
     for (name, schema) in [
         ("schemaVersion", json!({ "type": "integer" })),
         ("kind", json!({ "const": kind })),
         ("notices", notices_schema()),
         ("count", json!({ "type": "integer" })),
-        ("results", refs.clone()),
+        ("results", json!({ "type": "array", "items": call_row })),
         ("resultsOmitted", json!({ "type": "integer" })),
         ("matches", refs),
         (
@@ -720,7 +733,10 @@ mod tests {
     fn fitting_drops_trailing_items_and_flags_it() {
         let mut output = CallsOutput::new("callers");
         output.results = (0..200)
-            .map(|i| SymbolRef::from(&node(&format!("caller_{i}"), "src/lib.rs", i)))
+            .map(|i| CallRow {
+                symbol: SymbolRef::from(&node(&format!("caller_{i}"), "src/lib.rs", i)),
+                target: None,
+            })
             .collect();
         let value = fitted(
             &output,

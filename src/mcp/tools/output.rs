@@ -20,6 +20,7 @@ mod navigation;
 mod notices;
 mod rows;
 pub(in crate::mcp::tools) use graph::{
+    CallRow,
     CallsOutput,
     CrossCallersOutput,
     CrossImpactOutput,
