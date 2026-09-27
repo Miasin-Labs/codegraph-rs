@@ -247,21 +247,38 @@
       - name: add-sub-mul
         query: |
           (binary_expression left: (identifier) @arg operator: ["+" "-" "*"] right: (number_literal))
-        where: &c-range-checked
-          - not-inside: |
-              ((if_statement condition: (_) @c) (#match? @c "_MAX|_MIN|abs|sqrt"))
         argument: arg
       - name: square
         query: |
           ((binary_expression left: (identifier) @arg operator: "*" right: (identifier) @other)
            (#eq? @arg @other))
-        where: *c-range-checked
         argument: arg
       - name: increment
         query: |
           (update_expression argument: (identifier) @arg)
-        where: *c-range-checked
         argument: arg
+    # A range check on the value makes the arithmetic it dominates safe.
+    guards:
+      - name: bound
+        query: |
+          ((binary_expression left: (_) @v operator: ["<" "<=" ">" ">="] right: (_) @bound) @check
+           (#match? @bound "_MAX|_MIN|sqrt"))
+        value: v
+        check: check
+      - name: bound-first
+        query: |
+          ((binary_expression left: (_) @bound operator: ["<" "<=" ">" ">="] right: (_) @v) @check
+           (#match? @bound "_MAX|_MIN|sqrt"))
+        value: v
+        check: check
+      - name: absolute-bound
+        query: |
+          ((binary_expression
+             left: (call_expression function: (identifier) @abs arguments: (argument_list . (_) @v .))
+             operator: ["<" "<="] right: (_) @bound) @check
+           (#match? @abs "^(abs|labs|llabs|imaxabs)$") (#match? @bound "_MAX|sqrt"))
+        value: v
+        check: check
   examples:
     bad:
       - |
@@ -288,4 +305,10 @@
         void f(void) {
             int data = 2;
             int result = data * 2;
+        }
+      - |
+        void f(void) {
+            char data = ' ';
+            fscanf(stdin, "%c", &data);
+            if (abs((long)data) <= (long)sqrt((double)CHAR_MAX)) { char result = data * data; }
         }

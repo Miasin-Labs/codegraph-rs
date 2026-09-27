@@ -493,26 +493,40 @@
       - name: add-sub-mul
         query: |
           (binary_expression left: (identifier) @arg operator: ["+" "-" "*"] right: (decimal_integer_literal))
-        where:
-          - not-inside: |
-              ((if_statement condition: (_) @c) (#match? @c "MAX_VALUE|MIN_VALUE|abs|sqrt"))
         argument: arg
       - name: square
         query: |
           ((binary_expression left: (identifier) @arg operator: "*" right: (identifier) @other)
            (#eq? @arg @other))
-        where:
-          - not-inside: |
-              ((if_statement condition: (_) @c) (#match? @c "MAX_VALUE|MIN_VALUE|abs|sqrt"))
         argument: arg
       - name: increment
         query: |
           (update_expression (identifier) @arg)
         where:
-          - not-inside: |
-              ((if_statement condition: (_) @c) (#match? @c "MAX_VALUE|MIN_VALUE|abs|sqrt"))
           - not-inside: "(for_statement)"
         argument: arg
+    # A range check on the value makes the arithmetic it dominates safe.
+    guards:
+      - name: bound
+        query: |
+          ((binary_expression left: (_) @v operator: ["<" "<=" ">" ">="] right: (_) @bound) @check
+           (#match? @bound "MAX_VALUE|MIN_VALUE|sqrt"))
+        value: v
+        check: check
+      - name: bound-first
+        query: |
+          ((binary_expression left: (_) @bound operator: ["<" "<=" ">" ">="] right: (_) @v) @check
+           (#match? @bound "MAX_VALUE|MIN_VALUE|sqrt"))
+        value: v
+        check: check
+      - name: absolute-bound
+        query: |
+          ((binary_expression
+             left: (method_invocation name: (identifier) @abs arguments: (argument_list . (_) @v .))
+             operator: ["<" "<="] right: (_) @bound) @check
+           (#eq? @abs "abs") (#match? @bound "MAX_VALUE|sqrt"))
+        value: v
+        check: check
   examples:
     bad:
       - |
@@ -535,4 +549,11 @@
         class A { void f() {
           int data = 2;
           int result = data * 2;
+        } }
+      - |
+        class A { void f() throws Exception {
+          int data = Integer.parseInt(System.getenv("N").trim());
+          if ((data != Integer.MIN_VALUE) && (Math.abs(data) <= (long)Math.sqrt(Integer.MAX_VALUE))) {
+            int result = data * data;
+          }
         } }
