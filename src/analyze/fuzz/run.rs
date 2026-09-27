@@ -301,6 +301,14 @@ pub struct RunOutcome {
     pub build_error: Option<String>,
 }
 
+/// Code (not comments) still calls `todo!(`.
+fn has_todo(source: &str) -> bool {
+    source
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .any(|code| code.contains("todo!("))
+}
+
 /// The compiler's errors from a failed build (each `error` line and the
 /// few after it), else the output's last lines.
 pub fn build_errors(output: &str) -> String {
@@ -336,6 +344,19 @@ pub fn run(options: &RunOptions) -> Result<RunOutcome, String> {
             "no cargo-fuzz project at {} (generate one with `codegraph analyze fuzz-harness`)",
             fuzz_dir.display()
         ));
+    }
+    // A generated harness with TODOs panics in its own `todo!()`, which
+    // would read as a crash of the code under test.
+    let harness = fuzz_dir
+        .join("fuzz_targets")
+        .join(format!("{}.rs", options.target));
+    if let Ok(source) = std::fs::read_to_string(&harness) {
+        if has_todo(&source) {
+            return Err(format!(
+                "{} still has todo!() placeholders: fill them in first (see its TODO comments)",
+                harness.display()
+            ));
+        }
     }
     let workdir = fuzz_dir.parent().unwrap_or(fuzz_dir);
     let artifacts = fuzz_dir.join("artifacts").join(&options.target);
@@ -503,6 +524,14 @@ Base64: IyMj
         let oom = "==9== ERROR: libFuzzer: out-of-memory (malloc(4294967296))\n";
         assert_eq!(status_of(&parse_output(oom), false), RunStatus::OutOfMemory);
         assert_eq!(status_of(&ParsedRun::default(), false), RunStatus::Error);
+    }
+
+    #[test]
+    fn todo_placeholders_block_a_run() {
+        assert!(has_todo("    let x = todo!(\"build `x`\");\n"));
+        assert!(!has_todo(
+            "// TODO: build `x` — was todo!()\nlet _ = f(data);\n"
+        ));
     }
 
     #[test]
