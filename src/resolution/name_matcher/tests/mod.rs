@@ -9,6 +9,7 @@ mod rust_call;
 mod rust_chain;
 mod rust_path;
 mod rust_receiver;
+mod rust_type_inference;
 mod rust_use_tree;
 mod std_methods;
 
