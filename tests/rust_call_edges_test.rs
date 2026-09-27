@@ -574,3 +574,96 @@ async fn path_dependency_calls_resolve_into_the_linked_project() {
         );
     }
 }
+
+/// Every `calls` edge as `source -> target file: target qualified name`.
+fn call_targets(root: &Path) -> Vec<String> {
+    let conn = DatabaseConnection::open(get_database_path(root)).unwrap();
+    let db = conn.get_db().unwrap();
+    let mut stmt = db
+        .conn()
+        .prepare(
+            "SELECT s.qualified_name || ' -> ' || t.file_path || ': ' || t.qualified_name
+             FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+             WHERE e.kind = 'calls' ORDER BY 1",
+        )
+        .unwrap();
+    stmt.query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// Paths through a module in scope — a child `mod`, `self::`, a `use`d or
+/// renamed module, `m::Type::new`, a `pub(crate) use` re-export — reach the
+/// item in that module, not its same-named twin elsewhere, and a std path
+/// never lands on a same-named project module.
+#[tokio::test(flavor = "current_thread")]
+async fn module_qualified_paths_reach_the_named_module() {
+    let (dir, _) = index_crate(&[
+        (
+            "src/lib.rs",
+            "mod png;\nmod jpeg;\nmod reader;\nmod parse;\nmod fmt;\n\
+             mod inl {\n    pub fn inline_helper() -> u32 { 1 }\n}\n\
+             pub(crate) use parse::parse;\n\
+             pub fn entry() -> u32 {\n\
+             \x20   self::png::get_exif_attr() + png::get_exif_attr() + self::inl::inline_helper()\n\
+             }\n\
+             pub fn via_reexport() -> u32 {\n    parse(1) + crate::parse(2) + parse::parse(3)\n}\n",
+        ),
+        (
+            "src/png.rs",
+            "pub fn get_exif_attr() -> u32 { 2 }\n\
+             pub struct Chunk;\n\
+             impl Chunk {\n    pub fn new() -> Chunk { Chunk }\n}\n",
+        ),
+        (
+            "src/jpeg.rs",
+            "pub fn get_exif_attr() -> u32 { 3 }\n\
+             pub struct Chunk;\n\
+             impl Chunk {\n    pub fn new() -> Chunk { Chunk }\n}\n",
+        ),
+        (
+            "src/parse/mod.rs",
+            "mod parsers;\npub(crate) use parsers::parse;\n",
+        ),
+        (
+            "src/parse/parsers.rs",
+            "pub fn parse(x: u32) -> u32 { x }\n",
+        ),
+        ("src/fmt.rs", "pub fn format(x: u32) -> u32 { x }\n"),
+        (
+            "src/reader.rs",
+            "use crate::png;\nuse crate::jpeg as jpg;\nuse std::fmt;\n\
+             pub fn read() -> u32 {\n\
+             \x20   let _chunk = png::Chunk::new();\n\
+             \x20   let _text = fmt::format(format_args!(\"x\"));\n\
+             \x20   png::get_exif_attr() + jpg::get_exif_attr()\n\
+             }\n",
+        ),
+    ])
+    .await;
+    let edges = call_targets(dir.path());
+    for expected in [
+        "entry -> src/png.rs: get_exif_attr",
+        "entry -> src/lib.rs: inl::inline_helper",
+        "via_reexport -> src/parse/parsers.rs: parse",
+        "read -> src/png.rs: get_exif_attr",
+        "read -> src/jpeg.rs: get_exif_attr",
+        "read -> src/png.rs: Chunk::new",
+    ] {
+        assert!(
+            edges.iter().any(|edge| edge == expected),
+            "missing {expected}: {edges:#?}"
+        );
+    }
+    for wrong in [
+        "entry -> src/jpeg.rs: get_exif_attr",
+        "read -> src/jpeg.rs: Chunk::new",
+        "read -> src/fmt.rs: format",
+    ] {
+        assert!(
+            !edges.iter().any(|edge| edge == wrong),
+            "unexpected {wrong}: {edges:#?}"
+        );
+    }
+}

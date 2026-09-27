@@ -27,6 +27,8 @@ pub(super) enum Namespace {
     Value,
     /// Anything but an import or file.
     Any,
+    /// A path's leading segments (`m` in `m::f`): a module only.
+    Module,
 }
 
 impl Namespace {
@@ -39,15 +41,16 @@ impl Namespace {
     }
 
     pub(super) fn admits(self, kind: NodeKind) -> bool {
-        match kind {
-            NodeKind::Import | NodeKind::File => false,
-            NodeKind::Module => self == Self::Any,
+        match (self, kind) {
+            (Self::Module, kind) => kind == NodeKind::Module,
+            (_, NodeKind::Import | NodeKind::File) => false,
+            (Self::Value, NodeKind::Module) => false,
             _ => true,
         }
     }
 
     fn admits_binding(self, binding: &UseBinding) -> bool {
-        !matches!(binding, UseBinding::Module(_)) || self == Self::Any
+        !matches!(binding, UseBinding::Module(_)) || self != Self::Value
     }
 }
 
@@ -183,13 +186,18 @@ impl ModuleTree<'_> {
     fn items(&mut self, module: &ModuleLocation, name: &str) -> Vec<Node> {
         let (context, namespace) = (self.context, self.namespace);
         let nodes = self.named.entry(name.to_string()).or_insert_with(|| {
-            context
-                .get_nodes_by_name(name)
+            // A module lookup asks the index for modules alone: `std` or
+            // `fmt` name thousands of imports it must not copy.
+            let named = match namespace {
+                Namespace::Module => context.get_nodes_by_name_and_kind(name, NodeKind::Module),
+                _ => context.get_nodes_by_name(name),
+            };
+            named
                 .into_iter()
                 .filter(|node| node.language == Language::Rust)
                 .collect()
         });
-        nodes
+        let found: Vec<Node> = nodes
             .iter()
             .filter(|node| namespace.admits(node.kind))
             .filter(|node| {
@@ -204,7 +212,17 @@ impl ModuleTree<'_> {
                 location == *module
             })
             .cloned()
-            .collect()
+            .collect();
+        if found.is_empty() && namespace == Namespace::Module {
+            // `mod m;` written inside a macro call (`cfg_rt! { mod m; }`)
+            // leaves no Module node; the module's indexed file stands in.
+            return module
+                .walk(&[name])
+                .and_then(|child| module_file(context, &child))
+                .into_iter()
+                .collect();
+        }
+        found
     }
 
     /// Use leaves declared directly in `module`: at the top level of its
@@ -229,6 +247,20 @@ impl ModuleTree<'_> {
         }
         leaves
     }
+}
+
+/// The File node of an indexed file holding `module`'s items (`m.rs` or
+/// `m/mod.rs`) — asked of the index, never the disk.
+pub(super) fn module_file(
+    context: &dyn ResolutionContext,
+    module: &ModuleLocation,
+) -> Option<Node> {
+    module_files(module).iter().find_map(|file| {
+        context
+            .get_nodes_by_qualified_name(file)
+            .into_iter()
+            .find(|node| node.kind == NodeKind::File && node.file_path == *file)
+    })
 }
 
 /// Whether a use leaf declared in `owner` is visible from `from`.

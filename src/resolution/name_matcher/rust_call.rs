@@ -365,7 +365,11 @@ impl<'a> FileScope<'a> {
                 .iter()
                 .map(|found| found.leaf.clone())
                 .collect();
-            leaves.extend(fn_local_uses(file, self.context).iter().cloned());
+            leaves.extend(
+                fn_local_uses(file, self.context)
+                    .iter()
+                    .map(|local| local.leaf.clone()),
+            );
             leaves.retain(|leaf| {
                 leaf.path
                     .first()

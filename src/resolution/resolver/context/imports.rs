@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::{ResolverContext, is_js_family_path};
 use crate::resolution::import_resolver::{extract_import_mappings, extract_re_exports};
-use crate::resolution::name_matcher::{RustUse, UseLeaf, rust_fn_local_uses, rust_use_leaves};
+use crate::resolution::name_matcher::{LocalUse, RustUse, rust_fn_local_uses, rust_use_leaves};
 use crate::resolution::types::{ImportMapping, ReExport};
 use crate::types::Language;
 
@@ -69,12 +69,12 @@ impl ResolverContext {
         leaves
     }
 
-    pub(super) fn cached_rust_fn_local_uses(&self, file_path: &str) -> Arc<[UseLeaf]> {
+    pub(super) fn cached_rust_fn_local_uses(&self, file_path: &str) -> Arc<[LocalUse]> {
         let key = file_path.to_string();
         if let Some(cached) = self.rust_fn_use_cache.borrow_mut().get(&key) {
             return Arc::clone(cached);
         }
-        let leaves: Arc<[UseLeaf]> = self
+        let leaves: Arc<[LocalUse]> = self
             .cached_file_text(file_path)
             .map(|source| rust_fn_local_uses(&source).into())
             .unwrap_or_else(|| Arc::from(Vec::new()));

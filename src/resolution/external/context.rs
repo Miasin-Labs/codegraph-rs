@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::declarations::Declarations;
 use crate::resolution::ForeignTypes;
-use crate::resolution::name_matcher::{RustUse, UseLeaf};
+use crate::resolution::name_matcher::{LocalUse, RustUse};
 use crate::resolution::types::{
     AliasMap,
     GoModule,
@@ -105,7 +105,7 @@ impl ResolutionContext for ExternalContext<'_> {
         self.project.get_rust_use_leaves(file_path)
     }
 
-    fn get_rust_fn_local_uses(&self, file_path: &str) -> Arc<[UseLeaf]> {
+    fn get_rust_fn_local_uses(&self, file_path: &str) -> Arc<[LocalUse]> {
         self.project.get_rust_fn_local_uses(file_path)
     }
 

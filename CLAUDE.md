@@ -233,6 +233,20 @@ cargo test --workspace
   per-file caches (`get_rust_use_leaves`, `get_rust_fn_local_uses`), line
   boundaries from `line_index.rs`; a per-reference whole-file scan there
   once doubled resolution CPU.
+- **Rust module paths resolve by walking the module tree**
+  (`name_matcher/rust_path/`): `crate::`/`self::`/`super::` from the
+  caller's module (file + inline `mod`s), and `m::f`/`m::Type::new` only
+  when `m` is a module *in scope there* — a child `mod m` (file, `mod.rs`
+  or inline), or a `use` (renames, globs, `pub`/`pub(crate)` re-exports)
+  resolved in the module namespace (`Namespace::Module`); a `mod` hidden in
+  a macro call (`cfg_rt! { mod m; }`) is stood in for by its File node.
+  A fn-local `use` (`LocalUse`, cached with its line) binds only inside
+  the fns enclosing that line, and shadows the module's names there.
+  `use std::fmt` + a project `fmt` elsewhere stays std's; a private free
+  item is never reached from outside its module; exactly one target or
+  nothing, and a scoped path gets no same-crate shape guess. The sequential and
+  snapshot resolvers share one prefilter (`has_any_possible_match_by`) —
+  the snapshot's copy once dropped every `self::m::f`.
 - **Dependency method names** (`src/resolution/rust_deps/`): `Cargo.lock`'s
   direct deps (plus crates they `pub use`, 2 hops: `clap` → `clap_builder`)
   are found vendored or in `$CARGO_HOME/registry/src/*` and `git/checkouts`

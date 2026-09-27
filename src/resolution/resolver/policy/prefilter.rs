@@ -14,7 +14,17 @@ pub(in crate::resolution::resolver) fn has_any_possible_match_in(
     known: &HashSet<String>,
     name: &str,
 ) -> bool {
-    if known.contains(name) {
+    has_any_possible_match_by(|candidate| known.contains(candidate), name)
+}
+
+/// Whether any node could answer `name`, by the names `known` holds. The
+/// sequential resolver and the parallel snapshot share this one rule, so a
+/// reference is never filtered by one and resolved by the other.
+pub(in crate::resolution::resolver) fn has_any_possible_match_by(
+    known: impl Fn(&str) -> bool,
+    name: &str,
+) -> bool {
+    if known(name) {
         return true;
     }
 
@@ -22,17 +32,17 @@ pub(in crate::resolution::resolver) fn has_any_possible_match_in(
         if dot_idx > 0 {
             let receiver = &name[..dot_idx];
             let member = &name[dot_idx + 1..];
-            if known.contains(receiver) || known.contains(member) {
+            if known(receiver) || known(member) {
                 return true;
             }
             let capitalized = capitalize_first(receiver);
-            if known.contains(&capitalized) {
+            if known(&capitalized) {
                 return true;
             }
             let last_dot = name.rfind('.').unwrap_or(0);
             if last_dot > dot_idx {
                 let tail = &name[last_dot + 1..];
-                if !tail.is_empty() && known.contains(tail) {
+                if !tail.is_empty() && known(tail) {
                     return true;
                 }
             }
@@ -42,7 +52,7 @@ pub(in crate::resolution::resolver) fn has_any_possible_match_in(
         if colon_idx > 0 {
             let receiver = &name[..colon_idx];
             let member = &name[colon_idx + 2..];
-            if known.contains(receiver) || known.contains(member) {
+            if known(receiver) || known(member) {
                 return true;
             }
             // Rust relative paths name the item last (`crate::a::b::item`).
@@ -50,7 +60,7 @@ pub(in crate::resolution::resolver) fn has_any_possible_match_in(
             // `std::collections::HashMap::new` stay filtered.
             if matches!(receiver, "crate" | "self" | "super" | "Self") {
                 if let Some((_, tail)) = name.rsplit_once("::") {
-                    if !tail.is_empty() && known.contains(tail) {
+                    if !tail.is_empty() && known(tail) {
                         return true;
                     }
                 }
@@ -61,7 +71,7 @@ pub(in crate::resolution::resolver) fn has_any_possible_match_in(
     if let Some(slash_idx) = name.rfind('/') {
         if slash_idx > 0 {
             let file_name = &name[slash_idx + 1..];
-            if known.contains(file_name) {
+            if known(file_name) {
                 return true;
             }
         }

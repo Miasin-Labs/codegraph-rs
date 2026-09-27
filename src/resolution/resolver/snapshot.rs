@@ -11,7 +11,7 @@ use crate::db::QueryBuilder;
 use crate::error::Result;
 use crate::resolution::go_module::load_go_module;
 use crate::resolution::import_resolver::load_cpp_include_dirs;
-use crate::resolution::name_matcher::{RustUse, UseLeaf};
+use crate::resolution::name_matcher::{LocalUse, RustUse};
 use crate::resolution::path_aliases::load_project_aliases;
 use crate::resolution::rust_deps::{self, RustDependencyApi};
 use crate::resolution::types::{AliasMap, GoModule, ImportMapping, ReExport, WorkspacePackages};
@@ -90,7 +90,7 @@ pub(super) struct SnapshotContext {
     import_mapping_cache: Mutex<HashMap<ImportCacheKey, Vec<ImportMapping>>>,
     re_export_cache: Mutex<HashMap<ImportCacheKey, Vec<ReExport>>>,
     rust_use_cache: Mutex<HashMap<String, Arc<[RustUse]>>>,
-    rust_fn_use_cache: Mutex<HashMap<String, Arc<[UseLeaf]>>>,
+    rust_fn_use_cache: Mutex<HashMap<String, Arc<[LocalUse]>>>,
 }
 
 impl ResolverSnapshot {

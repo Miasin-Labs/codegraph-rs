@@ -25,6 +25,7 @@ use crate::resolution::resolver::policy::{
     PYTHON_BUILT_INS,
     REACT_HOOKS,
     capitalize_first,
+    has_any_possible_match_by,
 };
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::{EdgeKind, Language};
@@ -173,44 +174,7 @@ impl ResolutionPolicy for SnapshotContext {
     }
 
     fn has_any_possible_match(&self, name: &str) -> bool {
-        if self.known_has(name) {
-            return true;
-        }
-
-        if let Some(dot_idx) = name.find('.') {
-            if dot_idx > 0 {
-                let receiver = &name[..dot_idx];
-                let member = &name[dot_idx + 1..];
-                if self.known_has(receiver) || self.known_has(member) {
-                    return true;
-                }
-                if self.known_has(&capitalize_first(receiver)) {
-                    return true;
-                }
-                let last_dot = name.rfind('.').unwrap_or(0);
-                if last_dot > dot_idx {
-                    let tail = &name[last_dot + 1..];
-                    if !tail.is_empty() && self.known_has(tail) {
-                        return true;
-                    }
-                }
-            }
-        }
-        if let Some(colon_idx) = name.find("::") {
-            if colon_idx > 0 {
-                let receiver = &name[..colon_idx];
-                let member = &name[colon_idx + 2..];
-                if self.known_has(receiver) || self.known_has(member) {
-                    return true;
-                }
-            }
-        }
-        if let Some(slash_idx) = name.rfind('/') {
-            if slash_idx > 0 && self.known_has(&name[slash_idx + 1..]) {
-                return true;
-            }
-        }
-        false
+        has_any_possible_match_by(|candidate| self.known_has(candidate), name)
     }
 
     fn has_any_possible_match_ci(&self, name: &str) -> bool {

@@ -64,13 +64,21 @@ pub struct RustUse {
     pub leaf: UseLeaf,
 }
 
+/// A use leaf declared inside a fn body, with the line its declaration
+/// starts on (1-based): it binds only inside the fn holding that line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalUse {
+    pub line: u32,
+    pub leaf: UseLeaf,
+}
+
 /// How many lines one fn-local `use` declaration may span.
 const MAX_USE_LINES: usize = 20;
 
 /// The use leaves of the `use` declarations written inside fn bodies of
 /// `source` (indented `use` lines), which the index keeps no Import node
 /// for.
-pub fn rust_fn_local_uses(source: &str) -> Vec<UseLeaf> {
+pub fn rust_fn_local_uses(source: &str) -> Vec<LocalUse> {
     let lines: Vec<&str> = source.lines().collect();
     let mut leaves = Vec::new();
     for (index, line) in lines.iter().enumerate() {
@@ -86,7 +94,12 @@ pub fn rust_fn_local_uses(source: &str) -> Vec<UseLeaf> {
             declaration.push(' ');
             declaration.push_str(next);
         }
-        leaves.extend(parse_use_leaves(&declaration));
+        let line = u32::try_from(index + 1).unwrap_or(u32::MAX);
+        leaves.extend(
+            parse_use_leaves(&declaration)
+                .into_iter()
+                .map(|leaf| LocalUse { line, leaf }),
+        );
     }
     leaves
 }
