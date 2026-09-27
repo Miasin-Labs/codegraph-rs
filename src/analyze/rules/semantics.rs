@@ -87,6 +87,7 @@ impl Semantics for SyntaxSemantics<'_> {
         CallResolution {
             in_project: !mapped.is_empty(),
             names: mapped,
+            summary: None,
         }
     }
 
@@ -259,6 +260,7 @@ impl IndexSemantics<'_> {
         CallResolution {
             names,
             in_project: chosen.iter().any(|target| target.in_project),
+            summary: None,
         }
     }
 }

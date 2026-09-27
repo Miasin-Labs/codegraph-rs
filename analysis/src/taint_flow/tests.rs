@@ -1,4 +1,5 @@
 use super::*;
+use crate::ir::IrOp;
 use crate::ir::lower_tests::lower;
 
 /// A mark on `needle`, found inside the first occurrence of `context`.
@@ -366,12 +367,13 @@ fn resolved_names_select_library_models() {
             Vec::new()
         },
         in_project: false,
+        summary: None,
     });
     assert!(resolved.is_empty(), "a keyed read of another key");
 }
 
 #[test]
-fn project_calls_are_not_guessed_through() {
+fn project_calls_without_a_summary_carry_nothing() {
     let src = "class A { void f(HttpServletRequest req, Statement stmt) {\n\
         String p = req.getParameter(\"a\");\n\
         String bar = new Test().doSomething(req, p);\n\
@@ -395,9 +397,10 @@ fn project_calls_are_not_guessed_through() {
     let project = analyze(&func, "java", &spec, &|op| CallResolution {
         names: Vec::new(),
         in_project: matches!(&func.body[op], IrOp::Call { callee, .. } if callee.ends_with("doSomething")),
+        summary: None,
     });
     assert!(
         project.is_empty(),
-        "phase 1 does not look into project code"
+        "project code without a summary carries nothing"
     );
 }

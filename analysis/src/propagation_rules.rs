@@ -30,7 +30,52 @@ pub struct PropagationRules {
     /// Calls whose result carries none of their inputs' data: lengths,
     /// comparisons, predicates.
     pub clean_results: &'static [&'static str],
+    /// Position-aware lists: a local list built by `new <type>()` and only
+    /// appended to, removed from and read at constant positions in one
+    /// straight run of code keeps its elements apart (`add(a); add(b);
+    /// remove(0); get(0)` reads `b`).
+    pub lists: &'static ListRules,
 }
+
+/// The list methods [`PropagationRules::lists`] follows.
+pub struct ListRules {
+    /// Constructed types (last name, generics dropped) that are lists.
+    pub types: &'static [&'static str],
+    /// `list.m(x)` appends `x`.
+    pub appends: &'static [&'static str],
+    /// `list.m(i)` removes the element at constant position `i`.
+    pub removes_at: &'static [&'static str],
+    /// `list.m()` removes the first element.
+    pub removes_first: &'static [&'static str],
+    /// `list.m(i)` reads the element at constant position `i`.
+    pub reads_at: &'static [&'static str],
+    /// `list.m()` reads the first element.
+    pub reads_first: &'static [&'static str],
+}
+
+static NO_LISTS: ListRules = ListRules {
+    types: &[],
+    appends: &[],
+    removes_at: &[],
+    removes_first: &[],
+    reads_at: &[],
+    reads_first: &[],
+};
+
+static JAVA_LISTS: ListRules = ListRules {
+    types: &[
+        "ArrayList",
+        "LinkedList",
+        "Vector",
+        "ArrayDeque",
+        "CopyOnWriteArrayList",
+    ],
+    appends: &["add", "addLast", "addElement", "offer", "offerLast"],
+    removes_at: &["remove"],
+    removes_first: &["removeFirst", "poll", "pollFirst", "pop", "remove"],
+    reads_at: &["get", "elementAt"],
+    reads_first: &["getFirst", "peek", "peekFirst", "element", "firstElement"],
+};
 
 impl PropagationRules {
     pub fn for_language(lang: &str) -> &'static PropagationRules {
@@ -80,6 +125,7 @@ static NONE: PropagationRules = PropagationRules {
     keyed_reads: &[],
     argument_writes: &[],
     clean_results: &[],
+    lists: &NO_LISTS,
 };
 
 static JAVA: PropagationRules = PropagationRules {
@@ -130,6 +176,7 @@ static JAVA: PropagationRules = PropagationRules {
         "getClass",
         "countTokens",
     ],
+    lists: &JAVA_LISTS,
 };
 
 static C: PropagationRules = PropagationRules {
@@ -178,6 +225,7 @@ static C: PropagationRules = PropagationRules {
         "length",
         "empty",
     ],
+    lists: &NO_LISTS,
 };
 
 static PYTHON: PropagationRules = PropagationRules {
@@ -198,6 +246,7 @@ static PYTHON: PropagationRules = PropagationRules {
         "isfile",
         "isdir",
     ],
+    lists: &NO_LISTS,
 };
 
 static JS: PropagationRules = PropagationRules {
@@ -217,6 +266,7 @@ static JS: PropagationRules = PropagationRules {
         "isNaN",
         "existsSync",
     ],
+    lists: &NO_LISTS,
 };
 
 static PHP: PropagationRules = PropagationRules {
@@ -241,4 +291,5 @@ static PHP: PropagationRules = PropagationRules {
         "strcmp",
         "preg_match",
     ],
+    lists: &NO_LISTS,
 };
