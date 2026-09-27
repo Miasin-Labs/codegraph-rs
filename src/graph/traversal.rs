@@ -617,7 +617,16 @@ impl GraphTraverser {
 
     /// Calculate the impact radius of a node.
     ///
-    /// Returns all nodes that could be affected by changes to this node.
+    /// Returns all nodes that could be affected by changes to this node: its
+    /// dependents (incoming edges other than `contains`) up to `max_depth`
+    /// hops, where a container's members count as the container itself.
+    ///
+    /// Each node is expanded at its *shortest* distance (a 0-1 breadth-first
+    /// walk: members cost 0 hops, dependents 1). A depth-first walk that marks
+    /// a node done the first time it sees it keeps whatever depth that route
+    /// happened to reach it at — through a long recursive chain it could stop
+    /// short of dependents a direct route reaches, so the radius (and every
+    /// "which tests reach this" answer built on it) depended on edge order.
     ///
     /// * `node_id` - ID of the node
     /// * `max_depth` - Maximum depth to traverse (TS default: 3)
@@ -629,64 +638,27 @@ impl GraphTraverser {
 
         let mut nodes: HashMap<String, Node> = HashMap::new();
         let mut edges: Vec<Edge> = Vec::new();
-        let mut visited: HashSet<String> = HashSet::new();
+        // The shortest depth each node has been reached at.
+        let mut best: HashMap<String, u32> = HashMap::new();
+        let mut queue: VecDeque<(String, u32)> = VecDeque::new();
 
-        // Add focal node
+        best.insert(focal_node.id.clone(), 0);
+        queue.push_back((focal_node.id.clone(), 0));
         nodes.insert(focal_node.id.clone(), focal_node);
 
-        // Traverse incoming edges to find all dependents
-        self.get_impact_recursive(node_id, max_depth, 0, &mut nodes, &mut edges, &mut visited)?;
+        while let Some((id, depth)) = queue.pop_front() {
+            crate::graph::cancel::check()?;
+            if best.get(&id).is_some_and(|&shortest| shortest < depth) || depth >= max_depth {
+                continue;
+            }
+            let Some(node) = nodes.get(&id) else {
+                continue;
+            };
 
-        Ok(Subgraph {
-            nodes,
-            edges,
-            roots: vec![node_id.to_string()],
-            confidence: None,
-        })
-    }
-
-    fn get_impact_recursive(
-        &self,
-        node_id: &str,
-        max_depth: u32,
-        current_depth: u32,
-        nodes: &mut HashMap<String, Node>,
-        edges: &mut Vec<Edge>,
-        visited: &mut HashSet<String>,
-    ) -> Result<()> {
-        // Recursion guard — depth grows with the dependency fan-out traversal.
-        crate::ensure_sufficient_stack(|| {
-            self.get_impact_recursive_inner(
-                node_id,
-                max_depth,
-                current_depth,
-                nodes,
-                edges,
-                visited,
-            )
-        })
-    }
-
-    fn get_impact_recursive_inner(
-        &self,
-        node_id: &str,
-        max_depth: u32,
-        current_depth: u32,
-        nodes: &mut HashMap<String, Node>,
-        edges: &mut Vec<Edge>,
-        visited: &mut HashSet<String>,
-    ) -> Result<()> {
-        crate::graph::cancel::check()?;
-        if current_depth >= max_depth || visited.contains(node_id) {
-            return Ok(());
-        }
-        visited.insert(node_id.to_string());
-
-        // For container nodes (classes, interfaces, structs, etc.), also traverse
-        // into their children so that callers of contained methods appear in impact
-        if let Some(focal_node) = self.queries.get_node_by_id(node_id)? {
+            // A container's members are part of it: callers of its methods
+            // are its dependents too, at the same depth.
             let is_container = matches!(
-                focal_node.kind,
+                node.kind,
                 NodeKind::Class
                     | NodeKind::Interface
                     | NodeKind::Struct
@@ -699,67 +671,60 @@ impl GraphTraverser {
             if is_container {
                 let contains_edges =
                     self.queries
-                        .get_outgoing_edges(node_id, Some(&[EdgeKind::Contains]), None)?;
+                        .get_outgoing_edges(&id, Some(&[EdgeKind::Contains]), None)?;
                 if !contains_edges.is_empty() {
                     let child_ids: Vec<String> =
                         contains_edges.iter().map(|e| e.target.clone()).collect();
                     let children = self.queries.get_nodes_by_ids(&child_ids)?;
                     for edge in contains_edges {
-                        if let Some(child_node) = children.get(&edge.target) {
-                            if !visited.contains(&child_node.id) {
-                                let child_id = child_node.id.clone();
-                                nodes.insert(child_id.clone(), child_node.clone());
-                                edges.push(edge);
-                                // Recurse into children at the same depth (they're part of the same symbol)
-                                self.get_impact_recursive(
-                                    &child_id,
-                                    max_depth,
-                                    current_depth,
-                                    nodes,
-                                    edges,
-                                    visited,
-                                )?;
+                        if let Some(child) = children.get(&edge.target) {
+                            if reach(&mut best, &child.id, depth) {
+                                if !nodes.contains_key(&child.id) {
+                                    nodes.insert(child.id.clone(), child.clone());
+                                    edges.push(edge);
+                                }
+                                queue.push_front((child.id.clone(), depth));
                             }
                         }
                     }
                 }
             }
-        }
 
-        // Get all incoming edges (things that depend on this node). Exclude
-        // `contains`: a container "contains" its members but does not *depend* on
-        // them, so following it upward would climb to the parent class and then
-        // re-expand every sibling member — exploding impact for a leaf symbol. (#536)
-        let incoming_edges: Vec<Edge> = self
-            .queries
-            .get_incoming_edges(node_id, None)?
-            .into_iter()
-            .filter(|e| e.kind != EdgeKind::Contains)
-            .collect();
-        if incoming_edges.is_empty() {
-            return Ok(());
-        }
-        let source_ids: Vec<String> = incoming_edges.iter().map(|e| e.source.clone()).collect();
-        let sources = self.queries.get_nodes_by_ids(&source_ids)?;
-
-        for edge in incoming_edges {
-            if let Some(source_node) = sources.get(&edge.source) {
-                if !nodes.contains_key(&source_node.id) {
-                    let source_id = source_node.id.clone();
-                    nodes.insert(source_id.clone(), source_node.clone());
-                    edges.push(edge);
-                    self.get_impact_recursive(
-                        &source_id,
-                        max_depth,
-                        current_depth + 1,
-                        nodes,
-                        edges,
-                        visited,
-                    )?;
+            // Get all incoming edges (things that depend on this node). Exclude
+            // `contains`: a container "contains" its members but does not
+            // *depend* on them, so following it upward would climb to the
+            // parent class and then re-expand every sibling member — exploding
+            // impact for a leaf symbol. (#536)
+            let incoming_edges: Vec<Edge> = self
+                .queries
+                .get_incoming_edges(&id, None)?
+                .into_iter()
+                .filter(|e| e.kind != EdgeKind::Contains)
+                .collect();
+            if incoming_edges.is_empty() {
+                continue;
+            }
+            let source_ids: Vec<String> = incoming_edges.iter().map(|e| e.source.clone()).collect();
+            let sources = self.queries.get_nodes_by_ids(&source_ids)?;
+            for edge in incoming_edges {
+                if let Some(source) = sources.get(&edge.source) {
+                    if reach(&mut best, &source.id, depth + 1) {
+                        if !nodes.contains_key(&source.id) {
+                            nodes.insert(source.id.clone(), source.clone());
+                            edges.push(edge);
+                        }
+                        queue.push_back((source.id.clone(), depth + 1));
+                    }
                 }
             }
         }
-        Ok(())
+
+        Ok(Subgraph {
+            nodes,
+            edges,
+            roots: vec![node_id.to_string()],
+            confidence: None,
+        })
     }
 
     /// Find the shortest path between two nodes.
@@ -975,5 +940,17 @@ fn other_endpoint<'a>(edge: &'a Edge, node_id: &str) -> &'a str {
         &edge.target
     } else {
         &edge.source
+    }
+}
+
+/// Record reaching `id` at `depth`; true when that is shorter than any route
+/// before, i.e. the node must be (re-)expanded from here.
+fn reach(best: &mut HashMap<String, u32>, id: &str, depth: u32) -> bool {
+    match best.get(id) {
+        Some(&shortest) if shortest <= depth => false,
+        _ => {
+            best.insert(id.to_string(), depth);
+            true
+        }
     }
 }

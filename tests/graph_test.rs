@@ -690,6 +690,49 @@ fn does_not_drag_in_sibling_members_via_the_structural_contains_edge_536() {
     assert!(impact.nodes.contains_key(PRINT));
 }
 
+#[test]
+fn impact_expands_each_dependent_at_its_shortest_depth() {
+    // target <- a1 <- a2 <- x, and target <- x directly; y depends on x.
+    // x is 1 hop from target, y 2. A walk that first meets x at the end of
+    // the long chain (depth 3) and never re-expands it would lose y.
+    let dir = TempDir::new().expect("tempdir");
+    let conn = DatabaseConnection::initialize(dir.path().join("codegraph.db")).expect("init db");
+    let queries = Rc::new(QueryBuilder::new(conn.get_db().expect("db handle")));
+    queries
+        .upsert_file(&make_file("src/chain.ts"))
+        .expect("upsert file");
+    let fn_node = |id: &str| make_node(id, NodeKind::Function, id, id, "src/chain.ts", false);
+    queries
+        .insert_nodes(&["target", "a1", "a2", "x", "y"].map(fn_node))
+        .expect("insert nodes");
+    queries
+        .insert_edges(&[
+            // The long route is recorded first, so it is walked first.
+            Edge::new("a1", "target", EdgeKind::Calls),
+            Edge::new("a2", "a1", EdgeKind::Calls),
+            Edge::new("x", "a2", EdgeKind::Calls),
+            Edge::new("x", "target", EdgeKind::Calls),
+            Edge::new("y", "x", EdgeKind::Calls),
+        ])
+        .expect("insert edges");
+
+    let impact = GraphTraverser::new(Rc::clone(&queries))
+        .get_impact_radius("target", 3)
+        .unwrap();
+    let mut found: Vec<&str> = impact.nodes.keys().map(String::as_str).collect();
+    found.sort_unstable();
+    assert_eq!(found, ["a1", "a2", "target", "x", "y"]);
+
+    // And the depth limit still holds: at depth 1 only direct dependents.
+    let near = GraphTraverser::new(Rc::clone(&queries))
+        .get_impact_radius("target", 1)
+        .unwrap();
+    let mut found: Vec<&str> = near.nodes.keys().map(String::as_str).collect();
+    found.sort_unstable();
+    assert_eq!(found, ["a1", "target", "x"]);
+    drop(conn);
+}
+
 // =============================================================================
 // findPath()
 // =============================================================================
