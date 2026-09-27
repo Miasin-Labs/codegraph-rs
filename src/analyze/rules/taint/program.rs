@@ -314,7 +314,9 @@ impl<'a> Table<'a> {
     }
 
     /// Methods `name` of `class`, or of its nearest supertype defining it.
-    fn method_in_lineage(&self, class: &str, name: &str) -> Vec<usize> {
+    /// Classes of the same name in several files (inner classes) are told
+    /// apart by preferring the caller's file.
+    fn method_in_lineage(&self, class: &str, name: &str, file: usize) -> Vec<usize> {
         for ancestor in self.facts.lineage(class) {
             if let Some(found) = self.by_owner.get(&(ancestor, name.to_string())) {
                 let bodies: Vec<usize> = found
@@ -322,6 +324,16 @@ impl<'a> Table<'a> {
                     .copied()
                     .filter(|&c| self.has_body(c))
                     .collect();
+                if bodies.len() > 1 {
+                    let local: Vec<usize> = bodies
+                        .iter()
+                        .copied()
+                        .filter(|&c| self.candidates[c].file == file)
+                        .collect();
+                    if !local.is_empty() {
+                        return local;
+                    }
+                }
                 if !bodies.is_empty() {
                     return bodies;
                 }
@@ -478,15 +490,19 @@ impl<'a> Table<'a> {
         allocated: &HashMap<Var, String>,
         pointers: &HashMap<&str, Vec<String>>,
     ) {
+        // `this.m()` runs on the caller's class, like a bare `m()`.
         let receiver_class = call.receiver.and_then(|r| match r {
-            Operand::Var(var) => allocated.get(var),
+            Operand::Var(var) if matches!(var.as_str(), "this" | "self" | "$this") => {
+                call.owner.map(str::to_string)
+            }
+            Operand::Var(var) => allocated.get(var).cloned(),
             _ => None,
         });
         let (found, guessed) = if let Some(constructed) = call.callee.strip_prefix("new ") {
             let class = simple_type(constructed);
-            (self.method_in_lineage(&class, &class), false)
+            (self.method_in_lineage(&class, &class, call.file), false)
         } else if let Some(class) = receiver_class {
-            (self.method_in_lineage(class, call.name), false)
+            (self.method_in_lineage(&class, call.name, call.file), false)
         } else if let Some(owner) = call.bodyless_owner {
             let found = self.implementations(owner, call.name);
             if found.len() > MAX_IMPLEMENTATIONS {
@@ -507,7 +523,7 @@ impl<'a> Table<'a> {
             } else {
                 let in_class = call
                     .owner
-                    .map(|owner| self.method_in_lineage(owner, call.name))
+                    .map(|owner| self.method_in_lineage(owner, call.name, call.file))
                     .unwrap_or_default();
                 if in_class.is_empty() {
                     self.same_file(call.file, call.name)
@@ -516,7 +532,12 @@ impl<'a> Table<'a> {
                 }
             };
             (found, false)
-        } else if call.receiver.is_some() && !call.index_resolved {
+        } else if let Some(Operand::Var(var)) = call.receiver.filter(|_| !call.index_resolved) {
+            // `x.m()` of a variable of unknown type: the file's one `m`,
+            // never for a call's result or a class (a library's API).
+            if var.as_str().starts_with("__t") || self.facts.is_class(var.as_str()) {
+                return;
+            }
             (self.same_file(call.file, call.name), true)
         } else {
             return;
