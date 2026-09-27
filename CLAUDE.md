@@ -365,6 +365,36 @@ cargo test --workspace
   crypto/random/cookie/logic, Python/JS/PHP injection, Rust Send/Sync,
   uninit and panic-safety. Measured with `tools/bugbench/` (juliet-c
   55.7% P / 21.8% R, OWASP 76.3% / 38.2%, 2026-09).
+- **Fuzzing as confirmation** (`src/analyze/fuzz/`, `codegraph analyze
+  fuzz-targets|fuzz-harness|fuzz-run`): the graph picks fuzz targets and
+  writes cargo-fuzz harnesses so a crash proves a finding. Language-neutral
+  core (`model.rs` input shapes + score, `graph.rs` call reach/SCC recursion,
+  `sites.rs` one tree-sitter walk per file with a per-language `SiteRules`
+  table: unsafe/index/panic/overflow/loop sites, generic bounds, `impl Trait
+  for`, exact visibility); an ecosystem module supplies exposure, type →
+  input classification, existing targets, harness and runner — only `rust/`
+  today (`api.rs`: public paths via `pub mod` chains and `pub use`
+  re-exports/globs, reading a decl line to tell `pub` from `pub(crate)`,
+  which the index conflates). Everything else comes from the index (bugs'
+  `Project` bulk load). Score = input weight (bytes/reader/text ≫ Arbitrary
+  scalars; any unbuildable param → ~0) × receiver (constructor found?) ×
+  (1 + parser name + ln risk reached (0.6/hop, 4 hops) + fan-in + recursion
+  + bug findings); targets an existing `fuzz/fuzz_targets/*.rs` calls are
+  dropped (read as text too — the fuzz crate calls by crate path), reached
+  ones ×0.4; a function returning a project iterator gets an edge to its
+  `next` (and the harness drains it). `--finding`/`--function` rank only
+  targets reaching it (×0.75/hop). Harness text is a pure function of the
+  callable (golden tests): one buffer when a single bytes/&str/reader
+  param, else a derived `arbitrary::Arbitrary` input struct; size-like ints
+  taken `% 1024`; `u8` for type params with only `Copy`-like bounds; a
+  generic owner through a public concrete alias; receivers via `new`/
+  `from_*`/`Default`; `Default` project params; the rest `todo!()` + TODO.
+  An existing target file with other content is kept unless `--force`.
+  `fuzz-run` builds with `--debug-assertions` (overflow checks), bounds
+  build and run by wall clock (process group killed), writes logs to
+  `fuzz/logs/` (never `artifacts/`: cargo-fuzz reports every file there as
+  a failing input), and maps the panic site / first project ASan frame to
+  the indexed function. Tests never run cargo-fuzz.
 - **Concurrency lint** (`analysis/src/concurrency.rs`, per-language rules in
   `concurrency_rules.rs`): flags lossy best-effort sends. Library-only since
   the vuln engine (its sole CLI surface) was deleted.
