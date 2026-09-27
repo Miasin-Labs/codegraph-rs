@@ -280,9 +280,11 @@ mod tests {
     fn every_structured_output_schema_declares_notices() {
         let mut checked = 0;
         for tool in tools() {
-            let Some(schema) = tool.output_schema else {
-                continue;
-            };
+            // Every result is JSON the model and SDKs can act on; the server
+            // instructions promise it.
+            let schema = tool
+                .output_schema
+                .unwrap_or_else(|| panic!("{} declares no output schema", tool.name));
             for branch in schema["oneOf"].as_array().expect("oneOf branches") {
                 let kind = &branch["properties"]["kind"]["const"];
                 if kind == "error" {
@@ -304,10 +306,9 @@ mod tests {
                 checked += 1;
             }
         }
-        // search, node (symbol + file view), files, status, explore, grep,
-        // recall and projects (list + one project) — opt-in, but their
-        // schemas are still served when enabled.
-        assert_eq!(checked, 10);
+        // One success branch per tool, plus node's file view and projects'
+        // one-project view (opt-in tools' schemas are served when enabled).
+        assert_eq!(checked, 19);
     }
 
     #[test]

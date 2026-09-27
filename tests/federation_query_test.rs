@@ -84,17 +84,51 @@ fn success_schema(tool: &str, kind: &str) -> Value {
         .unwrap()
 }
 
+/// The structured payload of a call-graph result, checked against the
+/// success branch of `tool`'s output schema for `kind`.
+fn payload_of(result: &codegraph::mcp::tools::ToolResult, tool: &str, kind: &str) -> Value {
+    let payload = result.structured_content.clone().expect("structured");
+    assert_eq!(payload["kind"], kind, "{payload:#}");
+    conforms(&payload, &success_schema(tool, kind), kind);
+    payload
+}
+
+fn names_in(rows: &Value) -> Vec<&str> {
+    rows.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row["name"].as_str())
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn callees_follow_external_edges_into_their_graphs() {
     let machine = machine().await;
     let (cg, handler) = tools_at(&machine, &machine.app);
-    let text = call(
+    let result = call(
         &handler,
         "codegraph_callees",
         json!({ "symbol": "run", "limit": 50 }),
-    )
-    .text()
-    .to_string();
+    );
+    let payload = payload_of(&result, "codegraph_callees", "callees");
+    let external = &payload["external"];
+    for (name, graph) in [
+        ("from_str", "jsonish@1.0.0"),
+        ("Connection::open", "sqlish@0.3.0"),
+        ("trace_detail", "linkme"),
+    ] {
+        assert!(
+            external
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["name"] == name
+                    && row["graph"] == graph
+                    && row.get("unavailable").is_none()),
+            "{name} in {graph}: {payload:#}"
+        );
+    }
+    let text = result.text().to_string();
     for expected in [
         "### In other graphs",
         "- from_str (function) - jsonish@1.0.0 src/lib.rs:",
@@ -164,13 +198,17 @@ async fn callers_of_linked_and_dependency_code_come_from_every_user() {
     let machine = machine().await;
     // Asked in the linked project: its dependents' call sites.
     let (linked, handler) = tools_at(&machine, &machine.linked);
-    let text = call(
+    let result = call(
         &handler,
         "codegraph_callers",
         json!({ "symbol": "trace_detail" }),
-    )
-    .text()
-    .to_string();
+    );
+    let payload = payload_of(&result, "codegraph_callers", "callers");
+    let app = &payload["otherProjects"][0];
+    assert_eq!(app["project"], "app", "{payload:#}");
+    assert_eq!(names_in(&app["callers"]), ["run"], "{payload:#}");
+    assert_eq!(app["callers"][0]["file"], "src/lib.rs", "{payload:#}");
+    let text = result.text().to_string();
     assert!(text.contains("### Callers in other projects"), "{text}");
     assert!(text.contains("#### app (1)"), "{text}");
     assert!(text.contains("- run (function) - src/lib.rs:"), "{text}");
@@ -179,13 +217,18 @@ async fn callers_of_linked_and_dependency_code_come_from_every_user() {
     // Asked in the app about a dependency's symbol: every user of that
     // dependency version (the app itself here).
     let (app, handler) = tools_at(&machine, &machine.app);
-    let text = call(
+    let result = call(
         &handler,
         "codegraph_callers",
         json!({ "symbol": "jsonish::from_str" }),
-    )
-    .text()
-    .to_string();
+    );
+    let payload = payload_of(&result, "codegraph_callers", "callers");
+    let foreign = &payload["foreign"][0];
+    assert_eq!(foreign["symbol"]["graph"], "jsonish@1.0.0", "{payload:#}");
+    assert_eq!(foreign["symbol"]["name"], "from_str", "{payload:#}");
+    assert_eq!(foreign["otherProjects"][0]["project"], "app", "{payload:#}");
+    assert_eq!(payload["results"], json!([]), "{payload:#}");
+    let text = result.text().to_string();
     assert!(
         text.contains("## Callers of from_str (function) in jsonish@1.0.0"),
         "{text}"
@@ -198,13 +241,17 @@ async fn callers_of_linked_and_dependency_code_come_from_every_user() {
 async fn impact_crosses_into_dependent_projects() {
     let machine = machine().await;
     let (linked, handler) = tools_at(&machine, &machine.linked);
-    let text = call(
+    let result = call(
         &handler,
         "codegraph_impact",
         json!({ "symbol": "trace_detail" }),
-    )
-    .text()
-    .to_string();
+    );
+    let payload = payload_of(&result, "codegraph_impact", "impact");
+    assert!(payload["count"].as_u64().unwrap() >= 1, "{payload:#}");
+    let app = &payload["otherProjects"][0];
+    assert_eq!(app["project"], "app", "{payload:#}");
+    assert_eq!(names_in(&app["entries"]), ["run"], "{payload:#}");
+    let text = result.text().to_string();
     assert!(text.contains("### Across projects"), "{text}");
     assert!(text.contains("#### app (1 calling in"), "{text}");
     assert!(text.contains("run:"), "{text}");
@@ -221,13 +268,24 @@ async fn a_missing_graph_degrades_to_not_available() {
     )))
     .unwrap();
     let (cg, handler) = tools_at(&machine, &machine.app);
-    let text = call(
+    let result = call(
         &handler,
         "codegraph_callees",
         json!({ "symbol": "run", "limit": 50 }),
-    )
-    .text()
-    .to_string();
+    );
+    let payload = payload_of(&result, "codegraph_callees", "callees");
+    let from_str = payload["external"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "from_str")
+        .expect("from_str row");
+    assert_eq!(from_str["line"], 14, "{payload:#}");
+    assert_eq!(
+        from_str["unavailable"], "target not available: shard not built",
+        "{payload:#}"
+    );
+    let text = result.text().to_string();
     assert!(
         text.contains("- from_str (function) - jsonish@1.0.0 src/lib.rs:14 (target not available: shard not built)"),
         "{text}"
@@ -293,13 +351,31 @@ async fn cross_project_callers_are_bounded_and_say_what_they_skipped() {
         .await;
 
     let (linked, handler) = tools_at(&machine, &machine.linked);
-    let text = call(
+    let result = call(
         &handler,
         "codegraph_callers",
         json!({ "symbol": "trace_detail" }),
-    )
-    .text()
-    .to_string();
+    );
+    let payload = payload_of(&result, "codegraph_callers", "callers");
+    let projects: Vec<&str> = payload["otherProjects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|group| group["project"].as_str().unwrap())
+        .collect();
+    assert_eq!(projects, ["app", "second"], "{payload:#}");
+    assert_eq!(
+        payload["skippedProjects"][0]["project"], "third",
+        "{payload:#}"
+    );
+    assert!(
+        payload["skippedProjects"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("external resolution has not run"),
+        "{payload:#}"
+    );
+    let text = result.text().to_string();
     assert!(text.contains("#### app (1)"), "{text}");
     assert!(text.contains("#### second (1)"), "{text}");
     assert!(

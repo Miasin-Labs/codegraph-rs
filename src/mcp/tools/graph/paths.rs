@@ -3,6 +3,8 @@
 use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
+use super::super::format::mcp_output_budget;
+use super::super::output::{PathStepOutput, PathsOutput, PathsSearched, fitted};
 use super::super::schema::ToolResult;
 use crate::error::Result;
 use crate::types::{EdgeKind, Node};
@@ -24,11 +26,23 @@ impl ToolHandler {
 
         let from_m = self.find_all_symbols(&cg, &from)?;
         if from_m.nodes.is_empty() {
-            return Ok(self.text_result(&format!("Source symbol \"{from}\" not found")));
+            return self.structured_result(
+                &format!("Source symbol \"{from}\" not found"),
+                &PathsOutput {
+                    source_not_found: true,
+                    ..PathsOutput::new()
+                },
+            );
         }
         let to_m = self.find_all_symbols(&cg, &to)?;
         if to_m.nodes.is_empty() {
-            return Ok(self.text_result(&format!("Sink symbol \"{to}\" not found")));
+            return self.structured_result(
+                &format!("Sink symbol \"{to}\" not found"),
+                &PathsOutput {
+                    sink_not_found: true,
+                    ..PathsOutput::new()
+                },
+            );
         }
 
         let edge_kinds = [
@@ -76,13 +90,38 @@ impl ToolHandler {
                         ));
                     }
                 }
-                return Ok(self.text_result(&self.truncate_output(&s)));
+                let output = PathsOutput {
+                    found: true,
+                    steps: path
+                        .iter()
+                        .enumerate()
+                        .map(|(i, step)| PathStepOutput {
+                            name: step.node.name.clone(),
+                            kind: step.node.kind.as_str(),
+                            file: step.node.file_path.clone(),
+                            line: step.node.start_line,
+                            // The text shows `?` for a step with no edge.
+                            via: (i > 0)
+                                .then(|| step.edge.as_ref().map_or("?", |e| e.kind.as_str())),
+                        })
+                        .collect(),
+                    ..PathsOutput::new()
+                };
+                let payload = fitted(&output, mcp_output_budget(), &["steps"]);
+                return self.structured_result(&self.truncate_output(&s), &payload);
             }
         }
-        Ok(self.text_result(&format!(
+        let output = PathsOutput {
+            searched: Some(PathsSearched {
+                sources: froms.len(),
+                sinks: tos.len(),
+            }),
+            ..PathsOutput::new()
+        };
+        self.structured_result(&format!(
             "No path found from \"{from}\" to \"{to}\" over calls/references (searched {}×{} symbol matches). They may be unreachable, or connected only via dynamic dispatch.",
             froms.len(),
             tos.len()
-        )))
+        ), &output)
     }
 }

@@ -12,7 +12,16 @@ use std::collections::HashSet;
 use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
-use super::super::format::num_or;
+use super::super::format::{mcp_output_budget, num_or};
+use super::super::output::{
+    CallsOutput,
+    CrossCallersOutput,
+    ExternalRef,
+    ForeignCallsOutput,
+    SymbolRef,
+    fitted,
+    foreign_ref,
+};
 use super::super::schema::ToolResult;
 use super::federated::{
     CALL_KINDS,
@@ -24,7 +33,7 @@ use super::federated::{
 };
 use crate::codegraph::CodeGraph;
 use crate::error::Result;
-use crate::federation::{ForeignSymbol, GraphId, GraphSet};
+use crate::federation::{Followed, ForeignSymbol, GraphId, GraphSet};
 use crate::types::{Node, NodeRef};
 use crate::utils::clamp;
 
@@ -77,6 +86,7 @@ impl ToolHandler {
         let limit = clamp(num_or(args, "limit", 20.0), 1.0, 100.0) as usize;
         let graph = graph_arg(args);
         let fed = self.federation();
+        let kind = direction.noun();
 
         let all_matches = match graph {
             Some(_) => None,
@@ -88,10 +98,18 @@ impl ToolHandler {
                 .map(|fed| self.foreign_symbols(fed, &cg, &symbol, graph.as_deref()))
                 .unwrap_or_default();
             return match (fed.as_ref(), foreign.is_empty()) {
-                (Some(fed), false) => Ok(self.text_result(&self.truncate_output(
-                    &foreign_calls_text(fed, &cg, &symbol, &foreign, direction, limit),
-                ))),
-                _ => Ok(self.text_result(&not_found(&symbol, graph.as_deref()))),
+                (Some(fed), false) => {
+                    let (text, sections) =
+                        foreign_calls(fed, &cg, &symbol, &foreign, direction, limit);
+                    let mut output = CallsOutput::new(kind);
+                    output.not_found = sections.is_empty();
+                    output.foreign = sections;
+                    self.calls_result(&text, &output)
+                }
+                _ => self.calls_result(
+                    &not_found(&symbol, graph.as_deref()),
+                    &CallsOutput::not_found(kind),
+                ),
             };
         };
 
@@ -109,7 +127,13 @@ impl ToolHandler {
                 }
             }
         }
+        let mut output = CallsOutput::new(kind);
+        output.results_omitted = related.len().saturating_sub(limit);
         related.truncate(limit);
+        output.results = related.iter().map(SymbolRef::from).collect();
+        if all_matches.nodes.len() > 1 {
+            output.matches = all_matches.nodes.iter().map(SymbolRef::from).collect();
+        }
 
         let federated = match &fed {
             Some(fed) => match direction {
@@ -118,7 +142,10 @@ impl ToolHandler {
                     let mut edges = external_edges_of(&cg, &ids, CALL_KINDS)?;
                     let omitted = edges.len().saturating_sub(limit);
                     edges.truncate(limit);
-                    external_callees_section(fed, &edges, omitted)
+                    let followed = fed.follow_all(&edges);
+                    output.external = followed.iter().map(ExternalRef::from).collect();
+                    output.external_omitted = if followed.is_empty() { 0 } else { omitted };
+                    external_callees_section(&followed, omitted)
                 }
                 Direction::Callers => {
                     let targets: Vec<Node> = all_matches
@@ -133,6 +160,7 @@ impl ToolHandler {
                         None,
                         limit,
                     );
+                    output.cross = CrossCallersOutput::from(&cross);
                     cross_callers_section(&cross, "Callers in other projects")
                 }
             },
@@ -140,11 +168,14 @@ impl ToolHandler {
         };
 
         if related.is_empty() && federated.is_empty() {
-            return Ok(self.text_result(&format!(
-                "No {} found for \"{symbol}\"{}",
-                direction.noun(),
-                all_matches.note
-            )));
+            return self.calls_result(
+                &format!(
+                    "No {} found for \"{symbol}\"{}",
+                    direction.noun(),
+                    all_matches.note
+                ),
+                &output,
+            );
         }
         let own = if related.is_empty() {
             format!("## {} of {symbol}: none in this project", direction.title())
@@ -152,7 +183,19 @@ impl ToolHandler {
             self.format_node_list(&related, &format!("{} of {symbol}", direction.title()))
         };
         let formatted = format!("{own}{federated}{}", all_matches.note);
-        Ok(self.text_result(&self.truncate_output(&formatted)))
+        self.calls_result(&formatted, &output)
+    }
+
+    /// The human text as-is (the CLI and tests read it) with the payload,
+    /// bounded to the MCP budget: foreign sections go first, then other
+    /// projects, then the tail of the results.
+    fn calls_result(&self, text: &str, output: &CallsOutput) -> Result<ToolResult> {
+        let payload = fitted(
+            output,
+            mcp_output_budget(),
+            &["foreign", "otherProjects", "external", "results"],
+        );
+        self.structured_result(&self.truncate_output(text), &payload)
     }
 
     // =========================================================================
@@ -170,15 +213,10 @@ fn not_found(symbol: &str, graph: Option<&str>) -> String {
 }
 
 /// Callees in other graphs: each external call edge, followed.
-fn external_callees_section(
-    fed: &GraphSet,
-    edges: &[crate::db::ExternalEdge],
-    omitted: usize,
-) -> String {
-    if edges.is_empty() {
+fn external_callees_section(followed: &[Followed], omitted: usize) -> String {
+    if followed.is_empty() {
         return String::new();
     }
-    let followed = fed.follow_all(edges);
     let mut lines = vec![
         String::new(),
         format!("### In other graphs ({})", followed.len() + omitted),
@@ -193,15 +231,16 @@ fn external_callees_section(
 
 /// Callers or callees of a symbol that lives in another graph: inside that
 /// graph, and (callers) in every project using the graph.
-fn foreign_calls_text(
+fn foreign_calls(
     fed: &GraphSet,
     cg: &CodeGraph,
     symbol: &str,
     foreign: &[ForeignSymbol],
     direction: Direction,
     limit: usize,
-) -> String {
+) -> (String, Vec<ForeignCallsOutput>) {
     let mut sections = Vec::new();
+    let mut outputs = Vec::new();
     for found in foreign {
         let traverser = found.graph.traverser();
         let refs: Vec<NodeRef> = match direction {
@@ -231,6 +270,16 @@ fn foreign_calls_text(
         if omitted > 0 {
             lines.push(format!("- … +{omitted} more"));
         }
+        let mut output = ForeignCallsOutput {
+            symbol: foreign_ref(&found.graph.label, &found.node),
+            results: refs
+                .iter()
+                .take(limit)
+                .map(|r| SymbolRef::from(&r.node))
+                .collect(),
+            results_omitted: omitted,
+            cross: CrossCallersOutput::default(),
+        };
         if direction == Direction::Callers {
             let cross = fed.callers_across(
                 &found.graph.id,
@@ -238,15 +287,17 @@ fn foreign_calls_text(
                 Some(cg.get_project_root()),
                 limit,
             );
+            output.cross = CrossCallersOutput::from(&cross);
             lines.push(cross_callers_section(
                 &cross,
                 &format!("Callers in projects using {}", found.graph.label),
             ));
         }
         sections.push(lines.join("\n"));
+        outputs.push(output);
     }
     if sections.is_empty() {
-        return format!("Symbol \"{symbol}\" not found");
+        return (format!("Symbol \"{symbol}\" not found"), outputs);
     }
-    sections.join("\n\n")
+    (sections.join("\n\n"), outputs)
 }

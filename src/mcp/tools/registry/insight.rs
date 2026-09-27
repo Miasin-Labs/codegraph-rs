@@ -2,6 +2,7 @@
 
 use serde_json::{Map, Value};
 
+use super::super::output::{diagnostics_output_schema, history_output_schema, tests_output_schema};
 use super::super::schema::{InputSchema, ToolAnnotations, ToolDefinition};
 use super::schema_builder::{
     project_path_property,
@@ -52,7 +53,7 @@ pub(in crate::mcp::tools::registry) fn push_history_tool(out: &mut Vec<ToolDefin
             properties: props,
             required: None,
         },
-        output_schema: None,
+        output_schema: Some(history_output_schema()),
         annotations: read_only_annotations(),
     });
 }
@@ -91,7 +92,7 @@ pub(in crate::mcp::tools::registry) fn push_tests_tool(out: &mut Vec<ToolDefinit
             properties: props,
             required: Some(vec!["symbol".into()]),
         },
-        output_schema: None,
+        output_schema: Some(tests_output_schema()),
         annotations: read_only_annotations(),
     });
 }
@@ -163,7 +164,7 @@ pub(in crate::mcp::tools::registry) fn push_diagnostics_tool(out: &mut Vec<ToolD
             properties: props,
             required: None,
         },
-        output_schema: None,
+        output_schema: Some(diagnostics_output_schema()),
         annotations: build_annotations(),
     });
 }

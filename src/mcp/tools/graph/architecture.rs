@@ -5,7 +5,8 @@ use std::collections::HashSet;
 use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
-use super::super::format::num_or;
+use super::super::format::{mcp_output_budget, num_or};
+use super::super::output::{ArchFile, ArchOutput, ArchSymbol, fitted};
 use super::super::schema::ToolResult;
 use crate::error::Result;
 use crate::types::{Node, NodeKind};
@@ -38,14 +39,15 @@ impl ToolHandler {
             .collect();
         files.sort_by(|a, b| a.path.cmp(&b.path));
         if files.is_empty() {
-            return Ok(self.text_result(&format!(
+            let text = format!(
                 "No indexed files under \"{}\". Try a different path or run `codegraph index`.",
                 if prefix.is_empty() {
                     "<project root>"
                 } else {
                     &prefix
                 }
-            )));
+            );
+            return self.structured_result(&text, &ArchOutput::new());
         }
 
         let in_scope: HashSet<String> = files.iter().map(|f| f.path.replace('\\', "/")).collect();
@@ -63,6 +65,7 @@ impl ToolHandler {
             )
         };
 
+        let mut output = ArchOutput::new();
         let mut body = String::new();
         let mut total_defs = 0usize;
         let mut ext_deps: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -98,6 +101,17 @@ impl ToolHandler {
             if defs.len() > max_syms {
                 body.push_str(&format!("  … +{} more\n", defs.len() - max_syms));
             }
+            output.files.push(ArchFile {
+                file: f.path.clone(),
+                language: f.language.as_str(),
+                node_count: f.node_count,
+                symbols: defs
+                    .iter()
+                    .take(max_syms)
+                    .map(|n| ArchSymbol::from(*n))
+                    .collect(),
+                symbols_omitted: defs.len().saturating_sub(max_syms),
+            });
 
             for dep in cg.get_file_dependencies(&f.path)? {
                 let d = dep.replace('\\', "/");
@@ -148,6 +162,17 @@ impl ToolHandler {
             }
         }
 
-        Ok(self.text_result(&self.truncate_output(&report)))
+        output.file_count = files.len();
+        output.definition_count = total_defs;
+        output.depends_on = ext_deps.iter().take(40).cloned().collect();
+        output.depends_on_omitted = ext_deps.len().saturating_sub(40);
+        output.depended_on_by = ext_dependents.iter().take(40).cloned().collect();
+        output.depended_on_by_omitted = ext_dependents.len().saturating_sub(40);
+        let payload = fitted(
+            &output,
+            mcp_output_budget(),
+            &["dependedOnBy", "dependsOn", "files"],
+        );
+        self.structured_result(&self.truncate_output(&report), &payload)
     }
 }

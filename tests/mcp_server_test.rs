@@ -521,7 +521,7 @@ async fn direct_tool_results_use_compact_json_projection() {
     );
     assert!(structured_response["result"].get("isError").is_none());
 
-    // When: call a handler that supplies human text only.
+    // When: call a graph tool whose symbol is missing.
     server.send(&json!({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": {
@@ -533,20 +533,19 @@ async fn direct_tool_results_use_compact_json_projection() {
         message["id"] == 2
     });
 
-    // Then: a tool without an output schema sends its own text as-is — no
-    // structuredContent, and no JSON envelope escaping the text.
+    // Then: callers is structured like search — the miss is a normal
+    // payload, and the text the model reads is that payload as compact JSON.
     let text_result = &text_response["result"];
-    assert!(
-        text_result.get("structuredContent").is_none(),
-        "{text_result}"
-    );
+    let payload = text_result
+        .get("structuredContent")
+        .expect("structuredContent");
+    assert_eq!(payload["kind"], "callers", "{text_result}");
+    assert_eq!(payload["notFound"], true, "{text_result}");
+    assert_eq!(payload["results"], json!([]), "{text_result}");
     let text = text_result["content"][0]["text"]
         .as_str()
         .expect("text content");
-    assert!(
-        text.contains("projectionMissingSymbol") && serde_json::from_str::<Value>(text).is_err(),
-        "{text}"
-    );
+    assert_eq!(text, serde_json::to_string(payload).unwrap());
     assert_eq!(
         text_response["result"]["_meta"]["notices"][0]["kind"],
         "auto_sync_disabled"
@@ -1438,11 +1437,6 @@ fn notice_kinds(notices: &[Value]) -> Vec<&str> {
         .collect()
 }
 
-fn text_of(result: &Value) -> &str {
-    assert!(result.get("structuredContent").is_none(), "{result}");
-    result["content"][0]["text"].as_str().expect("text content")
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn a_stale_file_reaches_the_model_on_search_node_explore_and_callers() {
     let _guard = env_read().await;
@@ -1516,7 +1510,7 @@ async fn a_stale_file_reaches_the_model_on_search_node_explore_and_callers() {
         assert!(result["_meta"]["notices"][0]["files"][0]["ageMs"].is_number());
     }
 
-    // A text tool leads with the same warning.
+    // The call-graph tools carry the same warning in their payload.
     id += 1;
     let callers = call_tool(
         &mut server,
@@ -1524,14 +1518,10 @@ async fn a_stale_file_reaches_the_model_on_search_node_explore_and_callers() {
         "codegraph_callers",
         json!({ "symbol": "alphaOnly" }),
     );
-    let text = text_of(&callers);
-    let (banner, body) = text.split_once("\n\n").expect("banner, then the result");
-    assert!(
-        banner.starts_with("⚠️ These files changed after the last index sync"),
-        "{text}"
-    );
-    assert!(banner.ends_with(" Files: src/alpha.ts"), "{text}");
-    assert!(body.contains("alphaOnly"), "{text}");
+    let notices = payload_notices(&callers);
+    assert_eq!(notice_kinds(&notices), ["stale_index"], "{callers}");
+    assert_eq!(notices[0]["files"], json!(["src/alpha.ts"]), "{callers}");
+    assert_eq!(callers["structuredContent"]["kind"], "callers");
     assert_eq!(callers["_meta"]["notices"][0]["kind"], "stale_index");
 }
 
@@ -1571,8 +1561,10 @@ async fn disabled_auto_sync_and_drifted_files_reach_the_model_on_every_tool() {
         "codegraph_callers",
         json!({ "symbol": "alphaOnly" }),
     );
+    let notices = payload_notices(&callers);
+    assert_eq!(notice_kinds(&notices), ["auto_sync_disabled"], "{callers}");
     assert!(
-        text_of(&callers).starts_with(&format!("⚠️ {frozen}")),
+        notices[0]["message"].as_str().unwrap().starts_with(frozen),
         "{callers}"
     );
 
@@ -1637,8 +1629,11 @@ async fn an_index_from_an_older_extractor_is_flagged_on_every_tool() {
         "codegraph_callers",
         json!({ "symbol": "alphaOnly" }),
     );
+    let notices = payload_notices(&callers);
     assert!(
-        text_of(&callers).starts_with(&format!("⚠️ {old}")),
+        notices
+            .iter()
+            .any(|notice| notice["message"].as_str().unwrap().starts_with(old)),
         "{callers}"
     );
 }

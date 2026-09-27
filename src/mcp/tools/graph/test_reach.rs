@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
-use super::super::format::num_or;
+use super::super::format::{mcp_output_budget, num_or};
+use super::super::output::{SymbolRef, TestFile, TestRow, TestsOutput, fitted};
 use super::super::schema::ToolResult;
 use crate::error::Result;
 use crate::types::{Node, NodeKind};
@@ -37,7 +38,10 @@ impl ToolHandler {
 
         let matches = self.find_all_symbols(&cg, &symbol)?;
         if matches.nodes.is_empty() {
-            return Ok(self.text_result(&format!("Symbol \"{symbol}\" not found in the codebase")));
+            return self.tests_result(
+                &format!("Symbol \"{symbol}\" not found in the codebase"),
+                &TestsOutput::not_found(depth),
+            );
         }
 
         // file -> (line, name) for every test reaching any definition.
@@ -61,13 +65,21 @@ impl ToolHandler {
         }
 
         let total: usize = by_file.values().map(BTreeMap::len).sum();
+        let mut output = TestsOutput::new(depth);
+        output.count = total;
+        if matches.nodes.len() > 1 {
+            output.matches = matches.nodes.iter().map(SymbolRef::from).collect();
+        }
         if total == 0 {
-            return Ok(self.text_result(&format!(
-                "No test reaches `{symbol}` through the call graph within depth {depth} — \
+            return self.tests_result(
+                &format!(
+                    "No test reaches `{symbol}` through the call graph within depth {depth} — \
                  it is likely untested (or only exercised through dynamic dispatch the index \
                  cannot see).{}",
-                matches.note
-            )));
+                    matches.note
+                ),
+                &output,
+            );
         }
         let mut lines = vec![
             format!(
@@ -81,16 +93,34 @@ impl ToolHandler {
         let mut shown = 0;
         'files: for (file, tests) in &by_file {
             lines.push(format!("**{file}**"));
+            output.files.push(TestFile {
+                file: file.clone(),
+                tests: Vec::new(),
+            });
             for (line, name) in tests {
                 if shown == limit {
                     lines.push(format!("… {} more (raise `limit`)", total - shown));
+                    output.tests_omitted = total - shown;
                     break 'files;
                 }
                 lines.push(format!("- `{name}` :{line}"));
+                if let Some(group) = output.files.last_mut() {
+                    group.tests.push(TestRow {
+                        name: name.clone(),
+                        line: *line,
+                    });
+                }
                 shown += 1;
             }
         }
+        // A file reached only past the cut lists no test: leave it out.
+        output.files.retain(|group| !group.tests.is_empty());
         lines.push(matches.note);
-        Ok(self.text_result(&self.truncate_output(&lines.join("\n"))))
+        self.tests_result(&lines.join("\n"), &output)
+    }
+
+    fn tests_result(&self, text: &str, output: &TestsOutput) -> Result<ToolResult> {
+        let payload = fitted(output, mcp_output_budget(), &["matches", "files"]);
+        self.structured_result(&self.truncate_output(text), &payload)
     }
 }

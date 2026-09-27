@@ -14,22 +14,48 @@ use serde_json::{Map, Value, json};
 use super::format::{json_len, rows_within_budget};
 use crate::types::{GraphStats, SearchResult};
 
+mod graph;
+mod insight;
+mod navigation;
 mod notices;
 mod rows;
+pub(in crate::mcp::tools) use graph::{
+    CallsOutput,
+    CrossCallersOutput,
+    CrossImpactOutput,
+    ForeignCallsOutput,
+    ForeignImpactOutput,
+    ImpactOutput,
+    calls_output_schema,
+    fitted,
+    foreign_ref,
+    group_by_file,
+    impact_output_schema,
+};
+#[allow(unused_imports)]
+pub(in crate::mcp::tools) use insight::*;
+#[allow(unused_imports)]
+pub(in crate::mcp::tools) use navigation::*;
 pub(in crate::mcp::tools) use notices::{
     attach_notices,
     notice_banner,
     notice_outputs,
     notices_schema,
 };
-pub(in crate::mcp::tools) use rows::{SymbolRef, SymbolRow, compact_signature};
-use rows::{symbol_ref_schema, symbol_row_properties, symbol_row_required};
+pub(in crate::mcp::tools) use rows::{
+    SymbolRef,
+    SymbolRow,
+    compact_signature,
+    symbol_ref_schema,
+    symbol_row_properties,
+    symbol_row_required,
+};
 
-fn is_false(value: &bool) -> bool {
+pub(in crate::mcp::tools) fn is_false(value: &bool) -> bool {
     !*value
 }
 
-fn is_zero(value: &usize) -> bool {
+pub(in crate::mcp::tools) fn is_zero(value: &usize) -> bool {
     *value == 0
 }
 

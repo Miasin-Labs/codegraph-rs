@@ -233,6 +233,18 @@ async fn payloads_with_notices_validate_against_their_output_schemas() {
         ("codegraph_files", json!({ "projectPath": project })),
         ("codegraph_status", json!({ "projectPath": project })),
         (
+            "codegraph_callers",
+            json!({ "symbol": "smallTarget", "projectPath": project }),
+        ),
+        (
+            "codegraph_callees",
+            json!({ "symbol": "orchestrate", "projectPath": project }),
+        ),
+        (
+            "codegraph_impact",
+            json!({ "symbol": "smallTarget", "projectPath": project }),
+        ),
+        (
             "codegraph_explore",
             json!({ "query": "orchestrate handler3", "projectPath": project }),
         ),
@@ -247,7 +259,8 @@ async fn payloads_with_notices_validate_against_their_output_schemas() {
             schema_matches(&tool_output_schema(tool), payload),
             "{tool} payload failed its advertised outputSchema: {payload}"
         );
-        if tool == "codegraph_explore" || args.get("symbol").is_some() {
+        // Only tools that read source can tell a slice went stale.
+        if tool == "codegraph_explore" || (tool == "codegraph_node" && args.get("symbol").is_some()) {
             assert_eq!(payload["notices"][1]["kind"], "stale_index", "{payload}");
             assert_eq!(payload["notices"][1]["files"], json!(["src/big.ts"]));
         }

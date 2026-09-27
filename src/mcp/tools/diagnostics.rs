@@ -12,7 +12,8 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 
 use super::context::ToolHandler;
-use super::format::{is_callable_kind, now_ms, num_or};
+use super::format::{is_callable_kind, mcp_output_budget, now_ms, num_or};
+use super::output::{DiagnosticFile, DiagnosticRow, DiagnosticsOutput, fitted};
 use super::schema::ToolResult;
 use crate::codegraph::CodeGraph;
 use crate::diagnostics::{Checker, Diagnostic, DiagnosticsRun, RunStatus, Severity, check_or_poll};
@@ -64,13 +65,19 @@ impl ToolHandler {
             Err(message) => return Ok(self.error_result(&message)),
         };
         if run.status == RunStatus::Running {
-            let elapsed = (now_ms() as u64).saturating_sub(run.started_ms) / 1000;
-            return Ok(self.text_result(&format!(
-                "`{}` is still running (started {elapsed}s ago) — it continues in the \
-                 background. Call codegraph_diagnostics again for the result; don't start \
-                 your own build meanwhile.",
-                command_label(checker)
-            )));
+            let elapsed_ms = (now_ms() as u64).saturating_sub(run.started_ms);
+            let elapsed = elapsed_ms / 1000;
+            let mut output = DiagnosticsOutput::new(checker.as_str(), "running");
+            output.elapsed_ms = Some(elapsed_ms);
+            return self.diagnostics_result(
+                &format!(
+                    "`{}` is still running (started {elapsed}s ago) — it continues in the \
+                     background. Call codegraph_diagnostics again for the result; don't start \
+                     your own build meanwhile.",
+                    command_label(checker)
+                ),
+                &output,
+            );
         }
 
         let shown: Vec<&Diagnostic> = run
@@ -83,7 +90,13 @@ impl ToolHandler {
                     .is_none_or(|f| d.file == f || d.file.starts_with(&format!("{f}/")))
             })
             .collect();
-        Ok(self.text_result(&self.truncate_output(&render(&cg, &run, &shown, limit))))
+        let (text, output) = render(&cg, &run, &shown, limit);
+        self.diagnostics_result(&text, &output)
+    }
+
+    fn diagnostics_result(&self, text: &str, output: &DiagnosticsOutput) -> Result<ToolResult> {
+        let payload = fitted(output, mcp_output_budget(), &["files"]);
+        self.structured_result(&self.truncate_output(text), &payload)
     }
 }
 
@@ -99,7 +112,22 @@ fn plural(n: usize, word: &str) -> String {
     format!("{n} {word}{}", if n == 1 { "" } else { "s" })
 }
 
-fn render(cg: &CodeGraph, run: &DiagnosticsRun, shown: &[&Diagnostic], limit: usize) -> String {
+fn severity_label(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Note => "note",
+    }
+}
+
+/// The text of a finished run and its payload, which lists the same
+/// diagnostics.
+fn render(
+    cg: &CodeGraph,
+    run: &DiagnosticsRun,
+    shown: &[&Diagnostic],
+    limit: usize,
+) -> (String, DiagnosticsOutput) {
     let label = command_label(run.checker);
     let count = |severity| {
         run.diagnostics
@@ -116,23 +144,33 @@ fn render(cg: &CodeGraph, run: &DiagnosticsRun, shown: &[&Diagnostic], limit: us
             )
         })
         .unwrap_or_default();
+    let (errors, warnings) = (count(Severity::Error), count(Severity::Warning));
+    let mut output = DiagnosticsOutput::new(run.checker.as_str(), "complete");
+    output.elapsed_ms = run
+        .finished_ms
+        .map(|done| done.saturating_sub(run.started_ms));
+    output.exit_code = run.exit_code;
+    output.errors = Some(errors);
+    output.warnings = Some(warnings);
+    output.filtered_out = run.diagnostics.len() - shown.len();
     let mut lines = vec![format!(
         "`{label}` finished{took}: {}, {}.",
-        plural(count(Severity::Error), "error"),
-        plural(count(Severity::Warning), "warning")
+        plural(errors, "error"),
+        plural(warnings, "warning")
     )];
     if let Some(failure) = &run.failure {
         lines.push(format!(
             "It failed without reporting a diagnostic (exit {}):\n```\n{failure}\n```",
             run.exit_code.map_or("?".to_string(), |c| c.to_string())
         ));
-        return lines.join("\n");
+        output.failure = Some(failure.clone());
+        return (lines.join("\n"), output);
     }
     if shown.is_empty() {
         if !run.diagnostics.is_empty() {
             lines.push("None match the `file`/`severity` filter.".into());
         }
-        return lines.join("\n");
+        return (lines.join("\n"), output);
     }
 
     let mut by_file: BTreeMap<&str, Vec<&Diagnostic>> = BTreeMap::new();
@@ -143,31 +181,42 @@ fn render(cg: &CodeGraph, run: &DiagnosticsRun, shown: &[&Diagnostic], limit: us
     lines.push(String::new());
     for (file, diagnostics) in by_file {
         lines.push(format!("**{file}**"));
+        let mut rows = Vec::with_capacity(diagnostics.len());
         for d in diagnostics {
-            let severity = match d.severity {
-                Severity::Error => "error",
-                Severity::Warning => "warning",
-                Severity::Note => "note",
-            };
+            let severity = severity_label(d.severity);
             let code = d
                 .code
                 .as_deref()
                 .map(|c| format!("[{c}]"))
                 .unwrap_or_default();
-            let within = symbols
-                .enclosing(file, d.line)
+            let symbol = symbols.enclosing(file, d.line);
+            let within = symbol
+                .as_deref()
                 .map(|name| format!(" in `{name}`"))
                 .unwrap_or_default();
             lines.push(format!(
                 "- {severity}{code} L{}:{}{within} — {}",
                 d.line, d.column, d.message
             ));
+            rows.push(DiagnosticRow {
+                severity,
+                code: d.code.clone(),
+                line: d.line,
+                column: d.column,
+                symbol,
+                message: d.message.clone(),
+            });
         }
+        output.files.push(DiagnosticFile {
+            file: file.to_string(),
+            diagnostics: rows,
+        });
     }
     if shown.len() > limit {
         lines.push(format!("… {} more (raise `limit`)", shown.len() - limit));
+        output.omitted = shown.len() - limit;
     }
-    lines.join("\n")
+    (lines.join("\n"), output)
 }
 
 /// Innermost indexed symbol around a line, per file, loaded once per file.

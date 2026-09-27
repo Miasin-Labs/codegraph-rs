@@ -53,17 +53,7 @@ pub(super) fn attach_external(
     }
     detail.external_omitted = edges.len().saturating_sub(TRAIL_CAP);
     let followed = fed.follow_all(&edges[..edges.len().min(TRAIL_CAP)]);
-    detail.external = followed
-        .iter()
-        .map(|item| ExternalRef {
-            name: item.edge.target_qualified_name.clone(),
-            kind: item.edge.target_kind.as_str(),
-            graph: item.label.clone(),
-            file: item.file().to_string(),
-            line: item.line(),
-            unavailable: availability_note(item),
-        })
-        .collect();
+    detail.external = followed.iter().map(ExternalRef::from).collect();
     let listed: Vec<String> = followed
         .iter()
         .map(|item| {

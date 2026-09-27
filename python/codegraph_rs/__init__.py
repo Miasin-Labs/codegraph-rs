@@ -4,7 +4,8 @@
     >>> g = cg.open(".")                      # finds .codegraph/ upward
     >>> print(g.search("EngineHandle"))       # text, same as the MCP tool
     >>> g.search("EngineHandle").data         # structuredContent dict
-    >>> g.callers("spawn", limit=5)
+    >>> [c["name"] for c in g.callers("spawn", limit=5)]   # structured rows
+    >>> for row in g.impact("spawn"): print(row["file"], row["name"])
     >>> g.explore("how does indexing work")
     >>> g.call("codegraph_grep", pattern="TODO")
 
@@ -70,16 +71,36 @@ class Result:
         r = d.get("results")
         return r if isinstance(r, list) else []
 
+    @property
+    def rows(self) -> List[Dict[str, Any]]:
+        """The payload's rows, flat: ``results`` as-is (search, callers,
+        callees), or file groups (``files: [{file, symbols|tests|diagnostics:
+        [...]}]`` from impact, tests, diagnostics, arch) flattened so each row
+        carries its ``file``. ``[]`` for payloads without rows."""
+        d = self.data or {}
+        r = d.get("results")
+        if isinstance(r, list):
+            return r
+        out: List[Dict[str, Any]] = []
+        for group in d.get("files") or []:
+            if not isinstance(group, dict):
+                continue
+            for key, items in group.items():
+                if key == "file" or not isinstance(items, list):
+                    continue
+                out.extend({**item, "file": group.get("file")} for item in items if isinstance(item, dict))
+        return out
+
     def __iter__(self) -> Iterator[Dict[str, Any]]:
-        return iter(self.results)
+        return iter(self.rows)
 
     def __len__(self) -> int:
-        return len(self.results)
+        return len(self.rows)
 
     def __getitem__(self, key):
         if isinstance(key, str):
             return (self.data or {})[key]
-        return self.results[key]
+        return self.rows[key]
 
     def __str__(self) -> str:
         return self.text

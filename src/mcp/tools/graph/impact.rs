@@ -12,7 +12,21 @@ use std::collections::HashSet;
 use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
-use super::super::format::{OrderedNodeMap, num_or, ordered_nodes_from_subgraph};
+use super::super::format::{
+    OrderedNodeMap,
+    mcp_output_budget,
+    num_or,
+    ordered_nodes_from_subgraph,
+};
+use super::super::output::{
+    CrossImpactOutput,
+    ForeignImpactOutput,
+    ImpactOutput,
+    SymbolRef,
+    fitted,
+    foreign_ref,
+    group_by_file,
+};
 use super::super::schema::ToolResult;
 use super::federated::{cross_impact_section, graph_arg};
 use crate::codegraph::CodeGraph;
@@ -53,12 +67,15 @@ impl ToolHandler {
                 .unwrap_or_default();
             return match (fed.as_ref(), foreign.is_empty()) {
                 (Some(fed), false) => {
-                    let text = self.foreign_impact_text(fed, &cg, &symbol, &foreign, depth);
-                    Ok(self.text_result(&self.truncate_output(&text)))
+                    let (text, sections) = self.foreign_impact(fed, &cg, &symbol, &foreign, depth);
+                    let mut output = ImpactOutput::new();
+                    output.foreign = sections;
+                    self.impact_result(&text, &output)
                 }
-                _ => {
-                    Ok(self.text_result(&format!("Symbol \"{symbol}\" not found in the codebase")))
-                }
+                _ => self.impact_result(
+                    &format!("Symbol \"{symbol}\" not found in the codebase"),
+                    &ImpactOutput::not_found(),
+                ),
             };
         };
 
@@ -80,6 +97,12 @@ impl ToolHandler {
             }
         }
 
+        let mut output = ImpactOutput::new();
+        output.count = merged_nodes.len();
+        output.files = group_by_file(merged_nodes.values());
+        if all_matches.nodes.len() > 1 {
+            output.matches = all_matches.nodes.iter().map(SymbolRef::from).collect();
+        }
         let across = match &fed {
             Some(fed) => {
                 let changed: Vec<Node> =
@@ -91,6 +114,7 @@ impl ToolHandler {
                     depth,
                     PER_PROJECT,
                 );
+                output.cross = CrossImpactOutput::from(&cross);
                 cross_impact_section(&cross)
             }
             None => String::new(),
@@ -100,20 +124,32 @@ impl ToolHandler {
             self.format_impact(&symbol, &merged_nodes),
             all_matches.note
         );
-        Ok(self.text_result(&self.truncate_output(&formatted)))
+        self.impact_result(&formatted, &output)
+    }
+
+    /// The human text as-is with the payload, bounded to the MCP budget:
+    /// foreign sections and other projects go first, then trailing files.
+    fn impact_result(&self, text: &str, output: &ImpactOutput) -> Result<ToolResult> {
+        let payload = fitted(
+            output,
+            mcp_output_budget(),
+            &["foreign", "otherProjects", "files"],
+        );
+        self.structured_result(&self.truncate_output(text), &payload)
     }
 
     /// The blast radius of a symbol in another graph: inside that graph,
     /// then in every project using it.
-    fn foreign_impact_text(
+    fn foreign_impact(
         &self,
         fed: &GraphSet,
         cg: &CodeGraph,
         symbol: &str,
         foreign: &[ForeignSymbol],
         depth: u32,
-    ) -> String {
+    ) -> (String, Vec<ForeignImpactOutput>) {
         let mut sections = Vec::new();
+        let mut outputs = Vec::new();
         for found in foreign {
             let radius = found
                 .graph
@@ -140,7 +176,13 @@ impl ToolHandler {
                 self.format_impact(&heading, &inside),
                 cross_impact_section(&cross)
             ));
+            outputs.push(ForeignImpactOutput {
+                symbol: foreign_ref(&found.graph.label, &found.node),
+                count: inside.len(),
+                files: group_by_file(inside.values()),
+                cross: CrossImpactOutput::from(&cross),
+            });
         }
-        sections.join("\n\n")
+        (sections.join("\n\n"), outputs)
     }
 }

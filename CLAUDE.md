@@ -99,8 +99,14 @@ cargo test --workspace
   schema sends `structuredContent` and, as its one text block, that payload
   as compact JSON (the spec's SHOULD; hosts show the model the text, so the
   payload IS the token cost — keep it free of request echoes, ids, and
-  derivable fields; rows are `output::SymbolRow`/`SymbolRef`). A tool without
-  one sends its own text as-is (no JSON envelope). Hosts rarely show `_meta`,
+  derivable fields; rows are `output::SymbolRow`/`SymbolRef`, file-grouped
+  `FileSymbols` where paths would repeat — `output/graph.rs`). Every tool
+  declares one (2026-09: callers/callees/impact/tests/history/diagnostics/
+  arch/xref/paths joined the rest), keeping its human `text()` unchanged for
+  the CLI and tests; a miss is a success payload with `notFound: true`, and
+  payloads are fitted to the budget with `output::fitted`. The text-only
+  projection (text as-is, no JSON envelope) remains for a tool that has none.
+  Hosts rarely show `_meta`,
   so the projection also puts `_meta.notices` (stale files, auto-sync off,
   worktree mismatch, old extractor — `NoticeKind`) where the model reads: a
   `notices` array right after `kind` in the payload (every success schema

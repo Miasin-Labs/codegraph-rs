@@ -2,6 +2,7 @@
 
 use serde_json::{Map, Value};
 
+use super::super::output::{arch_output_schema, paths_output_schema, xref_output_schema};
 use super::super::schema::{InputSchema, ToolDefinition};
 use super::schema_builder::{project_path_property, prop, prop_default, read_only_annotations};
 
@@ -33,7 +34,7 @@ pub(in crate::mcp::tools::registry) fn push_arch_tool(out: &mut Vec<ToolDefiniti
                 properties: props,
                 required: None,
             },
-            output_schema: None,
+            output_schema: Some(arch_output_schema()),
             annotations: read_only_annotations(),
         });
     }
@@ -67,7 +68,7 @@ pub(in crate::mcp::tools::registry) fn push_xref_tool(out: &mut Vec<ToolDefiniti
                 properties: props,
                 required: Some(vec!["symbol".into()]),
             },
-            output_schema: None,
+            output_schema: Some(xref_output_schema()),
             annotations: read_only_annotations(),
         });
     }
@@ -97,7 +98,7 @@ pub(in crate::mcp::tools::registry) fn push_paths_tool(out: &mut Vec<ToolDefinit
                 properties: props,
                 required: Some(vec!["from".into(), "to".into()]),
             },
-            output_schema: None,
+            output_schema: Some(paths_output_schema()),
             annotations: read_only_annotations(),
         });
     }

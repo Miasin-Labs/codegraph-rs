@@ -21,3 +21,20 @@ RUSTUP_TOOLCHAIN=stable maturin build --release -o dist    # abi3 wheel (CPython
 `RUSTUP_TOOLCHAIN=stable` is needed on this machine because the rustup default points to an uninstalled `rustc-master` toolchain.
 
 Engine worker failures raise a Python exception instead of calling `process::exit`, so they won't kill the host interpreter/REPL (uses `EngineHandle::spawn_embedded`).
+
+## Results
+
+Every call returns a `Result`: `str(r)` is the human text, `r.data` the
+structured payload (the tool's declared output schema), and iterating a
+result yields its rows as dicts:
+
+```python
+for c in g.callers("EngineHandle::spawn"):      # {name, kind, file, line}
+    print(c["file"], c["line"], c["name"])
+hits = [row for row in g.impact("spawn") if row["file"].startswith("src/mcp/")]
+g.callers("x").data["otherProjects"]           # cross-project sections
+```
+
+`r.rows` flattens file-grouped payloads (`impact`, `tests`, `diagnostics`,
+`arch`) so each row carries its `file`; `r.results` is the raw `results`
+array of `search`/`callers`/`callees`.

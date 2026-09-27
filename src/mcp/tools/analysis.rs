@@ -4,7 +4,8 @@
 use serde_json::{Map, Value};
 
 use super::context::ToolHandler;
-use super::format::num_or;
+use super::format::{mcp_output_budget, num_or};
+use super::output::{HistoryOutput, fitted};
 use super::schema::ToolResult;
 use crate::analysis_bridge::{BridgeOptions, build_analysis_graph_cached_with_options};
 use crate::analyze::CoChangeReport;
@@ -53,10 +54,13 @@ impl ToolHandler {
                     .iter()
                     .find_map(|node| cached.result.id_map.get(&node.id).cloned());
                 if seed.is_none() {
-                    return Ok(self.text_result(&format!(
-                        "Symbol \"{name}\" not found in the analysis graph{}",
-                        matches.note
-                    )));
+                    return self.structured_result(
+                        &format!(
+                            "Symbol \"{name}\" not found in the analysis graph{}",
+                            matches.note
+                        ),
+                        &HistoryOutput::not_found(),
+                    );
                 }
                 seed
             }
@@ -72,7 +76,12 @@ impl ToolHandler {
             top,
         );
         let text = render_history(&report, symbol);
-        self.structured_result(&self.truncate_output(&text), &report)
+        let payload = fitted(
+            &HistoryOutput::new(&report),
+            mcp_output_budget(),
+            &["pairs"],
+        );
+        self.structured_result(&self.truncate_output(&text), &payload)
     }
 }
 

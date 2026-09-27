@@ -2,7 +2,12 @@
 
 use serde_json::{Map, Value, json};
 
-use super::super::output::{node_output_schema, search_output_schema};
+use super::super::output::{
+    calls_output_schema,
+    impact_output_schema,
+    node_output_schema,
+    search_output_schema,
+};
 use super::super::schema::{InputSchema, ToolDefinition};
 use super::schema_builder::{
     graph_property,
@@ -121,7 +126,7 @@ pub(in crate::mcp::tools::registry) fn push_callee_tools(out: &mut Vec<ToolDefin
                 properties: props,
                 required: Some(vec!["symbol".into()]),
             },
-            output_schema: None,
+            output_schema: Some(calls_output_schema("callers")),
             annotations: read_only_annotations(),
         });
     }
@@ -157,7 +162,7 @@ pub(in crate::mcp::tools::registry) fn push_callee_tools(out: &mut Vec<ToolDefin
                 properties: props,
                 required: Some(vec!["symbol".into()]),
             },
-            output_schema: None,
+            output_schema: Some(calls_output_schema("callees")),
             annotations: read_only_annotations(),
         });
     }
@@ -190,7 +195,7 @@ pub(in crate::mcp::tools::registry) fn push_impact_tool(out: &mut Vec<ToolDefini
                 properties: props,
                 required: Some(vec!["symbol".into()]),
             },
-            output_schema: None,
+            output_schema: Some(impact_output_schema()),
             annotations: read_only_annotations(),
         });
     }
