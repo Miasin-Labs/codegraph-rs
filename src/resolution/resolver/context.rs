@@ -12,7 +12,7 @@ use std::sync::{Arc, LazyLock};
 use super::cache::resolve_cache_limit;
 use crate::db::QueryBuilder;
 use crate::resolution::lru_cache::LRUCache;
-use crate::resolution::name_matcher::{RustUse, UseLeaf};
+use crate::resolution::name_matcher::{LocalUse, RustUse};
 use crate::resolution::rust_deps::RustDependencyApi;
 use crate::resolution::types::{
     AliasMap,
@@ -35,7 +35,7 @@ pub struct ResolverContext {
     pub(super) import_mapping_cache: RefCell<LRUCache<String, Vec<ImportMapping>>>,
     pub(super) re_export_cache: RefCell<LRUCache<String, Vec<ReExport>>>,
     pub(super) rust_use_cache: RefCell<LRUCache<String, Arc<[RustUse]>>>,
-    pub(super) rust_fn_use_cache: RefCell<LRUCache<String, Arc<[UseLeaf]>>>,
+    pub(super) rust_fn_use_cache: RefCell<LRUCache<String, Arc<[LocalUse]>>>,
     pub(super) name_cache: RefCell<LRUCache<String, Vec<Node>>>,
     pub(super) lower_name_cache: RefCell<LRUCache<String, Vec<Node>>>,
     pub(super) qualified_name_cache: RefCell<LRUCache<String, Vec<Node>>>,
@@ -215,7 +215,7 @@ impl ResolutionContext for ResolverContext {
         self.cached_rust_use_leaves(file_path)
     }
 
-    fn get_rust_fn_local_uses(&self, file_path: &str) -> Arc<[UseLeaf]> {
+    fn get_rust_fn_local_uses(&self, file_path: &str) -> Arc<[LocalUse]> {
         self.cached_rust_fn_local_uses(file_path)
     }
 

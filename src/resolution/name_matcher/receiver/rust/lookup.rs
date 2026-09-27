@@ -10,7 +10,7 @@ use super::crates::project_crate_dir;
 use super::types::{Named, named_type, signature_return};
 use crate::resolution::line_index::Lines;
 use crate::resolution::name_matcher::rust_path::crate_key;
-use crate::resolution::name_matcher::{UseBinding, UseLeaf};
+use crate::resolution::name_matcher::{LocalUse, UseBinding};
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::{Language, Node, NodeKind};
 
@@ -435,8 +435,8 @@ fn use_path(name: &str, file: &str, context: &dyn ResolutionContext) -> Option<V
         .or_else(|| {
             fn_local_uses(file, context)
                 .iter()
-                .find(|leaf| leaf.binding == binding)
-                .cloned()
+                .find(|local| local.leaf.binding == binding)
+                .map(|local| local.leaf.clone())
         })
         .map(|leaf| leaf.path)
 }
@@ -446,7 +446,7 @@ fn use_path(name: &str, file: &str, context: &dyn ResolutionContext) -> Option<V
 pub(in crate::resolution::name_matcher) fn fn_local_uses(
     file: &str,
     context: &dyn ResolutionContext,
-) -> Arc<[UseLeaf]> {
+) -> Arc<[LocalUse]> {
     context.get_rust_fn_local_uses(file)
 }
 

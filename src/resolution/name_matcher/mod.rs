@@ -43,6 +43,7 @@ use qualified::match_by_qualified_name as qualified_name;
 pub(crate) use receiver::{infer_receiver_type_from_declaration, resolve_method_on_type};
 pub(crate) use rust_call::{rust_call_admits, rust_reference_admits};
 pub use rust_path::{
+    LocalUse,
     RustUse,
     UseBinding,
     UseLeaf,

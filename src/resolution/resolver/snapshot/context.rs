@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::{ImportCacheKey, SnapshotContext};
 use crate::error::log_debug;
 use crate::resolution::import_resolver::{extract_import_mappings, extract_re_exports};
-use crate::resolution::name_matcher::{RustUse, UseLeaf, rust_fn_local_uses, rust_use_leaves};
+use crate::resolution::name_matcher::{LocalUse, RustUse, rust_fn_local_uses, rust_use_leaves};
 use crate::resolution::resolver::context::is_js_family_path;
 use crate::resolution::types::{
     AliasMap,
@@ -226,7 +226,7 @@ impl ResolutionContext for SnapshotContext {
         leaves
     }
 
-    fn get_rust_fn_local_uses(&self, file_path: &str) -> Arc<[UseLeaf]> {
+    fn get_rust_fn_local_uses(&self, file_path: &str) -> Arc<[LocalUse]> {
         {
             let cache = self
                 .rust_fn_use_cache
@@ -236,7 +236,7 @@ impl ResolutionContext for SnapshotContext {
                 return Arc::clone(cached);
             }
         }
-        let leaves: Arc<[UseLeaf]> = self
+        let leaves: Arc<[LocalUse]> = self
             .read_file_arc(file_path)
             .map(|source| rust_fn_local_uses(&source).into())
             .unwrap_or_else(|| Arc::from(Vec::new()));

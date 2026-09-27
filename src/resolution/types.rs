@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::resolution::name_matcher::{RustUse, UseLeaf, rust_fn_local_uses, rust_use_leaves};
+use crate::resolution::name_matcher::{LocalUse, RustUse, rust_fn_local_uses, rust_use_leaves};
 use crate::types::{EdgeKind, Language, Metadata, Node, NodeKind};
 
 // =============================================================================
@@ -423,7 +423,7 @@ pub trait ResolutionContext {
     /// source ([`rust_fn_local_uses`]). Receiver inference asks for them on
     /// every type path it resolves, so the production contexts cache this
     /// per file like [`Self::get_rust_use_leaves`].
-    fn get_rust_fn_local_uses(&self, file_path: &str) -> Arc<[UseLeaf]> {
+    fn get_rust_fn_local_uses(&self, file_path: &str) -> Arc<[LocalUse]> {
         self.read_file_arc(file_path)
             .map(|source| rust_fn_local_uses(&source).into())
             .unwrap_or_else(|| Arc::from(Vec::new()))

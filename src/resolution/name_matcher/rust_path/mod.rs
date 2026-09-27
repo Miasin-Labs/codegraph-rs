@@ -23,6 +23,7 @@ mod use_tree;
 use layout::{inline_modules, module_location};
 use module_tree::{Namespace, Resolution, resolve_in_module};
 pub use use_tree::{
+    LocalUse,
     RustUse,
     UseBinding,
     UseLeaf,
