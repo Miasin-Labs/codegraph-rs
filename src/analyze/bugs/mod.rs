@@ -212,7 +212,7 @@ pub fn bugs_review(
 
 /// The selected detectors' findings, filtered by `options`, most confident
 /// first.
-fn detect(project: &mut Project, options: &BugsOptions) -> Vec<Finding> {
+pub(crate) fn detect(project: &mut Project, options: &BugsOptions) -> Vec<Finding> {
     // `Rule` findings come from the rules engine: asking for only those
     // runs neither family here.
     let wants = |detector| options.detectors.is_empty() || options.detectors.contains(&detector);
