@@ -50,6 +50,9 @@ pub(super) struct Candidate {
     pub top_level: bool,
     /// The C++ namespaces around it (`a::b`), when any.
     pub namespace: Option<String>,
+    /// It has a body to lower (not an interface or abstract method, not a
+    /// prototype).
+    pub has_body: bool,
 }
 
 /// A call's resolution before its targets are program ids.
@@ -170,6 +173,7 @@ impl<'a> Table<'a> {
                         owner,
                         top_level: false,
                         namespace: namespace_of(node, file.source),
+                        has_body: node.child_by_field_name("body").is_some(),
                     });
                 }
                 let mut cursor = node.walk();
@@ -221,6 +225,7 @@ impl<'a> Table<'a> {
             owner: None,
             top_level: node.parent().is_none(),
             namespace: None,
+            has_body: true,
         })
     }
 
@@ -344,10 +349,7 @@ impl<'a> Table<'a> {
     /// Whether a candidate has a body to lower (not an interface or
     /// abstract method, not a prototype).
     fn has_body(&self, candidate: usize) -> bool {
-        self.candidates[candidate].top_level
-            || self
-                .node(candidate)
-                .is_some_and(|node| node.child_by_field_name("body").is_some())
+        self.candidates[candidate].has_body
     }
 
     /// Methods `name` of `class`, or of its nearest supertype defining it.
