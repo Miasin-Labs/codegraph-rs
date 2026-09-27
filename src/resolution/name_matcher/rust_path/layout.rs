@@ -5,6 +5,8 @@
 //! `mod` blocks, which show up as leading snake_case segments of a qualified
 //! name (`tests::case`).
 
+use crate::types::{Node, NodeKind};
+
 /// Where a file or module sits: which crate, and the module path inside it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct ModuleLocation {
@@ -120,6 +122,34 @@ pub(super) fn module_files(location: &ModuleLocation) -> Vec<String> {
     }
     let path = location.module.join("/");
     vec![format!("{root}/{path}.rs"), format!("{root}/{path}/mod.rs")]
+}
+
+/// Where an indexed Rust item sits: its file's module plus the inline `mod`
+/// blocks around it, and its qualified name inside that module (`f` for
+/// `inl::f` in `mod inl { fn f() }`, `Type::m` for a method).
+pub(super) fn item_location(node: &Node) -> (ModuleLocation, &str) {
+    let mut location = module_location(&node.file_path);
+    let inline = inline_modules(&node.qualified_name);
+    let skip: usize = inline.iter().map(|segment| segment.len() + 2).sum();
+    let local = node
+        .qualified_name
+        .get(skip..)
+        .unwrap_or(&node.qualified_name);
+    location.module.extend(inline);
+    (location, local)
+}
+
+/// The module a `mod` declaration (a Module node) defines: `mod m;` in
+/// `src/a.rs` is `a::m`, whether its items live in `a/m.rs` or inline. A
+/// File node standing in for a declaration is its own file's module.
+pub(super) fn declared_module(node: &Node) -> ModuleLocation {
+    if node.kind == NodeKind::File {
+        // A module's own file (see `module_tree::module_file`).
+        return module_location(&node.file_path);
+    }
+    let (mut location, local) = item_location(node);
+    location.module.push(local.to_string());
+    location
 }
 
 /// Inline `mod` blocks enclosing an item, read from its qualified name: the

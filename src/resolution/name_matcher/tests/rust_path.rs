@@ -2,7 +2,7 @@ use super::{Fixture, match_reference, node};
 use crate::resolution::types::UnresolvedRef;
 use crate::types::{EdgeKind, Language, NodeKind, Visibility};
 
-fn rust_ref(from: &str, name: &str, file: &str) -> UnresolvedRef {
+pub(super) fn rust_ref(from: &str, name: &str, file: &str) -> UnresolvedRef {
     UnresolvedRef {
         from_node_id: from.into(),
         reference_name: name.into(),
@@ -16,7 +16,7 @@ fn rust_ref(from: &str, name: &str, file: &str) -> UnresolvedRef {
     }
 }
 
-fn func(id: &str, name: &str, qualified: &str, file: &str) -> crate::types::Node {
+pub(super) fn func(id: &str, name: &str, qualified: &str, file: &str) -> crate::types::Node {
     node(
         id,
         NodeKind::Function,
@@ -29,7 +29,7 @@ fn func(id: &str, name: &str, qualified: &str, file: &str) -> crate::types::Node
     )
 }
 
-fn method(id: &str, name: &str, qualified: &str, file: &str) -> crate::types::Node {
+pub(super) fn method(id: &str, name: &str, qualified: &str, file: &str) -> crate::types::Node {
     node(
         id,
         NodeKind::Method,
@@ -289,7 +289,7 @@ fn calls_ignore_modules_and_imports_that_share_the_name() {
     );
 }
 
-fn import(id: &str, qualified: &str, file: &str, signature: &str) -> crate::types::Node {
+pub(super) fn import(id: &str, qualified: &str, file: &str, signature: &str) -> crate::types::Node {
     let name = qualified.rsplit("::").next().unwrap_or(qualified);
     let mut node = node(
         id,
@@ -305,11 +305,14 @@ fn import(id: &str, qualified: &str, file: &str, signature: &str) -> crate::type
     node
 }
 
-fn module(id: &str, name: &str, file: &str) -> crate::types::Node {
+pub(super) fn module(id: &str, name: &str, file: &str) -> crate::types::Node {
     node(id, NodeKind::Module, name, name, file, Language::Rust, 1, 1)
 }
 
-fn with_visibility(mut node: crate::types::Node, visibility: Visibility) -> crate::types::Node {
+pub(super) fn with_visibility(
+    mut node: crate::types::Node,
+    visibility: Visibility,
+) -> crate::types::Node {
     node.visibility = Some(visibility);
     node
 }
