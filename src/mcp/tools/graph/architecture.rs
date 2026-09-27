@@ -103,7 +103,6 @@ impl ToolHandler {
             }
             output.files.push(ArchFile {
                 file: f.path.clone(),
-                language: f.language.as_str(),
                 node_count: f.node_count,
                 symbols: defs
                     .iter()

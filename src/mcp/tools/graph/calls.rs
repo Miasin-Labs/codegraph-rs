@@ -129,6 +129,7 @@ impl ToolHandler {
             }
         }
         let mut output = CallsOutput::new(kind);
+        output.count = related.len();
         output.results_omitted = related.len().saturating_sub(limit);
         related.truncate(limit);
         output.results = related.iter().map(SymbolRef::from).collect();

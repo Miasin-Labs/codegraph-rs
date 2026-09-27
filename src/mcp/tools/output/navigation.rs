@@ -37,13 +37,12 @@ impl From<&Node> for ArchSymbol {
     }
 }
 
-/// A file of the mapped area: its language, how many symbols it has, and
-/// its key definitions in line order.
+/// A file of the mapped area: how many symbols it has, and its key
+/// definitions in line order (no language — the extension says it).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(in crate::mcp::tools) struct ArchFile {
     pub file: String,
-    pub language: &'static str,
     pub node_count: u32,
     pub symbols: Vec<ArchSymbol>,
     #[serde(skip_serializing_if = "is_zero")]
@@ -280,12 +279,11 @@ pub(in crate::mcp::tools) fn arch_output_schema() -> Value {
         "additionalProperties": false,
         "properties": {
             "file": { "type": "string" },
-            "language": { "type": "string" },
             "nodeCount": { "type": "integer" },
             "symbols": { "type": "array", "items": symbol },
             "symbolsOmitted": { "type": "integer" }
         },
-        "required": ["file", "language", "nodeCount", "symbols"]
+        "required": ["file", "nodeCount", "symbols"]
     });
     success_or_error(json!({
         "type": "object",
@@ -474,7 +472,6 @@ mod tests {
         output.definition_count = 14;
         output.files.push(ArchFile {
             file: "src/core/util.rs".into(),
-            language: "rust",
             node_count: 20,
             symbols: vec![ArchSymbol::from(&node("helper", "src/core/util.rs", 3))],
             symbols_omitted: 13,

@@ -256,6 +256,10 @@ pub(in crate::mcp::tools) struct CallsOutput {
     pub schema_version: u32,
     /// `callers` or `callees`.
     pub kind: &'static str,
+    /// How many there are in this project, listed or not. Stated, not left
+    /// to be counted: in a blind reading test a small model miscounted a
+    /// 20-row list that the markdown's "(20 found)" header had spelled out.
+    pub count: usize,
     /// In this project.
     pub results: Vec<SymbolRef>,
     #[serde(skip_serializing_if = "is_zero")]
@@ -285,6 +289,7 @@ impl CallsOutput {
         Self {
             schema_version: 1,
             kind,
+            count: 0,
             results: Vec::new(),
             results_omitted: 0,
             matches: Vec::new(),
@@ -562,6 +567,7 @@ pub(in crate::mcp::tools) fn calls_output_schema(kind: &str) -> Value {
         ("schemaVersion", json!({ "type": "integer" })),
         ("kind", json!({ "const": kind })),
         ("notices", notices_schema()),
+        ("count", json!({ "type": "integer" })),
         ("results", refs.clone()),
         ("resultsOmitted", json!({ "type": "integer" })),
         ("matches", refs),
@@ -588,7 +594,7 @@ pub(in crate::mcp::tools) fn calls_output_schema(kind: &str) -> Value {
         "type": "object",
         "additionalProperties": false,
         "properties": Value::Object(properties),
-        "required": ["schemaVersion", "kind", "results"]
+        "required": ["schemaVersion", "kind", "count", "results"]
     }))
 }
 
@@ -676,7 +682,7 @@ mod tests {
         let value = serde_json::to_value(CallsOutput::new("callers")).unwrap();
         assert_eq!(
             value,
-            json!({ "schemaVersion": 1, "kind": "callers", "results": [] })
+            json!({ "schemaVersion": 1, "kind": "callers", "count": 0, "results": [] })
         );
         let value = serde_json::to_value(ImpactOutput::not_found()).unwrap();
         assert_eq!(
