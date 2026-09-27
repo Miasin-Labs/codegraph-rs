@@ -638,3 +638,23 @@ examples:
     );
     assert_eq!(finding.rule, "unvalidated-client-send");
 }
+
+#[test]
+fn an_alias_without_an_anchor_is_a_load_error_not_a_crash() {
+    let lone = error("description: *x\n");
+    assert!(lone.message.contains("no anchor"), "{lone:?}");
+
+    // Anchors do not cross `---`: the second document fails, the first loads.
+    let set = load(
+        "id: &x a\nlanguage: rust\ncheck-patterns:\n  - query: (identifier) @i\n\
+         examples: {bad: ['fn f() { x; }'], good: ['']}\n---\nid: b\ndescription: *x\n",
+    );
+    assert_eq!(set.errors.len(), 1, "{:?}", set.errors);
+    assert!(
+        set.errors[0].message.contains("no anchor"),
+        "{:?}",
+        set.errors
+    );
+    assert_eq!(set.errors[0].line, Some(8), "{:?}", set.errors);
+    assert_eq!(set.rules.len(), 1);
+}

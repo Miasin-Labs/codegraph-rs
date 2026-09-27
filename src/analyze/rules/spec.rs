@@ -296,23 +296,51 @@ impl<'de> Deserialize<'de> for RuleDoc {
     }
 }
 
+const NO_ANCHOR: &str = "an alias (`*name`) has no anchor (`&name`) before it in the same \
+                         document — anchors do not carry across `---`";
+
 /// Every rule in `text` (all its documents), and each document's YAML
 /// error as `line:column: message`. A document that fails does not stop
-/// the others, unless the YAML itself is broken.
+/// the others, unless the YAML itself is broken (or an alias has no
+/// anchor, which leaves the stream mid-document).
 pub fn parse_rules(text: &str) -> (Vec<RuleSpec>, Vec<String>) {
     let mut rules = Vec::new();
     let mut errors = Vec::new();
-    for document in serde_yaml_ng::Deserializer::from_str(text) {
-        match RuleDoc::deserialize(document) {
-            Ok(doc) => rules.extend(doc.0),
-            Err(error) => {
-                let broken = error.to_string().contains("while parsing")
-                    || error.to_string().contains("while scanning");
-                errors.push(yaml_error(&error));
-                if broken {
-                    break;
-                }
+    for (index, document) in serde_yaml_ng::Deserializer::from_str(text).enumerate() {
+        // An alias with no anchor makes serde_yaml_ng (and its serde_yaml
+        // siblings) stop loading mid-document: that document reports
+        // "unknown anchor", and the stream then yields the rest as a bogus
+        // document whose deserializer `panic!`s on a truncated event list (a
+        // lone document can panic at once). Rule text is model-written, so
+        // both are one error and the end of the stream, never a crash.
+        let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            RuleDoc::deserialize(document)
+        }));
+        let error = match parsed {
+            Ok(Ok(doc)) => {
+                rules.extend(doc.0);
+                continue;
             }
+            Ok(Err(error)) => error,
+            Err(_) => {
+                if errors.is_empty() || index == 0 {
+                    errors.push(format!("document {}: {NO_ANCHOR}", index + 1));
+                }
+                break;
+            }
+        };
+        let text = error.to_string();
+        if text.starts_with("unknown anchor") {
+            let at = error
+                .location()
+                .map(|l| format!("{}:{}: ", l.line(), l.column()))
+                .unwrap_or_default();
+            errors.push(format!("{at}{NO_ANCHOR}"));
+            break;
+        }
+        errors.push(yaml_error(&error));
+        if text.contains("while parsing") || text.contains("while scanning") {
+            break;
         }
     }
     (rules, errors)
