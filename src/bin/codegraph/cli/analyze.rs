@@ -236,9 +236,9 @@ with `codegraph analyze review`."
         /// Include findings in test code
         #[arg(long)]
         tests: bool,
-        /// Show at most N findings
-        #[arg(short = 't', long, value_name = "number", default_value = "50")]
-        top: String,
+        /// Show at most N findings (default: 50, or all with --json)
+        #[arg(short = 't', long, value_name = "number")]
+        top: Option<String>,
         /// Project path
         #[arg(short = 'p', long, value_name = "path")]
         path: Option<String>,
@@ -323,9 +323,9 @@ nonzero when a bad example does not match or a good one does, saying why: \
         /// Include findings in test code
         #[arg(long)]
         tests: bool,
-        /// Show at most N findings
-        #[arg(short = 't', long, value_name = "number", default_value = "50")]
-        top: String,
+        /// Show at most N findings (default: 50, or all with --json)
+        #[arg(short = 't', long, value_name = "number")]
+        top: Option<String>,
         /// Project path
         #[arg(short = 'p', long, value_name = "path")]
         path: Option<String>,

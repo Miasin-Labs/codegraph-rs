@@ -337,6 +337,8 @@ cargo test --workspace
   windowed ≤160 lines, evidence with context, callers, a per-rule checklist)
   for a person or model to decide. Test code is excluded unless `--tests`;
   `--base` narrows the report (beliefs are still learned project-wide).
+  `analyze bugs|rules --json` lists every finding (a consumer filters it);
+  the human form shows the 50 most confident; `--top` caps either.
 - **Rules engine** (`src/analyze/rules/`, `codegraph analyze rules`,
   `analyze review --rules|--builtin`): model-writable YAML rules
   (weggli-ruleset format, `deny_unknown_fields`, `serde_yaml_ng`) whose

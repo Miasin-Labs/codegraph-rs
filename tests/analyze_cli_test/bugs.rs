@@ -71,3 +71,35 @@ fn analyze_bugs_reports_findings_and_review_packets_quote_them() {
     let out = run_cli(&root, &["analyze", "bugs"]);
     assert!(stdout_str(&out).contains("src/layout.ts:7"), "{}", stdout_str(&out));
 }
+
+#[test]
+fn analyze_bugs_json_is_unbounded_unless_top_is_given() {
+    let (_dir, root) = temp_project();
+    // 55 self-comparisons: more than the 50 the human form shows.
+    let source: String = (0..55)
+        .map(|i| {
+            format!(
+                "export function f{i}(w: number): number {{\n  if (w < w) {{\n    return 1;\n  }}\n  return w;\n}}\n\n"
+            )
+        })
+        .collect();
+    support::write(&root.join("src/many.ts"), &source);
+    init_fixture_files_only(&root);
+
+    let report = run_analyze_json(&root, &["bugs"]);
+    let all = report["findings"].as_array().unwrap().len();
+    assert!(all >= 55, "{report}");
+    assert_eq!(report["findingsOmitted"], 0, "{report}");
+
+    // An explicit --top still applies to JSON.
+    let report = run_analyze_json(&root, &["bugs", "--top", "3"]);
+    assert_eq!(report["findings"].as_array().unwrap().len(), 3, "{report}");
+    assert_eq!(report["findingsOmitted"], all - 3, "{report}");
+
+    // A person reading the list gets the 50 most confident.
+    let out = run_cli(&root, &["analyze", "bugs"]);
+    assert!(out.status.success(), "{}", stderr_str(&out));
+    let text = stdout_str(&out);
+    assert!(text.contains(&format!("Suspected bugs: 50 of {all}")), "{text}");
+    assert!(text.contains("raise --top"), "{text}");
+}

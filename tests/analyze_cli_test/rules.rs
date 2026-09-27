@@ -172,3 +172,34 @@ fn analyze_rules_reports_findings_through_the_index() {
     assert!(out.status.success(), "{}", stderr_str(&out));
     assert!(stdout_str(&out).contains("src/lib.rs:19"), "{}", stdout_str(&out));
 }
+
+#[test]
+fn analyze_rules_json_is_unbounded_unless_top_is_given() {
+    let (_dir, root) = temp_project();
+    let source: String = (0..60)
+        .map(|i| format!("pub fn f{i}(x: Option<u8>) -> u8 {{\n    x.unwrap()\n}}\n\n"))
+        .collect();
+    support::write(&root.join("src/lib.rs"), &source);
+    support::write(
+        &root.join("unwrap.yaml"),
+        "id: any-unwrap\nlanguage: rust\ncheck-patterns:\n  - query: \"((call_expression function: (field_expression field: (field_identifier) @m)) @call (#eq? @m \\\"unwrap\\\"))\"\nexamples:\n  bad: [\"fn f(x: Option<u8>) { x.unwrap(); }\"]\n  good: [\"fn g(x: Option<u8>) { x.expect(\\\"set\\\"); }\"]\n",
+    );
+    init_fixture_files_only(&root);
+
+    // JSON is for a consumer that filters itself: every finding.
+    let report = run_analyze_json(&root, &["rules", "unwrap.yaml"]);
+    assert_eq!(report["findings"].as_array().unwrap().len(), 60, "{report}");
+    assert_eq!(report["findingsOmitted"], 0, "{report}");
+
+    // An explicit --top still applies to JSON.
+    let report = run_analyze_json(&root, &["rules", "unwrap.yaml", "--top", "7"]);
+    assert_eq!(report["findings"].as_array().unwrap().len(), 7, "{report}");
+    assert_eq!(report["findingsOmitted"], 53, "{report}");
+
+    // A person reading the list gets the 50 most confident.
+    let out = run_cli(&root, &["analyze", "rules", "unwrap.yaml"]);
+    assert!(out.status.success(), "{}", stderr_str(&out));
+    let text = stdout_str(&out);
+    assert!(text.contains("Rule findings: 50 of 60"), "{text}");
+    assert!(text.contains("10 more (raise --top)"), "{text}");
+}

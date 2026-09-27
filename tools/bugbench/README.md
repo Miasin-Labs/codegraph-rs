@@ -12,7 +12,7 @@ granularity and its caveats. Point `BUGBENCH_ROOT` at the built directory.
 cargo build --release --bin codegraph
 export BUGBENCH_ROOT=/path/to/bench
 python3 tools/bugbench/run.py rustsec-adjacent --jobs 8 \
-    --cmd 'rules=analyze rules --builtin --json --tests --top 100000'
+    --cmd 'rules=analyze rules --builtin --json --tests'
 python3 tools/bugbench/score.py rustsec-adjacent
 ```
 

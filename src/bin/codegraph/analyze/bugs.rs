@@ -37,7 +37,7 @@ pub(crate) fn cmd_analyze_bugs(
     base: Option<&str>,
     detectors: &[String],
     include_tests: bool,
-    top_arg: &str,
+    top_arg: Option<&str>,
     path_arg: Option<&str>,
     json: bool,
 ) {
@@ -51,14 +51,16 @@ pub(crate) fn cmd_analyze_bugs(
             ));
         }
         let options = bugs_options(&project_path, base, detectors, include_tests, false)?;
-        let top = parse_int_js(top_arg).unwrap_or(50).max(1) as usize;
+        let top = findings_limit(top_arg, json);
 
         let cg =
             CodeGraph::open(&project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
         let report = bugs_report(&cg, &project_path, &options);
         cg.close();
         let mut report = report?;
-        report.limit(top);
+        if let Some(top) = top {
+            report.limit(top);
+        }
 
         if json {
             return print_report_json("bugs", &report);
@@ -70,6 +72,17 @@ pub(crate) fn cmd_analyze_bugs(
     if let Err(msg) = body() {
         error_msg(&format!("analyze bugs failed: {msg}"));
         process::exit(1);
+    }
+}
+
+/// How many findings `analyze bugs|rules` report: `--top` when given; else
+/// every finding for `--json` (a consumer filters them itself) and the 50
+/// most confident for a person reading them.
+fn findings_limit(top_arg: Option<&str>, json: bool) -> Option<usize> {
+    match top_arg {
+        Some(arg) => Some(parse_int_js(arg).unwrap_or(50).max(1) as usize),
+        None if json => None,
+        None => Some(50),
     }
 }
 
@@ -280,7 +293,7 @@ pub(crate) fn cmd_analyze_rules(
     check: bool,
     base: Option<&str>,
     include_tests: bool,
-    top_arg: &str,
+    top_arg: Option<&str>,
     path_arg: Option<&str>,
     json: bool,
 ) {
@@ -324,13 +337,15 @@ pub(crate) fn cmd_analyze_rules(
             only_files,
             include_tests,
         };
-        let top = parse_int_js(top_arg).unwrap_or(50).max(1) as usize;
+        let top = findings_limit(top_arg, json);
         let cg =
             CodeGraph::open(&project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
         let report = rules_report(&cg, &project_path, &rules, &options);
         cg.close();
         let mut report = report?;
-        report.limit(top);
+        if let Some(top) = top {
+            report.limit(top);
+        }
         if json {
             return print_report_json("rules", &report);
         }
