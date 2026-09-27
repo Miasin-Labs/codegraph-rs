@@ -10,6 +10,7 @@ mod output;
 mod projects;
 mod recall;
 mod registry;
+mod rules;
 mod schema;
 mod text;
 

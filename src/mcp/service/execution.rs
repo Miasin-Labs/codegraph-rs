@@ -14,8 +14,14 @@ use crate::mcp::explore_session::{GREP_SESSION_ARG, SESSION_ARG, dedup_enabled};
 /// session ledger (so lines this conversation already holds are not sent
 /// again) and record what they sent into it. `grep` sends single-line
 /// excerpts, which it records apart from the source ranges (see
-/// `explore_session::grep`).
-const LEDGER_TOOLS: &[&str] = &["codegraph_explore", "codegraph_node", "codegraph_grep"];
+/// `explore_session::grep`); `rules` sends source only from `variant` (the
+/// enclosing function's window).
+const LEDGER_TOOLS: &[&str] = &[
+    "codegraph_explore",
+    "codegraph_node",
+    "codegraph_grep",
+    "codegraph_rules",
+];
 
 impl CodeGraphService {
     pub(super) async fn execute_tool(
