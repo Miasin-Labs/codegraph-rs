@@ -165,7 +165,11 @@ fn analyze_rules_reports_findings_through_the_index() {
     support::write(&root.join("bad.yaml"), "id: x\nlanguage: rust\n");
     let out = run_cli(&root, &["analyze", "rules", "--rules", "bad.yaml"]);
     assert!(!out.status.success());
-    assert!(stderr_str(&out).contains("missing field `check-patterns`"), "{}", stderr_str(&out));
+    assert!(
+        stderr_str(&out).contains("needs `check-patterns`"),
+        "{}",
+        stderr_str(&out)
+    );
 
     // Human output.
     let out = run_cli(&root, &["analyze", "rules", "rules.yaml"]);

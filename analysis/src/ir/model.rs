@@ -66,24 +66,56 @@ pub enum BinOpKind {
     Gt,
     And,
     Or,
+    Rem,
+    Le,
+    Ge,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 impl BinOpKind {
     /// Map a textual operator (as it appears in source) to a [`BinOpKind`].
     pub fn from_source(op: &str) -> Option<Self> {
         Some(match op {
-            "+" => BinOpKind::Add,
+            "+" | "." => BinOpKind::Add,
             "-" => BinOpKind::Sub,
             "*" => BinOpKind::Mul,
             "/" => BinOpKind::Div,
-            "==" => BinOpKind::Eq,
-            "!=" => BinOpKind::Ne,
+            "%" => BinOpKind::Rem,
+            "==" | "===" | "is" => BinOpKind::Eq,
+            "!=" | "!==" | "<>" | "is not" => BinOpKind::Ne,
             "<" => BinOpKind::Lt,
             ">" => BinOpKind::Gt,
-            "&&" => BinOpKind::And,
-            "||" => BinOpKind::Or,
+            "<=" => BinOpKind::Le,
+            ">=" => BinOpKind::Ge,
+            "&&" | "and" => BinOpKind::And,
+            "||" | "or" => BinOpKind::Or,
+            "&" => BinOpKind::BitAnd,
+            "|" => BinOpKind::BitOr,
+            "^" => BinOpKind::BitXor,
+            "<<" => BinOpKind::Shl,
+            ">>" | ">>>" => BinOpKind::Shr,
             _ => return None,
         })
+    }
+
+    /// Whether the operator yields a comparison or logical result (a
+    /// boolean, never a copy of an operand's data).
+    pub fn is_comparison(self) -> bool {
+        matches!(
+            self,
+            BinOpKind::Eq
+                | BinOpKind::Ne
+                | BinOpKind::Lt
+                | BinOpKind::Gt
+                | BinOpKind::Le
+                | BinOpKind::Ge
+                | BinOpKind::And
+                | BinOpKind::Or
+        )
     }
 }
 
@@ -141,6 +173,106 @@ pub enum IrOp {
     Nop,
 }
 
+/// Where an op or a value comes from: the syntax node's start as a 1-based
+/// line and 0-based column (the position the index records a call edge
+/// at), and its byte range.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Span {
+    pub line: u32,
+    pub col: u32,
+    pub start_byte: usize,
+    pub end_byte: usize,
+}
+
+impl Span {
+    pub fn of(node: Node<'_>) -> Self {
+        let start = node.start_position();
+        Self {
+            line: start.row as u32 + 1,
+            col: start.column as u32,
+            start_byte: node.start_byte(),
+            end_byte: node.end_byte(),
+        }
+    }
+
+    /// Whether `other` lies within this span.
+    pub fn contains(&self, other: &Span) -> bool {
+        self.start_byte <= other.start_byte && other.end_byte <= self.end_byte
+    }
+}
+
+/// A storage location an expression designates: a variable and a field
+/// path below it (`req.param.x` → `req` + `[param, x]`; an element
+/// `a[i]` is `a` + `["[]"]`, or `["[k]"]` for a constant key `k`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Place {
+    pub base: Var,
+    pub fields: Vec<String>,
+}
+
+impl Place {
+    pub fn var(var: Var) -> Self {
+        Self {
+            base: var,
+            fields: Vec::new(),
+        }
+    }
+
+    /// Whether `self` is `other` or a path below it.
+    pub fn starts_with(&self, other: &Place) -> bool {
+        self.base == other.base && self.fields.starts_with(&other.fields)
+    }
+}
+
+impl std::fmt::Display for Place {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.base.as_str())?;
+        for field in &self.fields {
+            if field.starts_with('[') {
+                f.write_str(field)?;
+            } else {
+                write!(f, ".{field}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The value an expression evaluated to, recorded by lowerers that track
+/// expressions (the rules-driven one: [`crate::ir::lower_with_rules`]), so
+/// an analysis can find the IR value of a syntax node by its span.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExprValue {
+    pub span: Span,
+    /// The node kind, to tell apart nodes sharing a span (`(x)` and `x`).
+    pub kind: &'static str,
+    pub operand: Operand,
+    /// The storage the expression designates, when it designates one
+    /// (`x`, `a.b`, `a[i]`, `&x`, `*p`, `p + n`): what a write through it —
+    /// an out-parameter — defines.
+    pub place: Option<Place>,
+    /// Index into `body` of the first op after the expression was
+    /// evaluated: the value holds at that point.
+    pub at: usize,
+}
+
+/// What a call's receiver and arguments designate, for writes through them
+/// (C `fgets(buf, …)`, `strcpy(dst, src)`, `list.add(x)`): recorded by
+/// the rules-driven lowering, one entry per `Call` op, in op order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallPlaces {
+    /// Index of the `Call` op in `body`.
+    pub op: usize,
+    pub receiver: Option<Place>,
+    /// Parallel to the op's `args`.
+    pub args: Vec<Option<Place>>,
+}
+
+/// Fields a [`Place`] keeps below its variable; deeper accesses stand for
+/// their prefix (`a.b.c.d` is `a.b.c`), which analyses treat as a weak
+/// (non-killing) write.
+pub const MAX_PLACE_DEPTH: usize = 3;
+
 /// A lowered function: parameters + a flat instruction list, plus an index
 /// from [`Label`] to its position in `body` for O(1) jump resolution.
 ///
@@ -148,6 +280,10 @@ pub enum IrOp {
 /// Python's first parameter of an instance/class method, TypeScript `this`,
 /// a Go receiver — kept out of `params` so `params[i]` is the parameter the
 /// `i`-th parenthesised argument binds to.
+///
+/// `spans[i]` is where `body[i]` comes from (lowerers set the current span
+/// with [`IrFunction::set_span`]; ops pushed without one carry
+/// `Span::default()`), so the `match`es on [`IrOp`] never see locations.
 #[derive(Debug, Clone, Default)]
 pub struct IrFunction {
     pub name: String,
@@ -155,27 +291,106 @@ pub struct IrFunction {
     pub params: Vec<Var>,
     pub body: Vec<IrOp>,
     pub labels: HashMap<Label, usize>,
+    pub spans: Vec<Span>,
+    /// Expression values, when the lowerer records them.
+    pub values: Vec<ExprValue>,
+    /// Where each parameter is declared (parallel to `params`, when known).
+    pub param_spans: Vec<Span>,
+    /// Receiver/argument places of each call, when the lowerer records them.
+    pub call_places: Vec<CallPlaces>,
+    current: Span,
 }
 
 impl IrFunction {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            receiver: None,
-            params: Vec::new(),
-            body: Vec::new(),
-            labels: HashMap::new(),
+            ..Self::default()
         }
     }
 
-    /// Append an op to the body. If it is a [`IrOp::Label`], also record its
-    /// position in the `labels` index.
+    /// Append an op to the body at the current span. If it is a
+    /// [`IrOp::Label`], also record its position in the `labels` index.
     pub fn push(&mut self, op: IrOp) {
         if let IrOp::Label(l) = op {
             self.labels.insert(l, self.body.len());
         }
         self.body.push(op);
+        self.spans.push(self.current);
     }
+
+    /// Make `span` the span of the ops pushed next; returns the previous
+    /// one, for the caller to restore.
+    pub fn set_span(&mut self, span: Span) -> Span {
+        std::mem::replace(&mut self.current, span)
+    }
+
+    /// Where `body[index]` comes from.
+    pub fn span(&self, index: usize) -> Span {
+        self.spans.get(index).copied().unwrap_or_default()
+    }
+
+    /// The recorded places of the `Call` op at `op`.
+    pub fn call_places(&self, op: usize) -> Option<&CallPlaces> {
+        self.call_places
+            .binary_search_by_key(&op, |places| places.op)
+            .ok()
+            .map(|index| &self.call_places[index])
+    }
+}
+
+impl Place {
+    /// `self.field`, or `self` itself when it is already
+    /// [`MAX_PLACE_DEPTH`] deep (the second value says whether the result
+    /// is exact).
+    pub fn field(&self, field: &str) -> (Place, bool) {
+        if self.fields.len() >= MAX_PLACE_DEPTH {
+            return (self.clone(), false);
+        }
+        let mut place = self.clone();
+        place.fields.push(field.to_string());
+        (place, true)
+    }
+
+    /// Whether the two places can share storage: one is a prefix of the
+    /// other, where an unknown element `[]` matches any element.
+    pub fn overlaps(&self, other: &Place) -> bool {
+        self.base == other.base
+            && self
+                .fields
+                .iter()
+                .zip(&other.fields)
+                .all(|(a, b)| field_matches(a, b))
+    }
+
+    /// Whether a write to `self` overwrites all of `other` (`other` is
+    /// `self` or below it, with no unknown element on the way).
+    pub fn covers(&self, other: &Place) -> bool {
+        self.base == other.base
+            && self.fields.len() <= other.fields.len()
+            && self
+                .fields
+                .iter()
+                .zip(&other.fields)
+                .all(|(a, b)| a == b && a != "[]")
+    }
+}
+
+fn field_matches(a: &str, b: &str) -> bool {
+    a == b || (a == "[]" && b.starts_with('[')) || (b == "[]" && a.starts_with('['))
+}
+
+/// Run `lower` with `node` as the span of the ops it pushes, restoring the
+/// enclosing span after: each op carries the innermost node being lowered.
+pub(crate) fn at_node<R>(
+    func: &mut IrFunction,
+    node: Node<'_>,
+    lower: impl FnOnce(&mut IrFunction) -> R,
+) -> R {
+    let outer = func.set_span(Span::of(node));
+    let result = lower(func);
+    func.set_span(outer);
+    result
 }
 
 // ─── Trait ───────────────────────────────────────────────────────────────────
@@ -238,7 +453,9 @@ impl RustIrLowering {
     ) {
         // Recursion guard — statement nesting is bounded only by source size.
         crate::ensure_sufficient_stack(|| {
-            Self::lower_stmt_inner(node, source, func, next_label, next_temp)
+            at_node(func, node, |func| {
+                Self::lower_stmt_inner(node, source, func, next_label, next_temp)
+            })
         });
     }
 
@@ -310,7 +527,9 @@ impl RustIrLowering {
     ) -> Operand {
         // Recursion guard — expression nesting is bounded only by source size.
         crate::ensure_sufficient_stack(|| {
-            Self::lower_expr_inner(node, source, func, next_label, next_temp)
+            at_node(func, node, |func| {
+                Self::lower_expr_inner(node, source, func, next_label, next_temp)
+            })
         })
     }
 
@@ -675,7 +894,11 @@ impl PythonIrLowering {
 
     fn lower_stmt(node: Node, source: &str, func: &mut IrFunction, nl: &mut u32, nt: &mut usize) {
         // Recursion guard — statement nesting is bounded only by source size.
-        crate::ensure_sufficient_stack(|| Self::lower_stmt_inner(node, source, func, nl, nt));
+        crate::ensure_sufficient_stack(|| {
+            at_node(func, node, |func| {
+                Self::lower_stmt_inner(node, source, func, nl, nt)
+            })
+        });
     }
 
     fn lower_stmt_inner(
@@ -739,7 +962,11 @@ impl PythonIrLowering {
         nt: &mut usize,
     ) -> Operand {
         // Recursion guard — expression nesting is bounded only by source size.
-        crate::ensure_sufficient_stack(|| Self::lower_expr_inner(node, source, func, nl, nt))
+        crate::ensure_sufficient_stack(|| {
+            at_node(func, node, |func| {
+                Self::lower_expr_inner(node, source, func, nl, nt)
+            })
+        })
     }
 
     fn lower_expr_inner(
@@ -960,7 +1187,11 @@ impl TypeScriptIrLowering {
 
     fn lower_stmt(node: Node, source: &str, func: &mut IrFunction, nl: &mut u32, nt: &mut usize) {
         // Recursion guard — statement nesting is bounded only by source size.
-        crate::ensure_sufficient_stack(|| Self::lower_stmt_inner(node, source, func, nl, nt));
+        crate::ensure_sufficient_stack(|| {
+            at_node(func, node, |func| {
+                Self::lower_stmt_inner(node, source, func, nl, nt)
+            })
+        });
     }
 
     fn lower_stmt_inner(
@@ -1019,7 +1250,11 @@ impl TypeScriptIrLowering {
         nt: &mut usize,
     ) -> Operand {
         // Recursion guard — expression nesting is bounded only by source size.
-        crate::ensure_sufficient_stack(|| Self::lower_expr_inner(node, source, func, nl, nt))
+        crate::ensure_sufficient_stack(|| {
+            at_node(func, node, |func| {
+                Self::lower_expr_inner(node, source, func, nl, nt)
+            })
+        })
     }
 
     fn lower_expr_inner(
@@ -1314,7 +1549,11 @@ impl GoIrLowering {
 
     fn lower_stmt(node: Node, source: &str, func: &mut IrFunction, nl: &mut u32, nt: &mut usize) {
         // Recursion guard — statement nesting is bounded only by source size.
-        crate::ensure_sufficient_stack(|| Self::lower_stmt_inner(node, source, func, nl, nt));
+        crate::ensure_sufficient_stack(|| {
+            at_node(func, node, |func| {
+                Self::lower_stmt_inner(node, source, func, nl, nt)
+            })
+        });
     }
 
     fn lower_stmt_inner(
@@ -1494,7 +1733,11 @@ impl GoIrLowering {
         nt: &mut usize,
     ) -> Operand {
         // Recursion guard — expression nesting is bounded only by source size.
-        crate::ensure_sufficient_stack(|| Self::lower_expr_inner(node, source, func, nl, nt))
+        crate::ensure_sufficient_stack(|| {
+            at_node(func, node, |func| {
+                Self::lower_expr_inner(node, source, func, nl, nt)
+            })
+        })
     }
 
     fn lower_expr_inner(
@@ -1649,7 +1892,9 @@ pub fn lower_for_language(lang_id: &str, node: Node, source: &str) -> Option<IrF
             TypeScriptIrLowering::new().lower_function(node, source)
         }
         "go" => GoIrLowering::new().lower_function(node, source),
-        _ => None,
+        // Java, C, C++, PHP: the rules-driven lowering (`ir_rules.rs` +
+        // `cfg_rules.rs`).
+        _ => super::lower_with_rules(lang_id, node, source),
     }
 }
 

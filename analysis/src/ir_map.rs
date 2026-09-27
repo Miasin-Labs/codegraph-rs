@@ -14,8 +14,9 @@
 //! 3. locates the function node covering the node's recorded byte span, and
 //! 4. lowers it to an [`IrFunction`] via [`crate::ir::lower_for_language`].
 //!
-//! IR lowering currently supports rust / python / typescript-javascript / go
-//! (see `lower_for_language`); functions in other indexed languages are skipped
+//! IR lowering supports rust / python / typescript-javascript / go (bespoke
+//! lowerers) and java / c / c++ / php (the rules-driven lowering, see
+//! `lower_for_language`); functions in other indexed languages are skipped
 //! and simply get no IR entry — the downstream analyses degrade gracefully
 //! (those nodes contribute no dataflow edges) rather than erroring.
 //!
@@ -40,6 +41,10 @@ fn lang_id_for_ext(ext: &str) -> Option<&'static str> {
         "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => "typescript",
         "ets" => "arkts",
         "go" => "go",
+        "java" => "java",
+        "c" => "c",
+        "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => "cpp",
+        "php" => "php",
         _ => return None,
     })
 }
@@ -53,6 +58,10 @@ fn parser_for(lang_id: &str) -> Option<Parser> {
         "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         "arkts" => tree_sitter_arkts::LANGUAGE.into(),
         "go" => tree_sitter_go::LANGUAGE.into(),
+        "java" => tree_sitter_java::LANGUAGE.into(),
+        "c" => tree_sitter_c::LANGUAGE.into(),
+        "cpp" => tree_sitter_cpp::LANGUAGE.into(),
+        "php" => tree_sitter_php::LANGUAGE_PHP.into(),
         _ => return None,
     };
     parser.set_language(&lang).ok()?;
@@ -96,7 +105,8 @@ fn is_function_kind(kind: &str) -> bool {
             | "function_declaration" // go, js/ts
             | "method_declaration"   // go, ts
             | "method_definition"    // js/ts
-            | "arrow_function" // js/ts
+            | "arrow_function"       // js/ts
+            | "constructor_declaration" // java
     )
 }
 

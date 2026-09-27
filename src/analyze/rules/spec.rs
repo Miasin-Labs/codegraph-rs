@@ -73,11 +73,16 @@ pub struct RuleSpec {
     #[serde(default)]
     pub language: Option<OneOrMany<String>>,
     #[serde(
+        default,
         alias = "check patterns",
         alias = "check-pattern",
         alias = "check pattern"
     )]
-    pub check_patterns: OneOrMany<PatternSpec>,
+    pub check_patterns: Option<OneOrMany<PatternSpec>>,
+    /// A taint rule (instead of `check-patterns`): a finding is a sink
+    /// whose value a source's value reaches, in one function.
+    #[serde(default)]
+    pub taint: Option<TaintSpec>,
     #[serde(
         default,
         alias = "ignore patterns",
@@ -131,11 +136,87 @@ pub struct PatternSpec {
     pub unique: bool,
 }
 
+/// The roles of a taint rule, each a list of patterns.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct TaintSpec {
+    /// Where tainted values come from: `value` names the capture whose
+    /// value is tainted (a call's result, a parameter, or storage a call
+    /// fills, like C `fgets(buf, …)`'s `buf`).
+    pub sources: OneOrMany<TaintPatternSpec>,
+    /// Where they must not go: `argument` names the capture whose value
+    /// must not be tainted.
+    pub sinks: OneOrMany<TaintPatternSpec>,
+    /// What makes a value clean: `value` names the capture whose value
+    /// (a call's result, or storage a call rewrites in place) is clean.
+    #[serde(default)]
+    pub sanitizers: Option<OneOrMany<TaintPatternSpec>>,
+    /// Extra steps: the data of capture `from` flows into capture `to`.
+    #[serde(default)]
+    pub propagators: Option<OneOrMany<TaintPatternSpec>>,
+}
+
+/// A pattern of a taint rule: a weggli `pattern` or a tree-sitter `query`
+/// with `regex`/`where` constraints (as a check pattern), plus the
+/// capture(s) its role reads.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct TaintPatternSpec {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub language: Option<OneOrMany<String>>,
+    #[serde(default)]
+    pub pattern: Option<String>,
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default, alias = "regexes")]
+    pub regex: Option<OneOrMany<String>>,
+    #[serde(default, rename = "where")]
+    pub where_: Vec<PredicateSpec>,
+    /// Finding text for a sink (else the rule's `message`).
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub unique: bool,
+    /// Sources and sanitizers: the capture whose value they mark.
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Sinks: the capture whose value must not be tainted.
+    #[serde(default)]
+    pub argument: Option<String>,
+    /// Propagators: the capture whose data flows…
+    #[serde(default)]
+    pub from: Option<String>,
+    /// …into this capture's value.
+    #[serde(default)]
+    pub to: Option<String>,
+}
+
+impl TaintPatternSpec {
+    /// The pattern part, as a check pattern (the compiler reports it at
+    /// its role's capture once it checked that capture exists).
+    pub fn pattern(&self) -> PatternSpec {
+        PatternSpec {
+            name: self.name.clone(),
+            language: self.language.clone(),
+            pattern: self.pattern.clone(),
+            query: self.query.clone(),
+            regex: self.regex.clone(),
+            where_: self.where_.clone(),
+            message: self.message.clone(),
+            at: None,
+            limit: false,
+            unique: self.unique,
+        }
+    }
+}
+
 /// One `where` entry. Exactly one test per entry: a capture test
 /// (`capture` + one of `regex`, `not-regex`, `resolves-to`,
 /// `not-resolves-to`), `enclosing-function`, or `inside`/`not-inside`
 /// (optionally with `capture`).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct PredicateSpec {
     #[serde(default)]
@@ -157,7 +238,7 @@ pub struct PredicateSpec {
 }
 
 /// Tests on the function the match sits in; all given must hold.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct EnclosingSpec {
     /// Some call in the function resolves to a name matching this.
@@ -279,7 +360,10 @@ impl<'de> Deserialize<'de> for RuleDoc {
         impl<'de> Visitor<'de> for DocVisitor {
             type Value = RuleDoc;
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("a rule (a mapping with `id` and `check-patterns`) or a list of rules")
+                f.write_str(
+                    "a rule (a mapping with `id` and `check-patterns` or `taint`) or a list of \
+                     rules",
+                )
             }
             fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<RuleDoc, A::Error> {
                 Vec::<RuleSpec>::deserialize(SeqAccessDeserializer::new(seq)).map(RuleDoc)
@@ -338,8 +422,14 @@ pub fn parse_rules(text: &str) -> (Vec<RuleSpec>, Vec<String>) {
             errors.push(format!("{at}{NO_ANCHOR}"));
             break;
         }
-        errors.push(yaml_error(&error));
-        if text.contains("while parsing") || text.contains("while scanning") {
+        let message = yaml_error(&error);
+        // A syntax error the parser cannot get past repeats for every later
+        // "document" (forever, on some inputs): report it once and stop.
+        let repeated = errors.last() == Some(&message);
+        if !repeated {
+            errors.push(message);
+        }
+        if repeated || text.contains("while parsing") || text.contains("while scanning") {
             break;
         }
     }

@@ -11,7 +11,17 @@ use tree_sitter::Query;
 
 use super::lang::parse_language;
 use super::locate::{KeyAt, Locator};
-use super::spec::{self, ExampleSpec, OneOrMany, PatternSpec, PredicateSpec, RuleSpec, Severity};
+use super::spec::{
+    self,
+    ExampleSpec,
+    OneOrMany,
+    PatternSpec,
+    PredicateSpec,
+    RuleSpec,
+    Severity,
+    TaintPatternSpec,
+    TaintSpec,
+};
 use super::weggli::query::QueryTree;
 use super::weggli::{self, RegexMap};
 use crate::extraction::grammar_language;
@@ -52,8 +62,11 @@ pub struct Rule {
     pub tags: Vec<String>,
     pub message: Option<String>,
     pub review: Vec<String>,
+    /// The check patterns, or a taint rule's sinks.
     pub checks: Vec<Pattern>,
     pub ignores: Vec<Pattern>,
+    /// A taint rule's roles (its sinks are `checks`).
+    pub taint: Option<TaintRule>,
     pub examples: Vec<Example>,
     /// Where it was read from, and the line of its `id:`.
     pub source: String,
@@ -68,9 +81,22 @@ impl Rule {
             .any(|pattern| pattern.backend(language).is_some())
     }
 
+    /// Every pattern of the rule: checks (sinks), ignores, taint roles.
+    pub fn patterns(&self) -> impl Iterator<Item = &Pattern> {
+        let taint = self.taint.iter().flat_map(|taint| {
+            taint
+                .sources
+                .iter()
+                .chain(&taint.sanitizers)
+                .map(|role| &role.pattern)
+                .chain(taint.propagators.iter().map(|p| &p.pattern))
+        });
+        self.checks.iter().chain(&self.ignores).chain(taint)
+    }
+
     /// Whether a predicate reads the index (resolution, enclosing calls).
     pub fn uses_index(&self) -> bool {
-        self.checks.iter().chain(&self.ignores).any(|pattern| {
+        self.patterns().any(|pattern| {
             pattern.predicates.iter().any(|predicate| {
                 matches!(
                     predicate.kind,
@@ -84,6 +110,29 @@ impl Rule {
             })
         })
     }
+}
+
+/// A compiled taint rule. Its sinks are the rule's `checks`.
+pub struct TaintRule {
+    /// Per sink (parallel to `Rule::checks`): the capture whose value must
+    /// not be tainted.
+    pub sink_values: Vec<String>,
+    pub sources: Vec<RolePattern>,
+    pub sanitizers: Vec<RolePattern>,
+    pub propagators: Vec<PropagatorPattern>,
+}
+
+/// A source or sanitizer: a pattern and the capture whose value it marks.
+pub struct RolePattern {
+    pub pattern: Pattern,
+    pub value: String,
+}
+
+/// A propagator: the data of capture `from` flows into capture `to`.
+pub struct PropagatorPattern {
+    pub pattern: Pattern,
+    pub from: String,
+    pub to: String,
 }
 
 /// A compiled check or ignore pattern.
@@ -296,6 +345,8 @@ const CHECK_KEYS: &[&str] = &[
     "check-pattern",
     "check pattern",
 ];
+/// Languages the IR lowers — where taint rules run.
+const TAINT_LANGUAGES: &str = "java, c, cpp, php, python, javascript, typescript";
 const IGNORE_KEYS: &[&str] = &[
     "ignore-patterns",
     "ignore patterns",
@@ -306,8 +357,9 @@ const IGNORE_KEYS: &[&str] = &[
 static PLACEHOLDER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{([A-Za-z_][A-Za-z0-9_]*)\}").expect("valid regex"));
 
-/// Placeholders a message may use besides the captures.
-const MESSAGE_BUILTINS: &[&str] = &["function"];
+/// Placeholders a message may use besides the captures (`source`: a taint
+/// finding's source code).
+const MESSAGE_BUILTINS: &[&str] = &["function", "source"];
 
 fn compile_rule(spec: RuleSpec, at: &RuleAt) -> Result<Rule, LoadError> {
     let id = spec.id.trim().to_string();
@@ -336,33 +388,30 @@ fn compile_rule(spec: RuleSpec, at: &RuleAt) -> Result<Rule, LoadError> {
         None => None,
     };
 
-    let mut checks = Vec::new();
-    let mut names = HashSet::new();
-    for (index, pattern) in spec.check_patterns.0.into_iter().enumerate() {
-        let item = at.item(at.range.0, at.range.1, CHECK_KEYS, index);
-        let compiled = compile_pattern(
-            pattern,
-            "check-patterns",
-            index,
-            item,
-            rule_languages.as_deref(),
-            at,
-            &id,
-        )?;
-        if !names.insert(compiled.name.clone()) {
+    let (checks, taint) = match (spec.check_patterns, spec.taint) {
+        (Some(patterns), None) => (
+            compile_checks(patterns, rule_languages.as_deref(), at, &id)?,
+            None,
+        ),
+        (None, Some(taint)) => {
+            let (sinks, taint) = compile_taint(taint, rule_languages.as_deref(), at, &id)?;
+            (sinks, Some(taint))
+        }
+        (Some(_), Some(_)) => {
             return Err(err(
-                item.map(|(line, _)| line),
-                format!(
-                    "two check-patterns are named `{}`; names must be unique within a rule",
-                    compiled.name
-                ),
+                at.key(at.range.0, at.range.1, &["taint"]).map(|k| k.line),
+                "has both `check-patterns` and `taint`; a rule is one or the other".into(),
             ));
         }
-        checks.push(compiled);
-    }
-    if checks.is_empty() {
-        return Err(err(None, "`check-patterns` is empty".into()));
-    }
+        (None, None) => {
+            return Err(err(
+                None,
+                "needs `check-patterns` (syntax patterns to match) or `taint` (sources, \
+                 sinks, sanitizers: data flow to find)"
+                    .into(),
+            ));
+        }
+    };
     let mut ignores = Vec::new();
     for (index, pattern) in spec
         .ignore_patterns
@@ -449,11 +498,224 @@ fn compile_rule(spec: RuleSpec, at: &RuleAt) -> Result<Rule, LoadError> {
         review: spec.review,
         checks,
         ignores,
+        taint,
         examples: compiled_examples,
         source: at.source.to_string(),
         line: at.id_line.unwrap_or(0),
         id,
     })
+}
+
+fn compile_checks(
+    patterns: OneOrMany<PatternSpec>,
+    rule_languages: Option<&[Language]>,
+    at: &RuleAt,
+    id: &str,
+) -> Result<Vec<Pattern>, LoadError> {
+    let mut checks = Vec::new();
+    let mut names = HashSet::new();
+    for (index, pattern) in patterns.0.into_iter().enumerate() {
+        let item = at.item(at.range.0, at.range.1, CHECK_KEYS, index);
+        let compiled = compile_pattern(
+            pattern,
+            "check-patterns",
+            index,
+            item,
+            rule_languages,
+            at,
+            id,
+        )?;
+        if !names.insert(compiled.name.clone()) {
+            return Err(at.error(
+                id,
+                item.map(|(line, _)| line),
+                format!(
+                    "two check-patterns are named `{}`; names must be unique within a rule",
+                    compiled.name
+                ),
+            ));
+        }
+        checks.push(compiled);
+    }
+    if checks.is_empty() {
+        return Err(at.error(id, None, "`check-patterns` is empty".into()));
+    }
+    Ok(checks)
+}
+
+/// The keys each taint role takes, and says what they mean.
+fn role_keys(role: &str) -> (&'static [&'static str], &'static str) {
+    match role {
+        "sinks" => (
+            &["argument"],
+            "`argument: <capture>` — the value that must not be tainted",
+        ),
+        "propagators" => (
+            &["from", "to"],
+            "`from: <capture>` and `to: <capture>` — the data of `from` flows into `to`",
+        ),
+        _ => (&["value"], "`value: <capture>` — the value it marks"),
+    }
+}
+
+/// A taint rule's roles; its sinks become the rule's check patterns.
+fn compile_taint(
+    spec: TaintSpec,
+    rule_languages: Option<&[Language]>,
+    at: &RuleAt,
+    id: &str,
+) -> Result<(Vec<Pattern>, TaintRule), LoadError> {
+    let taint_line = at
+        .key(at.range.0, at.range.1, &["taint"])
+        .map_or(at.range.0, |k| k.line);
+    let mut taint = TaintRule {
+        sink_values: Vec::new(),
+        sources: Vec::new(),
+        sanitizers: Vec::new(),
+        propagators: Vec::new(),
+    };
+    let mut sinks = Vec::new();
+    let lists = [
+        ("sources", spec.sources.0),
+        ("sinks", spec.sinks.0),
+        (
+            "sanitizers",
+            spec.sanitizers.map(|p| p.0).unwrap_or_default(),
+        ),
+        (
+            "propagators",
+            spec.propagators.map(|p| p.0).unwrap_or_default(),
+        ),
+    ];
+    for (role, list) in lists {
+        let role_line = at.key(taint_line, at.range.1, &[role]).map(|k| k.line);
+        if list.is_empty() && matches!(role, "sources" | "sinks") {
+            return Err(at.error(
+                id,
+                role_line,
+                format!("`taint.{role}` is empty — a taint rule needs sources and sinks"),
+            ));
+        }
+        for (index, pattern) in list.into_iter().enumerate() {
+            let item = at.item(taint_line, at.range.1, &[role], index);
+            let (pattern, captures) =
+                compile_taint_pattern(pattern, role, index, item, rule_languages, at, id)?;
+            match role {
+                "sources" => taint.sources.push(RolePattern {
+                    pattern,
+                    value: captures[0].clone(),
+                }),
+                "sanitizers" => taint.sanitizers.push(RolePattern {
+                    pattern,
+                    value: captures[0].clone(),
+                }),
+                "propagators" => taint.propagators.push(PropagatorPattern {
+                    pattern,
+                    from: captures[0].clone(),
+                    to: captures[1].clone(),
+                }),
+                _ => {
+                    taint.sink_values.push(captures[0].clone());
+                    sinks.push(pattern);
+                }
+            }
+        }
+    }
+    Ok((sinks, taint))
+}
+
+/// One pattern of a taint role, and the captures its role names (in the
+/// order of [`role_keys`]).
+fn compile_taint_pattern(
+    spec: TaintPatternSpec,
+    role: &str,
+    index: usize,
+    item: Option<(usize, usize)>,
+    rule_languages: Option<&[Language]>,
+    at: &RuleAt,
+    id: &str,
+) -> Result<(Pattern, Vec<String>), LoadError> {
+    let section = format!("taint.{role}");
+    let label = match &spec.name {
+        Some(name) => format!("{section}[{index}] `{name}`"),
+        None => format!("{section}[{index}]"),
+    };
+    let (from, to) = item.unwrap_or(at.range);
+    let key_line = |keys: &[&str]| at.key(from, to, keys).map(|k| k.line);
+    let err = |keys: &[&str], message: String| {
+        at.error(
+            id,
+            key_line(keys).or(item.map(|(line, _)| line)),
+            format!("{label}: {message}"),
+        )
+    };
+    let (wanted, usage) = role_keys(role);
+    let given = [
+        ("value", &spec.value),
+        ("argument", &spec.argument),
+        ("from", &spec.from),
+        ("to", &spec.to),
+    ];
+    for (key, value) in given {
+        if value.is_some() && !wanted.contains(&key) {
+            return Err(err(
+                &[key],
+                format!("`{key}` does not apply to {role}; they take {usage}"),
+            ));
+        }
+    }
+    if spec.message.is_some() && role != "sinks" {
+        return Err(err(
+            &["message"],
+            format!("`message` is for sinks (the finding's text), not {role}"),
+        ));
+    }
+    let names: Vec<Option<String>> = wanted
+        .iter()
+        .map(|key| {
+            given
+                .iter()
+                .find(|(k, _)| k == key)
+                .and_then(|(_, value)| (*value).clone())
+        })
+        .collect();
+    if names.iter().any(Option::is_none) {
+        return Err(err(&[], format!("{role} need {usage}")));
+    }
+    let names: Vec<String> = names.into_iter().flatten().collect();
+    let mut pattern = compile_pattern(
+        spec.pattern(),
+        &section,
+        index,
+        item,
+        rule_languages,
+        at,
+        id,
+    )?;
+    for (key, name) in wanted.iter().zip(&names) {
+        if !pattern.captures.contains(name) {
+            return Err(err(
+                &[key],
+                format!(
+                    "`{key}: {name}` names no capture ({})",
+                    available(&pattern.captures)
+                ),
+            ));
+        }
+    }
+    for (language, _) in &pattern.backends {
+        if super::lang::for_language(*language).ir.is_none() {
+            return Err(err(
+                &["language"],
+                format!(
+                    "taint rules run on the languages the IR lowers ({TAINT_LANGUAGES}), not {}",
+                    language.as_str()
+                ),
+            ));
+        }
+    }
+    pattern.at = Some(names[0].clone());
+    Ok((pattern, names))
 }
 
 fn parse_languages(names: &OneOrMany<String>) -> Result<Vec<Language>, String> {

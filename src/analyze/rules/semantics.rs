@@ -15,6 +15,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
+use codegraph_analysis::taint_flow::CallResolution;
 use tree_sitter::Node;
 
 use super::engine::FileInput;
@@ -35,6 +36,11 @@ pub(super) struct FunctionFacts {
 pub(super) trait Semantics {
     /// Names the call node `call` resolves to (empty when unresolved).
     fn call_targets(&self, file: &FileInput, rules: &LangRules, call: Node) -> Vec<String>;
+    /// What the call starting at `line` (1-based) and `col` whose callee
+    /// is written `callee` resolves to: the join of an IR call op (which
+    /// carries its call's start and callee text) with the index. Chained
+    /// calls share a start, so the callee's last name picks among them.
+    fn call_at(&self, file: &FileInput, line: u32, col: u32, callee: &str) -> CallResolution;
     /// Facts about the function node `function`.
     fn function(&self, file: &FileInput, rules: &LangRules, function: Node) -> FunctionFacts;
 }
@@ -68,6 +74,20 @@ impl Semantics for SyntaxSemantics<'_> {
     fn call_targets(&self, file: &FileInput, rules: &LangRules, call: Node) -> Vec<String> {
         let (text, name) = lang::callee(rules, call, file.source);
         self.targets(text, name)
+    }
+
+    /// As written; an example's `resolves` map stands for the index (a
+    /// callee it names is project code).
+    fn call_at(&self, _: &FileInput, _: u32, _: u32, callee: &str) -> CallResolution {
+        let name = lang::last_name(callee);
+        let mapped: Vec<String> = [callee, name]
+            .iter()
+            .filter_map(|key| self.resolves.get(*key).cloned())
+            .collect();
+        CallResolution {
+            in_project: !mapped.is_empty(),
+            names: mapped,
+        }
     }
 
     fn function(&self, file: &FileInput, rules: &LangRules, function: Node) -> FunctionFacts {
@@ -112,6 +132,8 @@ fn syntax_facts<'t>(
 struct Target {
     name: String,
     names: Vec<String>,
+    /// A project function (else code in another graph).
+    in_project: bool,
 }
 
 /// Calls and functions from the index.
@@ -147,6 +169,7 @@ impl<'p> IndexSemantics<'p> {
                 .push(Target {
                     name: site.callee_name.clone(),
                     names,
+                    in_project: true,
                 });
         }
         for external in external {
@@ -210,20 +233,19 @@ fn push_unique(list: &mut Vec<String>, names: &[String]) {
     }
 }
 
-impl Semantics for IndexSemantics<'_> {
-    fn call_targets(&self, file: &FileInput, rules: &LangRules, call: Node) -> Vec<String> {
-        let start = call.start_position();
-        let key = (
-            file.path.to_string(),
-            start.row as u32 + 1,
-            start.column as u32,
-        );
-        let Some(targets) = self.calls_at.get(&key) else {
-            return Vec::new();
+impl IndexSemantics<'_> {
+    /// The resolved callees of the call at `file:line:col` named `name`.
+    fn targets_at(&self, file: &str, line: u32, col: u32, name: &str) -> Vec<String> {
+        self.resolve_at(file, line, col, name).names
+    }
+
+    /// [`Self::targets_at`], and whether a target is project code.
+    fn resolve_at(&self, file: &str, line: u32, col: u32, name: &str) -> CallResolution {
+        let Some(targets) = self.calls_at.get(&(file.to_string(), line, col)) else {
+            return CallResolution::default();
         };
         // Chained calls (`a.b().c()`) share a start; keep the callee named
         // like this call when one is.
-        let (_, name) = lang::callee(rules, call, file.source);
         let named: Vec<&Target> = targets.iter().filter(|t| t.name == name).collect();
         let chosen: Vec<&Target> = if named.is_empty() {
             targets.iter().collect()
@@ -231,10 +253,25 @@ impl Semantics for IndexSemantics<'_> {
             named
         };
         let mut names = Vec::new();
-        for target in chosen {
+        for target in &chosen {
             push_unique(&mut names, &target.names);
         }
-        names
+        CallResolution {
+            names,
+            in_project: chosen.iter().any(|target| target.in_project),
+        }
+    }
+}
+
+impl Semantics for IndexSemantics<'_> {
+    fn call_targets(&self, file: &FileInput, rules: &LangRules, call: Node) -> Vec<String> {
+        let start = call.start_position();
+        let (_, name) = lang::callee(rules, call, file.source);
+        self.targets_at(file.path, start.row as u32 + 1, start.column as u32, &name)
+    }
+
+    fn call_at(&self, file: &FileInput, line: u32, col: u32, callee: &str) -> CallResolution {
+        self.resolve_at(file.path, line, col, lang::last_name(callee))
     }
 
     fn function(&self, file: &FileInput, rules: &LangRules, function: Node) -> FunctionFacts {
@@ -311,6 +348,7 @@ fn load_external_calls(cg: &CodeGraph) -> Result<Vec<ExternalCall>, String> {
                 target: Target {
                     name: row.get(4)?,
                     names,
+                    in_project: false,
                 },
             })
         })
