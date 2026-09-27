@@ -1,10 +1,6 @@
 use super::context::{extract_name, named_children};
 use super::extractor::TreeSitterExtractor;
-use crate::extraction::tree_sitter_helpers::{
-    get_child_by_field,
-    get_node_text,
-    get_preceding_docstring,
-};
+use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
 use crate::extraction::tree_sitter_types::{NodeExtra, SyntaxNode};
 use crate::types::NodeKind;
 
@@ -74,7 +70,7 @@ impl<'a> TreeSitterExtractor<'a> {
             return;
         }
 
-        let docstring = get_preceding_docstring(node, self.source);
+        let docstring = self.preceding_docstring(node);
         let signature = ext.get_signature(node, self.source);
         let visibility = ext.get_visibility(node, self.source);
         let is_exported = ext.is_exported(node, self.source);
@@ -124,7 +120,7 @@ impl<'a> TreeSitterExtractor<'a> {
         let Some(ext) = self.extractor else { return };
 
         let name = extract_name(node, self.source, ext);
-        let docstring = get_preceding_docstring(node, self.source);
+        let docstring = self.preceding_docstring(node);
         let visibility = ext.get_visibility(node, self.source);
         let is_exported = ext.is_exported(node, self.source);
 

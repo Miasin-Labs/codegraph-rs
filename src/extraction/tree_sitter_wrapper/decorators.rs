@@ -1,5 +1,6 @@
 use super::context::{named_children, strip_qualifier};
 use super::extractor::TreeSitterExtractor;
+use super::siblings::{SiblingKind, first_starting_at, is_decorator_kind, run_start};
 use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
 use crate::extraction::tree_sitter_types::SyntaxNode;
 use crate::types::{EdgeKind, Language, UnresolvedReference};
@@ -11,7 +12,7 @@ impl<'a> TreeSitterExtractor<'a> {
         // `marker_annotation` is Java's grammar for arg-less annotations
         // (`@Override`, `@Deprecated`); without including it, every
         // such Java annotation would be silently skipped.
-        if !matches!(n.kind(), "decorator" | "annotation" | "marker_annotation") {
+        if !is_decorator_kind(n.kind()) {
             return;
         }
         // Find the leading identifier: skip the `@` punct, unwrap
@@ -99,24 +100,24 @@ impl<'a> TreeSitterExtractor<'a> {
         //    Note on identity: matching is by start byte (the TS web
         //    bindings return fresh wrapper objects from navigation, so
         //    the original matched on startIndex; kept for parity).
-        if let Some(parent) = decl_node.parent() {
-            let decl_start = decl_node.start_byte();
-            let siblings = named_children(parent);
-            let decl_idx = siblings.iter().position(|s| s.start_byte() == decl_start);
-            if let Some(decl_idx) = decl_idx {
-                if decl_idx > 0 {
-                    for j in (0..decl_idx).rev() {
-                        let sibling = siblings[j];
-                        if !matches!(
-                            sibling.kind(),
-                            "decorator" | "annotation" | "marker_annotation"
-                        ) {
-                            break; // non-decorator separator → stop consuming
-                        }
-                        self.consider_decorator(sibling, decorated_id);
-                    }
-                }
-            }
+        //
+        //    The parent's children come from the per-file sibling index
+        //    (`siblings.rs`): walking them per declaration was quadratic.
+        //    Only a declaration a decorator precedes walks them again.
+        let Some(parent) = decl_node.parent() else {
+            return;
+        };
+        let siblings = self.siblings.of(parent);
+        let Some(decl_idx) = first_starting_at(siblings, decl_node.start_byte()) else {
+            return;
+        };
+        let run_start = run_start(siblings, decl_idx, SiblingKind::Decorator);
+        if run_start == decl_idx {
+            return;
+        }
+        let siblings = named_children(parent);
+        for sibling in siblings[run_start..decl_idx].iter().rev() {
+            self.consider_decorator(*sibling, decorated_id);
         }
     }
 }

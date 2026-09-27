@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 
+use super::siblings::SiblingIndex;
 use super::value_references::ValueReferenceState;
 use crate::extraction::grammars::detect_language;
 use crate::extraction::tree_sitter_types::{
@@ -53,6 +54,9 @@ pub struct TreeSitterExtractor<'a> {
     /// (`obj.Method().Other()`), which share the `selector_expression`
     /// inner-callee shape.
     pub(super) go_imported_pkgs: Option<std::collections::HashSet<String>>,
+    /// Declarations' parents' named children, read once per parent
+    /// (preceding decorators and doc comments; see `siblings.rs`).
+    pub(super) siblings: SiblingIndex,
 }
 
 impl<'a> TreeSitterExtractor<'a> {
@@ -86,6 +90,7 @@ impl<'a> TreeSitterExtractor<'a> {
                 std::env::var_os("CODEGRAPH_VALUE_REFS").as_deref(),
             ),
             go_imported_pkgs: None,
+            siblings: SiblingIndex::default(),
         }
     }
 

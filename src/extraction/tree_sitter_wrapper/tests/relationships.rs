@@ -27,6 +27,38 @@ fn extracts_class_inheritance_references() {
 }
 
 #[test]
+fn preceding_decorators_attach_to_their_own_declaration() {
+    // Decorators before `export` are siblings of the class, not children;
+    // each run stops at the previous declaration, so `@A` stays on `Foo`.
+    let source = "@A()\nexport class Foo {}\nfunction gap() {}\n@B\n@C()\nexport class Bar {}\n";
+    let result = extract_ts("src/decorated.ts", source);
+
+    let id_of = |name: &str| {
+        result
+            .nodes
+            .iter()
+            .find(|n| n.name == name)
+            .unwrap_or_else(|| panic!("{name} node"))
+            .id
+            .clone()
+    };
+    let mut decorations: Vec<(String, String)> = result
+        .unresolved_references
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Decorates)
+        .map(|r| (r.from_node_id.clone(), r.reference_name.clone()))
+        .collect();
+    decorations.sort();
+    let mut expected = vec![
+        (id_of("Foo"), "A".to_string()),
+        (id_of("Bar"), "B".to_string()),
+        (id_of("Bar"), "C".to_string()),
+    ];
+    expected.sort();
+    assert_eq!(decorations, expected);
+}
+
+#[test]
 fn instantiation_inside_function_body_emits_instantiates_ref() {
     let source = "function build() {\n  const m = new ns.Mapper<string>();\n}\n";
     let result = extract_ts("src/build.ts", source);
@@ -62,4 +94,23 @@ fn decorated_class_emits_decorates_reference() {
         .expect("decorates ref");
     assert_eq!(dec.reference_name, "Injectable");
     assert_eq!(dec.from_node_id, service.id);
+}
+
+#[test]
+fn function_docstrings_are_the_comments_right_before_them() {
+    let source = "/** Adds. */\n// twice\nfunction add() {}\nconst gap = 1;\n// Subtracts.\nfunction sub() {}\nfunction bare() {}\n";
+    let result = extract_ts("src/docs.ts", source);
+
+    let doc = |name: &str| {
+        result
+            .nodes
+            .iter()
+            .find(|n| n.name == name)
+            .unwrap_or_else(|| panic!("{name} node"))
+            .docstring
+            .clone()
+    };
+    assert_eq!(doc("add").as_deref(), Some("Adds.\ntwice"));
+    assert_eq!(doc("sub").as_deref(), Some("Subtracts."));
+    assert_eq!(doc("bare"), None);
 }

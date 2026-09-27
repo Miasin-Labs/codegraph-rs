@@ -16,6 +16,7 @@ mod pascal;
 mod pascal_calls;
 mod pascal_declarations;
 mod rust_relationships;
+mod siblings;
 #[cfg(test)]
 mod tests;
 mod traversal;

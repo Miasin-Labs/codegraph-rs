@@ -252,6 +252,11 @@ fn worker_loop(
 /// object literal with `onProgress`/`stop`).
 pub struct ShimmerProgress {
     last_phase: String,
+    /// Percent of the last update sent, and when it went.
+    last_sent: Option<(i32, Instant)>,
+    /// Percent and count of the newest update not sent yet (coalesced; see
+    /// `on_progress`).
+    pending: Option<(i32, u64)>,
     tx: Sender<ShimmerWorkerMessage>,
     rx: Receiver<ShimmerMainMessage>,
     handle: Option<JoinHandle<()>>,
@@ -271,6 +276,8 @@ pub fn create_shimmer_progress() -> ShimmerProgress {
 
     ShimmerProgress {
         last_phase: String::new(),
+        last_sent: None,
+        pending: None,
         tx: tx_worker,
         rx: rx_main,
         handle,
@@ -279,17 +286,21 @@ pub fn create_shimmer_progress() -> ShimmerProgress {
 
 impl ShimmerProgress {
     /// Feed an indexing progress update to the renderer.
+    ///
+    /// Indexing reports progress per item, far more often than the worker
+    /// renders (every `TICK_MS`), so updates are coalesced: one goes out when
+    /// the phase or percent changes or a tick has passed, and the newest held
+    /// one is sent before its phase finishes, so the final line is exact.
     pub fn on_progress(&mut self, progress: &IndexProgress) {
-        let phase_name = PHASE_NAMES
-            .iter()
-            .find(|(id, _)| *id == progress.phase)
-            .map(|(_, name)| (*name).to_string())
-            .unwrap_or_else(|| progress.phase.clone());
-
-        if progress.phase != self.last_phase && !self.last_phase.is_empty() {
+        let phase_changed = progress.phase != self.last_phase;
+        if phase_changed && !self.last_phase.is_empty() {
+            self.flush_pending();
             let _ = self.tx.send(ShimmerWorkerMessage::FinishPhase);
         }
-        self.last_phase = progress.phase.clone();
+        if phase_changed {
+            self.last_phase = progress.phase.clone();
+            self.last_sent = None;
+        }
 
         let mut percent: i32 = -1;
         let mut count: u64 = 0;
@@ -299,8 +310,33 @@ impl ShimmerProgress {
             count = progress.current;
         }
 
+        let now = Instant::now();
+        let due = self.last_sent.is_none_or(|(sent_percent, at)| {
+            sent_percent != percent || now.duration_since(at) >= Duration::from_millis(TICK_MS)
+        });
+        if due {
+            self.pending = None;
+            self.last_sent = Some((percent, now));
+            self.send_update(percent, count);
+        } else {
+            self.pending = Some((percent, count));
+        }
+    }
+
+    fn flush_pending(&mut self) {
+        if let Some((percent, count)) = self.pending.take() {
+            self.send_update(percent, count);
+        }
+    }
+
+    fn send_update(&self, percent: i32, count: u64) {
+        let phase_name = PHASE_NAMES
+            .iter()
+            .find(|(id, _)| *id == self.last_phase)
+            .map(|(_, name)| (*name).to_string())
+            .unwrap_or_else(|| self.last_phase.clone());
         let _ = self.tx.send(ShimmerWorkerMessage::Update {
-            phase: progress.phase.clone(),
+            phase: self.last_phase.clone(),
             phase_name,
             percent,
             count,
@@ -312,6 +348,7 @@ impl ShimmerProgress {
     /// acknowledgment, then join. On timeout the thread is detached —
     /// the closest equivalent of `worker.terminate()`.
     pub fn stop(mut self) {
+        self.flush_pending();
         let _ = self.tx.send(ShimmerWorkerMessage::Stop);
         match self.rx.recv_timeout(Duration::from_millis(2000)) {
             Ok(ShimmerMainMessage::Stopped) => {
@@ -378,6 +415,43 @@ mod tests {
         assert_eq!(lookup("storing"), Some("Storing data"));
         assert_eq!(lookup("resolving"), Some("Resolving refs"));
         assert_eq!(lookup("custom-phase"), None);
+    }
+
+    #[test]
+    fn per_item_updates_are_coalesced_and_the_last_one_is_kept() {
+        let (tx, rx) = unbounded::<ShimmerWorkerMessage>();
+        let (_main_tx, main_rx) = unbounded::<ShimmerMainMessage>();
+        let mut progress = ShimmerProgress {
+            last_phase: String::new(),
+            last_sent: None,
+            pending: None,
+            tx,
+            rx: main_rx,
+            handle: None,
+        };
+        for current in 1..=10_000 {
+            progress.on_progress(&IndexProgress {
+                phase: "scanning".to_string(),
+                current,
+                total: 0,
+            });
+        }
+        progress.on_progress(&IndexProgress {
+            phase: "parsing".to_string(),
+            current: 0,
+            total: 1,
+        });
+
+        let messages: Vec<ShimmerWorkerMessage> = rx.try_iter().collect();
+        assert!(messages.len() < 100, "{} messages", messages.len());
+        let finish = messages
+            .iter()
+            .position(|m| matches!(m, ShimmerWorkerMessage::FinishPhase))
+            .expect("scanning finished");
+        assert!(matches!(
+            messages[finish - 1],
+            ShimmerWorkerMessage::Update { count: 10_000, .. }
+        ));
     }
 
     #[test]

@@ -64,6 +64,12 @@ pub fn get_preceding_docstring(node: SyntaxNode<'_>, source: &str) -> Option<Str
         }
     }
 
+    docstring_from_comments(&comments)
+}
+
+/// The docstring made of consecutive comment texts, first to last (`None`
+/// when there are none).
+pub fn docstring_from_comments(comments: &[&str]) -> Option<String> {
     if comments.is_empty() {
         return None;
     }
