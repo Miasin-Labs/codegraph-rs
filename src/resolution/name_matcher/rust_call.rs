@@ -39,6 +39,7 @@ use super::receiver::{
 use super::rust_method::match_typed_call;
 use super::std_methods::{is_receiverless_dependency_method_call, is_receiverless_std_method_call};
 use super::{UseBinding, UseLeaf};
+use crate::resolution::line_index::Lines;
 use crate::resolution::types::{ResolutionContext, ResolvedRef, UnresolvedRef};
 use crate::types::{
     EdgeKind,
@@ -265,9 +266,10 @@ impl Syntax {
             return None;
         }
         let source = context.read_file_arc(&reference.file_path)?;
-        let line = source
-            .split('\n')
-            .nth((reference.line as usize).checked_sub(1)?)?;
+        // Every Rust call reference: an indexed line, not a split file.
+        let index = (reference.line as usize).checked_sub(1)?;
+        let lines = Lines::of(&source);
+        let line = (index < lines.len()).then(|| lines.raw_text(index..index + 1))?;
         let at = line.get(reference.column as usize..)?;
         if strip_word(at, name).is_some() {
             return Some(Syntax::Bare);
@@ -316,13 +318,11 @@ impl Syntax {
 }
 
 /// What is in scope at the call site: the referencing file's `use`
-/// declarations and fns, each read on first need.
+/// declarations (read on first need) and the fns holding the call.
 struct FileScope<'a> {
     reference: &'a UnresolvedRef,
     context: &'a dyn ResolutionContext,
     leaves: Option<Vec<UseLeaf>>,
-    /// The Rust fns and methods of the referencing file, as line ranges.
-    fns: Option<Vec<(String, u32, u32)>>,
 }
 
 impl<'a> FileScope<'a> {
@@ -331,7 +331,6 @@ impl<'a> FileScope<'a> {
             reference,
             context,
             leaves: None,
-            fns: None,
         }
     }
 
@@ -342,24 +341,17 @@ impl<'a> FileScope<'a> {
         if node.file_path != self.reference.file_path {
             return false;
         }
-        let line = self.reference.line;
-        let fns = self.fns.get_or_insert_with(|| {
-            self.context
-                .get_nodes_in_file(&self.reference.file_path)
-                .into_iter()
-                .filter(|node| {
-                    node.language == Language::Rust
-                        && matches!(node.kind, NodeKind::Function | NodeKind::Method)
-                })
-                .map(|node| (node.id, node.start_line, node.end_line.max(node.start_line)))
-                .collect()
-        });
-        fns.iter().any(|(id, start, end)| {
-            *id != node.id
-                && *start < node.start_line
-                && node.end_line <= *end
-                && (*start..=*end).contains(&line)
-        })
+        // The fns holding the call line, from the context's scope index.
+        self.context
+            .scopes_enclosing_line(&self.reference.file_path, self.reference.line)
+            .into_iter()
+            .any(|outer| {
+                outer.language == Language::Rust
+                    && matches!(outer.kind, NodeKind::Function | NodeKind::Method)
+                    && outer.id != node.id
+                    && outer.start_line < node.start_line
+                    && node.end_line <= outer.end_line.max(outer.start_line)
+            })
     }
 
     /// The file's `use` leaves not rooted in a std crate, those inside fn

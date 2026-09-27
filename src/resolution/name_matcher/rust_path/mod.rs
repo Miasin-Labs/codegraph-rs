@@ -111,11 +111,10 @@ fn resolve_self(
     };
     let suffix = format!("::{item}");
     let local: Vec<Node> = context
-        .get_nodes_in_file(&reference.file_path)
+        .get_nodes_in_file_named(&reference.file_path, item)
         .into_iter()
         .filter(|node| {
-            node.name == *item
-                && node.qualified_name.ends_with(&suffix)
+            node.qualified_name.ends_with(&suffix)
                 && node.qualified_name != format!("{owner}::{item}")
         })
         .collect();

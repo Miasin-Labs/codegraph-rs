@@ -1,6 +1,7 @@
 use regex::Regex;
 
 use super::{infer_local_receiver_type, resolve_method_on_type};
+use crate::resolution::line_index::Lines;
 use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
 use crate::types::{Language, NodeKind};
 
@@ -58,10 +59,10 @@ pub(in crate::resolution::name_matcher) fn match_go_field_chain_call(
         let Some(source) = context.read_file_arc(&owner.file_path) else {
             continue;
         };
-        let lines: Vec<&str> = source.lines().collect();
+        let lines = Lines::of(&source);
         let start = owner.start_line.saturating_sub(1) as usize;
-        let end = (owner.end_line as usize).min(lines.len());
-        for raw_line in lines.get(start..end).unwrap_or_default() {
+        let end = (owner.end_line as usize).min(lines.str_lines_len());
+        for raw_line in lines.span().slice(start..end.max(start)).iter() {
             let line = raw_line.split("//").next().unwrap_or(raw_line);
             let Some(raw_type) = field_type_re
                 .captures(line)

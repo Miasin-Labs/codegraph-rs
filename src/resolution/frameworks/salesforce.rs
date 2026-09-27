@@ -35,6 +35,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::types::{
     FrameworkExtractionResult,
     FrameworkResolver,
@@ -62,10 +63,6 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .expect("system time before epoch")
         .as_millis() as i64
-}
-
-fn line_of(source: &str, offset: usize) -> u32 {
-    source[..offset].bytes().filter(|&b| b == b'\n').count() as u32 + 1
 }
 
 /// Member-shaped node kinds a template/markup binding may target.
@@ -139,6 +136,7 @@ impl FrameworkResolver for SalesforceResolver {
 
         let now = now_ms();
         let mut result = FrameworkExtractionResult::default();
+        let line_starts = LineStarts::new(content);
 
         // Function members, in file order; each spans to the next member's
         // line (the last one to EOF) so codegraph_explore shows the body.
@@ -149,7 +147,7 @@ impl FrameworkResolver for SalesforceResolver {
                 let whole = c.get(0).expect("match");
                 (
                     m.as_str().to_string(),
-                    line_of(content, whole.start()),
+                    line_starts.line_of(whole.start()),
                     whole.start(),
                 )
             })
@@ -190,7 +188,7 @@ impl FrameworkResolver for SalesforceResolver {
                 from_node_id: result.nodes[owner_idx].id.clone(),
                 reference_name: m.as_str().to_string(),
                 reference_kind: EdgeKind::Calls,
-                line: line_of(content, offset),
+                line: line_starts.line_of(offset),
                 column: 0,
                 file_path: file_path.to_string(),
                 language: Language::Apex,

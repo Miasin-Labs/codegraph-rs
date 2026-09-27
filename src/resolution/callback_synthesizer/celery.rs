@@ -7,7 +7,8 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::edges::{edge_meta, synthesized_edge};
-use super::source::{enclosing_fn, line_of};
+use super::source::enclosing_fn;
+use crate::resolution::line_index::{LineStarts, Lines};
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, Node, NodeKind};
@@ -38,15 +39,16 @@ fn is_celery_task(
 
     let mut matched = false;
     if node.kind == NodeKind::Function && node.file_path.ends_with(".py") {
-        if let Some(content) = ctx.read_file(&node.file_path) {
-            let lines: Vec<&str> = content.split('\n').collect();
+        if let Some(content) = ctx.read_file_arc(&node.file_path) {
+            // Shared and line-indexed: this runs once per candidate function.
+            let lines = Lines::of(&content);
             let last = node.start_line.saturating_sub(2) as usize;
             let stop =
                 node.start_line
                     .saturating_sub(1 + CELERY_DECORATOR_LOOKBACK as u32) as usize;
             if last < lines.len() && last >= stop {
                 for index in (stop..=last).rev() {
-                    let line = lines.get(index).copied().unwrap_or_default().trim();
+                    let line = lines.get(index).unwrap_or_default().trim();
                     if PREVIOUS_PY_DECL_RE.is_match(line) {
                         break;
                     }
@@ -93,7 +95,7 @@ pub(super) fn celery_dispatch_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         if !file.ends_with(".py") {
             continue;
         }
-        let Some(content) = ctx.read_file(&file) else {
+        let Some(content) = ctx.read_file_arc(&file) else {
             continue;
         };
         if !content.contains(".delay(") && !content.contains(".apply_async(") {
@@ -101,6 +103,7 @@ pub(super) fn celery_dispatch_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         }
 
         let safe = strip_comments_for_regex(&content, CommentLang::Python);
+        let line_starts = LineStarts::new(&safe);
         let nodes = ctx.get_nodes_in_file(&file);
         let mut added = 0usize;
         for captures in CELERY_DISPATCH_RE.captures_iter(&safe) {
@@ -113,7 +116,7 @@ pub(super) fn celery_dispatch_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
             let Some(name) = captures.get(1).map(|capture| capture.as_str()) else {
                 continue;
             };
-            let line = line_of(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let Some(dispatcher) = enclosing_fn(&nodes, line) else {
                 continue;
             };

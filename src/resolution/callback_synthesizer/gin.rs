@@ -8,9 +8,10 @@ use serde_json::Value;
 
 use super::edges::{edge_meta, synthesized_edge};
 use super::ordered::OrderedMap;
-use super::source::{line_of, node_source};
+use super::source::node_source;
 use crate::db::QueryBuilder;
 use crate::error::Result;
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, Language, Node, NodeKind};
@@ -145,19 +146,20 @@ pub(super) fn gin_middleware_chain_edges(
         if !file.ends_with(".go") {
             continue;
         }
-        let Some(content) = ctx.read_file(&file) else {
+        let Some(content) = ctx.read_file_arc(&file) else {
             continue;
         };
         if content.is_empty() || !GIN_REG_RE.is_match(&content) {
             continue;
         }
         let safe = strip_comments_for_regex(&content, CommentLang::Go);
+        let line_starts = LineStarts::new(&safe);
         for m in GIN_REG_RE.find_iter(&safe) {
             let paren_idx = m.end() - 1;
             let Some(arg_str) = go_balanced_args(&safe, paren_idx) else {
                 continue;
             };
-            let line = line_of(&safe, m.start());
+            let line = line_starts.line_of(m.start());
             for arg in go_split_args(arg_str) {
                 if let Some(name) = go_handler_ident(&arg) {
                     if !registered.contains_key(&name) {

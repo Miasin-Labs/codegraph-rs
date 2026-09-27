@@ -47,6 +47,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::types::{
     FrameworkExtractionResult,
     FrameworkResolver,
@@ -125,13 +126,14 @@ fn extract_expo_methods(file_path: &str, source: &str, language: Language) -> Ve
 
     let now = now_ms();
     let mut seen_at_line: HashSet<String> = HashSet::new();
+    let line_starts = LineStarts::new(source);
     for m in EXPO_DECL_RE.captures_iter(source) {
         let whole = m.get(0).unwrap();
         let kind = &m[1];
         let method_name = &m[2];
         // Compute line number from match index.
         let before = &source[..whole.start()];
-        let start_line = (before.matches('\n').count() + 1) as u32;
+        let start_line = line_starts.line_of(whole.start());
         // Avoid duplicates if the same method literal appears twice in one
         // file (e.g., declared and re-declared inside a `View {...}` block).
         let dedup_key = format!("{method_name}:{start_line}");

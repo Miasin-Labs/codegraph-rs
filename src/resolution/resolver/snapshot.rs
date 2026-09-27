@@ -1,5 +1,6 @@
 mod context;
 mod policy;
+mod scopes;
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -77,6 +78,7 @@ pub(super) struct SnapshotContext {
     nodes_by_qualified_name: LookupIndex,
     nodes_by_kind: HashMap<NodeKind, IndexBucket>,
     nodes_by_lower_name: LookupIndex,
+    scopes: scopes::ScopeIndex,
     all_files: Vec<String>,
     known_files: LookupIndex,
     project_aliases: Option<AliasMap>,
@@ -155,8 +157,10 @@ impl SnapshotContext {
             add_lookup(&mut known_files, file_path, index);
         }
 
+        let scopes = scopes::ScopeIndex::build(&nodes);
         Ok(Self {
             project_root: project_root.to_string(),
+            scopes,
             nodes,
             nodes_by_id,
             nodes_by_file,

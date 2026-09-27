@@ -19,6 +19,7 @@
 use super::bindings::{binds, nearest_binding};
 use super::types::{is_ident_byte, signature_params};
 use super::{enclosing_fn, prefix};
+use crate::resolution::line_index::{LineSpan, Lines};
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::{Language, Node, NodeKind};
 
@@ -53,34 +54,33 @@ pub(in crate::resolution::name_matcher) fn is_local_at_call(
     if first_line > call_line {
         return false;
     }
-    let lines: Vec<&str> = source
-        .split('\n')
-        .skip(first_line)
-        .take(call_line - first_line + 1)
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
-        .collect();
+    let file = Lines::of(&source);
+    let lines = file.span().slice(first_line..call_line + 1);
     if lines.len() != call_line - first_line + 1 {
         return false;
     }
     let column = reference.column as usize;
     let last = lines.len() - 1;
     (0..=last).rev().any(|index| {
+        let Some(full) = lines.get(index) else {
+            return false;
+        };
         let line = if index == last {
-            prefix(lines[index], column)
+            prefix(full, column)
         } else {
-            lines[index]
+            full
         };
         if !line.contains(name) {
             return false;
         }
-        let next_lines = if index == last {
-            &[][..]
+        let next_lines = lines.from(if index == last {
+            lines.len()
         } else {
-            &lines[index + 1..]
-        };
-        nearest_binding(line, next_lines, name).is_some_and(|(position, _)| {
+            index + 1
+        });
+        nearest_binding(line, next_lines.iter(), name).is_some_and(|(position, _)| {
             // A binding written in a line comment binds nothing.
-            !line[..position].contains("//") && in_scope_at_call(&lines, index, position, column)
+            !line[..position].contains("//") && in_scope_at_call(lines, index, position, column)
         })
     })
 }
@@ -104,21 +104,23 @@ pub(super) fn caller_fn(
 
 /// The binding starting at byte `position` of `lines[index]` is still in
 /// scope at byte `column` of the last line.
-fn in_scope_at_call(lines: &[&str], index: usize, position: usize, column: usize) -> bool {
+fn in_scope_at_call(lines: LineSpan<'_>, index: usize, position: usize, column: usize) -> bool {
     let last = lines.len() - 1;
-    let line = lines[index];
+    let (Some(line), Some(last_line)) = (lines.get(index), lines.get(last)) else {
+        return false;
+    };
     let form = Form::at(&line[..position], &line[position..]);
     let mut text = String::new();
     if index == last {
         text.push_str(prefix(line, column).get(position..).unwrap_or_default());
     } else {
         text.push_str(&line[position..]);
-        for between in &lines[index + 1..last] {
+        for between in lines.slice(index + 1..last).iter() {
             text.push('\n');
             text.push_str(between);
         }
         text.push('\n');
-        text.push_str(prefix(lines[last], column));
+        text.push_str(prefix(last_line, column));
     }
     form.in_scope_after(&text)
 }

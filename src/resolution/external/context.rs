@@ -33,6 +33,14 @@ impl ResolutionContext for ExternalContext<'_> {
         self.project.get_node_by_id(id)
     }
 
+    fn get_nodes_in_file_named(&self, file_path: &str, name: &str) -> Vec<Node> {
+        self.project.get_nodes_in_file_named(file_path, name)
+    }
+
+    fn scopes_enclosing_line(&self, file_path: &str, line: u32) -> Vec<Node> {
+        self.project.scopes_enclosing_line(file_path, line)
+    }
+
     fn get_nodes_by_name(&self, name: &str) -> Vec<Node> {
         self.project.get_nodes_by_name(name)
     }

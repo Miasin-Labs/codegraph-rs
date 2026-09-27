@@ -11,6 +11,7 @@ use super::locals::caller_fn;
 use super::lookup::{RustType, resolve_named, resolve_type};
 use super::method_owner;
 use super::types::{is_ident_byte, named_type};
+use crate::resolution::line_index::Lines;
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::Node;
 
@@ -27,12 +28,8 @@ pub(in crate::resolution::name_matcher) fn self_field_receiver_type(
 ) -> Option<RustType> {
     let source = context.read_file_arc(&reference.file_path)?;
     let line_index = (reference.line as usize).checked_sub(1)?;
-    let call = source
-        .split('\n')
-        .skip(line_index)
-        .take(MAX_CALL_LINES)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let lines = Lines::of(&source);
+    let call = lines.raw_text(line_index..line_index + MAX_CALL_LINES);
     let column = reference.column as usize;
     let method = &reference.reference_name;
     // A parsed call starts at `self`; one inside a macro's arguments at the
@@ -115,13 +112,10 @@ pub(in crate::resolution::name_matcher) fn declared_type(
     context: &dyn ResolutionContext,
 ) -> Option<String> {
     let source = context.read_file_arc(&field.file_path)?;
-    let declaration = source
-        .split('\n')
-        .skip(field.start_line.checked_sub(1)? as usize)
-        .take(MAX_FIELD_LINES)
-        .collect::<Vec<_>>()
-        .join("\n");
-    let at = word_positions(&declaration, &field.name).next()?;
+    let first = field.start_line.checked_sub(1)? as usize;
+    let lines = Lines::of(&source);
+    let declaration = lines.raw_text(first..first + MAX_FIELD_LINES);
+    let at = word_positions(declaration, &field.name).next()?;
     let written = declaration[at + field.name.len()..]
         .trim_start()
         .strip_prefix(':')

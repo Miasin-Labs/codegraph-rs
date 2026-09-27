@@ -6,6 +6,7 @@ use super::bindings::{Binding, binding_in_line};
 use super::lookup::resolve_type;
 use super::types::starts_uppercase;
 use super::{Inference, MAX_LINE_BYTES, Origin, Value};
+use crate::resolution::line_index::Lines;
 use crate::types::{Language, NodeKind};
 
 impl Inference<'_> {
@@ -47,9 +48,10 @@ impl Inference<'_> {
             let Some(source) = self.context.read_file_arc(&node.file_path) else {
                 continue;
             };
+            let lines = Lines::of(&source);
             let line = (node.start_line as usize)
                 .checked_sub(1)
-                .and_then(|index| source.split('\n').nth(index))
+                .map(|index| lines.raw_text(index..index + 1))
                 .unwrap_or_default();
             let annotation = annotated_item(line, name)?.to_string();
             match &found {
@@ -72,7 +74,7 @@ fn annotated_item<'l>(line: &'l str, name: &str) -> Option<&'l str> {
     if line.len() > MAX_LINE_BYTES {
         return None;
     }
-    match binding_in_line(line, &[], name) {
+    match binding_in_line(line, std::iter::empty(), name) {
         Some(Binding::Let {
             annotation: Some(annotation),
             ..

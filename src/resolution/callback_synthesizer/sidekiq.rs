@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use regex::Regex;
 use serde_json::Value;
 
 use super::edges::{edge_meta, synthesized_edge};
-use super::source::{enclosing_fn, line_of};
+use super::source::enclosing_fn;
+use crate::resolution::line_index::{LineStarts, Lines};
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, Node, NodeKind};
@@ -20,18 +21,17 @@ static SIDEKIQ_WORKER_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 const SIDEKIQ_FANOUT_CAP: usize = 80;
 
-fn class_source(content: &str, class: &Node) -> String {
+/// The class's lines as `content.lines()` yields them (no empty line after a
+/// trailing `\n`), through the shared line index rather than a scan per class.
+fn class_source(content: &Arc<str>, class: &Node) -> String {
     let start = class.start_line.saturating_sub(1) as usize;
     let count = class
         .end_line
         .saturating_sub(class.start_line)
         .saturating_add(1) as usize;
-    content
-        .lines()
-        .skip(start)
-        .take(count)
-        .collect::<Vec<_>>()
-        .join("\n")
+    let lines = Lines::of(content);
+    let end = start.saturating_add(count).min(lines.str_lines_len());
+    lines.join(start..end)
 }
 
 fn perform_of(
@@ -43,7 +43,7 @@ fn perform_of(
         return cached.clone();
     }
 
-    let perform = ctx.read_file(&class.file_path).and_then(|content| {
+    let perform = ctx.read_file_arc(&class.file_path).and_then(|content| {
         if !SIDEKIQ_WORKER_RE.is_match(&class_source(&content, class)) {
             return None;
         }
@@ -98,7 +98,7 @@ pub(super) fn sidekiq_dispatch_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         if !file.ends_with(".rb") {
             continue;
         }
-        let Some(content) = ctx.read_file(&file) else {
+        let Some(content) = ctx.read_file_arc(&file) else {
             continue;
         };
         if !content.contains(".perform_async")
@@ -109,6 +109,7 @@ pub(super) fn sidekiq_dispatch_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         }
 
         let safe = strip_comments_for_regex(&content, CommentLang::Ruby);
+        let line_starts = LineStarts::new(&safe);
         let nodes_in_file = ctx.get_nodes_in_file(&file);
         let mut added = 0usize;
         for captures in SIDEKIQ_DISPATCH_RE.captures_iter(&safe) {
@@ -121,7 +122,7 @@ pub(super) fn sidekiq_dispatch_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
             let Some(worker_ref) = captures.get(1).map(|m| m.as_str()) else {
                 continue;
             };
-            let line = line_of(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let Some(dispatcher) = enclosing_fn(&nodes_in_file, line) else {
                 continue;
             };

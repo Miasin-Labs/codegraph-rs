@@ -6,6 +6,7 @@
 use super::lookup::resolve_type;
 use super::types::{matching_paren, split_top_level};
 use super::{Inference, Origin, Value};
+use crate::resolution::line_index::Lines;
 use crate::types::{Language, NodeKind};
 
 impl Inference<'_> {
@@ -45,9 +46,9 @@ impl Inference<'_> {
             return None;
         }
         let source = self.context.read_file_arc(&declaration.file_path)?;
-        let line = source
-            .split('\n')
-            .nth((declaration.start_line as usize).checked_sub(1)?)?;
+        let index = (declaration.start_line as usize).checked_sub(1)?;
+        let lines = Lines::of(&source);
+        let line = (index < lines.len()).then(|| lines.raw_text(index..index + 1))?;
         let text = field_type(line, name, position)?;
         let self_ty = match declaration.kind {
             NodeKind::EnumMember => owner.or_else(|| {

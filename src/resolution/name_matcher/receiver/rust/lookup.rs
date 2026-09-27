@@ -8,6 +8,7 @@ use std::sync::Arc;
 use super::bindings::assignment;
 use super::crates::project_crate_dir;
 use super::types::{Named, named_type, signature_return};
+use crate::resolution::line_index::Lines;
 use crate::resolution::name_matcher::rust_path::crate_key;
 use crate::resolution::name_matcher::{UseBinding, UseLeaf};
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
@@ -467,11 +468,11 @@ fn aliased_text(alias: &Node, context: &dyn ResolutionContext) -> Option<String>
     let source = context.read_file_arc(&alias.file_path)?;
     let start = alias.start_line.saturating_sub(1) as usize;
     let length = (alias.end_line.max(alias.start_line) as usize).saturating_sub(start);
-    let declaration = source
-        .lines()
-        .skip(start)
-        .take(length.max(1))
-        .collect::<Vec<_>>()
+    let lines = Lines::of(&source);
+    let declaration = lines
+        .span()
+        .slice(start..lines.str_lines_len())
+        .slice(0..length.max(1))
         .join(" ");
     let equals = assignment(&declaration)?;
     Some(

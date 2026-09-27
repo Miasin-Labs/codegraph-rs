@@ -51,20 +51,18 @@ pub(super) fn resolve_python_receiver(
         .or_else(|| find_python_module_file(&module_path, reference, context));
         if let Some(resolved_path) = resolved_path {
             if resolved_path != reference.file_path {
-                if let Some(target) =
-                    context
-                        .get_nodes_in_file(&resolved_path)
-                        .into_iter()
-                        .find(|node| {
-                            node.name == member
-                                && matches!(
-                                    node.kind,
-                                    NodeKind::Function
-                                        | NodeKind::Class
-                                        | NodeKind::Variable
-                                        | NodeKind::Constant
-                                )
-                        })
+                if let Some(target) = context
+                    .get_nodes_in_file_named(&resolved_path, member)
+                    .into_iter()
+                    .find(|node| {
+                        matches!(
+                            node.kind,
+                            NodeKind::Function
+                                | NodeKind::Class
+                                | NodeKind::Variable
+                                | NodeKind::Constant
+                        )
+                    })
                 {
                     return Some(ResolvedRef {
                         original: reference.clone(),
@@ -97,12 +95,9 @@ fn resolve_imported_instance(
     )
     .or_else(|| find_python_module_file(&import.source, reference, context))?;
     let value = context
-        .get_nodes_in_file(&source_file)
+        .get_nodes_in_file_named(&source_file, &import.exported_name)
         .into_iter()
-        .find(|node| {
-            node.name == import.exported_name
-                && matches!(node.kind, NodeKind::Variable | NodeKind::Constant)
-        })?;
+        .find(|node| matches!(node.kind, NodeKind::Variable | NodeKind::Constant))?;
     let type_name = infer_receiver_type_from_declaration(&value, context)?;
     resolve_method_on_type(
         &type_name,

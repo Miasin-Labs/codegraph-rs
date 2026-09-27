@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::{
     FrameworkExtractionResult,
@@ -33,14 +34,6 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
-}
-
-fn line_at(source: &str, offset: usize) -> u32 {
-    source[..offset]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count() as u32
-        + 1
 }
 
 #[derive(Debug, Default)]
@@ -75,6 +68,8 @@ impl FrameworkResolver for GoFrameResolver {
         }
 
         let safe = strip_comments_for_regex(content, CommentLang::Go);
+        // Once per file: a newline count per match was quadratic on big files.
+        let line_starts = LineStarts::new(&safe);
         let package = GO_PACKAGE_RE
             .captures(&safe)
             .and_then(|captures| captures.get(1))
@@ -98,7 +93,7 @@ impl FrameworkResolver for GoFrameResolver {
                 .and_then(|method| method.get(1))
                 .map(|method| method.as_str().to_uppercase())
                 .unwrap_or_else(|| "ANY".to_string());
-            let line = line_at(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let join_key = package
                 .map(|package| format!("{package}.{request_type}"))
                 .unwrap_or_else(|| request_type.to_string());

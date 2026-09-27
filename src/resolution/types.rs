@@ -74,6 +74,22 @@ pub enum ResolvedBy {
 }
 
 /// Runtime-iterable list of all resolution methods.
+/// Node kinds that open a scope a reference can sit in: what
+/// [`ResolutionContext::scopes_enclosing_line`] returns.
+pub const SCOPE_KINDS: [NodeKind; 11] = [
+    NodeKind::Function,
+    NodeKind::Method,
+    NodeKind::Class,
+    NodeKind::Struct,
+    NodeKind::Union,
+    NodeKind::Interface,
+    NodeKind::Trait,
+    NodeKind::Protocol,
+    NodeKind::Enum,
+    NodeKind::Component,
+    NodeKind::Module,
+];
+
 pub const RESOLVED_BY_METHODS: [ResolvedBy; 7] = [
     ResolvedBy::ExactMatch,
     ResolvedBy::Import,
@@ -304,6 +320,41 @@ pub trait ResolutionContext {
         let mut nodes = self.get_nodes_by_name(name);
         nodes.retain(|node| node.kind == kind);
         nodes
+    }
+    /// The nodes of `file_path` named `name`.
+    ///
+    /// Resolution asks this per reference; a bundled file holds tens of
+    /// thousands of nodes, so contexts that hold the graph in memory look the
+    /// name up instead of copying the whole file (`get_nodes_in_file`).
+    fn get_nodes_in_file_named(&self, file_path: &str, name: &str) -> Vec<Node> {
+        let mut nodes = self.get_nodes_by_name(name);
+        nodes.retain(|node| node.file_path == file_path);
+        nodes
+    }
+    /// The [`SCOPE_KINDS`] nodes of `file_path` whose lines contain `line`,
+    /// innermost first (latest start; an end before the start counts as the
+    /// start line). Callers filter by kind/language themselves.
+    ///
+    /// Asked per reference (the enclosing fn or class of a call), so
+    /// in-memory contexts answer it from a per-file index rather than a scan
+    /// of every node in the file.
+    fn scopes_enclosing_line(&self, file_path: &str, line: u32) -> Vec<Node> {
+        let mut scopes: Vec<Node> = self
+            .get_nodes_in_file(file_path)
+            .into_iter()
+            .filter(|node| {
+                SCOPE_KINDS.contains(&node.kind)
+                    && node.start_line <= line
+                    && node.end_line.max(node.start_line) >= line
+            })
+            .collect();
+        scopes.sort_by_key(|node| {
+            (
+                std::cmp::Reverse(node.start_line),
+                node.end_line.max(node.start_line),
+            )
+        });
+        scopes
     }
     /// Get all nodes by qualified name
     fn get_nodes_by_qualified_name(&self, qualified_name: &str) -> Vec<Node>;

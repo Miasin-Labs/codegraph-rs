@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::{
     FrameworkExtractionResult,
@@ -247,6 +248,8 @@ impl FrameworkResolver for ExpressResolver {
         let now = now_ms();
         let lang = detect_language(file_path);
         let safe = strip_comments_for_regex(content, comment_lang(lang));
+        // Once per file: a newline count per match was quadratic on big files.
+        let line_starts = LineStarts::new(&safe);
         // Match the route head up to the first arg: (app|router).METHOD('/path',
         // (NOT the whole call — handlers are often inline arrows whose `)`/`{}` the
         // old single-regex couldn't span, so inline-handler routes connected to nothing.)
@@ -263,7 +266,7 @@ impl FrameworkResolver for ExpressResolver {
             if method == "use" && !route_path.starts_with('/') {
                 continue;
             }
-            let line = line_at(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let method_upper = method.to_uppercase();
             let mut route_node = Node::new(
                 format!("route:{file_path}:{line}:{method_upper}:{route_path}"),
@@ -360,11 +363,6 @@ fn has_js_extension(file_path: &str) -> bool {
     [".js", ".mjs", ".cjs", ".ts", ".tsx"]
         .iter()
         .any(|ext| file_path.ends_with(ext))
-}
-
-/// 1-based line number of the byte offset `index`.
-fn line_at(s: &str, index: usize) -> u32 {
-    (s[..index].matches('\n').count() + 1) as u32
 }
 
 /// `{ ...pkg.dependencies, ...pkg.devDependencies }`

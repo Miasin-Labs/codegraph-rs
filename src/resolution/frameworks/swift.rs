@@ -9,6 +9,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::{
     FrameworkExtractionResult,
@@ -61,12 +62,6 @@ fn now_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
-}
-
-/// Number of the line containing byte offset `idx` (1-based) — TS
-/// `safe.slice(0, idx).split('\n').length`.
-fn line_at(safe: &str, idx: usize) -> u32 {
-    (safe[..idx].matches('\n').count() + 1) as u32
 }
 
 fn framework_hit(reference: &UnresolvedRef, target: String, confidence: f64) -> ResolvedRef {
@@ -212,6 +207,8 @@ impl FrameworkResolver for SwiftUIResolver {
         let mut nodes: Vec<Node> = Vec::new();
         let now = now_millis();
         let safe = strip_comments_for_regex(content, CommentLang::Swift);
+        // Once per file: a newline count per match was quadratic on big files.
+        let line_starts = LineStarts::new(&safe);
 
         // Extract SwiftUI View structs
         // struct ContentView: View { ... }
@@ -221,7 +218,7 @@ impl FrameworkResolver for SwiftUIResolver {
         for caps in VIEW_RE.captures_iter(&safe) {
             let whole = caps.get(0).unwrap();
             let view_name = caps.get(1).unwrap().as_str();
-            let line = line_at(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
 
             let mut node = Node::new(
                 format!("view:{file_path}:{view_name}:{line}"),
@@ -245,7 +242,7 @@ impl FrameworkResolver for SwiftUIResolver {
         for caps in APP_RE.captures_iter(&safe) {
             let whole = caps.get(0).unwrap();
             let app_name = caps.get(1).unwrap().as_str();
-            let line = line_at(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
 
             let mut node = Node::new(
                 format!("app:{file_path}:{app_name}:{line}"),
@@ -362,6 +359,8 @@ impl FrameworkResolver for UIKitResolver {
         let mut nodes: Vec<Node> = Vec::new();
         let now = now_millis();
         let safe = strip_comments_for_regex(content, CommentLang::Swift);
+        // Once per file: a newline count per match was quadratic on big files.
+        let line_starts = LineStarts::new(&safe);
 
         // Extract UIViewController subclasses
         static VC_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -371,7 +370,7 @@ impl FrameworkResolver for UIKitResolver {
         for caps in VC_RE.captures_iter(&safe) {
             let whole = caps.get(0).unwrap();
             let vc_name = caps.get(1).unwrap().as_str();
-            let line = line_at(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
 
             let mut node = Node::new(
                 format!("viewcontroller:{file_path}:{vc_name}:{line}"),
@@ -395,7 +394,7 @@ impl FrameworkResolver for UIKitResolver {
         for caps in UIVIEW_RE.captures_iter(&safe) {
             let whole = caps.get(0).unwrap();
             let view_name = caps.get(1).unwrap().as_str();
-            let line = line_at(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
 
             let mut node = Node::new(
                 format!("uiview:{file_path}:{view_name}:{line}"),
@@ -511,6 +510,8 @@ impl FrameworkResolver for VaporResolver {
         let mut references: Vec<UnresolvedRef> = Vec::new();
         let now = now_millis();
         let safe = strip_comments_for_regex(content, CommentLang::Swift);
+        // Once per file: a newline count per match was quadratic on big files.
+        let line_starts = LineStarts::new(&safe);
 
         // Build a group-var → path-prefix map first. Modern Vapor routes live on a
         // grouped builder (`let todos = routes.grouped("todos"); todos.get(use: index)`
@@ -574,7 +575,7 @@ impl FrameworkResolver for VaporResolver {
             let method = caps.get(2).unwrap().as_str();
             let segs_str = caps.get(3).unwrap().as_str();
             let handler_expr = caps.get(4).unwrap().as_str();
-            let line = line_at(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let upper = method.to_uppercase();
             // TS: (groupPrefix.get(receiver) ?? '') + segJoin('', segsStr) || '/'
             let mut route_path = format!(

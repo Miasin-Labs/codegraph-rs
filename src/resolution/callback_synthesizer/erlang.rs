@@ -7,9 +7,10 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::edges::{edge_meta, synthesized_edge};
-use super::source::{enclosing_fn, line_of};
+use super::source::enclosing_fn;
 use crate::db::QueryBuilder;
 use crate::error::Result;
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, EdgeKind, Node, NodeKind};
 
@@ -178,6 +179,7 @@ fn dispatch_sites(
     callback_names: &HashSet<String>,
 ) -> Vec<DispatchSite> {
     let safe = strip_erlang_for_regex(source);
+    let line_starts = LineStarts::new(&safe);
     let mut sites = Vec::new();
     for capture in ERLANG_DISPATCH_RE.captures_iter(&safe) {
         let function = capture[3].to_string();
@@ -190,7 +192,7 @@ fn dispatch_sites(
         if arity < 0 {
             continue;
         }
-        let line = line_of(&safe, whole.start());
+        let line = line_starts.line_of(whole.start());
         let Some(caller) = enclosing_fn(nodes, line) else {
             continue;
         };
@@ -238,7 +240,7 @@ pub(super) fn erlang_behaviour_dispatch_edges(
         let Some(behaviour) = module_by_file.get(&file) else {
             continue;
         };
-        let Some(content) = ctx.read_file(&file) else {
+        let Some(content) = ctx.read_file_arc(&file) else {
             continue;
         };
         if !content.contains("-callback") {
@@ -275,7 +277,7 @@ pub(super) fn erlang_behaviour_dispatch_edges(
         if !is_erlang_file(&file) {
             continue;
         }
-        let Some(content) = ctx.read_file(&file) else {
+        let Some(content) = ctx.read_file_arc(&file) else {
             continue;
         };
         if !content.contains(':') {

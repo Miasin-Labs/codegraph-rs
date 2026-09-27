@@ -1,7 +1,9 @@
+use std::cell::RefCell;
 use std::collections::HashSet;
 
 use super::super::paths::resolve_import_path;
-use crate::resolution::alias_binding::extract_local_export_aliases;
+use crate::resolution::alias_binding::{LocalExportAlias, extract_local_export_aliases};
+use crate::resolution::line_index::SourceMemo;
 use crate::resolution::types::{ReExport, ResolutionContext};
 use crate::types::{Language, Node, NodeKind};
 
@@ -42,10 +44,10 @@ pub(super) fn find_exported_symbol(
     }
     visited.insert(file_path.to_string());
 
-    let nodes_in_file = context.get_nodes_in_file(file_path);
-
-    // 1. Direct hit: the symbol is declared in this file.
+    // 1. Direct hit: the symbol is declared in this file. Named lookups —
+    // this runs per import hop of every reference.
     if want.is_default {
+        let nodes_in_file = context.get_nodes_in_file(file_path);
         // Svelte/Vue single-file components ARE the module's default export,
         // but are extracted as kind 'component' (not function/class). Prefer
         // the component node; fall back to an exported function/class for the
@@ -68,18 +70,20 @@ pub(super) fn find_exported_symbol(
         // (TS `want.memberName` truthiness — an empty string falls through
         // to the exported-name branch below.)
         let member_name = want.member_name.as_deref().unwrap_or("");
-        let direct = nodes_in_file
-            .iter()
-            .find(|n| n.name == member_name && n.is_exported == Some(true));
-        if let Some(direct) = direct {
-            return Some(direct.clone());
+        let direct = context
+            .get_nodes_in_file_named(file_path, member_name)
+            .into_iter()
+            .find(|n| n.is_exported == Some(true));
+        if direct.is_some() {
+            return direct;
         }
     } else {
-        let direct = nodes_in_file
-            .iter()
-            .find(|n| n.name == want.exported_name && n.is_exported == Some(true));
-        if let Some(direct) = direct {
-            return Some(direct.clone());
+        let direct = context
+            .get_nodes_in_file_named(file_path, &want.exported_name)
+            .into_iter()
+            .find(|n| n.is_exported == Some(true));
+        if direct.is_some() {
+            return direct;
         }
         // Local export clause: `export { realImpl as alias }` (no `from`).
         // `extractReExports` only models the `export ... from './other'` form,
@@ -88,9 +92,7 @@ pub(super) fn find_exported_symbol(
         // clause's exported name to its local declaration so an importer asking
         // for the renamed name gets the real symbol instead of falling through
         // to the name-matcher (which cannot cross the rename). #1482 / PR #1485.
-        if let Some(local) =
-            resolve_local_export_alias(&nodes_in_file, &want.exported_name, context, file_path)
-        {
+        if let Some(local) = resolve_local_export_alias(&want.exported_name, context, file_path) {
             return Some(local);
         }
     }
@@ -165,18 +167,31 @@ pub(super) fn find_exported_symbol(
 /// extractor never flags a bare declaration exported. Guarded to JS/TS-family
 /// files (the only export-clause shape this understands). #1482 / PR #1485.
 fn resolve_local_export_alias(
-    nodes_in_file: &[Node],
     exported_name: &str,
     context: &dyn ResolutionContext,
     file_path: &str,
 ) -> Option<Node> {
-    let content = context.read_file(file_path)?;
-    if content.is_empty() || !content.contains("export") {
-        return None;
+    thread_local! {
+        /// Each file's export clauses, read once rather than per import hop.
+        static ALIASES: RefCell<SourceMemo<Vec<LocalExportAlias>>> =
+            const { RefCell::new(SourceMemo::new()) };
     }
-    let local_name = extract_local_export_aliases(&content)
-        .into_iter()
+    let content = context.read_file_arc(file_path)?;
+    let aliases = ALIASES.with(|memo| {
+        memo.borrow_mut().get_or_insert_with(&content, |text| {
+            if text.is_empty() || !text.contains("export") {
+                Vec::new()
+            } else {
+                extract_local_export_aliases(text)
+            }
+        })
+    });
+    let local_name = &aliases
+        .iter()
         .find(|alias| alias.exported_name == exported_name)?
         .local_name;
-    nodes_in_file.iter().find(|n| n.name == local_name).cloned()
+    context
+        .get_nodes_in_file_named(file_path, local_name)
+        .into_iter()
+        .next()
 }

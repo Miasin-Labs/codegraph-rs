@@ -8,7 +8,8 @@ use serde_json::Value;
 
 use super::edges::{edge_meta, synthesized_edge};
 use super::ordered::OrderedSet;
-use super::source::{is_fn_kind, slice_lines};
+use super::source::is_fn_kind;
+use crate::resolution::line_index::slice_lines;
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, Node, NodeKind};
 
@@ -27,7 +28,7 @@ pub(super) fn react_jsx_child_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
     let mut edges: Vec<Edge> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for file in ctx.get_all_files() {
-        let Some(content) = ctx.read_file(&file) else {
+        let Some(content) = ctx.read_file_arc(&file) else {
             continue;
         };
         if content.is_empty() || (!content.contains("</") && !content.contains("/>")) {
@@ -46,7 +47,7 @@ pub(super) fn react_jsx_child_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
                 continue;
             }
             let mut names = OrderedSet::default();
-            for m in JSX_TAG_RE.captures_iter(&src) {
+            for m in JSX_TAG_RE.captures_iter(src) {
                 names.add(&m[1]);
             }
             let mut added = 0usize;

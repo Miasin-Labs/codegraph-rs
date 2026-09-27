@@ -8,6 +8,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::{
     FrameworkExtractionResult,
@@ -38,12 +39,6 @@ fn now_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
-}
-
-/// Number of the line containing byte offset `idx` (1-based) — TS
-/// `safe.slice(0, idx).split('\n').length`.
-fn line_at(safe: &str, idx: usize) -> u32 {
-    (safe[..idx].matches('\n').count() + 1) as u32
 }
 
 /// Extract the last identifier from an expression like `pkg.Sub.handler` or `handler`.
@@ -234,6 +229,8 @@ impl FrameworkResolver for GoResolver {
         let mut references: Vec<UnresolvedRef> = Vec::new();
         let now = now_millis();
         let safe = strip_comments_for_regex(content, CommentLang::Go);
+        // Once per file: a newline count per match was quadratic on big files.
+        let line_starts = LineStarts::new(&safe);
 
         // <anyVar>.METHOD("/path", handler) — Gin (GET/POST/...), Chi (Get/Post/...),
         // net/http (HandleFunc/Handle). The receiver is ANY identifier, not just
@@ -252,7 +249,7 @@ impl FrameworkResolver for GoResolver {
             let raw_method = caps.get(1).unwrap().as_str();
             let route_path = caps.get(2).unwrap().as_str();
             let handler_expr = caps.get(3).unwrap().as_str();
-            let line = line_at(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let method = if raw_method == "Handle" || raw_method == "HandleFunc" {
                 "ANY".to_string()
             } else {

@@ -38,6 +38,20 @@ impl ResolutionContext for SnapshotContext {
         })
     }
 
+    fn get_nodes_in_file_named(&self, file_path: &str, name: &str) -> Vec<Node> {
+        self.lookup_nodes(&self.nodes_by_name, name, |node, key| {
+            node.name == key && node.file_path == file_path
+        })
+    }
+
+    fn scopes_enclosing_line(&self, file_path: &str, line: u32) -> Vec<Node> {
+        self.scopes
+            .enclosing(file_path, line)
+            .into_iter()
+            .filter_map(|index| self.nodes.get(index as usize).cloned())
+            .collect()
+    }
+
     fn get_nodes_by_qualified_name(&self, qualified_name: &str) -> Vec<Node> {
         self.lookup_nodes(
             &self.nodes_by_qualified_name,

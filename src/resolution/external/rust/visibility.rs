@@ -5,6 +5,7 @@
 
 use super::lookup::MAX_HEADER_LINES;
 use crate::resolution::external::open::{ForeignGraph, GraphCache};
+use crate::resolution::line_index::Lines;
 use crate::resolution::types::ResolutionContext;
 use crate::types::{EdgeKind, Language, Node, NodeKind, Visibility};
 
@@ -51,14 +52,16 @@ fn cfg_variants(context: &dyn ResolutionContext, nodes: &[Node]) -> bool {
     else {
         return false;
     };
-    let lines: Vec<&str> = source.split('\n').collect();
+    let lines = Lines::of(&source);
     let gated = nodes
         .iter()
         .filter(|node| {
             let at = (node.start_line as usize)
                 .saturating_sub(1)
                 .min(lines.len());
-            lines[..at]
+            lines
+                .span()
+                .slice(0..at)
                 .iter()
                 .rev()
                 .map(|line| line.trim())
@@ -155,14 +158,20 @@ fn in_trait_or_trait_impl(context: &dyn ResolutionContext, node: &Node) -> bool 
     let Some(source) = context.read_file_arc(&node.file_path) else {
         return false;
     };
-    let lines: Vec<&str> = source.split('\n').collect();
+    let lines = Lines::of(&source);
     let Some(at) = (node.start_line as usize).checked_sub(1) else {
         return false;
     };
-    let Some(own) = lines.get(at).map(|line| indentation(line)) else {
+    let Some(own) = lines.get(at).map(indentation) else {
         return false;
     };
-    for line in lines[..at].iter().rev().take(MAX_HEADER_LINES) {
+    for line in lines
+        .span()
+        .slice(0..at)
+        .iter()
+        .rev()
+        .take(MAX_HEADER_LINES)
+    {
         let trimmed = line.trim();
         if trimmed.is_empty() || indentation(line) >= own {
             continue;

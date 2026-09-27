@@ -42,6 +42,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use regex::Regex;
 
 use crate::extraction::tree_sitter_helpers::generate_node_id;
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::types::{
     FrameworkExtractionResult,
     FrameworkResolver,
@@ -57,10 +58,6 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64
-}
-
-fn line_of(content: &str, idx: usize) -> u32 {
-    content[..idx].matches('\n').count() as u32 + 1
 }
 
 // ---------------------------------------------------------------------------
@@ -308,11 +305,13 @@ fn extract_drupal_hooks(file_path: &str, content: &str) -> FrameworkExtractionRe
     // (TS used an insertion-ordered Map; here a HashMap for lookup + Vec for order.)
     let mut func_line_map: HashMap<String, u32> = HashMap::new();
     let mut func_order: Vec<String> = Vec::new();
+    let line_starts = LineStarts::new(content);
     for fm in FUNC_DEF_RE.captures_iter(content) {
         let name = fm[1].to_string();
         if !func_line_map.contains_key(&name) {
             // line = number of newlines before match start + 1
-            func_line_map.insert(name.clone(), line_of(content, fm.get(0).unwrap().start()));
+            let line = line_starts.line_of(fm.get(0).unwrap().start());
+            func_line_map.insert(name.clone(), line);
             func_order.push(name);
         }
     }

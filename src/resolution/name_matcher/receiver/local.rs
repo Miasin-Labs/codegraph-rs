@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 use regex::Regex;
 
+use crate::resolution::line_index::Lines;
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::{Language, NodeKind};
 
@@ -178,10 +179,13 @@ pub(crate) fn infer_receiver_type_from_declaration(
     context: &dyn ResolutionContext,
 ) -> Option<String> {
     let source = context.read_file_arc(&value.file_path)?;
-    let lines: Vec<&str> = source.lines().collect();
+    let lines = Lines::of(&source);
     let start = value.start_line.saturating_sub(1) as usize;
-    let end = (value.end_line as usize).min(lines.len());
-    let declaration = lines.get(start..end)?.join("\n");
+    let end = (value.end_line as usize).min(lines.str_lines_len());
+    if start > end {
+        return None;
+    }
+    let declaration = lines.join(start..end);
     local_receiver_type_patterns(value.language, &value.name)
         .iter()
         .find_map(|pattern| {
@@ -194,7 +198,7 @@ pub(crate) fn infer_receiver_type_from_declaration(
 
 fn infer_php_assigned_property_type(
     property: &str,
-    lines: &[&str],
+    lines: &Lines,
     call_index: usize,
 ) -> Option<String> {
     let assignment = compile(format!(
@@ -202,7 +206,7 @@ fn infer_php_assigned_property_type(
         regex::escape(property)
     ));
     let find_assignment = |index: usize| {
-        let line = lines.get(index).copied()?;
+        let line = lines.get(index)?;
         (line.len() <= MAX_SOURCE_LINE_BYTES)
             .then(|| assignment.captures(line))
             .flatten()
@@ -218,7 +222,7 @@ fn infer_php_assigned_property_type(
     let patterns = local_receiver_type_patterns(Language::Php, &variable);
 
     for index in (0..=assignment_index).rev() {
-        let line = lines[index];
+        let line = lines.get(index).unwrap_or("");
         if line.len() <= MAX_SOURCE_LINE_BYTES {
             if let Some(inferred) = patterns.iter().find_map(|pattern| {
                 pattern
@@ -238,17 +242,13 @@ fn infer_php_assigned_property_type(
 
 fn enclosing_scope_start_line(reference: &UnresolvedRef, context: &dyn ResolutionContext) -> u32 {
     context
-        .get_nodes_in_file(&reference.file_path)
+        .scopes_enclosing_line(&reference.file_path, reference.line)
         .into_iter()
-        .filter(|node| {
+        .find(|node| {
             matches!(node.kind, NodeKind::Function | NodeKind::Method)
                 && node.language == reference.language
-                && node.start_line <= reference.line
-                && node.end_line.max(node.start_line) >= reference.line
         })
-        .map(|node| node.start_line)
-        .max()
-        .unwrap_or(1)
+        .map_or(1, |node| node.start_line)
 }
 
 pub(in crate::resolution::name_matcher) fn infer_local_receiver_type(
@@ -292,10 +292,8 @@ pub(in crate::resolution::name_matcher) fn infer_local_receiver_type(
     }
 
     let source = context.read_file_arc(&reference.file_path)?;
-    let lines: Vec<&str> = source
-        .split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
-        .collect();
+    // Once per reference: index the file's lines, never split it all.
+    let lines = Lines::of(&source);
     if lines.is_empty() {
         return None;
     }
@@ -321,7 +319,7 @@ pub(in crate::resolution::name_matcher) fn infer_local_receiver_type(
     };
 
     for index in (start_index.min(call_index)..=call_index).rev() {
-        if let Some(inferred) = match_line(lines[index]) {
+        if let Some(inferred) = lines.get(index).and_then(&match_line) {
             return Some(inferred);
         }
     }

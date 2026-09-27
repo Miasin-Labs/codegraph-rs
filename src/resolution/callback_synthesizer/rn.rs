@@ -1,5 +1,6 @@
 //! React Native cross-language event-channel synthesis.
 
+use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
@@ -8,7 +9,8 @@ use serde_json::Value;
 
 use super::edges::{edge_meta, synthesized_edge};
 use super::ordered::{OrderedMap, OrderedSet};
-use super::source::{enclosing_fn, line_of};
+use super::source::FnIndex;
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, Node, NodeKind};
 
@@ -70,7 +72,7 @@ pub(super) fn rn_event_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
     let mut js_handlers_by_event: OrderedMap<OrderedMap<String>> = OrderedMap::new();
 
     for file in ctx.get_all_files() {
-        let Some(content) = ctx.read_file(&file) else {
+        let Some(content) = ctx.read_file_arc(&file) else {
             continue;
         };
         if content.is_empty() {
@@ -78,8 +80,21 @@ pub(super) fn rn_event_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         }
 
         let nodes_in_file = ctx.get_nodes_in_file(&file);
+        // Built on the first match, once per file: a newline count and node
+        // scan per match were quadratic on bundled files.
+        let line_starts = OnceCell::new();
+        let line_of = |idx: usize| {
+            line_starts
+                .get_or_init(|| LineStarts::new(&content))
+                .line_of(idx)
+        };
+        let fns = OnceCell::new();
+        let enclosing_fn = |line: u32| {
+            fns.get_or_init(|| FnIndex::new(&nodes_in_file))
+                .enclosing(line)
+        };
         let mut add_dispatcher = |event: &str, line: u32| {
-            let Some(disp) = enclosing_fn(&nodes_in_file, line) else {
+            let Some(disp) = enclosing_fn(line) else {
                 return;
             };
             native_dispatchers_by_event
@@ -93,7 +108,7 @@ pub(super) fn rn_event_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
             for m in RN_OBJC_SEND_RE.captures_iter(&content) {
                 let idx = m.get(0).expect("whole match").start();
                 if !m[1].is_empty() {
-                    add_dispatcher(&m[1], line_of(&content, idx));
+                    add_dispatcher(&m[1], line_of(idx));
                 }
             }
         }
@@ -103,7 +118,7 @@ pub(super) fn rn_event_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
             for m in RN_SWIFT_SEND_RE.captures_iter(&content) {
                 let idx = m.get(0).expect("whole match").start();
                 if !m[1].is_empty() {
-                    add_dispatcher(&m[1], line_of(&content, idx));
+                    add_dispatcher(&m[1], line_of(idx));
                 }
             }
         }
@@ -121,7 +136,7 @@ pub(super) fn rn_event_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
             for m in RN_JVM_EMIT_RE.captures_iter(&content) {
                 let idx = m.get(0).expect("whole match").start();
                 if !m[1].is_empty() {
-                    add_dispatcher(&m[1], line_of(&content, idx));
+                    add_dispatcher(&m[1], line_of(idx));
                 }
             }
         }
@@ -158,8 +173,7 @@ pub(super) fn rn_event_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
                     // Fall back to the enclosing function — the subscribe-wrapper
                     // pattern means the event fires THROUGH this function on its
                     // way to user code. Reachability-correct attribution.
-                    target_id =
-                        enclosing_fn(&nodes_in_file, line_of(&content, idx)).map(|n| n.id.clone());
+                    target_id = enclosing_fn(line_of(idx)).map(|n| n.id.clone());
                 }
                 if target_id.is_none() {
                     // Broader fallback for JS object-literal API shape
@@ -169,7 +183,7 @@ pub(super) fn rn_event_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
                     // the smallest enclosing `constant` / `variable` node — that's
                     // the API surface a downstream caller would `import` and
                     // invoke. Reachability-correct.
-                    let line = line_of(&content, idx);
+                    let line = line_of(idx);
                     let mut smallest: Option<&Node> = None;
                     for n in &nodes_in_file {
                         if n.kind != NodeKind::Constant && n.kind != NodeKind::Variable {
@@ -188,7 +202,7 @@ pub(super) fn rn_event_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
                 let Some(target_id) = target_id else { continue };
                 js_handlers_by_event
                     .entry_or_default(&event)
-                    .set(&target_id, format!("{}:{}", file, line_of(&content, idx)));
+                    .set(&target_id, format!("{}:{}", file, line_of(idx)));
             }
         }
     }

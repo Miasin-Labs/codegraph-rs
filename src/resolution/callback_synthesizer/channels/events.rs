@@ -6,7 +6,8 @@ use serde_json::Value;
 
 use super::super::edges::{edge_meta, synthesized_edge};
 use super::super::ordered::{OrderedMap, OrderedSet};
-use super::super::source::{enclosing_fn, line_of};
+use super::super::source::FnIndex;
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, NodeKind};
 
@@ -33,7 +34,7 @@ pub(in crate::resolution::callback_synthesizer) fn event_emitter_edges(
     let mut handlers_by_event: OrderedMap<OrderedMap<String>> = OrderedMap::new();
 
     for file in ctx.get_all_files() {
-        let Some(content) = ctx.read_file(&file) else {
+        let Some(content) = ctx.read_file_arc(&file) else {
             continue;
         };
         if content.is_empty() {
@@ -49,11 +50,15 @@ pub(in crate::resolution::callback_synthesizer) fn event_emitter_edges(
             continue;
         }
         let nodes_in_file = ctx.get_nodes_in_file(&file);
+        // Once per file: a newline count and node scan per match were
+        // quadratic on bundled files.
+        let line_starts = LineStarts::new(&content);
+        let fns = FnIndex::new(&nodes_in_file);
 
         if has_emit {
             for m in EMIT_RE.captures_iter(&content) {
                 let idx = m.get(0).expect("whole match").start();
-                let Some(disp) = enclosing_fn(&nodes_in_file, line_of(&content, idx)) else {
+                let Some(disp) = fns.enclosing(line_starts.line_of(idx)) else {
                     continue;
                 };
                 emits_by_event.entry_or_default(&m[1]).add(&disp.id);
@@ -77,9 +82,10 @@ pub(in crate::resolution::callback_synthesizer) fn event_emitter_edges(
                     .find(|n| n.kind == NodeKind::Function || n.kind == NodeKind::Method);
                 let Some(handler) = handler else { continue };
                 let idx = m.get(0).expect("whole match").start();
-                handlers_by_event
-                    .entry_or_default(&m[1])
-                    .set(&handler.id, format!("{}:{}", file, line_of(&content, idx)));
+                handlers_by_event.entry_or_default(&m[1]).set(
+                    &handler.id,
+                    format!("{}:{}", file, line_starts.line_of(idx)),
+                );
             }
         }
     }

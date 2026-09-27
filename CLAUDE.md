@@ -141,6 +141,19 @@ cargo test --workspace
 - **Recursive AST/graph walkers must call `ensure_sufficient_stack`** (crate
   root fn) at the recursion head — depth is bounded by input, not thread stack;
   a deep input otherwise aborts the process.
+- **Work run per declaration, reference, node or match must not be O(file).**
+  A bundled JS file (25–74 MB, tens of thousands of nodes) made every such
+  loop quadratic and pinned `codegraph sync` for hours (2026-09). Use the
+  file-level indexes instead: `resolution::line_index` (`Lines`/`LineSpan`
+  for lines, `LineStarts` for offset→line, `slice_lines`, and `SourceMemo`
+  for anything derived from a file's text), `read_file_arc` (never
+  `read_file`, which copies the file), `ResolutionContext::
+  scopes_enclosing_line` / `get_nodes_in_file_named` (never
+  `get_nodes_in_file` per reference — it copies every node), extraction's
+  per-parent `SiblingIndex`, and the synthesizers' `FnIndex`. tree-sitter's
+  sibling/parent navigation is itself linear in the parent's children, so
+  never call it per child. Check a change with an old-vs-new index of a real
+  corpus: the graph tables must stay byte-identical.
 - **Per-language behavior lives in static rules tables**, looked up by language
   id: `cfg_rules.rs`, `dataflow_rules.rs`, `concurrency_rules.rs`
   (`for_language(lang)`). Add a language by extending these, not by branching in

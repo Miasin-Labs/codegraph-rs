@@ -6,16 +6,18 @@
 //! struct initializers, macro-built tables, local included tables, field-to-
 //! field propagation, chained receivers, and bare arrays of function pointers.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use regex::Regex;
 use serde_json::Value;
 
 use super::edges::{edge_meta, synthesized_edge};
-use super::source::{count_newlines, slice_lines};
+use super::source::count_newlines;
 use crate::db::QueryBuilder;
 use crate::error::Result;
+use crate::resolution::line_index::slice_lines;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, Node, NodeKind};
@@ -527,7 +529,14 @@ struct FnPtrSynthesis<'a> {
     registrations: HashMap<String, HashSet<String>>,
     array_registrations: HashMap<String, Vec<ArrayRegistration>>,
     global_var_type: HashMap<String, String>,
+    /// The comment-stripped sources used last, newest last. Struct layouts
+    /// are read per node and headers per includer; re-reading and
+    /// re-stripping the whole file each time was quadratic in large units.
+    stripped: RefCell<Vec<(String, Option<Arc<str>>)>>,
 }
+
+/// How many stripped sources [`FnPtrSynthesis`] keeps.
+const STRIPPED_FILES: usize = 32;
 
 impl<'a> FnPtrSynthesis<'a> {
     fn new(ctx: &'a dyn ResolutionContext, files: Vec<String>) -> Self {
@@ -542,16 +551,30 @@ impl<'a> FnPtrSynthesis<'a> {
             registrations: HashMap::new(),
             array_registrations: HashMap::new(),
             global_var_type: HashMap::new(),
+            stripped: RefCell::new(Vec::new()),
         }
     }
 
-    fn raw_source(&self, file: &str) -> Option<String> {
-        self.ctx.read_file(file)
+    fn raw_source(&self, file: &str) -> Option<Arc<str>> {
+        self.ctx.read_file_arc(file)
     }
 
-    fn stripped_source(&self, file: &str) -> Option<String> {
-        self.raw_source(file)
-            .map(|source| strip_comments_for_regex(&source, CommentLang::Csharp))
+    fn stripped_source(&self, file: &str) -> Option<Arc<str>> {
+        let mut stripped = self.stripped.borrow_mut();
+        if let Some(at) = stripped.iter().position(|(seen, _)| seen == file) {
+            let entry = stripped.remove(at);
+            let source = entry.1.clone();
+            stripped.push(entry);
+            return source;
+        }
+        let source: Option<Arc<str>> = self
+            .raw_source(file)
+            .map(|source| Arc::from(strip_comments_for_regex(&source, CommentLang::Csharp)));
+        if stripped.len() == STRIPPED_FILES {
+            stripped.remove(0);
+        }
+        stripped.push((file.to_string(), source.clone()));
+        source
     }
 
     fn collect_typedefs(&mut self) {
@@ -616,7 +639,7 @@ impl<'a> FnPtrSynthesis<'a> {
                 let Some(open) = body.find('{') else {
                     return true;
                 };
-                let Some(close) = match_brace(&body, open) else {
+                let Some(close) = match_brace(body, open) else {
                     return true;
                 };
                 let fields = parse_struct_fields(
@@ -1078,13 +1101,13 @@ impl<'a> FnPtrSynthesis<'a> {
                 else {
                     continue;
                 };
-                for captures in DIRECT_ASSIGN_RE.captures_iter(&body) {
+                for captures in DIRECT_ASSIGN_RE.captures_iter(body) {
                     let whole = captures.get(0).expect("whole direct assignment match");
                     let tail = body[whole.end()..].trim_start();
                     if tail.starts_with("->") || tail.starts_with('.') {
                         continue;
                     }
-                    let Some(struct_name) = self.receiver_type_in(&body, &captures[1]) else {
+                    let Some(struct_name) = self.receiver_type_in(body, &captures[1]) else {
                         continue;
                     };
                     let field = &captures[2];
@@ -1095,11 +1118,11 @@ impl<'a> FnPtrSynthesis<'a> {
                         self.add_registration(&struct_name, field, &handler);
                     }
                 }
-                for captures in FIELD_ASSIGN_RE.captures_iter(&body) {
-                    let Some(target_struct) = self.receiver_type_in(&body, &captures[1]) else {
+                for captures in FIELD_ASSIGN_RE.captures_iter(body) {
+                    let Some(target_struct) = self.receiver_type_in(body, &captures[1]) else {
                         continue;
                     };
-                    let Some(source_struct) = self.receiver_type_in(&body, &captures[3]) else {
+                    let Some(source_struct) = self.receiver_type_in(body, &captures[3]) else {
                         continue;
                     };
                     if self.is_fn_ptr_field(&target_struct, &captures[2])
@@ -1147,7 +1170,7 @@ impl<'a> FnPtrSynthesis<'a> {
                     continue;
                 };
                 let mut added = 0usize;
-                for captures in DISPATCH_RE.captures_iter(&body) {
+                for captures in DISPATCH_RE.captures_iter(body) {
                     if added >= FANOUT_CAP {
                         break;
                     }
@@ -1163,7 +1186,7 @@ impl<'a> FnPtrSynthesis<'a> {
                         continue;
                     };
                     let mut owner = self
-                        .resolve_chain_type(&body, base)
+                        .resolve_chain_type(body, base)
                         .filter(|candidate| owners.contains(candidate));
                     if owner.is_none() {
                         let without_subscripts = ARRAY_SUBSCRIPT_RE.replace_all(base, "");
@@ -1172,7 +1195,7 @@ impl<'a> FnPtrSynthesis<'a> {
                             .filter(|segment| !segment.is_empty())
                             .last();
                         owner = last
-                            .and_then(|receiver| self.receiver_type_in(&body, receiver))
+                            .and_then(|receiver| self.receiver_type_in(body, receiver))
                             .filter(|candidate| owners.contains(candidate));
                     }
                     if owner.is_none() && owners.len() == 1 {
@@ -1214,7 +1237,7 @@ impl<'a> FnPtrSynthesis<'a> {
                 if added >= FANOUT_CAP || self.array_registrations.is_empty() {
                     continue;
                 }
-                for captures in ARRAY_DISPATCH_RE.captures_iter(&body) {
+                for captures in ARRAY_DISPATCH_RE.captures_iter(body) {
                     if added >= FANOUT_CAP {
                         break;
                     }

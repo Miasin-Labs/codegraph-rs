@@ -1,20 +1,39 @@
 //! Razor `@using` and cascading `_Imports.razor` type resolution.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock};
 
 use regex::Regex;
 
+use crate::resolution::line_index::SourceMemo;
 use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
 use crate::types::Language;
 
-fn collect_usings(source: &str, out: &mut HashSet<String>) {
-    let pattern = Regex::new(r"(?m)^\s*@using\s+(?:static\s+)?([A-Za-z_][\w.]*)")
-        .expect("valid Razor using regex");
-    for capture in pattern.captures_iter(source) {
-        if let Some(namespace) = capture.get(1) {
-            out.insert(namespace.as_str().to_string());
-        }
+static USING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s*@using\s+(?:static\s+)?([A-Za-z_][\w.]*)")
+        .expect("valid Razor using regex")
+});
+
+/// The `@using` namespaces of `source`, parsed once per file: this runs per
+/// reference, for the file and each `_Imports.razor` above it.
+fn usings_of(source: &Arc<str>) -> Arc<Vec<String>> {
+    thread_local! {
+        static USINGS: RefCell<SourceMemo<Vec<String>>> = const { RefCell::new(SourceMemo::new()) };
     }
+    USINGS.with(|memo| {
+        memo.borrow_mut().get_or_insert_with(source, |text| {
+            USING
+                .captures_iter(text)
+                .filter_map(|capture| capture.get(1))
+                .map(|namespace| namespace.as_str().to_string())
+                .collect()
+        })
+    })
+}
+
+fn collect_usings(source: &Arc<str>, out: &mut HashSet<String>) {
+    out.extend(usings_of(source).iter().cloned());
 }
 
 pub(super) fn match_via_using(
@@ -29,7 +48,7 @@ pub(super) fn match_via_using(
     }
 
     let mut usings = HashSet::new();
-    if let Some(source) = context.read_file(&reference.file_path) {
+    if let Some(source) = context.read_file_arc(&reference.file_path) {
         collect_usings(&source, &mut usings);
     }
 
@@ -44,7 +63,7 @@ pub(super) fn match_via_using(
             format!("{directory}/_Imports.razor")
         };
         if imports_path != normalized {
-            if let Some(source) = context.read_file(&imports_path) {
+            if let Some(source) = context.read_file_arc(&imports_path) {
                 collect_usings(&source, &mut usings);
             }
         }

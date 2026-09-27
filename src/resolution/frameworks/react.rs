@@ -3,12 +3,14 @@
 //! Handles React and Next.js patterns.
 //! Ported from `src/resolution/frameworks/react.ts`.
 
+use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::types::{
     FrameworkExtractionResult,
     FrameworkResolver,
@@ -24,11 +26,6 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64
-}
-
-/// 1-based line number of the byte offset `index`.
-fn line_at(s: &str, index: usize) -> u32 {
-    (s[..index].matches('\n').count() + 1) as u32
 }
 
 /// `content[start..start+window]` clamped to length and char boundaries
@@ -129,6 +126,14 @@ impl FrameworkResolver for ReactResolver {
         let mut nodes: Vec<Node> = Vec::new();
         let mut references: Vec<UnresolvedRef> = Vec::new();
         let now = now_ms();
+        // 1-based line of a byte offset. Built on first use; counting newlines
+        // per match was quadratic on bundled files.
+        let line_starts = OnceCell::new();
+        let line_at = |index: usize| {
+            line_starts
+                .get_or_init(|| LineStarts::new(content))
+                .line_of(index)
+        };
 
         // Extract component definitions
         // function Component() or const Component = () =>
@@ -152,7 +157,7 @@ impl FrameworkResolver for ReactResolver {
             for m in pattern.captures_iter(content) {
                 let full_match = m.get(0).unwrap();
                 let name = &m[1];
-                let line = line_at(content, full_match.start());
+                let line = line_at(full_match.start());
 
                 // Check if it returns JSX (rough heuristic)
                 let after_match = window_after(content, full_match.end(), 500);
@@ -190,7 +195,7 @@ impl FrameworkResolver for ReactResolver {
         for m in HOOK_PATTERN.captures_iter(content) {
             let full_match = m.get(0).unwrap();
             let name = &m[1];
-            let line = line_at(content, full_match.start());
+            let line = line_at(full_match.start());
 
             let mut node = Node::new(
                 format!("hook:{file_path}:{name}:{line}"),
@@ -237,7 +242,7 @@ impl FrameworkResolver for ReactResolver {
             let comp_match = ROUTE_COMPONENT_RE
                 .captures(window)
                 .or_else(|| ROUTE_ELEMENT_RE.captures(window));
-            let line = line_at(content, route_match.start());
+            let line = line_at(route_match.start());
             let mut route_node = Node::new(
                 format!("route:{file_path}:{line}:{route_path}"),
                 NodeKind::Route,
@@ -293,7 +298,7 @@ impl FrameworkResolver for ReactResolver {
                     continue; // require a component → it's a real route object
                 };
                 let route_path = if om[1].is_empty() { "/" } else { &om[1] };
-                let line = line_at(content, whole.start());
+                let line = line_at(whole.start());
                 let mut route_node = Node::new(
                     format!("route:{file_path}:{line}:{route_path}"),
                     NodeKind::Route,
@@ -327,7 +332,7 @@ impl FrameworkResolver for ReactResolver {
             if content.contains("export default") {
                 if let Some(route_path) = file_path_to_route(file_path) {
                     let idx = content.find("export default").unwrap();
-                    let line_num = line_at(content, idx);
+                    let line_num = line_at(idx);
 
                     let mut node = Node::new(
                         format!("route:{file_path}:{route_path}:{line_num}"),

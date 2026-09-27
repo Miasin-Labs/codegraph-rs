@@ -59,9 +59,9 @@ pub(super) enum Binding<'a> {
 
 /// The binding of `name` in `line` nearest the line's end, if any. A
 /// closure parameter list left open on `line` continues into `next_lines`.
-pub(super) fn binding_in_line<'a>(
+pub(super) fn binding_in_line<'a, 'n>(
     line: &'a str,
-    next_lines: &[&str],
+    next_lines: impl Iterator<Item = &'n str>,
     name: &str,
 ) -> Option<Binding<'a>> {
     nearest_binding(line, next_lines, name).map(|(_, binding)| binding)
@@ -70,9 +70,9 @@ pub(super) fn binding_in_line<'a>(
 /// [`binding_in_line`] with the byte offset where the binding form starts:
 /// its `let`/`static`/`const`/`for` keyword, the closure's opening `|`, or
 /// the match arm's `=>`.
-pub(super) fn nearest_binding<'a>(
+pub(super) fn nearest_binding<'a, 'n>(
     line: &'a str,
-    next_lines: &[&str],
+    next_lines: impl Iterator<Item = &'n str>,
     name: &str,
 ) -> Option<(usize, Binding<'a>)> {
     let mut nearest: Option<(usize, Binding<'a>)> = None;
@@ -276,7 +276,10 @@ fn for_binding<'a>(line: &'a str, keyword_end: usize, name: &str) -> Option<Bind
 }
 
 /// The parameter lists of closures opened on this line, with their offsets.
-fn closure_params<'a>(line: &'a str, next_lines: &[&str]) -> Vec<(usize, Cow<'a, str>)> {
+fn closure_params<'a, 'n>(
+    line: &'a str,
+    next_lines: impl Iterator<Item = &'n str>,
+) -> Vec<(usize, Cow<'a, str>)> {
     let bytes = line.as_bytes();
     let mut params = Vec::new();
     let mut index = 0;
@@ -302,9 +305,9 @@ fn closure_params<'a>(line: &'a str, next_lines: &[&str]) -> Vec<(usize, Cow<'a,
 }
 
 /// A parameter list continued past its line: `|a: &A,` then `b: &B| …`.
-fn spanning_params(start: &str, next_lines: &[&str]) -> Option<String> {
+fn spanning_params<'n>(start: &str, next_lines: impl Iterator<Item = &'n str>) -> Option<String> {
     let mut params = start.to_string();
-    for line in next_lines.iter().take(MAX_PARAM_LINES) {
+    for line in next_lines.take(MAX_PARAM_LINES) {
         params.push('\n');
         match line.find('|') {
             Some(end) => {
@@ -411,7 +414,7 @@ mod tests {
     use super::{Binding, binding_in_line};
 
     fn binding<'a>(line: &'a str, name: &str) -> Option<Binding<'a>> {
-        binding_in_line(line, &[], name)
+        binding_in_line(line, std::iter::empty(), name)
     }
 
     #[test]
@@ -552,11 +555,11 @@ mod tests {
     fn reads_closure_params_spanning_lines() {
         let next = ["        b: &Graph,", "        (c, d): (u8, u8)| -> bool {"];
         assert_eq!(
-            binding_in_line("    let edge = |a: &Graph,", &next, "b"),
+            binding_in_line("    let edge = |a: &Graph,", next.iter().copied(), "b"),
             Some(Binding::Typed(Cow::Owned("&Graph".into())))
         );
         assert_eq!(
-            binding_in_line("    let edge = |a: &Graph,", &next, "d"),
+            binding_in_line("    let edge = |a: &Graph,", next.iter().copied(), "d"),
             Some(Binding::Opaque)
         );
     }

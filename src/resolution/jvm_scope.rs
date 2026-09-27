@@ -1,7 +1,9 @@
+use std::cell::RefCell;
 use std::sync::OnceLock;
 
 use regex::Regex;
 
+use super::line_index::SourceMemo;
 use super::types::{ImportMapping, ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
 use crate::types::{EdgeKind, Language, Node, NodeKind};
 
@@ -149,9 +151,21 @@ fn package_declaration(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
 ) -> Option<String> {
-    let content = context.read_file(&reference.file_path)?;
-    let captures = package_re().captures(&content)?;
-    captures.get(1).map(|m| m.as_str().to_string())
+    thread_local! {
+        /// Each file's `package`, read once rather than per reference.
+        static PACKAGES: RefCell<SourceMemo<Option<String>>> =
+            const { RefCell::new(SourceMemo::new()) };
+    }
+    let content = context.read_file_arc(&reference.file_path)?;
+    PACKAGES
+        .with(|memo| {
+            memo.borrow_mut().get_or_insert_with(&content, |text| {
+                let captures = package_re().captures(text)?;
+                captures.get(1).map(|m| m.as_str().to_string())
+            })
+        })
+        .as_ref()
+        .clone()
 }
 
 fn candidate_matches_import(candidate: &Node, import: &ImportMapping) -> bool {

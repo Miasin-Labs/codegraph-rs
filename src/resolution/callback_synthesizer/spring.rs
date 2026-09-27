@@ -7,7 +7,8 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::edges::{edge_meta, synthesized_edge};
-use super::source::{enclosing_fn, line_of};
+use super::source::enclosing_fn;
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, Node, NodeKind};
@@ -82,7 +83,7 @@ pub(super) fn spring_event_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         if !file.ends_with(".java") {
             continue;
         }
-        let Some(content) = ctx.read_file(&file) else {
+        let Some(content) = ctx.read_file_arc(&file) else {
             continue;
         };
         if content.contains(".publishEvent(") {
@@ -128,13 +129,14 @@ pub(super) fn spring_event_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
     let mut edges = Vec::new();
     let mut seen = HashSet::new();
     for file in publisher_files {
-        let Some(content) = ctx.read_file(&file) else {
+        let Some(content) = ctx.read_file_arc(&file) else {
             continue;
         };
         if !content.contains(".publishEvent(") {
             continue;
         }
         let safe = strip_comments_for_regex(&content, CommentLang::Java);
+        let line_starts = LineStarts::new(&safe);
         let nodes = ctx.get_nodes_in_file(&file);
         let mut added = 0usize;
         for captures in SPRING_PUBLISH_RE.captures_iter(&safe) {
@@ -150,7 +152,7 @@ pub(super) fn spring_event_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
             let Some(targets) = listeners.get(event_type) else {
                 continue;
             };
-            let line = line_of(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let Some(dispatcher) = enclosing_fn(&nodes, line) else {
                 continue;
             };

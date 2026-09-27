@@ -46,12 +46,14 @@
 //!
 //! Ported from `src/resolution/frameworks/fabric.ts`.
 
+use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::types::{
     FrameworkExtractionResult,
     FrameworkResolver,
@@ -66,11 +68,6 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64
-}
-
-/// 1-based line number of the byte offset `index`.
-fn line_at(s: &str, index: usize) -> u32 {
-    (s[..index].matches('\n').count() + 1) as u32
 }
 
 /// 0-based column (bytes since the last newline) of the byte offset `index`.
@@ -183,6 +180,14 @@ fn extract_prop_names(body: &str) -> Vec<String> {
 /// Returns `[]` if the file doesn't look like a ViewManager (no
 /// RCT_EXPORT_VIEW_PROPERTY macros).
 fn extract_legacy_view_manager_nodes(file_path: &str, source: &str) -> Vec<Node> {
+    // 1-based line of a byte offset, indexed on first use (a newline count
+    // per match was quadratic on big files).
+    let line_starts = OnceCell::new();
+    let line_at = |index: usize| {
+        line_starts
+            .get_or_init(|| LineStarts::new(source))
+            .line_of(index)
+    };
     // Cheap gate: no view-property macros at all → not a view manager.
     if !source.contains("RCT_EXPORT_VIEW_PROPERTY")
         && !source.contains("RCT_CUSTOM_VIEW_PROPERTY")
@@ -213,7 +218,7 @@ fn extract_legacy_view_manager_nodes(file_path: &str, source: &str) -> Vec<Node>
     // works for legacy too. The native class IS the manager itself in this
     // case; the convention-based suffix lookup in the synthesizer
     // (`Manager`, `ViewManager`) will find it.
-    let start_line = line_at(source, impl_match.get(0).unwrap().start());
+    let start_line = line_at(impl_match.get(0).unwrap().start());
     let mut component = Node::new(
         format!("fabric-component:{file_path}:{component_name}:{start_line}"),
         NodeKind::Component,
@@ -241,7 +246,7 @@ fn extract_legacy_view_manager_nodes(file_path: &str, source: &str) -> Vec<Node>
             continue;
         }
         seen.insert(prop_name.to_string());
-        let prop_line = line_at(source, m.get(0).unwrap().start());
+        let prop_line = line_at(m.get(0).unwrap().start());
         let mut prop = Node::new(
             format!("fabric-prop:{file_path}:{prop_name}:{prop_line}"),
             NodeKind::Property,
@@ -269,6 +274,14 @@ fn extract_legacy_view_manager_nodes(file_path: &str, source: &str) -> Vec<Node>
 ///
 /// Returns `[]` if no @ReactProp annotations are found.
 fn extract_jvm_view_manager_nodes(file_path: &str, source: &str) -> Vec<Node> {
+    // 1-based line of a byte offset, indexed on first use (a newline count
+    // per match was quadratic on big files).
+    let line_starts = OnceCell::new();
+    let line_at = |index: usize| {
+        line_starts
+            .get_or_init(|| LineStarts::new(source))
+            .line_of(index)
+    };
     static CLASS_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b").unwrap());
     // @ReactProp("name") followed (after optional modifiers / args) by a
@@ -305,7 +318,7 @@ fn extract_jvm_view_manager_nodes(file_path: &str, source: &str) -> Vec<Node> {
     let now = now_ms();
     let mut nodes: Vec<Node> = Vec::new();
 
-    let start_line = line_at(source, class_match.get(0).unwrap().start());
+    let start_line = line_at(class_match.get(0).unwrap().start());
     let mut component = Node::new(
         format!("fabric-component:{file_path}:{component_name}:{start_line}"),
         NodeKind::Component,
@@ -332,7 +345,7 @@ fn extract_jvm_view_manager_nodes(file_path: &str, source: &str) -> Vec<Node> {
             continue;
         }
         seen.insert(prop_name.to_string());
-        let prop_line = line_at(source, m.get(0).unwrap().start());
+        let prop_line = line_at(m.get(0).unwrap().start());
         let mut prop = Node::new(
             format!("fabric-prop:{file_path}:{prop_name}:{prop_line}"),
             NodeKind::Property,
@@ -355,6 +368,14 @@ fn extract_jvm_view_manager_nodes(file_path: &str, source: &str) -> Vec<Node> {
 }
 
 fn extract_fabric_nodes(file_path: &str, source: &str) -> Vec<Node> {
+    // 1-based line of a byte offset, indexed on first use (a newline count
+    // per match was quadratic on big files).
+    let line_starts = OnceCell::new();
+    let line_at = |index: usize| {
+        line_starts
+            .get_or_init(|| LineStarts::new(source))
+            .line_of(index)
+    };
     if !is_fabric_spec(source) {
         return Vec::new();
     }
@@ -370,7 +391,7 @@ fn extract_fabric_nodes(file_path: &str, source: &str) -> Vec<Node> {
     for m in CODEGEN_DECL_RE.captures_iter(source) {
         let whole = m.get(0).unwrap();
         let component_name = &m[1];
-        let start_line = line_at(source, whole.start());
+        let start_line = line_at(whole.start());
         let start_column = column_at(source, whole.start());
 
         // The component itself — kind: 'component' so the existing
@@ -416,7 +437,7 @@ fn extract_fabric_nodes(file_path: &str, source: &str) -> Vec<Node> {
                 .find(&prop_name)
                 .map(|i| i + body_index);
             let prop_line = match prop_before {
-                Some(i) => line_at(source, i),
+                Some(i) => line_at(i),
                 None => 1,
             };
             let mut prop = Node::new(

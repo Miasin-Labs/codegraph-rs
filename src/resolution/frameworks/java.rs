@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::{
     FrameworkExtractionResult,
@@ -24,10 +25,6 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64
-}
-
-fn line_of(content: &str, idx: usize) -> u32 {
-    content[..idx].matches('\n').count() as u32 + 1
 }
 
 /// TS `safe.slice(i, i + 600)` — bounded lookahead window. Byte-based here
@@ -350,6 +347,8 @@ impl FrameworkResolver for SpringResolver {
             Language::Java
         };
         let safe = strip_comments_for_regex(content, CommentLang::Java);
+        // Once per file: a newline count per match was quadratic on big files.
+        let line_starts = LineStarts::new(&safe);
 
         let mut class_prefix = String::new();
         if let Some(cls) = CLASS_REQUEST_MAPPING_RE.captures(&safe) {
@@ -369,7 +368,7 @@ impl FrameworkResolver for SpringResolver {
             let sub = parse_mapping_path(strip_outer_parens(args));
             let route_path = join_path(&class_prefix, &sub);
             let whole = m.get(0).unwrap();
-            let line = line_of(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let mut route_node = Node::new(
                 format!("route:{file_path}:{line}:{method}:{route_path}"),
                 NodeKind::Route,
@@ -426,7 +425,7 @@ impl FrameworkResolver for SpringResolver {
                 .map(|v| v[1].to_uppercase())
                 .unwrap_or_else(|| "ANY".to_string());
             let route_path = join_path(&class_prefix, &parse_mapping_path(args));
-            let line = line_of(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let mut route_node = Node::new(
                 format!("route:{file_path}:{line}:{method}:{route_path}"),
                 NodeKind::Route,
@@ -464,7 +463,15 @@ impl FrameworkResolver for SpringResolver {
         // is the corresponding YAML/properties leaf-key node emitted by
         // extract_spring_config; SpringResolver::resolve looks it up with relaxed
         // binding (kebab/camel/snake collapse).
-        extract_spring_value_bindings(file_path, &safe, lang, now, &mut nodes, &mut references);
+        extract_spring_value_bindings(
+            file_path,
+            &safe,
+            &line_starts,
+            lang,
+            now,
+            &mut nodes,
+            &mut references,
+        );
 
         Some(FrameworkExtractionResult { nodes, references })
     }
@@ -644,10 +651,11 @@ fn strip_wrapping_quotes(s: &str) -> &str {
 
 /// Append `@Value("${k}")` and `@ConfigurationProperties(prefix=...)`
 /// references discovered in `safe` (comments stripped) into the caller's
-/// `nodes`/`references` vectors.
+/// `nodes`/`references` vectors. `line_starts` indexes `safe`.
 fn extract_spring_value_bindings(
     file_path: &str,
     safe: &str,
+    line_starts: &LineStarts,
     lang: Language,
     now: i64,
     nodes: &mut Vec<Node>,
@@ -659,7 +667,7 @@ fn extract_spring_value_bindings(
             continue;
         }
         let whole = m.get(0).unwrap();
-        let line = line_of(safe, whole.start());
+        let line = line_starts.line_of(whole.start());
         let mut bind_node = Node::new(
             format!("spring-value:{file_path}:{line}:{key}"),
             NodeKind::Constant,
@@ -694,7 +702,7 @@ fn extract_spring_value_bindings(
             continue;
         }
         let whole = m.get(0).unwrap();
-        let line = line_of(safe, whole.start());
+        let line = line_starts.line_of(whole.start());
         let mut bind_node = Node::new(
             format!("spring-cp:{file_path}:{line}:{prefix}"),
             NodeKind::Constant,

@@ -5,6 +5,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::resolution::line_index::Lines;
 use crate::resolution::types::{
     FrameworkResolver,
     ResolutionContext,
@@ -235,16 +236,23 @@ fn read_node_span_match(
     pattern: &Regex,
     context: &dyn ResolutionContext,
 ) -> Option<String> {
-    let content = context.read_file(&node.file_path)?;
-    let lines: Vec<&str> = content.split('\n').collect();
+    let content = context.read_file_arc(&node.file_path)?;
+    let lines = Lines::of(&content);
     let start = node.start_line.saturating_sub(1) as usize;
     let end = (node.end_line as usize).min(lines.len());
-    lines
-        .get(start..end)?
+    if start > end {
+        return None;
+    }
+    // Lines lose a trailing `\r`, which the pattern never reaches past its
+    // closing quote.
+    let found = lines
+        .span()
+        .slice(start..end)
         .iter()
         .find_map(|line| pattern.captures(line))
         .and_then(|captures| captures.get(1))
-        .map(|capture| capture.as_str().to_string())
+        .map(|capture| capture.as_str().to_string());
+    found
 }
 
 fn dir_of(path: &str) -> String {

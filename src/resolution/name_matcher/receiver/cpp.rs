@@ -7,6 +7,7 @@ use super::super::support::{
     ptr_ref_re,
     whitespace_re,
 };
+use crate::resolution::line_index::Lines;
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 
 /// C++ keywords/control-flow tokens that can appear right before a receiver
@@ -87,15 +88,6 @@ fn build_declarator_regex(escaped_receiver: &str) -> Regex {
     .expect("valid declarator regex")
 }
 
-/// Split source into lines like JS `split(/\r?\n/)` (a lone `\r` is NOT a
-/// separator; a trailing `\r` before `\n` is stripped).
-fn split_lines(source: &str) -> Vec<&str> {
-    source
-        .split('\n')
-        .map(|l| l.strip_suffix('\r').unwrap_or(l))
-        .collect()
-}
-
 pub(in crate::resolution::name_matcher) fn infer_cpp_receiver_type(
     receiver_name: &str,
     reference: &UnresolvedRef,
@@ -106,7 +98,9 @@ pub(in crate::resolution::name_matcher) fn infer_cpp_receiver_type(
         return None;
     }
 
-    let lines = split_lines(&source);
+    // Lines like JS `split(/\r?\n/)`, indexed once per file rather than
+    // split per reference (quadratic on large files).
+    let lines = Lines::of(&source);
     let call_line_index = ((reference.line as i64) - 1).clamp(0, lines.len() as i64 - 1) as usize;
 
     // Receiver names repeat constantly across a codebase's references
@@ -138,7 +132,7 @@ pub(in crate::resolution::name_matcher) fn infer_cpp_receiver_type(
     });
 
     for i in (0..=call_line_index).rev() {
-        let line = lines[i];
+        let line = lines.get(i).unwrap_or("");
         if line.is_empty() || !receiver_pattern.is_match(line) {
             continue;
         }
@@ -180,7 +174,7 @@ pub(in crate::resolution::name_matcher) fn infer_cpp_receiver_type(
             continue;
         }
 
-        for line in split_lines(&header_source) {
+        for line in Lines::of(&header_source).iter() {
             if !receiver_pattern.is_match(line) {
                 continue;
             }

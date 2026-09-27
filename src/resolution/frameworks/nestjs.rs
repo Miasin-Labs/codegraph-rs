@@ -27,6 +27,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::{
     FrameworkExtractionResult,
@@ -153,6 +154,8 @@ impl FrameworkResolver for NestjsResolver {
         let now = now_ms();
         let lang = detect_language(file_path);
         let safe = strip_comments_for_regex(content, comment_lang(lang));
+        // Once per file: a newline count per match was quadratic on big files.
+        let line_starts = LineStarts::new(&safe);
 
         let add_route = |nodes: &mut Vec<Node>,
                          references: &mut Vec<UnresolvedRef>,
@@ -203,7 +206,7 @@ impl FrameworkResolver for NestjsResolver {
             add_route(
                 &mut nodes,
                 &mut references,
-                line_at(&safe, hit.index),
+                line_starts.line_of(hit.index),
                 &hit.name.to_uppercase(),
                 &path,
                 hit.length,
@@ -224,7 +227,7 @@ impl FrameworkResolver for NestjsResolver {
             add_route(
                 &mut nodes,
                 &mut references,
-                line_at(&safe, hit.index),
+                line_starts.line_of(hit.index),
                 &hit.name.to_uppercase(),
                 &name,
                 hit.length,
@@ -249,7 +252,7 @@ impl FrameworkResolver for NestjsResolver {
             add_route(
                 &mut nodes,
                 &mut references,
-                line_at(&safe, hit.index),
+                line_starts.line_of(hit.index),
                 verb,
                 &path,
                 hit.length,
@@ -279,7 +282,7 @@ impl FrameworkResolver for NestjsResolver {
             add_route(
                 &mut nodes,
                 &mut references,
-                line_at(&safe, hit.index),
+                line_starts.line_of(hit.index),
                 "WS",
                 &path,
                 hit.length,
@@ -686,10 +689,6 @@ fn join_http_path(prefix: &str, sub: &str) -> String {
         .filter(|p| !p.is_empty())
         .collect();
     format!("/{}", parts.join("/"))
-}
-
-fn line_at(safe: &str, index: usize) -> u32 {
-    (safe[..index].matches('\n').count() + 1) as u32
 }
 
 fn detect_language(file_path: &str) -> Language {

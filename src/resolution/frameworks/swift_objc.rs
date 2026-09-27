@@ -44,6 +44,7 @@ use std::sync::{LazyLock, Mutex};
 
 use regex::Regex;
 
+use crate::resolution::line_index::Lines;
 use crate::resolution::types::{
     FrameworkResolver,
     ResolutionContext,
@@ -253,18 +254,19 @@ fn build_objc_map(context: &dyn ResolutionContext) -> HashMap<String, Vec<Node>>
 /// inspect Swift attribute annotations attached to a declaration. Returns
 /// an empty string if the source can't be read.
 fn declaration_source_window(node: &Node, context: &dyn ResolutionContext) -> String {
-    let Some(content) = context.read_file(&node.file_path) else {
+    let Some(content) = context.read_file_arc(&node.file_path) else {
         return String::new();
     };
-    // TS content.split(/\r?\n/) — str::lines() splits on '\n' and strips a
-    // trailing '\r' (the trailing-empty-line difference is harmless here).
-    let lines: Vec<&str> = content.lines().collect();
+    // TS content.split(/\r?\n/) — `str::lines` counting (the trailing-empty-
+    // line difference is harmless here). Indexed, not split: this runs per
+    // selector reference and candidate.
+    let lines = Lines::of(&content);
     let start_idx = node.start_line.saturating_sub(1 + SOURCE_PROBE_LINES) as usize;
-    let end_idx = std::cmp::min(lines.len(), node.start_line as usize);
+    let end_idx = std::cmp::min(lines.str_lines_len(), node.start_line as usize);
     if start_idx >= end_idx {
         return String::new();
     }
-    lines[start_idx..end_idx].join("\n")
+    lines.join(start_idx..end_idx)
 }
 
 /// TS `swiftObjcBridgeResolver` (name: `"swift-objc-bridge"`).

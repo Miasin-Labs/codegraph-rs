@@ -71,13 +71,13 @@ impl Inference<'_> {
             .saturating_sub(MAX_CHAIN_LINES)
             .max(self.first_line)
             .min(index);
-        let above = &self.lines[first..index];
+        let above = self.lines.slice(first..index);
         if above.iter().any(|line| line.len() > MAX_LINE_BYTES) {
             return None;
         }
         let mut before = above.join("\n");
         before.push('\n');
-        before.push_str(self.lines[index].get(..open)?);
+        before.push_str(self.lines.get(index)?.get(..open)?);
         let (receiver, method) = receiver_before(&before)?;
         if !CLOSURE_METHODS.contains(&method) || param > usize::from(is_comparator(method)) {
             return None;

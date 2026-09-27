@@ -244,15 +244,23 @@ fn extract_wire_references(file_path: &str, source: &str) -> Vec<UnresolvedRef> 
 
     let mut refs = Vec::new();
     let from_node_id = format!("file:{file_path}");
+    // Line/column cursor advanced from match to match (matches come in
+    // order): rescanning from the file start per match was quadratic on
+    // bundled files.
+    let (mut scanned, mut line, mut line_start) = (0usize, 1u32, 0usize);
     for caps in WIRE_CALL_RE.captures_iter(source) {
         let whole = caps.get(0).expect("match");
         let wire_name = caps.get(1).expect("group 1").as_str();
 
         // Line/column of the wire-call, for the edge's location.
-        let upto = &source[..whole.start()];
-        let line = upto.bytes().filter(|&b| b == b'\n').count() as u32 + 1;
-        let last_nl = upto.rfind('\n').map(|i| i as isize).unwrap_or(-1);
-        let column = (whole.start() as isize - last_nl - 1).max(0) as u32;
+        for (at, byte) in source.as_bytes()[scanned..whole.start()].iter().enumerate() {
+            if *byte == b'\n' {
+                line += 1;
+                line_start = scanned + at + 1;
+            }
+        }
+        scanned = whole.start();
+        let column = (whole.start() - line_start) as u32;
 
         refs.push(UnresolvedRef {
             from_node_id: from_node_id.clone(),

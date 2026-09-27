@@ -26,7 +26,7 @@ impl ResolverContext {
         Path::new(&self.project_root).join(file_path).exists()
     }
 
-    pub(super) fn cached_file_text(&self, file_path: &str) -> Option<String> {
+    pub(super) fn cached_file_text(&self, file_path: &str) -> Option<Arc<str>> {
         let key = file_path.to_string();
         if self.file_cache.borrow().has(&key) {
             return self.file_cache.borrow_mut().get(&key).cloned().flatten();
@@ -35,8 +35,10 @@ impl ResolverContext {
         let full_path = Path::new(&self.project_root).join(file_path);
         match fs::read(&full_path) {
             Ok(bytes) => {
-                let content = String::from_utf8_lossy(&bytes).into_owned();
-                self.file_cache.borrow_mut().set(key, Some(content.clone()));
+                let content: Arc<str> = Arc::from(String::from_utf8_lossy(&bytes));
+                self.file_cache
+                    .borrow_mut()
+                    .set(key, Some(Arc::clone(&content)));
                 Some(content)
             }
             Err(error) => {

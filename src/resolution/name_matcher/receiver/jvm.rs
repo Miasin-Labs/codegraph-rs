@@ -1,6 +1,6 @@
 use super::super::support::{angle_re, array_brackets_re, dot_space_split_re, varargs_re};
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
-use crate::types::{Node, NodeKind};
+use crate::types::NodeKind;
 
 /// Java/Kotlin: infer a receiver's declared type by walking field declarations
 /// in the class enclosing the call site. The field's `signature` is already in
@@ -16,34 +16,21 @@ pub(in crate::resolution::name_matcher) fn infer_java_field_receiver_type(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
 ) -> Option<String> {
-    let in_file = context.get_nodes_in_file(&reference.file_path);
-    if in_file.is_empty() {
-        return None;
-    }
-
-    // Find the class enclosing the call line (tightest match by latest start).
-    let mut enclosing: Option<&Node> = None;
-    for n in &in_file {
-        if n.kind != NodeKind::Class && n.kind != NodeKind::Interface {
-            continue;
-        }
-        if n.language != reference.language {
-            continue;
-        }
-        let end = n.end_line;
-        if n.start_line <= reference.line && end >= reference.line {
-            match enclosing {
-                Some(e) if n.start_line < e.start_line => {}
-                _ => enclosing = Some(n),
-            }
-        }
-    }
-    let enclosing = enclosing?;
+    // The class enclosing the call line (tightest: latest start). Indexed
+    // lookups — this runs per reference.
+    let enclosing = context
+        .scopes_enclosing_line(&reference.file_path, reference.line)
+        .into_iter()
+        .find(|n| {
+            matches!(n.kind, NodeKind::Class | NodeKind::Interface)
+                && n.language == reference.language
+                && n.end_line >= reference.line
+        })?;
 
     let enclosing_end = enclosing.end_line;
-    let field = in_file.iter().find(|n| {
+    let fields = context.get_nodes_in_file_named(&reference.file_path, receiver_name);
+    let field = fields.iter().find(|n| {
         n.kind == NodeKind::Field
-            && n.name == receiver_name
             && n.language == reference.language
             && n.start_line >= enclosing.start_line
             && n.end_line <= enclosing_end

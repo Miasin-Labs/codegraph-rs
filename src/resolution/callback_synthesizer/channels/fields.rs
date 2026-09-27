@@ -13,6 +13,7 @@ use super::super::source::{
 };
 use crate::db::QueryBuilder;
 use crate::error::Result;
+use crate::resolution::line_index;
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, EdgeKind, Node, NodeKind};
 
@@ -87,10 +88,12 @@ pub(in crate::resolution::callback_synthesizer) fn field_channel_edges(
             let Some(caller) = queries.get_node_by_id(&e.source)? else {
                 continue;
             };
-            let content = ctx.read_file(&caller.file_path);
-            let line_text = content
-                .as_deref()
-                .and_then(|c| c.split('\n').nth((line - 1) as usize));
+            // Shared and line-indexed: this runs per incoming call edge. The
+            // regex ignores a trailing `\r`, so the stripped line matches alike.
+            let lines = ctx
+                .read_file_arc(&caller.file_path)
+                .map(|content| line_index::Lines::of(&content));
+            let line_text = lines.as_ref().and_then(|l| l.get((line - 1) as usize));
             let Some(am) = line_text.and_then(|t| arg_re.captures(t)) else {
                 continue;
             };

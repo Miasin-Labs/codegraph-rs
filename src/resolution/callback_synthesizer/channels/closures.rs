@@ -6,9 +6,10 @@ use serde_json::Value;
 
 use super::super::edges::{edge_meta, synthesized_edge};
 use super::super::ordered::OrderedMap;
-use super::super::source::{count_newlines, for_each_method_and_function, node_source};
+use super::super::source::{for_each_method_and_function, node_source};
 use crate::db::QueryBuilder;
 use crate::error::Result;
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, Node};
 
@@ -83,7 +84,9 @@ pub(in crate::resolution::callback_synthesizer) fn closure_collection_edges(
         if !has_for_each && !has_append {
             return;
         }
-        let line_at = |idx: usize| m.start_line + count_newlines(&src[..idx]);
+        // Once per node: counting newlines per match was quadratic on bundles.
+        let line_starts = LineStarts::new(&src);
+        let line_at = |idx: usize| m.start_line + line_starts.newlines_before(idx);
 
         if has_for_each {
             for d in CC_DISPATCH_RE.captures_iter(&src) {

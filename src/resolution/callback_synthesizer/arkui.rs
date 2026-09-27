@@ -7,9 +7,10 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::edges::{edge_meta, synthesized_edge};
-use super::source::{enclosing_fn, line_of, node_source};
+use super::source::{enclosing_fn, node_source};
 use crate::db::QueryBuilder;
 use crate::error::Result;
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, EdgeKind, Node, NodeKind};
@@ -241,13 +242,14 @@ pub(super) fn arkui_emitter_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         if !file.ends_with(".ets") {
             continue;
         }
-        let Some(content) = ctx.read_file(&file) else {
+        let Some(content) = ctx.read_file_arc(&file) else {
             continue;
         };
         if !content.contains("emitter.") {
             continue;
         }
         let safe = strip_comments_for_regex(&content, CommentLang::Typescript);
+        let line_starts = LineStarts::new(&safe);
         let nodes = ctx
             .get_nodes_in_file(&file)
             .into_iter()
@@ -260,7 +262,7 @@ pub(super) fn arkui_emitter_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
                 continue;
             };
             let whole = capture.get(0).expect("whole emitter match");
-            let line = line_of(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let Some(enclosing) = enclosing_fn(&nodes, line) else {
                 continue;
             };
@@ -327,13 +329,14 @@ pub(super) fn arkui_router_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         if !file.ends_with(".ets") {
             continue;
         }
-        let Some(content) = ctx.read_file(file) else {
+        let Some(content) = ctx.read_file_arc(file) else {
             continue;
         };
         if !content.contains("router.") {
             continue;
         }
         let safe = strip_comments_for_regex(&content, CommentLang::Typescript);
+        let line_starts = LineStarts::new(&safe);
         let nodes = ctx
             .get_nodes_in_file(file)
             .into_iter()
@@ -342,7 +345,7 @@ pub(super) fn arkui_router_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         for capture in ARKUI_ROUTER_RE.captures_iter(&safe) {
             let url = &capture[1];
             let whole = capture.get(0).expect("whole router match");
-            let line = line_of(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let Some(enclosing) = enclosing_fn(&nodes, line) else {
                 continue;
             };

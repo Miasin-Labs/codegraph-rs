@@ -14,6 +14,7 @@ use std::sync::{LazyLock, Mutex};
 use regex::Regex;
 
 use super::cargo_workspace::get_cargo_workspace_crate_map;
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::{
     FrameworkExtractionResult,
@@ -52,12 +53,6 @@ fn now_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
-}
-
-/// Number of the line containing byte offset `idx` (1-based) — TS
-/// `safe.slice(0, idx).split('\n').length`.
-fn line_at(safe: &str, idx: usize) -> u32 {
-    (safe[..idx].matches('\n').count() + 1) as u32
 }
 
 /// Index of the ')' that matches the '(' at `open_idx`, or `None` if unbalanced.
@@ -319,6 +314,8 @@ impl FrameworkResolver for RustResolver {
         let mut references: Vec<UnresolvedRef> = Vec::new();
         let now = now_millis();
         let safe = strip_comments_for_regex(content, CommentLang::Rust);
+        // Once per file: a newline count per match was quadratic on big files.
+        let line_starts = LineStarts::new(&safe);
 
         // Actix-web / Rocket attribute: #[get("/path")] fn handler(..)
         // Capture the method, path, and the fn identifier that follows.
@@ -335,7 +332,7 @@ impl FrameworkResolver for RustResolver {
             let whole = caps.get(0).unwrap();
             let method = caps.get(1).unwrap().as_str();
             let route_path = caps.get(2).unwrap().as_str();
-            let line = line_at(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let upper = method.to_uppercase();
 
             let mut route_node = Node::new(
@@ -395,7 +392,7 @@ impl FrameworkResolver for RustResolver {
                 continue;
             };
             let route_path = path_caps.get(1).unwrap().as_str();
-            let line = line_at(&safe, m.start());
+            let line = line_starts.line_of(m.start());
 
             let method_body = &args[path_caps.get(0).unwrap().end()..];
             for mh in METHOD_HANDLER_RE.captures_iter(method_body) {
@@ -492,7 +489,7 @@ impl FrameworkResolver for RustResolver {
         for caps in RESOURCE_RE.captures_iter(&safe) {
             let whole = caps.get(0).unwrap();
             let route_path = caps.get(1).unwrap().as_str();
-            let start_line = line_at(&safe, whole.start());
+            let start_line = line_starts.line_of(whole.start());
             let after = whole.end();
             // Bound the resource's method chain at the next resource() to avoid bleed.
             let next_res = safe[after..].find("web::resource").map(|i| i + after);
@@ -540,7 +537,7 @@ impl FrameworkResolver for RustResolver {
             .unwrap()
         });
         for caps in APP_ROUTE_RE.captures_iter(&safe) {
-            let line = line_at(&safe, caps.get(0).unwrap().start());
+            let line = line_starts.line_of(caps.get(0).unwrap().start());
             push_actix_route(
                 &mut nodes,
                 &mut references,

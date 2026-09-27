@@ -7,7 +7,8 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::edges::{edge_meta, synthesized_edge};
-use super::source::{enclosing_fn, line_of};
+use super::source::FnIndex;
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, Node, NodeKind};
@@ -181,7 +182,7 @@ pub(super) fn object_registry_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         if !is_registry_source(&file) {
             continue;
         }
-        let Some(content) = ctx.read_file(&file) else {
+        let Some(content) = ctx.read_file_arc(&file) else {
             continue;
         };
         if content.is_empty() || !content.contains('[') {
@@ -192,6 +193,8 @@ pub(super) fn object_registry_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
             continue;
         }
         let safe = strip_comments_for_regex(&content, comment_language(&file));
+        // Once per file: counting newlines per match was quadratic on big files.
+        let line_starts = LineStarts::new(&safe);
 
         let mut dispatches = Vec::new();
         for captures in REGISTRY_DISPATCH_RE.captures_iter(&safe) {
@@ -212,7 +215,7 @@ pub(super) fn object_registry_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
                     .expect("registry reference")
                     .as_str()
                     .to_string(),
-                line: line_of(&safe, matched.start()),
+                line: line_starts.line_of(matched.start()),
                 chained,
             });
         }
@@ -243,7 +246,7 @@ pub(super) fn object_registry_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
                     lhs.to_string(),
                     Registry {
                         names,
-                        line: line_of(&safe, matched.start()),
+                        line: line_starts.line_of(matched.start()),
                     },
                 );
             }
@@ -253,11 +256,12 @@ pub(super) fn object_registry_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         }
 
         let nodes_in_file = ctx.get_nodes_in_file(&file);
+        let fns = FnIndex::new(&nodes_in_file);
         for dispatch in dispatches {
             let Some(registry) = registries.get(normalize_registry(&dispatch.registry)) else {
                 continue;
             };
-            let Some(dispatcher) = enclosing_fn(&nodes_in_file, dispatch.line) else {
+            let Some(dispatcher) = fns.enclosing(dispatch.line) else {
                 continue;
             };
             let mut added = 0usize;

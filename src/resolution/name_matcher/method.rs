@@ -296,8 +296,9 @@ pub fn match_method_call_hinted(
                 continue;
             }
 
-            let nodes_in_file = context.get_nodes_in_file(&class_node.file_path);
-            let method_node = nodes_in_file.iter().find(|n| {
+            let candidates =
+                methods_named_in_file(context, &class_node.file_path, method_name, apex);
+            let method_node = candidates.iter().find(|n| {
                 n.kind == NodeKind::Method
                     && names_eq(&n.name, method_name)
                     && n.qualified_name.contains(&class_node.name)
@@ -331,8 +332,9 @@ pub fn match_method_call_hinted(
                     continue;
                 }
 
-                let nodes_in_file = context.get_nodes_in_file(&class_node.file_path);
-                let method_node = nodes_in_file.iter().find(|n| {
+                let candidates =
+                    methods_named_in_file(context, &class_node.file_path, method_name, apex);
+                let method_node = candidates.iter().find(|n| {
                     n.kind == NodeKind::Method
                         && names_eq(&n.name, method_name)
                         && n.qualified_name.contains(&class_node.name)
@@ -430,4 +432,22 @@ pub fn match_method_call_hinted(
     }
 
     None
+}
+
+/// The nodes of `file_path` that may be `method_name` (any case for Apex),
+/// by name lookup — per reference and class candidate, so never a copy of
+/// every node in the file. Callers still compare names exactly.
+fn methods_named_in_file(
+    context: &dyn ResolutionContext,
+    file_path: &str,
+    method_name: &str,
+    ignore_case: bool,
+) -> Vec<Node> {
+    if ignore_case {
+        let mut nodes = context.get_nodes_by_lower_name(&method_name.to_lowercase());
+        nodes.retain(|node| node.file_path == file_path);
+        nodes
+    } else {
+        context.get_nodes_in_file_named(file_path, method_name)
+    }
 }

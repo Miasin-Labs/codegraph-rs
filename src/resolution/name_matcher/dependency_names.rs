@@ -12,8 +12,11 @@
 //! several (a dropped receiver's call keeps nearest-first among them, as
 //! `rust_call` picks).
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::resolution::line_index::SourceMemo;
 use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
 use crate::types::{Language, Node, NodeKind};
 
@@ -51,12 +54,23 @@ pub(super) fn match_dependency_method(
     })
 }
 
-/// The calling file's text, for the owner check.
-pub(super) struct FileText(Option<Arc<str>>);
+/// The calling file's text and identifiers, for the owner check.
+pub(super) struct FileText(Option<(Arc<str>, Arc<HashSet<String>>)>);
 
 impl FileText {
     pub(super) fn read(reference: &UnresolvedRef, context: &dyn ResolutionContext) -> Self {
-        FileText(context.read_file_arc(&reference.file_path))
+        thread_local! {
+            /// Each file's identifiers: the check runs per candidate method
+            /// of every reference, and scanning the file for a word each
+            /// time was quadratic on large files.
+            static IDENTS: RefCell<SourceMemo<HashSet<String>>> =
+                const { RefCell::new(SourceMemo::new()) };
+        }
+        FileText(context.read_file_arc(&reference.file_path).map(|text| {
+            let idents =
+                IDENTS.with(|memo| memo.borrow_mut().get_or_insert_with(&text, identifiers));
+            (text, idents)
+        }))
     }
 
     /// The file names the type (or trait) `method` is defined on.
@@ -68,16 +82,33 @@ impl FileText {
         else {
             return false;
         };
-        self.0
-            .as_deref()
-            .is_some_and(|text| names_word(text, owner))
+        self.0.as_ref().is_some_and(|(text, idents)| {
+            if !owner.is_empty() && owner.bytes().all(is_ident_byte) {
+                idents.contains(owner)
+            } else {
+                names_word(text, owner)
+            }
+        })
     }
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// The maximal identifier runs of `text`: a word made of identifier bytes
+/// is in this set exactly when [`names_word`] finds it.
+fn identifiers(text: &str) -> HashSet<String> {
+    text.split(|ch: char| !(ch.is_ascii() && is_ident_byte(ch as u8)))
+        .filter(|run| !run.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// `word` occurs in `text` as a whole identifier.
 fn names_word(text: &str, word: &str) -> bool {
     let bytes = text.as_bytes();
-    let is_ident = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let is_ident = is_ident_byte;
     text.match_indices(word).any(|(start, _)| {
         let end = start + word.len();
         start
@@ -89,12 +120,24 @@ fn names_word(text: &str, word: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::names_word;
+    use super::{identifiers, names_word};
 
     #[test]
     fn owner_names_are_whole_words() {
         assert!(names_word("use crate::layout::Tile;", "Tile"));
         assert!(!names_word("let tiles = TileSet::new();", "Tile"));
         assert!(names_word("fn f(t: &Tile<W>)", "Tile"));
+    }
+
+    #[test]
+    fn identifier_set_agrees_with_the_word_scan() {
+        let text =
+            "use crate::layout::Tile;\nlet tiles = TileSet::new(); // é_x Ω9\nfn f(t: &Tile<W>) {}";
+        let idents = identifiers(text);
+        for word in [
+            "Tile", "TileSet", "tiles", "tile", "W", "layout", "x", "_x", "9", "new", "fn",
+        ] {
+            assert_eq!(idents.contains(word), names_word(text, word), "{word}");
+        }
     }
 }

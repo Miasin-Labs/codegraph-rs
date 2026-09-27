@@ -37,7 +37,8 @@ pub fn resolve_via_import(
     if imports.is_empty() {
         // TS: `!context.readFile(ref.filePath)` — falsy covers both a
         // missing file (null) and an empty one ('').
-        let content = context.read_file(&reference.file_path);
+        // Per reference: share the cached text, never copy the file.
+        let content = context.read_file_arc(&reference.file_path);
         if content.is_none_or(|c| c.is_empty()) {
             return None;
         }

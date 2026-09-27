@@ -7,9 +7,10 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::edges::{edge_meta, synthesized_edge};
-use super::source::{count_newlines, enclosing_fn, node_source};
+use super::source::{FnIndex, count_newlines, node_source};
 use crate::db::QueryBuilder;
 use crate::error::Result;
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::ResolutionContext;
 use crate::types::{Edge, Language, Node, NodeKind};
@@ -222,7 +223,7 @@ pub(super) fn pinia_store_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         if !is_consumer_file(file) {
             continue;
         }
-        let Some(content) = ctx.read_file(file) else {
+        let Some(content) = ctx.read_file_arc(file) else {
             continue;
         };
         if !content.contains("defineStore") {
@@ -245,7 +246,7 @@ pub(super) fn pinia_store_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         if !is_consumer_file(file) {
             continue;
         }
-        let Some(content) = ctx.read_file(file) else {
+        let Some(content) = ctx.read_file_arc(file) else {
             continue;
         };
         if !content.contains("Store") {
@@ -270,6 +271,10 @@ pub(super) fn pinia_store_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         let fallback = nodes_in_file
             .iter()
             .find(|node| node.kind == NodeKind::Component);
+        // Once per file: a newline count and node scan per call were
+        // quadratic on bundled files.
+        let line_starts = LineStarts::new(&safe);
+        let fns = FnIndex::new(&nodes_in_file);
         let mut added = 0usize;
         for capture in PINIA_CALL_RE.captures_iter(&safe) {
             if added >= PINIA_FANOUT_CAP {
@@ -281,8 +286,8 @@ pub(super) fn pinia_store_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
                 continue;
             };
             let method = capture.get(2).expect("store method").as_str();
-            let line = count_newlines(&safe[..matched.start()]) + 1;
-            let Some(dispatcher) = enclosing_fn(&nodes_in_file, line).or(fallback) else {
+            let line = line_starts.line_of(matched.start());
+            let Some(dispatcher) = fns.enclosing(line).or(fallback) else {
                 continue;
             };
             let target = ctx.get_nodes_by_name(method).into_iter().find(|candidate| {
@@ -324,7 +329,7 @@ fn is_vue_store_file(
     if let Some(cached) = cache.get(file) {
         return *cached;
     }
-    let is_store = ctx.read_file(file).is_some_and(|content| {
+    let is_store = ctx.read_file_arc(file).is_some_and(|content| {
         let distinct: HashSet<&str> = VUEX_STORE_SIGNAL
             .find_iter(&content)
             .map(|matched| matched.as_str())
@@ -379,7 +384,7 @@ pub(super) fn vuex_dispatch_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         if !is_consumer_file(&file) {
             continue;
         }
-        let Some(content) = ctx.read_file(&file) else {
+        let Some(content) = ctx.read_file_arc(&file) else {
             continue;
         };
         if !content.contains("dispatch(") && !content.contains("commit(") {
@@ -390,6 +395,10 @@ pub(super) fn vuex_dispatch_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
         let fallback = nodes_in_file
             .iter()
             .find(|node| node.kind == NodeKind::Component);
+        // Once per file: a newline count and node scan per dispatch were
+        // quadratic on bundled files.
+        let line_starts = LineStarts::new(&safe);
+        let fns = FnIndex::new(&nodes_in_file);
         let mut added = 0usize;
         for capture in VUEX_DISPATCH_RE.captures_iter(&safe) {
             if added >= VUEX_FANOUT_CAP {
@@ -397,8 +406,8 @@ pub(super) fn vuex_dispatch_edges(ctx: &dyn ResolutionContext) -> Vec<Edge> {
             }
             let matched = capture.get(0).expect("vuex dispatch");
             let key = capture.get(1).expect("vuex key").as_str();
-            let line = count_newlines(&safe[..matched.start()]) + 1;
-            let Some(dispatcher) = enclosing_fn(&nodes_in_file, line).or(fallback) else {
+            let line = line_starts.line_of(matched.start());
+            let Some(dispatcher) = fns.enclosing(line).or(fallback) else {
                 continue;
             };
             let Some(target) = resolve_vuex_target(ctx, &mut store_file_cache, key, &file) else {

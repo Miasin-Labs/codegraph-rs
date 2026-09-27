@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use super::lookup::{defines_type, lookup_path};
 use crate::resolution::external::open::{ForeignGraph, GraphCache};
+use crate::resolution::line_index::Lines;
 use crate::resolution::name_matcher::UseBinding;
 use crate::resolution::name_matcher::external::module_path;
 use crate::resolution::types::ResolutionContext;
@@ -28,12 +29,9 @@ pub(super) fn aliased_type(
     let source = alias.graph.context.read_file_arc(&alias.node.file_path)?;
     let start = (alias.node.start_line as usize).checked_sub(1)?;
     let span = (alias.node.end_line.max(alias.node.start_line) as usize).saturating_sub(start);
-    let text = source
-        .split('\n')
-        .skip(start)
-        .take(span.max(1))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let text = Lines::of(&source)
+        .raw_text(start..start + span.max(1))
+        .replace('\n', " ");
     let declared = text.find(&format!("type {}", alias.node.name))?;
     let target = top_level_assignment(&text[declared..])?;
     type_path(
@@ -61,10 +59,10 @@ pub(super) fn deref_target(
                 && graph.in_crate(&node.file_path)
         })?;
     let source = graph.context.read_file_arc(&deref.file_path)?;
-    let lines: Vec<&str> = source.split('\n').collect();
+    let lines = Lines::of(&source);
     let at = (deref.start_line as usize).checked_sub(1)?.min(lines.len());
     // The impl block's `type Target = …;`, between its header and the fn.
-    for line in lines[..at].iter().rev().take(40) {
+    for line in lines.span().slice(0..at).iter().rev().take(40) {
         let trimmed = line.trim();
         if trimmed.starts_with("impl") || trimmed.starts_with("unsafe impl") {
             return None;

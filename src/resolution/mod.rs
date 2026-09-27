@@ -16,6 +16,7 @@ pub mod go_module;
 pub mod gpu;
 pub mod import_resolver;
 mod jvm_scope;
+pub(crate) mod line_index;
 pub mod lru_cache;
 pub mod name_matcher;
 pub mod path_aliases;

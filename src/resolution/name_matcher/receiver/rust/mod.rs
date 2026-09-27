@@ -37,7 +37,6 @@ mod crates;
 mod expr;
 mod fields;
 mod items;
-mod line_index;
 mod links;
 mod locals;
 mod lookup;
@@ -60,6 +59,7 @@ pub(in crate::resolution::name_matcher) use lookup::{
 pub(in crate::resolution::name_matcher) use types::signature_return;
 use types::{named_type, signature_params, unwrapped};
 
+use crate::resolution::line_index::{LineSpan, Lines};
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::{Language, Node, NodeKind};
 
@@ -104,7 +104,8 @@ fn with_inference<T>(
     infer: impl FnOnce(&Inference<'_>, Site) -> Option<T>,
 ) -> Option<T> {
     let source = context.read_file_arc(&reference.file_path)?;
-    let lines = line_index::lines(&source);
+    let lines = Lines::of(&source);
+    let lines = lines.span();
     let call_line = (reference.line as usize)
         .saturating_sub(1)
         .min(lines.len().checked_sub(1)?);
@@ -116,7 +117,7 @@ fn with_inference<T>(
     let inference = Inference {
         reference,
         context,
-        lines: &lines,
+        lines,
         // Outside any fn (a `static` initializer) no local is in scope.
         first_line: scope.as_ref().map_or(call_line + 1, |node| {
             node.start_line.saturating_sub(1) as usize
@@ -152,15 +153,12 @@ impl Site {
 /// The innermost Rust fn or method whose lines contain the reference.
 fn enclosing_fn(reference: &UnresolvedRef, context: &dyn ResolutionContext) -> Option<Node> {
     context
-        .get_nodes_in_file(&reference.file_path)
+        .scopes_enclosing_line(&reference.file_path, reference.line)
         .into_iter()
-        .filter(|node| {
+        .find(|node| {
             node.language == Language::Rust
                 && matches!(node.kind, NodeKind::Function | NodeKind::Method)
-                && node.start_line <= reference.line
-                && node.end_line.max(node.start_line) >= reference.line
         })
-        .max_by_key(|node| node.start_line)
 }
 
 /// The impl type (or trait) a method belongs to: `Graph` for `Graph::load`.
@@ -200,7 +198,7 @@ enum Origin {
 struct Inference<'a> {
     reference: &'a UnresolvedRef,
     context: &'a dyn ResolutionContext,
-    lines: &'a [&'a str],
+    lines: LineSpan<'a>,
     /// Index of the enclosing fn's first line.
     first_line: usize,
     signature: Option<&'a str>,
@@ -317,16 +315,18 @@ impl Inference<'_> {
             .filter(|last| *last >= self.first_line)
             .map_or(0..0, |last| self.first_line..last + 1);
         for index in lines.rev() {
-            let full = self.lines[index];
+            let Some(full) = self.lines.get(index) else {
+                continue;
+            };
             if full.len() > MAX_LINE_BYTES {
                 continue;
             }
             let on_call_line = column.is_some() && Some(index) == last_line;
-            let (line, next_lines): (&str, &[&str]) = match column {
-                Some(column) if on_call_line => (prefix(full, column), &[]),
-                _ => (full, &self.lines[index + 1..]),
+            let (line, next_lines) = match column {
+                Some(column) if on_call_line => (prefix(full, column), self.lines.slice(0..0)),
+                _ => (full, self.lines.from(index + 1)),
             };
-            let value = match binding_in_line(line, next_lines, name) {
+            let value = match binding_in_line(line, next_lines.iter(), name) {
                 None => continue,
                 Some(Binding::Opaque) => None,
                 Some(Binding::Typed(written)) => Some(self.here(written.into_owned())),
@@ -435,7 +435,7 @@ impl Inference<'_> {
         depth: u8,
     ) -> Option<Value> {
         (index + 1..=last_line).find_map(|assigned| {
-            let line = self.lines[assigned];
+            let line = self.lines.get(assigned)?;
             let rest = line.trim_start().strip_prefix(name)?.trim_start();
             let init = rest
                 .strip_prefix('=')
@@ -455,8 +455,8 @@ impl Inference<'_> {
 
     /// The statement text from byte `offset` of line `index` to its `;`.
     fn statement(&self, index: usize, offset: usize) -> Option<String> {
-        let mut text = self.lines[index].get(offset..)?.to_string();
-        for next in self.lines.iter().skip(index + 1).take(MAX_STATEMENT_LINES) {
+        let mut text = self.lines.get(index)?.get(offset..)?.to_string();
+        for next in self.lines.from(index + 1).iter().take(MAX_STATEMENT_LINES) {
             if statement_end(&text).is_some() {
                 break;
             }

@@ -31,7 +31,7 @@ pub struct ResolverContext {
     pub(super) project_root: String,
     pub(super) queries: QueryBuilder,
     pub(super) node_cache: RefCell<LRUCache<String, Vec<Node>>>,
-    pub(super) file_cache: RefCell<LRUCache<String, Option<String>>>,
+    pub(super) file_cache: RefCell<LRUCache<String, Option<Arc<str>>>>,
     pub(super) import_mapping_cache: RefCell<LRUCache<String, Vec<ImportMapping>>>,
     pub(super) re_export_cache: RefCell<LRUCache<String, Vec<ReExport>>>,
     pub(super) rust_use_cache: RefCell<LRUCache<String, Arc<[RustUse]>>>,
@@ -167,6 +167,11 @@ impl ResolutionContext for ResolverContext {
     }
 
     fn read_file(&self, file_path: &str) -> Option<String> {
+        self.cached_file_text(file_path)
+            .map(|text| text.to_string())
+    }
+
+    fn read_file_arc(&self, file_path: &str) -> Option<Arc<str>> {
         self.cached_file_text(file_path)
     }
 

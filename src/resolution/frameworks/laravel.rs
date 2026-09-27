@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::{
     FrameworkExtractionResult,
@@ -24,10 +25,6 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64
-}
-
-fn line_of(content: &str, idx: usize) -> u32 {
-    content[..idx].matches('\n').count() as u32 + 1
 }
 
 /// Laravel facade mappings to underlying classes.
@@ -171,13 +168,15 @@ impl FrameworkResolver for LaravelResolver {
         let mut references: Vec<UnresolvedRef> = Vec::new();
         let now = now_millis();
         let safe = strip_comments_for_regex(content, CommentLang::Php);
+        // Once per file: a newline count per match was quadratic on big files.
+        let line_starts = LineStarts::new(&safe);
 
         for m in ROUTE_RE.captures_iter(&safe) {
             let method = m.get(1).unwrap().as_str();
             let route_path = m.get(2).unwrap().as_str();
             let handler_expr = m.get(3).unwrap().as_str();
             let whole = m.get(0).unwrap();
-            let line = line_of(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let upper = method.to_uppercase();
             let mut route_node = Node::new(
                 format!("route:{file_path}:{line}:{upper}:{route_path}"),
@@ -213,7 +212,7 @@ impl FrameworkResolver for LaravelResolver {
             let resource_name = m.get(2).unwrap().as_str();
             let handler_expr = m.get(3).map(|g| g.as_str());
             let whole = m.get(0).unwrap();
-            let line = line_of(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let mut route_node = Node::new(
                 format!("route:{file_path}:{line}:RESOURCE:{resource_name}"),
                 NodeKind::Route,

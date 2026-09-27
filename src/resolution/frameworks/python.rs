@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 
+use crate::resolution::line_index::LineStarts;
 use crate::resolution::strip_comments::{CommentLang, strip_comments_for_regex};
 use crate::resolution::types::{
     FrameworkExtractionResult,
@@ -24,11 +25,6 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64
-}
-
-/// 1-based line of a byte offset (TS `content.slice(0, idx).split('\n').length`).
-fn line_of(content: &str, idx: usize) -> u32 {
-    content[..idx].matches('\n').count() as u32 + 1
 }
 
 // =============================================================================
@@ -153,12 +149,14 @@ impl FrameworkResolver for DjangoResolver {
         let mut references: Vec<UnresolvedRef> = Vec::new();
         let now = now_millis();
         let safe = strip_comments_for_regex(content, CommentLang::Python);
+        // Once per file: a newline count per match was quadratic on big files.
+        let line_starts = LineStarts::new(&safe);
 
         for m in DJANGO_ROUTE_RE.captures_iter(&safe) {
             let url_path = m.get(2).unwrap().as_str();
             let handler_expr = m.get(3).unwrap().as_str();
             let whole = m.get(0).unwrap();
-            let line = line_of(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
 
             let mut route_node = Node::new(
                 format!("route:{file_path}:{line}:{url_path}"),
@@ -202,7 +200,7 @@ impl FrameworkResolver for DjangoResolver {
                 continue;
             }
             let whole = m.get(0).unwrap();
-            let line = line_of(&safe, whole.start());
+            let line = line_starts.line_of(whole.start());
             let mut route_node = Node::new(
                 format!("route:{file_path}:{line}:VIEWSET:{prefix}"),
                 NodeKind::Route,
@@ -524,6 +522,7 @@ fn extract_decorator_routes(
     let mut nodes: Vec<Node> = Vec::new();
     let mut references: Vec<UnresolvedRef> = Vec::new();
     let now = now_millis();
+    let line_starts = LineStarts::new(content);
     for m in opts.decorator_regex.captures_iter(content) {
         let route_path = m.get(opts.path_group).map(|g| g.as_str()).unwrap_or("");
         let mut method = opts.default_method.to_string();
@@ -539,7 +538,7 @@ fn extract_decorator_routes(
             }
         }
         let whole = m.get(0).unwrap();
-        let line = line_of(content, whole.start());
+        let line = line_starts.line_of(whole.start());
         let display_path = if route_path.is_empty() {
             "/"
         } else {
@@ -615,13 +614,14 @@ fn extract_flask_restful(file_path: &str, safe: &str) -> FrameworkExtractionResu
     let mut nodes: Vec<Node> = Vec::new();
     let mut references: Vec<UnresolvedRef> = Vec::new();
     let now = now_millis();
+    let line_starts = LineStarts::new(safe);
     for m in FLASK_RESTFUL_RE.captures_iter(safe) {
         let class_name = m.get(1).unwrap().as_str();
         let paths: Vec<&str> = QUOTED_PATH_RE
             .captures_iter(m.get(2).unwrap().as_str())
             .map(|c| c.get(1).unwrap().as_str())
             .collect();
-        let line = line_of(safe, m.get(0).unwrap().start());
+        let line = line_starts.line_of(m.get(0).unwrap().start());
         for route_path in paths {
             let mut route_node = Node::new(
                 format!("route:{file_path}:{line}:ANY:{route_path}"),
