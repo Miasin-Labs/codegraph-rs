@@ -206,6 +206,19 @@ impl Budget {
     pub fn is_exhausted(&self) -> bool {
         self.exhausted
     }
+
+    /// Check the deadline now (for work outside the search: matching,
+    /// lowering); past it, the budget is spent.
+    pub fn check_deadline(&mut self) -> bool {
+        if !self.exhausted
+            && self
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.exhausted = true;
+        }
+        !self.exhausted
+    }
 }
 
 /// Run `spec` over `func` alone: the flows from its sources to its sinks.

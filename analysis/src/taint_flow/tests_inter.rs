@@ -705,3 +705,21 @@ fn a_reference_parameter_assigned_assigns_the_callers_variable() {
         .collect();
     assert_eq!(sinks, vec!["bad"], "a by-value parameter is a copy");
 }
+
+#[test]
+fn a_spent_budget_stops_and_says_so() {
+    let methods = methods(PARAM);
+    let specs = specs(
+        &methods,
+        &[
+            ("source", "req.getParameter(\"a\")", 0),
+            ("sink", "executeQuery(q)|q", 0),
+        ],
+    );
+    let mut solver = Solver::new(&methods.functions);
+    let solution = solver.run(&specs, &mut Budget::new(3, None));
+    assert!(solution.partial);
+    let solution = solver.run(&specs, &mut Budget::unlimited());
+    assert!(!solution.partial);
+    assert_eq!(solution.flows.len(), 1);
+}

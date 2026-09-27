@@ -835,6 +835,31 @@ fn taint_findings_carry_source_hops_and_sink() {
 }
 
 #[test]
+fn a_spent_taint_budget_reports_what_it_found_and_says_so() {
+    let source = "class A {\n    void run(Runtime r) {\n        String v = System.getenv(\"X\");\n        r.exec(v);\n    }\n}\n";
+    let run = span("f1", "run", "src/A.java", (2, 5));
+    let (_dir, project) = project(&[("src/A.java", source)], vec![run], Vec::new());
+    let rules = load(TAINT_RULE);
+    let semantics = IndexSemantics::for_tests(&project);
+    let spent = BugsOptions {
+        taint_budget: Some(std::time::Duration::ZERO),
+        ..BugsOptions::default()
+    };
+    let scan_result = scan(&project, &semantics, &rules, &spent);
+    assert!(
+        scan_result
+            .skipped
+            .iter()
+            .any(|reason| reason.starts_with("taint: the budget ran out")),
+        "{:?}",
+        scan_result.skipped
+    );
+    let full = scan(&project, &semantics, &rules, &BugsOptions::default());
+    assert_eq!(full.findings.len(), 1);
+    assert!(full.skipped.is_empty(), "{:?}", full.skipped);
+}
+
+#[test]
 fn a_yaml_syntax_error_is_reported_once() {
     // An unquoted query holding `: ` used to make the document iterator
     // yield the same error forever.

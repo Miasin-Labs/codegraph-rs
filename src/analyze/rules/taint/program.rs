@@ -24,8 +24,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use codegraph_analysis::ir::{IrFunction, IrOp, Operand, Var, shared};
-use codegraph_analysis::taint_flow::FuncId;
 use codegraph_analysis::taint_flow::program::{CallTargets, Function};
+use codegraph_analysis::taint_flow::{Budget, FuncId};
 use tree_sitter::Node;
 
 use super::super::engine::FileInput;
@@ -248,7 +248,13 @@ impl<'a> Table<'a> {
 
     /// Include candidates `seeds` and every function they may call
     /// (lowering each once), while fewer than `max_ops` ops are lowered.
-    pub fn include(&mut self, seeds: &[usize], semantics: &dyn Semantics, max_ops: usize) {
+    pub fn include(
+        &mut self,
+        seeds: &[usize],
+        semantics: &dyn Semantics,
+        max_ops: usize,
+        budget: &mut Budget,
+    ) {
         let mut queue: Vec<usize> = seeds.to_vec();
         queue.reverse();
         let mut pending: Vec<(FuncId, Vec<(usize, Pending)>)> = Vec::new();
@@ -257,7 +263,7 @@ impl<'a> Table<'a> {
             if self.ids.contains_key(&candidate) || failed.contains(&candidate) {
                 continue;
             }
-            if self.ops >= max_ops {
+            if self.ops >= max_ops || !budget.check_deadline() {
                 self.partial = true;
                 break;
             }

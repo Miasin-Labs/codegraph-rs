@@ -158,6 +158,7 @@ pub(super) fn run_files(
         marks.push(collect_marks(
             rule,
             taint,
+            budget,
             &mut shared,
             files,
             &mut table,
@@ -195,7 +196,7 @@ pub(super) fn run_files(
     }
     let tracing = std::env::var_os("CODEGRAPH_TAINT_TRACE").is_some();
     let marked_at = std::time::Instant::now();
-    table.include(&seeds, semantics, max_ops);
+    table.include(&seeds, semantics, max_ops, budget);
     let table = table;
     if tracing {
         trace_program(&table, files);
@@ -298,6 +299,7 @@ fn candidate_of(
 fn collect_marks(
     rule: &Rule,
     taint: &TaintRule,
+    budget: &mut Budget,
     shared: &mut SharedHits,
     files: &[&FileInput],
     table: &mut program::Table,
@@ -327,6 +329,9 @@ fn collect_marks(
             .collect()
     };
     for (file_index, file) in files.iter().enumerate() {
+        if !budget.check_deadline() {
+            break;
+        }
         for (index, pattern) in rule.checks.iter().enumerate() {
             let found = engine::pattern_hits(pattern, index, file, semantics, trace);
             results[file_index].rejected.extend(found.rejected);
@@ -344,6 +349,9 @@ fn collect_marks(
         return marks;
     }
     for (file_index, file) in files.iter().enumerate() {
+        if !budget.check_deadline() {
+            break;
+        }
         for (index, role) in taint.sources.iter().enumerate() {
             let hits = shared.hits(&role.pattern, index, file_index, file, semantics);
             let sources = marked(hits, &role.value, &role.pattern, file_index, table);

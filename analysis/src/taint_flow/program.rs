@@ -318,7 +318,17 @@ impl<'p> Solver<'p> {
                 }
             }
         }
-        self.pure[id as usize].clone().flatten()
+        let found = self.pure[id as usize].clone().flatten();
+        if budget.is_exhausted() {
+            // What the spent budget left unanalyzed is unknown, not
+            // summary-less: a later run with budget computes it.
+            for slot in &mut self.pure {
+                if matches!(slot, Some(None)) {
+                    *slot = None;
+                }
+            }
+        }
+        found
     }
 }
 
