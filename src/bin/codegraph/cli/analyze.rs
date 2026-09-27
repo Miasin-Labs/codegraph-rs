@@ -299,7 +299,11 @@ not-resolves-to, regex, not-regex, enclosing-function {calls, calls-not, name-re
 is-test}, inside, not-inside), `ignore-patterns`, `message` ({capture} interpolates) and \
 `examples` {bad, good}. `--check` runs every rule's examples without an index and exits \
 nonzero when a bad example does not match or a good one does, saying why: \
-`codegraph analyze rules --check my-rules/`, or `--rule-text -` to read YAML from stdin."
+`codegraph analyze rules --check my-rules/`, or `--rule-text -` to read YAML from stdin. \
+The project's saved rules (`.codegraph/rules/*.yaml`, written by the MCP `rules` tool's \
+`save`) run too unless --no-saved. `--score <corpus>` scores the rules on a tools/bugbench \
+corpus (its units staged and indexed under --work, reused while fresh) and says per rule \
+whether to keep it: `codegraph analyze rules --builtin --score bench/juliet-c --sample 10`."
     )]
     Rules {
         /// Rule files or directories (same as --rules)
@@ -314,9 +318,38 @@ nonzero when a bad example does not match or a good one does, saying why: \
         /// Include the built-in rules
         #[arg(long)]
         builtin: bool,
+        /// Leave out the project's saved rules (.codegraph/rules/*.yaml)
+        #[arg(long = "no-saved")]
+        no_saved: bool,
         /// Validate the rules and run their examples (no index needed)
         #[arg(long)]
         check: bool,
+        /// Score the rules on a bugbench corpus directory (with
+        /// ground_truth.jsonl): precision, recall, base rate, keep/discard
+        #[arg(long, value_name = "corpus-dir")]
+        score: Option<String>,
+        /// --score: Juliet testcases per CWE (default 40), or pairs (default all)
+        #[arg(long, value_name = "n")]
+        sample: Option<String>,
+        /// --score: sampling seed (bugbench's default, 1)
+        #[arg(long, value_name = "n", default_value = "1")]
+        seed: String,
+        /// --score: line slack (default 3; pairs 5)
+        #[arg(long, value_name = "n")]
+        slack: Option<String>,
+        /// --score: where units are staged and indexed (default:
+        /// rulescore-work beside the corpus)
+        #[arg(long, value_name = "dir")]
+        work: Option<String>,
+        /// --score: units indexed at once
+        #[arg(long, value_name = "n", default_value = "4")]
+        jobs: String,
+        /// --score: stop after this many seconds; rerun with --cursor to resume
+        #[arg(long, value_name = "secs")]
+        deadline: Option<String>,
+        /// --score: resume a run cut by its deadline
+        #[arg(long, value_name = "cursor")]
+        cursor: Option<String>,
         /// Report only files changed since this git revision
         #[arg(long, value_name = "rev")]
         base: Option<String>,

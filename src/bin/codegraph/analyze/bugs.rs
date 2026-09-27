@@ -10,7 +10,17 @@ use codegraph::analyze::bugs::{
     bugs_report,
     bugs_review,
 };
-use codegraph::analyze::rules::{CheckReport, RuleSet, check_rules, rules_report};
+use codegraph::analyze::rules::{
+    CheckReport,
+    RuleSet,
+    ScoreOptions,
+    ScoreReport,
+    check_rules,
+    collect_rule_texts,
+    rules_report,
+    saved_rule_texts,
+    score_rules,
+};
 
 use super::{
     CodeGraph,
@@ -140,7 +150,7 @@ pub(crate) fn cmd_analyze_review(
         let rules = if sources.is_empty() {
             None
         } else {
-            Some(load_rules(sources, true)?)
+            Some(load_rules(sources, None, true)?)
         };
         let selection = ReviewSelection {
             rule,
@@ -230,6 +240,8 @@ pub(crate) struct RuleSources {
     /// Inline YAML; `-` is stdin.
     pub texts: Vec<String>,
     pub builtin: bool,
+    /// Also the project's saved rules (`.codegraph/rules/*.yaml`).
+    pub saved: bool,
 }
 
 impl RuleSources {
@@ -238,16 +250,21 @@ impl RuleSources {
     }
 }
 
-/// The rules `sources` name. With `strict`, any rule that does not load is
-/// an error listing every problem.
-fn load_rules(sources: &RuleSources, strict: bool) -> Result<RuleSet, String> {
-    if sources.is_empty() {
-        return Err(
-            "no rules given: pass rule files or directories (--rules), --rule-text <yaml|->, \
-             or --builtin"
-                .to_string(),
-        );
-    }
+/// `--score` settings.
+pub(crate) struct ScoreArgs {
+    pub corpus: String,
+    pub sample: Option<String>,
+    pub seed: String,
+    pub slack: Option<String>,
+    pub work: Option<String>,
+    pub jobs: String,
+    pub deadline: Option<String>,
+    pub cursor: Option<String>,
+}
+
+/// The `(label, yaml)` texts `sources` name (stdin read once), without the
+/// saved rules.
+fn source_texts(sources: &RuleSources) -> Result<Vec<(String, String)>, String> {
     let mut texts = Vec::new();
     for (index, text) in sources.texts.iter().enumerate() {
         if text == "-" {
@@ -261,7 +278,42 @@ fn load_rules(sources: &RuleSources, strict: bool) -> Result<RuleSet, String> {
         }
     }
     let paths: Vec<PathBuf> = sources.paths.iter().map(PathBuf::from).collect();
-    let rules = RuleSet::load(&paths, &texts, sources.builtin);
+    let (texts, errors) = collect_rule_texts(&paths, &texts, sources.builtin);
+    if let Some(error) = errors.first() {
+        return Err(error.to_string());
+    }
+    Ok(texts)
+}
+
+/// The saved rules of the project at `root`, when `sources` asks for them.
+fn saved_texts(sources: &RuleSources, root: Option<&std::path::Path>) -> Vec<(String, String)> {
+    match root {
+        Some(root) if sources.saved => saved_rule_texts(root),
+        _ => Vec::new(),
+    }
+}
+
+/// The rules `sources` name, plus the saved rules of the project at
+/// `root` (each shadowed by a named rule of its id). With `strict`, any
+/// rule that does not load is an error listing every problem.
+fn load_rules(
+    sources: &RuleSources,
+    root: Option<&std::path::Path>,
+    strict: bool,
+) -> Result<RuleSet, String> {
+    let saved = saved_texts(sources, root);
+    if sources.is_empty() && saved.is_empty() {
+        return Err(
+            "no rules given: pass rule files or directories (--rules), --rule-text <yaml|->, \
+             or --builtin (or save rules to .codegraph/rules/ with the MCP `rules` tool)"
+                .to_string(),
+        );
+    }
+    let mut rules = RuleSet::default();
+    for (label, text) in source_texts(sources)? {
+        rules.add_text(&label, &text);
+    }
+    rules.add_shadowed(&saved);
     if strict && !rules.errors.is_empty() {
         let list: Vec<String> = rules.errors.iter().map(|e| format!("  {e}")).collect();
         return Err(format!(
@@ -275,17 +327,22 @@ fn load_rules(sources: &RuleSources, strict: bool) -> Result<RuleSet, String> {
 }
 
 /// codegraph analyze rules [RULES]... [--rules P] [--rule-text Y|-] [--builtin] [--check]
+/// [--score CORPUS]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_analyze_rules(
     sources: &RuleSources,
     check: bool,
+    score: Option<ScoreArgs>,
     base: Option<&str>,
     include_tests: bool,
     top_arg: &str,
     path_arg: Option<&str>,
     json: bool,
 ) {
+    let project_path = resolve_project_path(path_arg);
+    let saved_root = is_initialized(&project_path).then_some(project_path.as_path());
     if check {
-        let report = match load_rules(sources, false) {
+        let report = match load_rules(sources, saved_root, false) {
             Ok(rules) => check_rules(&rules),
             Err(msg) => {
                 error_msg(&format!("analyze rules --check failed: {msg}"));
@@ -305,10 +362,16 @@ pub(crate) fn cmd_analyze_rules(
         }
         return;
     }
+    if let Some(score) = score {
+        if let Err(msg) = cmd_score(sources, saved_root, &score, json) {
+            error_msg(&format!("analyze rules --score failed: {msg}"));
+            process::exit(1);
+        }
+        return;
+    }
 
-    let project_path = resolve_project_path(path_arg);
     let body = || -> Result<(), String> {
-        let rules = load_rules(sources, true)?;
+        let rules = load_rules(sources, saved_root, true)?;
         if !is_initialized(&project_path) {
             return Err(format!(
                 "CodeGraph not initialized in {} (`--check` runs rule examples without an \
@@ -341,6 +404,134 @@ pub(crate) fn cmd_analyze_rules(
         error_msg(&format!("analyze rules failed: {msg}"));
         process::exit(1);
     }
+}
+
+fn positive(value: Option<&str>, flag: &str) -> Result<Option<u64>, String> {
+    value
+        .map(|v| {
+            v.trim()
+                .parse::<u64>()
+                .map_err(|_| format!("{flag} takes a whole number, not `{v}`"))
+        })
+        .transpose()
+}
+
+/// `analyze rules --score`: stage, index and score; print per-rule verdicts.
+fn cmd_score(
+    sources: &RuleSources,
+    saved_root: Option<&std::path::Path>,
+    args: &ScoreArgs,
+    json: bool,
+) -> Result<(), String> {
+    let texts = source_texts(sources)?;
+    let saved = saved_texts(sources, saved_root);
+    if texts.is_empty() && saved.is_empty() {
+        return Err(
+            "no rules to score: pass --rules, --rule-text or --builtin (or run in a project \
+             with saved rules)"
+                .to_string(),
+        );
+    }
+    let mut options = ScoreOptions::new(PathBuf::from(&args.corpus));
+    options.sample = positive(args.sample.as_deref(), "--sample")?.map(|n| n as usize);
+    options.seed = positive(Some(&args.seed), "--seed")?.unwrap_or(1);
+    options.slack = positive(args.slack.as_deref(), "--slack")?.map(|n| n as i64);
+    options.jobs = positive(Some(&args.jobs), "--jobs")?.unwrap_or(4).max(1) as usize;
+    options.deadline =
+        positive(args.deadline.as_deref(), "--deadline")?.map(std::time::Duration::from_secs);
+    options.work = args.work.as_ref().map(PathBuf::from);
+    options.cursor = args.cursor.clone();
+    let quiet = json;
+    let report = score_rules(&texts, &saved, &options, &|line| {
+        if !quiet {
+            eprintln!("  {line}");
+        }
+    })?;
+    if json {
+        let mut value = serde_json::to_value(&report).map_err(|e| e.to_string())?;
+        value["metrics"] = report.metrics.clone();
+        return print_report_json("rules-score", &value);
+    }
+    print_score(&report);
+    Ok(())
+}
+
+fn pct(value: Option<f64>) -> String {
+    value.map_or("-".to_string(), |v| format!("{:.1}%", v * 100.0))
+}
+
+fn print_score(report: &ScoreReport) {
+    println!(
+        "{}",
+        bold(&format!(
+            "\nRule scores on {} ({} scoring, {} of {} units{})",
+            report.corpus,
+            report.scoring,
+            report.units.done,
+            report.units.total,
+            if report.units.failed > 0 {
+                format!(", {} failed", report.units.failed)
+            } else {
+                String::new()
+            }
+        ))
+    );
+    println!(
+        "{}\n",
+        dim(&format!(
+            "base rate {} over {} positives; units staged in {}",
+            pct(report.base_rate),
+            report.positives,
+            report.work
+        ))
+    );
+    for rule in &report.rules {
+        let verdict = match rule.verdict {
+            codegraph::analyze::rules::score::Decision::Keep => green("KEEP   "),
+            codegraph::analyze::rules::score::Decision::Discard => yellow("DISCARD"),
+        };
+        let counts = match (rule.fp, rule.off_fix) {
+            (Some(fp), _) => format!(
+                "{} findings: {} TP, {fp} FP, {} unlabeled",
+                rule.findings,
+                rule.tp,
+                rule.unlabeled.unwrap_or(0)
+            ),
+            (None, off) => format!(
+                "{} findings: {} TP, {} off the fix, {} not discriminating, {} background",
+                rule.findings,
+                rule.tp,
+                off.unwrap_or(0),
+                rule.not_discriminating.unwrap_or(0),
+                rule.background.unwrap_or(0)
+            ),
+        };
+        println!(
+            "{verdict} {} {}",
+            white(&rule.id),
+            dim(&format!(
+                "precision {}, recall {}",
+                pct(rule.precision),
+                pct(rule.recall)
+            ))
+        );
+        println!("        {counts}");
+        println!("        {}", rule.reason);
+    }
+    for (unit, status) in &report.failures {
+        println!("{} {unit}: {status}", yellow("unit"));
+    }
+    if let Some(cursor) = &report.next_cursor {
+        println!(
+            "\n{}",
+            yellow(&format!(
+                "Incomplete ({} units pending): the verdicts are provisional. Resume with \
+                 --cursor {cursor}",
+                report.units.pending
+            ))
+        );
+    }
+    println!();
 }
 
 fn print_check(report: &CheckReport) {

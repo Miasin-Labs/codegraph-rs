@@ -32,10 +32,13 @@ mod compile;
 mod engine;
 mod lang;
 mod locate;
+mod saved;
+pub mod score;
 mod semantics;
 mod spec;
 #[cfg(test)]
 mod tests;
+mod variant;
 pub mod weggli;
 
 use std::path::{Path, PathBuf};
@@ -44,8 +47,18 @@ pub use builtin::BUILTIN_RULES;
 pub use check::{CheckReport, ExampleCheck, RuleCheck, check_rules};
 pub use compile::{LoadError, Rule, RuleSet};
 use engine::{FileInput, one_line, position, render_message};
+pub use saved::{SaveError, SaveOutcome, rules_dir, save_rule, saved_rule_texts};
+pub use score::{ScoreOptions, ScoreReport, score_rules};
 use semantics::IndexSemantics;
 pub use spec::Severity;
+pub use variant::{
+    SkeletonCheck,
+    VariantCall,
+    VariantFunction,
+    VariantNode,
+    VariantReport,
+    variant,
+};
 
 use super::bugs::{self, BugsOptions, BugsReport, Detector, Evidence, Finding, Project};
 use crate::codegraph::CodeGraph;
@@ -56,27 +69,23 @@ const MAX_SOURCE_BYTES: usize = 2 * 1024 * 1024;
 /// Other captures listed as evidence of a finding.
 const MAX_CAPTURE_EVIDENCE: usize = 4;
 
-impl RuleSet {
-    /// Rules from files and directories (`*.yml`/`*.yaml`, recursively,
-    /// in path order), inline texts (`(label, yaml)`), and the built-in
-    /// rules. Problems are collected in [`RuleSet::errors`], not raised.
-    pub fn load(paths: &[PathBuf], texts: &[(String, String)], builtin: bool) -> RuleSet {
-        let mut set = RuleSet::default();
-        if builtin {
-            for (name, text) in BUILTIN_RULES {
-                set.add_text(&format!("builtin:{name}"), text);
-            }
+/// The `(label, yaml)` of rule files and directories (`*.yml`/`*.yaml`,
+/// recursively, in path order), inline texts, and the built-in rules — what
+/// [`RuleSet::load`] compiles, and what a score's cache is keyed on. Files
+/// that cannot be read are returned as errors.
+pub fn collect_rule_texts(
+    paths: &[PathBuf],
+    texts: &[(String, String)],
+    builtin: bool,
+) -> (Vec<(String, String)>, Vec<LoadError>) {
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    if builtin {
+        for (name, text) in BUILTIN_RULES {
+            out.push((format!("builtin:{name}"), text.to_string()));
         }
-        for path in paths {
-            set.add_path(path);
-        }
-        for (label, text) in texts {
-            set.add_text(label, text);
-        }
-        set
     }
-
-    fn add_path(&mut self, path: &Path) {
+    for path in paths {
         let mut files = Vec::new();
         if path.is_dir() {
             for entry in walkdir::WalkDir::new(path)
@@ -94,7 +103,7 @@ impl RuleSet {
                 }
             }
             if files.is_empty() {
-                self.errors.push(LoadError {
+                errors.push(LoadError {
                     source: path.display().to_string(),
                     line: None,
                     rule: None,
@@ -107,8 +116,8 @@ impl RuleSet {
         for file in files {
             let source = file.display().to_string();
             match std::fs::read_to_string(&file) {
-                Ok(text) => self.add_text(&source, &text),
-                Err(e) => self.errors.push(LoadError {
+                Ok(text) => out.push((source, text)),
+                Err(e) => errors.push(LoadError {
                     source,
                     line: None,
                     rule: None,
@@ -116,6 +125,43 @@ impl RuleSet {
                 }),
             }
         }
+    }
+    out.extend(texts.iter().cloned());
+    (out, errors)
+}
+
+impl RuleSet {
+    /// Rules from files and directories (`*.yml`/`*.yaml`, recursively,
+    /// in path order), inline texts (`(label, yaml)`), and the built-in
+    /// rules. Problems are collected in [`RuleSet::errors`], not raised.
+    pub fn load(paths: &[PathBuf], texts: &[(String, String)], builtin: bool) -> RuleSet {
+        let (texts, errors) = collect_rule_texts(paths, texts, builtin);
+        let mut set = RuleSet {
+            errors,
+            ..RuleSet::default()
+        };
+        for (label, text) in &texts {
+            set.add_text(label, text);
+        }
+        set
+    }
+
+    /// Add the rules of `texts` whose id is not loaded yet: a rule passed
+    /// explicitly shadows a saved one of the same id (the edited version
+    /// runs, not both). Returns how many were added.
+    pub fn add_shadowed(&mut self, texts: &[(String, String)]) -> usize {
+        let mut more = RuleSet::default();
+        for (label, text) in texts {
+            more.add_text(label, text);
+        }
+        let before = self.rules.len();
+        for rule in more.rules {
+            if self.get(&rule.id).is_none() {
+                self.rules.push(rule);
+            }
+        }
+        self.errors.extend(more.errors);
+        self.rules.len() - before
     }
 
     /// The rule named `id`.
