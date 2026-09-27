@@ -81,6 +81,10 @@ pub(super) struct Rules {
     pub constant_words: &'static [&'static str],
     /// Calls with no arguments that build a constant (`Default::default()`).
     pub constant_calls: &'static [&'static str],
+    /// Constants that carry nothing but "it worked" (`()`): an arm yielding
+    /// one, bare or wrapped (`Ok(())`), reports all a sibling could — the
+    /// failures went up through `?`.
+    pub unit_values: &'static [&'static str],
     /// Macros that build a constant when empty (`vec![]`).
     pub constant_macros: &'static [&'static str],
     /// Empty collection literals (`[]`, `{}`) as node kinds.
@@ -92,6 +96,9 @@ pub(super) struct Rules {
     /// uses it, `x.unwrap()` included — a panic on failure is a use): `f().ok()` as a statement
     /// still discards `f()`'s.
     pub forwarding_methods: &'static [&'static str],
+    /// Forwarding methods that say the failure is ignored on purpose: `f().ok();`
+    /// as a statement is an explicit discard, not an unchecked one.
+    pub silencing_methods: &'static [&'static str],
     /// Methods that look only at success/failure, dropping the payload.
     pub payload_dropping_methods: &'static [&'static str],
     /// Variants carrying a success payload (`Ok`, `Some`) and the failure
@@ -104,6 +111,14 @@ pub(super) struct Rules {
     pub undeclared_return_is_unit: bool,
     /// Declared return types that carry no value.
     pub unit_returns: &'static [&'static str],
+    /// Result types that report success or failure, by their last path
+    /// segment (`bool`) or its ending (`Result`: `io::Result`,
+    /// `LockResult`): the only results a bare statement discard is reported
+    /// for (`result-discarded`).
+    pub status_types: &'static [&'static str],
+    pub status_suffixes: &'static [&'static str],
+    /// Wrappers read through for that (`Promise<boolean>`).
+    pub status_transparent: &'static [&'static str],
 }
 
 static RUST: Rules = Rules {
@@ -168,15 +183,20 @@ static RUST: Rules = Rules {
         "BTreeSet::new",
         "VecDeque::new",
     ],
+    unit_values: &["()"],
     constant_macros: &["vec"],
     empty_collections: &[],
     value_wrappers: &["Some", "Ok", "Box::new", "Rc::new", "Arc::new"],
     forwarding_methods: &["ok", "map_err", "context", "with_context", "into"],
+    silencing_methods: &["ok"],
     payload_dropping_methods: &["is_ok", "is_err", "err"],
     success_variants: &["Ok", "Some"],
     failure_variants: &["Err", "None"],
     undeclared_return_is_unit: true,
     unit_returns: &["()", "!", "&mut Self", "&Self"],
+    status_types: &["bool"],
+    status_suffixes: &["Result"],
+    status_transparent: &[],
 };
 
 static TYPESCRIPT: Rules = Rules {
@@ -225,10 +245,12 @@ static TYPESCRIPT: Rules = Rules {
     literals: &["number", "string", "true", "false", "null", "undefined"],
     constant_words: &["undefined"],
     constant_calls: &[],
+    unit_values: &[],
     constant_macros: &[],
     empty_collections: &["array", "object"],
     value_wrappers: &[],
     forwarding_methods: &["catch", "finally"],
+    silencing_methods: &[],
     payload_dropping_methods: &[],
     success_variants: &[],
     failure_variants: &[],
@@ -241,6 +263,9 @@ static TYPESCRIPT: Rules = Rules {
         "Promise<undefined>",
         "this",
     ],
+    status_types: &["boolean"],
+    status_suffixes: &["Result"],
+    status_transparent: &["Promise"],
 };
 
 static PYTHON: Rules = Rules {
@@ -277,15 +302,20 @@ static PYTHON: Rules = Rules {
     literals: &["integer", "float", "string", "true", "false", "none"],
     constant_words: &["None"],
     constant_calls: &["dict", "list", "set", "tuple"],
+    unit_values: &[],
     constant_macros: &[],
     empty_collections: &["list", "dictionary", "tuple", "set"],
     value_wrappers: &[],
     forwarding_methods: &[],
+    silencing_methods: &[],
     payload_dropping_methods: &[],
     success_variants: &[],
     failure_variants: &[],
     undeclared_return_is_unit: false,
     unit_returns: &["None", "NoReturn", "Never"],
+    status_types: &["bool"],
+    status_suffixes: &["Result"],
+    status_transparent: &[],
 };
 
 /// The rules for `language`, if the syntactic templates support it.

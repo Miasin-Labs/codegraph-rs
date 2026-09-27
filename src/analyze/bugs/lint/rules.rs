@@ -126,6 +126,32 @@ pub(super) struct Mutation {
     pub marker: Option<&'static str>,
 }
 
+/// A method call comparing its receiver with its argument
+/// (`a.equals(b)`): `self-comparison` when both are the same.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct EqMethod {
+    pub kind: &'static str,
+    pub object: &'static str,
+    pub name: &'static str,
+    pub arguments: &'static str,
+    pub names: &'static [&'static str],
+}
+
+/// A named bound of an integer type (`Integer.MIN_VALUE`, `INT_MAX`) and
+/// the declared types whose every value lies within it: `x < INT_MIN` for
+/// an `int x` never holds.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Limit {
+    pub name: &'static str,
+    pub is_max: bool,
+    pub types: &'static [&'static str],
+}
+
+/// A declaration naming a variable's type: `(kind, type field, declarator
+/// field)`. The declarator is the name itself or a wrapper holding it under
+/// `name`/`declarator` (`variable_declarator`, `init_declarator`).
+pub(super) type TypedDeclaration = (&'static str, &'static str, &'static str);
+
 const fn m(kind: &'static str, target: &'static str) -> Mutation {
     Mutation {
         kind,
@@ -201,6 +227,20 @@ pub(super) struct Rules {
     /// Exceptions: a block inside one of these may leave mid-way into a
     /// handler that reads the variable.
     pub tries: &'static [&'static str],
+
+    /// Statements that evaluate an expression and drop its value: a
+    /// comparison there (`a == b;`) is `comparison-discarded`. Empty where
+    /// the language rejects it (Java, Go).
+    pub expr_statements: &'static [&'static str],
+    /// Assignments that may stand as an `if`/`while` condition (`if (x =
+    /// 5)`): `assignment-in-condition`. Empty where the language rejects it.
+    pub cond_assignments: &'static [&'static str],
+    /// An assignment in doubled parentheses (`if ((p = next()))`) is the
+    /// language's "I mean it" idiom (C compilers, ESLint's except-parens).
+    pub double_parens_mean_it: bool,
+    pub eq_methods: &'static [EqMethod],
+    pub limits: &'static [Limit],
+    pub typed_declarations: &'static [TypedDeclaration],
 }
 
 static RUST: Rules = Rules {
@@ -321,6 +361,12 @@ static RUST: Rules = Rules {
         },
     ],
     tries: &[],
+    expr_statements: &["expression_statement"],
+    cond_assignments: &[],
+    double_parens_mean_it: false,
+    eq_methods: &[],
+    limits: &[],
+    typed_declarations: &[],
 };
 
 static JS_FUNCTIONS: &[&str] = &[
@@ -467,6 +513,12 @@ static JS_TS: Rules = Rules {
         },
     ],
     tries: &["try_statement"],
+    expr_statements: &["expression_statement"],
+    cond_assignments: &["assignment_expression"],
+    double_parens_mean_it: true,
+    eq_methods: &[],
+    limits: &[],
+    typed_declarations: &[],
 };
 
 static PYTHON: Rules = Rules {
@@ -592,6 +644,13 @@ static PYTHON: Rules = Rules {
         operator: false,
     }],
     tries: &["try_statement", "with_statement"],
+    expr_statements: &["expression_statement"],
+    // `:=` is the walrus, deliberate by construction.
+    cond_assignments: &[],
+    double_parens_mean_it: false,
+    eq_methods: &[],
+    limits: &[],
+    typed_declarations: &[],
 };
 
 static GO: Rules = Rules {
@@ -723,6 +782,13 @@ static GO: Rules = Rules {
         },
     ],
     tries: &[],
+    // Go rejects both: an unused comparison and an assignment condition.
+    expr_statements: &[],
+    cond_assignments: &[],
+    double_parens_mean_it: false,
+    eq_methods: &[],
+    limits: &[],
+    typed_declarations: &[],
 };
 
 static JAVA: Rules = Rules {
@@ -865,7 +931,315 @@ static JAVA: Rules = Rules {
         },
     ],
     tries: &["try_statement", "try_with_resources_statement"],
+    // `a == b;` is not a Java statement.
+    expr_statements: &[],
+    cond_assignments: &["assignment_expression"],
+    // Java conditions are `boolean`: `if ((b = c))` is as wrong as `if (b =
+    // c)`.
+    double_parens_mean_it: false,
+    eq_methods: &[EqMethod {
+        kind: "method_invocation",
+        object: "object",
+        name: "name",
+        arguments: "arguments",
+        names: &[
+            "equals",
+            "equalsIgnoreCase",
+            "compareTo",
+            "compareToIgnoreCase",
+            "contentEquals",
+        ],
+    }],
+    limits: &[
+        Limit {
+            name: "Integer.MIN_VALUE",
+            is_max: false,
+            types: &["int", "short", "byte", "char"],
+        },
+        Limit {
+            name: "Integer.MAX_VALUE",
+            is_max: true,
+            types: &["int", "short", "byte", "char"],
+        },
+        Limit {
+            name: "Long.MIN_VALUE",
+            is_max: false,
+            types: &["long", "int", "short", "byte", "char"],
+        },
+        Limit {
+            name: "Long.MAX_VALUE",
+            is_max: true,
+            types: &["long", "int", "short", "byte", "char"],
+        },
+        Limit {
+            name: "Short.MIN_VALUE",
+            is_max: false,
+            types: &["short", "byte"],
+        },
+        Limit {
+            name: "Short.MAX_VALUE",
+            is_max: true,
+            types: &["short", "byte"],
+        },
+        Limit {
+            name: "Byte.MIN_VALUE",
+            is_max: false,
+            types: &["byte"],
+        },
+        Limit {
+            name: "Byte.MAX_VALUE",
+            is_max: true,
+            types: &["byte"],
+        },
+    ],
+    typed_declarations: &[
+        ("local_variable_declaration", "type", "declarator"),
+        ("formal_parameter", "type", "name"),
+    ],
 };
+
+const C_INT: &[&str] = &[
+    "int",
+    "signed",
+    "signed int",
+    "short",
+    "short int",
+    "signed char",
+];
+const C_LONG: &[&str] = &[
+    "long",
+    "long int",
+    "int",
+    "signed",
+    "signed int",
+    "short",
+    "short int",
+    "signed char",
+];
+const C_LLONG: &[&str] = &[
+    "long long",
+    "long long int",
+    "long",
+    "long int",
+    "int",
+    "signed",
+    "signed int",
+    "short",
+    "short int",
+    "signed char",
+];
+const C_SHORT: &[&str] = &["short", "short int", "signed char"];
+
+const C_LIMITS: &[Limit] = &[
+    Limit {
+        name: "INT_MIN",
+        is_max: false,
+        types: C_INT,
+    },
+    Limit {
+        name: "INT_MAX",
+        is_max: true,
+        types: C_INT,
+    },
+    Limit {
+        name: "LONG_MIN",
+        is_max: false,
+        types: C_LONG,
+    },
+    Limit {
+        name: "LONG_MAX",
+        is_max: true,
+        types: C_LONG,
+    },
+    Limit {
+        name: "LLONG_MIN",
+        is_max: false,
+        types: C_LLONG,
+    },
+    Limit {
+        name: "LLONG_MAX",
+        is_max: true,
+        types: C_LLONG,
+    },
+    Limit {
+        name: "SHRT_MIN",
+        is_max: false,
+        types: C_SHORT,
+    },
+    Limit {
+        name: "SHRT_MAX",
+        is_max: true,
+        types: C_SHORT,
+    },
+];
+
+/// C, and C++ below: the same statements; C++ wraps `if`/`while`
+/// conditions in a `condition_clause`, adds lambdas, `throw`, `try` and
+/// range-`for`. `switch` arms are left out (a `case` label is an arbitrary
+/// expression and bodies fall through).
+const C_RULES: Rules = Rules {
+    idents: &["identifier"],
+    receivers: &[],
+    fields: &[("field_expression", "argument")],
+    literals: &[
+        "number_literal",
+        "string_literal",
+        "concatenated_string",
+        "char_literal",
+        "true",
+        "false",
+        "null",
+    ],
+    bool_true: &["true"],
+    bool_false: &["false"],
+    constant_paths: &[],
+    transparent: &[
+        "parenthesized_expression",
+        "unary_expression",
+        "binary_expression",
+        "subscript_expression",
+        "cast_expression",
+        "pointer_expression",
+    ],
+    impure_ops: &[],
+    parens: &["parenthesized_expression"],
+    comments: &["comment"],
+    cond_loops: &[
+        CondLoop {
+            kind: "while_statement",
+            condition: Pick::Field("condition"),
+            body: "body",
+        },
+        CondLoop {
+            kind: "do_statement",
+            condition: Pick::Field("condition"),
+            body: "body",
+        },
+    ],
+    loops: &["while_statement", "do_statement", "for_statement"],
+    ifs: &[IfShape {
+        kind: "if_statement",
+        condition: "condition",
+        consequence: "consequence",
+        alternative: Alt::Wrapped,
+    }],
+    conditions: &[],
+    ternaries: &[Ternary {
+        kind: "conditional_expression",
+        condition: Pick::Field("condition"),
+        consequence: Pick::Field("consequence"),
+        alternative: Pick::Field("alternative"),
+    }],
+    switches: &[],
+    arms: &[],
+    typed_switches: &[],
+    binaries: &[Binary {
+        kind: "binary_expression",
+        left: Pick::Field("left"),
+        operator: "operator",
+        right: Pick::Field("right"),
+    }],
+    functions: &["function_definition"],
+    param_fields: &["declarator"],
+    declarations: &[
+        ("init_declarator", "declarator"),
+        ("declaration", "declarator"),
+    ],
+    non_locals: &[],
+    idents_are_locals: false,
+    mutations: &[
+        m("assignment_expression", "left"),
+        m("update_expression", "argument"),
+        m("init_declarator", "declarator"),
+        Mutation {
+            kind: "pointer_expression",
+            target: "",
+            marker: Some("&"),
+        },
+    ],
+    exits: &["return_statement", "break_statement", "goto_statement"],
+    continues: &["continue_statement"],
+    jumps: &[
+        "labeled_statement",
+        "goto_statement",
+        "break_statement",
+        "continue_statement",
+    ],
+    calls: &["call_expression"],
+    macro_kind: None,
+    // Code that differs per configuration, and inline assembly.
+    opaque: &[
+        "preproc_if",
+        "preproc_ifdef",
+        "gnu_asm_expression",
+        "seh_try_statement",
+    ],
+    attributes: &[],
+    blocks: &["compound_statement"],
+    stores: &[
+        StoreShape::Assign {
+            wrapper: "expression_statement",
+            kind: "assignment_expression",
+            left: "left",
+            right: "right",
+            operator: true,
+        },
+        StoreShape::Declare {
+            kind: "declaration",
+            declarator: "init_declarator",
+            name: "declarator",
+            value: "value",
+            shadows: false,
+        },
+    ],
+    tries: &["seh_try_statement"],
+    expr_statements: &["expression_statement"],
+    cond_assignments: &["assignment_expression"],
+    double_parens_mean_it: true,
+    eq_methods: &[],
+    limits: C_LIMITS,
+    typed_declarations: &[
+        ("declaration", "type", "declarator"),
+        ("parameter_declaration", "type", "declarator"),
+    ],
+};
+
+static CPP: Rules = Rules {
+    idents: &["identifier", "this"],
+    receivers: &["this"],
+    literals: &[
+        "number_literal",
+        "string_literal",
+        "raw_string_literal",
+        "concatenated_string",
+        "char_literal",
+        "true",
+        "false",
+        "null",
+        "nullptr",
+    ],
+    parens: &["parenthesized_expression", "condition_clause"],
+    loops: &[
+        "while_statement",
+        "do_statement",
+        "for_statement",
+        "for_range_loop",
+    ],
+    functions: &["function_definition", "lambda_expression"],
+    exits: &[
+        "return_statement",
+        "break_statement",
+        "goto_statement",
+        "throw_statement",
+        "co_return_statement",
+        "co_yield_statement",
+        "co_await_expression",
+    ],
+    tries: &["try_statement", "seh_try_statement"],
+    ..C_RULES
+};
+
+static C: Rules = C_RULES;
 
 /// The table for `language`, if the lint rules cover it.
 pub(super) fn for_language(language: Language) -> Option<&'static Rules> {
@@ -875,6 +1249,8 @@ pub(super) fn for_language(language: Language) -> Option<&'static Rules> {
         Language::Python => Some(&PYTHON),
         Language::Go => Some(&GO),
         Language::Java => Some(&JAVA),
+        Language::C => Some(&C),
+        Language::Cpp => Some(&CPP),
         _ => None,
     }
 }
@@ -907,6 +1283,25 @@ pub(super) const QUIET_MACROS: &[&str] = &[
     "debug_assert",
     "debug_assert_eq",
     "debug_assert_ne",
+];
+
+/// The languages' own empty/failure/boolean values: a match arm yielding
+/// one (`X::None => None`) passes a value on, it does not name its case.
+pub(super) const PASSTHROUGH_VALUES: &[&str] = &[
+    "None",
+    "Some",
+    "Ok",
+    "Err",
+    "null",
+    "nil",
+    "undefined",
+    "NULL",
+    "nullptr",
+    "true",
+    "false",
+    "True",
+    "False",
+    "Default",
 ];
 
 /// Rust macros whose arm body only reports that the arm should not run.

@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use super::results::Use;
+use super::results::{Explicit, Use, reports_status};
 use super::{companions, detect, scan};
 use crate::analyze::bugs::{CallSite, Finding, FnSpan, Project};
 
@@ -229,13 +229,12 @@ fn arm_that_reports_its_work_is_not() {
         by_rule(&findings, "arm-result-deviance").is_empty(),
         "{findings:#?}"
     );
-    // The discarded `fetch` result stays a (standalone) lead.
-    let discarded = by_rule(&findings, "result-discarded");
-    assert_eq!(discarded.len(), 1, "{findings:#?}");
+    // `match self.fetch(..) { Ok(_) => .., Err(_) => .. }` looks at the
+    // outcome and drops the payload on purpose: without a deviant arm to
+    // fold into, it is not reported on its own.
     assert!(
-        discarded[0].message.contains("3 of 4"),
-        "{}",
-        discarded[0].message
+        by_rule(&findings, "result-discarded").is_empty(),
+        "{findings:#?}"
     );
 }
 
@@ -297,14 +296,16 @@ mod checks {
             assert_eq!(uses[site], None, "test code teaches no belief");
             continue;
         }
-        let expected_used = call.line <= 8;
-        assert_eq!(
-            uses[site] == Some(Use::Used),
-            expected_used,
-            "line {}: {:?}",
-            call.line,
-            uses[site]
-        );
+        let expected = match call.line {
+            ..=8 => Use::Used,
+            10 => Use::Discarded,
+            11 | 12 => Use::Handled(Explicit::Wildcard),
+            13 => Use::Handled(Explicit::Silenced("ok")),
+            14 | 15 => Use::Handled(Explicit::UnboundSuccess),
+            16 => Use::Handled(Explicit::PayloadDropped("is_ok")),
+            _ => Use::Checked,
+        };
+        assert_eq!(uses[site], Some(expected), "line {}", call.line);
     }
     assert_eq!(uses.iter().filter(|u| u.is_some()).count(), 14);
     // `s.get()?;` checks for failure: neither a use nor a discard.
@@ -362,7 +363,7 @@ fn caller_missing_the_usual_companion_is_reported() {
     let f = "c.rs";
     let a = span("a", "begin", f, (1, 3), "()");
     let b = span("b", "commit", f, (4, 6), "()");
-    let callers: Vec<FnSpan> = (0..5)
+    let callers: Vec<FnSpan> = (0..6)
         .map(|i| {
             span(
                 &format!("c{i}"),
@@ -388,7 +389,7 @@ fn caller_missing_the_usual_companion_is_reported() {
     let mut calls = Vec::new();
     for (i, caller) in callers.iter().enumerate() {
         calls.push(site(caller, &a, (caller.start_line + 1, 4)));
-        if i < 4 {
+        if i < 5 {
             calls.push(site(caller, &b, (caller.start_line + 2, 4)));
         }
     }
@@ -403,11 +404,327 @@ fn caller_missing_the_usual_companion_is_reported() {
     );
     let findings = companions::findings(&project, &Default::default(), &Default::default());
     assert_eq!(findings.len(), 1, "{findings:#?}");
-    assert_eq!(findings[0].function.as_deref(), Some("S::user4"));
+    assert_eq!(findings[0].function.as_deref(), Some("S::user5"));
     assert!(
-        findings[0].message.contains("`commit` (4 of 5)"),
+        findings[0].message.contains("`commit` (5 of 6)"),
         "{}",
         findings[0].message
     );
-    assert_eq!(findings[0].evidence.len(), 4);
+    assert_eq!(findings[0].evidence.len(), 5);
+}
+
+/// A project with one callee `get` (signature `ret`) called from `user`
+/// once per line of `body` that contains `s.get(`.
+fn one_callee_project(dir: &Path, ret: &str, body: &str) -> Project {
+    let source =
+        format!("fn user(s: &mut S) {{\n{body}}}\nfn get(&mut self) -> {ret} {{ todo!() }}\n");
+    std::fs::write(dir.join("u.rs"), &source).unwrap();
+    let f = "u.rs";
+    let lines = source.lines().count() as u32;
+    let user = span("user", "user", f, (1, lines - 1), "(s: &mut S)");
+    let get = span(
+        "get",
+        "get",
+        f,
+        (lines, lines),
+        &format!("(&mut self) -> {ret}"),
+    );
+    let calls = (0..source.matches("s.get(").count())
+        .map(|nth| site(&user, &get, at(&source, "s.get(", nth)))
+        .collect();
+    Project::from_parts(dir, vec![f.to_string()], vec![user, get], calls)
+}
+
+const FOUR_USES: &str =
+    "    let a = s.get();\n    take(s.get());\n    if s.get() {}\n    s.get().unwrap();\n";
+
+/// RustSec false positives: `let _ = f()`, `if let Err(e) = f()`, `match
+/// f() { Ok(_) => Ok(()), Err(e) => Err(e) }` are decisions, not unchecked
+/// results; only a bare statement discard of a status result stands alone.
+#[test]
+fn explicit_discards_are_never_reported_alone() {
+    for explicit in [
+        "    let _ = s.get();\n",
+        "    _ = s.get();\n",
+        "    if let Err(e) = s.get() { return; }\n",
+        "    match s.get() { Ok(_) => Ok(()), Err(e) => Err(e) }\n",
+        "    let failed = s.get().is_err();\n",
+        "    s.get().ok();\n",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let body = format!("{FOUR_USES}{explicit}");
+        let mut project = one_callee_project(dir.path(), "Result<u32, E>", &body);
+        let findings = detect(&mut project);
+        assert!(
+            by_rule(&findings, "result-discarded").is_empty(),
+            "{explicit}: {findings:#?}"
+        );
+    }
+    // The unchecked form is still a lead.
+    let dir = tempfile::tempdir().unwrap();
+    let body = format!("{FOUR_USES}    s.get();\n");
+    let mut project = one_callee_project(dir.path(), "Result<u32, E>", &body);
+    let findings = detect(&mut project);
+    assert_eq!(
+        by_rule(&findings, "result-discarded").len(),
+        1,
+        "{findings:#?}"
+    );
+}
+
+/// `parser.add_child(..);` (`&'a AstNode`), `next(src);` advancing a cursor,
+/// `with(|x| ..);` (a type parameter): results called for their side effect,
+/// not status reports.
+#[test]
+fn statement_discard_of_a_non_status_result_is_not_reported() {
+    for ret in [
+        "&'a AstNode<'a>",
+        "R",
+        "Option<&'a ValRaw>",
+        "Self",
+        "impl Deref<Target = T>",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let body = format!("{FOUR_USES}    s.get();\n");
+        let mut project = one_callee_project(dir.path(), ret, &body);
+        let findings = detect(&mut project);
+        assert!(
+            by_rule(&findings, "result-discarded").is_empty(),
+            "{ret}: {findings:#?}"
+        );
+    }
+    for ret in [
+        "bool",
+        "io::Result<usize>",
+        "LockResult<MutexGuard<'a, T>>",
+        "Result<T, E>",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let body = format!("{FOUR_USES}    s.get();\n");
+        let mut project = one_callee_project(dir.path(), ret, &body);
+        let findings = detect(&mut project);
+        assert_eq!(
+            by_rule(&findings, "result-discarded").len(),
+            1,
+            "{ret}: {findings:#?}"
+        );
+    }
+}
+
+#[test]
+fn status_results_are_result_like_or_boolean() {
+    use crate::analyze::bugs::deviance::rules::for_language;
+    use crate::types::Language;
+    let rust = for_language(Language::Rust).unwrap();
+    let ts = for_language(Language::Typescript).unwrap();
+    assert!(reports_status(rust, "Result<u32>"));
+    assert!(reports_status(rust, "std::io::Result<()>"));
+    assert!(reports_status(rust, "&'a mut bool"));
+    assert!(reports_status(rust, "SysCallResult"));
+    assert!(!reports_status(rust, "Option<u32>"));
+    assert!(!reports_status(rust, "R"));
+    assert!(!reports_status(rust, "ErrorStack"));
+    assert!(reports_status(ts, "Promise<boolean>"));
+    assert!(!reports_status(ts, "Promise<Item>"));
+}
+
+/// Two arms yielding calls' results and the arms under test, in a function
+/// returning `ret`.
+fn arms_project(dir: &Path, ret: &str, arms: &str) -> (Project, String) {
+    let source = format!(
+        "fn run(s: &mut S, k: K) -> {ret} {{\n    match k {{\n        K::A => s.load(1),\n        \
+         K::B => s.load(2),\n{arms}    }}\n}}\nfn load(&mut self, n: u8) -> {ret} {{ todo!() }}\n\
+         fn step(&mut self, n: u8) -> Result<u32, E> {{ todo!() }}\n\
+         fn name(&self) -> String {{ todo!() }}\n"
+    );
+    std::fs::write(dir.join("a.rs"), &source).unwrap();
+    let f = "a.rs";
+    let run_end = line_of(&source, "fn load(") - 1;
+    let run = span(
+        "run",
+        "run",
+        f,
+        (1, run_end),
+        &format!("(s: &mut S, k: K) -> {ret}"),
+    );
+    // `Result<T, E>` whatever `ret` is: a value (wasmtime's `unexpected` is
+    // generic), so the sibling arms do work.
+    let load = span(
+        "load",
+        "load",
+        f,
+        (run_end + 1, run_end + 1),
+        "(&mut self, n: u8) -> Result<T, E>",
+    );
+    let step = span(
+        "step",
+        "step",
+        f,
+        (run_end + 2, run_end + 2),
+        "(&mut self, n: u8) -> Result<u32, E>",
+    );
+    let name = span(
+        "name",
+        "name",
+        f,
+        (run_end + 3, run_end + 3),
+        "(&self) -> String",
+    );
+    let mut calls = Vec::new();
+    for (callee, needle) in [(&load, "s.load("), (&step, "s.step("), (&name, "s.name(")] {
+        for nth in 0..source.matches(needle).count() {
+            calls.push(site(&run, callee, at(&source, needle, nth)));
+        }
+    }
+    (
+        Project::from_parts(dir, vec![f.to_string()], vec![run, load, step, name], calls),
+        source,
+    )
+}
+
+/// wasmtime `Val::store`: in a `Result<()>` match, `Ok(())` after `?`-checked
+/// work reports all a sibling could.
+#[test]
+fn arm_yielding_unit_success_is_not_deviant() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut project, _) = arms_project(
+        dir.path(),
+        "Result<()>",
+        "        K::C => {\n            s.step(3)?;\n            Ok(())\n        }\n",
+    );
+    let findings = detect(&mut project);
+    assert!(
+        by_rule(&findings, "arm-result-deviance").is_empty(),
+        "{findings:#?}"
+    );
+}
+
+/// matrix-sdk `ForwardedRoomKeyContent::Unknown(_) => { warn!(..); Ok(None) }`:
+/// the arm's call feeds a log line, so nothing it did was dropped. The same
+/// arm dropping a call's result is the KeepBoth shape and is reported.
+#[test]
+fn arm_whose_calls_pass_their_value_on_is_not_deviant() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut project, _) = arms_project(
+        dir.path(),
+        "Result<Option<u32>, E>",
+        "        K::C => {\n            let n = s.name();\n            log(n);\n            Ok(None)\n        }\n",
+    );
+    let findings = detect(&mut project);
+    assert!(
+        by_rule(&findings, "arm-result-deviance").is_empty(),
+        "{findings:#?}"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let (mut project, source) = arms_project(
+        dir.path(),
+        "Result<Option<u32>, E>",
+        "        K::C => {\n            s.step(3)?;\n            Ok(None)\n        }\n",
+    );
+    let findings = detect(&mut project);
+    let arms = by_rule(&findings, "arm-result-deviance");
+    assert_eq!(arms.len(), 1, "{findings:#?}");
+    assert_eq!(arms[0].line, line_of(&source, "K::C"));
+}
+
+#[test]
+fn companion_pairs_name_an_acquire_and_its_release() {
+    use super::companions::is_companion_pair;
+    assert!(is_companion_pair("getDirContext", "closeDirContext"));
+    assert!(is_companion_pair("lock", "unlock"));
+    assert!(is_companion_pair(
+        "pthread_mutex_lock",
+        "pthread_mutex_unlock"
+    ));
+    assert!(is_companion_pair("begin_transaction", "commit"));
+    assert!(is_companion_pair("transaction", "commit"));
+    assert!(is_companion_pair("push_limit", "pop_limit"));
+    assert!(is_companion_pair("open", "close"));
+    // Unrelated helpers the co-occurrence belief paired on RustSec crates.
+    assert!(!is_companion_pair("device_id", "user_id"));
+    assert!(!is_companion_pair("raw", "new"));
+    assert!(!is_companion_pair("hash_algo", "context"));
+    assert!(!is_companion_pair("eof", "pop_limit"));
+    assert!(!is_companion_pair("write", "open"));
+    // A generic verb needs the same object: `getX` is not released by `close`.
+    assert!(!is_companion_pair("getConnection", "close"));
+    assert!(!is_companion_pair("get_device", "close_session"));
+}
+
+/// Callers of `a`, all but one also calling `b` (`support` of them).
+fn companion_project(a: &str, b: &str, callers: usize) -> Vec<Finding> {
+    let f = "c.rs";
+    let a_span = span("a", a, f, (1, 3), "()");
+    let b_span = span("b", b, f, (4, 6), "()");
+    let users: Vec<FnSpan> = (0..callers)
+        .map(|i| {
+            let i = i as u32;
+            span(
+                &format!("c{i}"),
+                &format!("user{i}"),
+                f,
+                (10 + i * 10, 18 + i * 10),
+                "()",
+            )
+        })
+        .collect();
+    // Filler, so `b` is no ubiquitous utility.
+    let filler: Vec<FnSpan> = (0..40)
+        .map(|i| {
+            span(
+                &format!("x{i}"),
+                &format!("other{i}"),
+                f,
+                (500 + i * 5, 503 + i * 5),
+                "()",
+            )
+        })
+        .collect();
+    let mut calls = Vec::new();
+    for (i, caller) in users.iter().enumerate() {
+        calls.push(site(caller, &a_span, (caller.start_line + 1, 4)));
+        if i + 1 < callers {
+            calls.push(site(caller, &b_span, (caller.start_line + 2, 4)));
+        }
+    }
+    let mut functions = vec![a_span, b_span];
+    functions.extend(users);
+    functions.extend(filler);
+    let project = Project::from_parts(
+        Path::new("/nonexistent"),
+        vec![f.to_string()],
+        functions,
+        calls,
+    );
+    companions::findings(&project, &Default::default(), &Default::default())
+}
+
+/// OWASP `LDAPManager`: `getDirContext` without `closeDirContext` is kept;
+/// the same statistics over unrelated names are not a belief; 4 of 5 is too
+/// little support.
+#[test]
+fn companion_belief_needs_a_named_pair_and_support() {
+    let found = companion_project("getDirContext", "closeDirContext", 8);
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(
+        found[0].message.contains("`closeDirContext` (7 of 8)"),
+        "{}",
+        found[0].message
+    );
+    assert!(companion_project("device_id", "user_id", 8).is_empty());
+    assert!(companion_project("begin", "commit", 5).is_empty());
+}
+
+/// 3 of 4 is too little support for a discard to stand alone.
+#[test]
+fn a_lone_discard_needs_four_agreeing_sites() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = "    let a = s.get();\n    take(s.get());\n    if s.get() {}\n    s.get();\n";
+    let mut project = one_callee_project(dir.path(), "bool", body);
+    let findings = detect(&mut project);
+    assert!(
+        by_rule(&findings, "result-discarded").is_empty(),
+        "{findings:#?}"
+    );
 }

@@ -1,0 +1,129 @@
+# PHP rules (tree-sitter queries).
+id: php-sql-interpolated
+description: >-
+  An SQL statement is a double-quoted string with variables interpolated, or
+  built with `.` from request input, instead of a prepared statement (CWE-89).
+severity: high
+tags: [CWE-89]
+language: php
+check-patterns:
+  - name: interpolated-sql
+    query: |
+      ((encapsed_string (variable_name)) @sql
+       (#match? @sql "(?i)\\b(select|insert|update|delete)\\b[^\"]*\\b(from|into|set|where)\\b"))
+  - name: concatenated-sql
+    query: |
+      ((binary_expression left: [(string) (encapsed_string)] @head) @sql
+       (#match? @head "(?i)\\b(select|insert|update|delete)\\b"))
+message: "SQL built from variables: `{sql}`"
+examples:
+  bad:
+    - |
+      <?php
+      $id = $_REQUEST['id'];
+      $query  = "SELECT first_name, last_name FROM users WHERE user_id = '$id';";
+      $result = mysqli_query($conn, $query);
+    - |
+      <?php
+      $query = "SELECT * FROM users WHERE user = '" . $_GET['user'] . "'";
+  good:
+    - |
+      <?php
+      $data = $db->prepare('SELECT first_name, last_name FROM users WHERE user_id = (:id) LIMIT 1;');
+      $data->bindParam(':id', $id, PDO::PARAM_INT);
+---
+id: php-command-from-input
+description: A shell command is built with `.` or interpolation and run (shell_exec, exec, system, passthru, popen) (CWE-78).
+severity: high
+tags: [CWE-78]
+language: php
+check-patterns:
+  - name: exec-built
+    query: |
+      ((function_call_expression function: (name) @fn
+                                 arguments: (arguments . (argument [(binary_expression) (encapsed_string)] @cmd))) @call
+       (#match? @fn "^(shell_exec|exec|system|passthru|popen|proc_open|pcntl_exec)$"))
+message: "{fn}() runs a command built from `{cmd}`"
+examples:
+  bad:
+    - |
+      <?php
+      $target = $_REQUEST['ip'];
+      $cmd = shell_exec('ping  -c 4 ' . $target);
+  good:
+    - |
+      <?php
+      $cmd = shell_exec('uptime');
+---
+id: php-request-into-output
+description: >-
+  Request input ($_GET, $_POST, $_REQUEST, $_COOKIE, $_SERVER) is
+  concatenated or interpolated into output without escaping (CWE-79).
+severity: medium
+tags: [CWE-79]
+language: php
+check-patterns:
+  - name: concatenated
+    query: |
+      ((binary_expression right: (subscript_expression (variable_name (name) @var)) @input) @expr
+       (#match? @var "^_(GET|POST|REQUEST|COOKIE|SERVER)$"))
+  - name: echoed
+    query: |
+      ((echo_statement (subscript_expression (variable_name (name) @var)) @input) @expr
+       (#match? @var "^_(GET|POST|REQUEST|COOKIE|SERVER)$"))
+message: "`{input}` goes into output unescaped"
+examples:
+  bad:
+    - |
+      <?php
+      $html .= '<pre>Hello ' . $_GET['name'] . '</pre>';
+  good:
+    - |
+      <?php
+      $name = htmlspecialchars($_GET['name']);
+      $html .= "<pre>Hello {$name}</pre>";
+---
+id: php-redirect-from-input
+description: A Location header is built from request input (open redirect, CWE-601).
+severity: medium
+tags: [CWE-601]
+language: php
+check-patterns:
+  - name: location-header
+    query: |
+      ((function_call_expression function: (name) @fn
+                                 arguments: (arguments . (argument (binary_expression) @value))) @call
+       (#eq? @fn "header")
+       (#match? @value "(?i)location.*\\$_(GET|POST|REQUEST)"))
+message: "redirect target from the request: `{value}`"
+examples:
+  bad:
+    - |
+      <?php
+      header("location: " . $_GET['redirect']);
+  good:
+    - |
+      <?php
+      header("location: info.php?id=1");
+---
+id: php-weak-password-hash
+description: md5/sha1 of a password (unsalted, fast) instead of password_hash (CWE-916, CWE-328).
+severity: low
+tags: [CWE-916, CWE-328]
+language: php
+check-patterns:
+  - name: md5-password
+    query: |
+      ((function_call_expression function: (name) @fn arguments: (arguments . (argument) @arg)) @call
+       (#match? @fn "^(md5|sha1)$")
+       (#match? @arg "(?i)pass"))
+message: "{fn}({arg}) hashes a password with a fast, broken hash"
+examples:
+  bad:
+    - |
+      <?php
+      $pass = md5($pass);
+  good:
+    - |
+      <?php
+      $hash = password_hash($pass, PASSWORD_DEFAULT);

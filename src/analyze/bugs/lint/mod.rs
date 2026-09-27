@@ -12,7 +12,13 @@
 //! - `self-comparison` ([`conditions`]): `x == x`, `a.b < a.b`, `p && p`,
 //!   `x - x` over side-effect-free operands (`x != x` is the NaN idiom).
 //! - `constant-condition` ([`conditions`]): an `if`/ternary condition made
-//!   of literals only (`1 == 1`), or decided by a literal (`false && x`).
+//!   of literals only (`1 == 1`), or decided by a literal (`false && x`);
+//!   a variable compared past its declared type's bound (`int x <
+//!   INT_MIN`, `x > Integer.MAX_VALUE`).
+//! - `comparison-discarded` ([`conditions`]): `a == b;` — a comparison as a
+//!   statement, meant as an assignment (CWE-482).
+//! - `assignment-in-condition` ([`conditions`]): `if (x = 5)` — an
+//!   assignment of a side-effect-free value tested as a condition (CWE-481).
 //! - `dead-store` ([`stores`]): a local assigned and assigned again, in
 //!   straight-line code of one block, with no read in between.
 //!
@@ -57,12 +63,26 @@ const MAX_SOURCE_BYTES: usize = 2 * 1024 * 1024;
 ///   two intentional mappings in seven.
 /// - constant-condition: every finding was a deliberate debug switch
 ///   (`false && …`, `x || true`) — worth a look, rarely a bug.
+/// - identical-branches on Juliet C/Java: its `if (globalReturnsTrueOrFalse())
+///   { X } else { X }` flow variants are twins by construction (shape found,
+///   no bug); arms passing the language's own `None`/`null` on are no
+///   longer reported (18 → 16 on RustSec, the rest one commented twin).
 pub(super) const LOOP_NO_PROGRESS: f64 = 0.6;
 pub(super) const IDENTICAL_BRANCHES: f64 = 0.4;
 pub(super) const IDENTICAL_ARMS: f64 = 0.5;
 pub(super) const SELF_COMPARISON: f64 = 0.8;
 pub(super) const CONSTANT_CONDITION: f64 = 0.3;
 pub(super) const DEAD_STORE: f64 = 0.6;
+/// A variable compared past its own type's bound (`int x < INT_MIN`): a
+/// real mistake rather than a switch, but only a dead branch.
+pub(super) const LIMIT_CONDITION: f64 = 0.5;
+/// `a == b;` and `if (x = 5)` are syntax slips with no idiomatic use once
+/// the guards hold (see [`conditions`]). On Juliet (2026-09, sampled):
+/// `comparison-discarded` 18/18 on C (every CWE-482 flaw line, no good
+/// function), `assignment-in-condition` 18/18 on C and 17/17 on Java
+/// (CWE-481); neither fired on 306 RustSec crate pairs.
+pub(super) const COMPARISON_DISCARDED: f64 = 0.8;
+pub(super) const ASSIGNMENT_IN_CONDITION: f64 = 0.7;
 
 /// Tokens back on one line: spaces between words and around operators.
 fn spaced(tokens: &[&str]) -> String {
@@ -199,7 +219,7 @@ pub(super) fn detect(project: &mut Project) -> Vec<Finding> {
                 .map(|span| span.qualified_name.clone());
             findings.push(Finding {
                 detector: Detector::Lint,
-                rule: raw.rule,
+                rule: raw.rule.into(),
                 file: file.clone(),
                 line: raw.line,
                 col: raw.col,
@@ -255,7 +275,15 @@ fn lint_source(
         }
         if rules.binaries.iter().any(|b| b.kind == kind) {
             conditions::check_self_comparison(node, &mut ctx);
+            conditions::check_limit_comparison(node, &mut ctx);
         }
+        if rules.eq_methods.iter().any(|m| m.kind == kind) {
+            conditions::check_self_equals(node, &mut ctx);
+        }
+        if rules.expr_statements.contains(&kind) {
+            conditions::check_comparison_discarded(node, &mut ctx);
+        }
+        conditions::check_assignment_condition(node, &mut ctx);
         conditions::check_constant_condition(node, &mut ctx);
         if rules.blocks.contains(&kind) {
             stores::check_block(node, &mut ctx);

@@ -1,0 +1,276 @@
+# Java rules (tree-sitter queries).
+id: java-weak-cipher
+description: >-
+  A Cipher is created for a broken algorithm (DES, 3DES, RC2, RC4, Blowfish)
+  or in ECB mode, named by a literal (CWE-327).
+severity: medium
+tags: [CWE-327]
+language: java
+check-patterns:
+  - name: cipher-literal
+    query: |
+      ((method_invocation
+         object: (_) @cls
+         name: (identifier) @m
+         arguments: (argument_list . (string_literal) @alg))
+       (#match? @cls "(^|\\.)Cipher$")
+       (#eq? @m "getInstance")
+       (#match? @alg "(?i)^\"(DES|DESede|TripleDES|3DES|RC2|RC4|ARCFOUR|Blowfish)([/\"])|/ECB/|^\"AES\"$"))
+    at: alg
+message: "Cipher.getInstance({alg}) uses a broken algorithm or ECB mode"
+examples:
+  bad:
+    - |
+      class A { void f() throws Exception { javax.crypto.Cipher c = javax.crypto.Cipher.getInstance("DES/CBC/PKCS5Padding"); } }
+    - |
+      class A { void f() throws Exception { Cipher c = Cipher.getInstance("AES/ECB/PKCS5Padding", "SunJCE"); } }
+  good:
+    - |
+      class A { void f() throws Exception { Cipher c = Cipher.getInstance("AES/GCM/NoPadding"); } }
+---
+id: java-weak-hash
+description: A MessageDigest is created for MD2, MD4, MD5 or SHA-1, named by a literal (CWE-328).
+severity: medium
+tags: [CWE-328, CWE-327]
+language: java
+check-patterns:
+  - name: digest-literal
+    query: |
+      ((method_invocation
+         object: (_) @cls
+         name: (identifier) @m
+         arguments: (argument_list . (string_literal) @alg))
+       (#match? @cls "(^|\\.)MessageDigest$")
+       (#eq? @m "getInstance")
+       (#match? @alg "(?i)^\"(MD2|MD4|MD5|SHA|SHA1|SHA-1)\"$"))
+    at: alg
+  - name: digest-utils
+    query: |
+      ((method_invocation object: (_) @cls name: (identifier) @alg)
+       (#match? @cls "(^|\\.)DigestUtils$")
+       (#match? @alg "^(md5|md5Hex|sha|sha1|sha1Hex|shaHex|getMd5Digest|getSha1Digest)$"))
+message: "{alg} is a broken hash"
+examples:
+  bad:
+    - |
+      class A { void f() throws Exception { java.security.MessageDigest md = java.security.MessageDigest.getInstance("MD5"); } }
+    - |
+      class A { void f() throws Exception { MessageDigest md = MessageDigest.getInstance("SHA1", "SUN"); } }
+  good:
+    - |
+      class A { void f() throws Exception { MessageDigest md = MessageDigest.getInstance("SHA-256"); } }
+---
+id: java-insecure-random
+description: >-
+  java.util.Random or Math.random() produce predictable values; anything
+  secret (tokens, ids, keys) needs java.security.SecureRandom (CWE-330).
+severity: low
+tags: [CWE-330, CWE-338]
+language: java
+check-patterns:
+  - name: new-random
+    query: |
+      ((object_creation_expression type: (_) @type) @new
+       (#match? @type "^(java\\.util\\.)?Random$"))
+  - name: math-random
+    query: |
+      ((method_invocation object: (_) @cls name: (identifier) @m) @call
+       (#match? @cls "^(java\\.lang\\.)?Math$")
+       (#eq? @m "random"))
+message: "predictable random numbers (java.util.Random / Math.random)"
+examples:
+  bad:
+    - |
+      class A { void f() { float r = new java.util.Random().nextFloat(); } }
+    - |
+      class A { void f() { double v = java.lang.Math.random(); } }
+  good:
+    - |
+      class A { void f() throws Exception { int r = java.security.SecureRandom.getInstance("SHA1PRNG").nextInt(); } }
+---
+id: java-cookie-not-secure
+description: >-
+  A cookie is sent without the Secure flag: `setSecure(false)`, or a cookie
+  created in a method that never calls `setSecure` (CWE-614).
+severity: low
+tags: [CWE-614, CWE-1004]
+language: java
+check-patterns:
+  - name: set-secure-false
+    query: |
+      ((method_invocation name: (identifier) @m arguments: (argument_list . (false) .)) @call
+       (#eq? @m "setSecure"))
+  - name: never-set-secure
+    query: |
+      ((object_creation_expression type: (_) @type) @new
+       (#match? @type "(^|\\.)Cookie$"))
+    where:
+      - enclosing-function:
+          calls-not: "(^|\\.)setSecure$"
+message: "cookie sent without the Secure flag"
+examples:
+  bad:
+    - |
+      class A { void f(HttpServletResponse response, String str) {
+        javax.servlet.http.Cookie cookie = new javax.servlet.http.Cookie("SomeCookie", str);
+        cookie.setSecure(false);
+        response.addCookie(cookie);
+      } }
+    - |
+      class A { void f(HttpServletResponse response) {
+        Cookie c = new Cookie("id", "x");
+        response.addCookie(c);
+      } }
+  good:
+    - |
+      class A { void f(HttpServletResponse response, String str) {
+        javax.servlet.http.Cookie cookie = new javax.servlet.http.Cookie("SomeCookie", str);
+        cookie.setSecure(true);
+        cookie.setHttpOnly(true);
+        response.addCookie(cookie);
+      } }
+---
+id: java-assignment-in-condition
+description: >-
+  An assignment is the condition of an if/while (`if (flag = true)`): almost
+  always `==` was meant, and the condition is then constant (CWE-481).
+severity: medium
+tags: [CWE-481, CWE-571]
+language: java
+check-patterns:
+  - name: if-assign
+    query: |
+      (if_statement condition: (parenthesized_expression (assignment_expression) @assign))
+  - name: while-assign-literal
+    query: |
+      (while_statement condition: (parenthesized_expression (assignment_expression right: [(true) (false)]) @assign))
+message: "`{assign}` assigns where a comparison was likely meant"
+examples:
+  bad:
+    - |
+      class A { void f(boolean isZero) { if (isZero = true) { System.out.println("x"); } } }
+  good:
+    - |
+      class A { void f(boolean isZero) { if (isZero == true) { System.out.println("x"); } } }
+    - |
+      class A { void f(java.io.BufferedReader r) throws Exception { String line; while ((line = r.readLine()) != null) { } } }
+---
+id: java-comparison-of-comparison
+description: >-
+  A variable is compared with the result of another comparison (`b == (x ==
+  0)`) where assigning it (`b = (x == 0)`) was likely meant (CWE-482).
+severity: low
+tags: [CWE-482]
+language: java
+check-patterns:
+  - name: var-eq-comparison
+    query: |
+      (binary_expression
+        left: (identifier) @var
+        operator: "=="
+        right: (parenthesized_expression (binary_expression operator: ["==" "!=" "<" ">" "<=" ">="]) @inner)) @cmp
+message: "`{var}` is compared with `{inner}`; an assignment may have been meant"
+examples:
+  bad:
+    - |
+      class A { void f(int zeroOrOne) { boolean isZero = false; if ((isZero == (zeroOrOne == 0)) == true) { } } }
+  good:
+    - |
+      class A { void f(int zeroOrOne) { boolean isZero = false; if ((isZero = (zeroOrOne == 0)) == true) { } } }
+---
+id: java-impossible-comparison
+description: >-
+  A comparison that cannot change: an int below Integer.MIN_VALUE or above
+  MAX_VALUE, `x == x - 1`, or a value `.equals` itself (CWE-570, CWE-571).
+severity: low
+tags: [CWE-570, CWE-571]
+language: java
+check-patterns:
+  - name: below-min-value
+    query: |
+      ((binary_expression operator: ["<" ">="] right: (field_access field: (identifier) @limit)) @cmp
+       (#eq? @limit "MIN_VALUE"))
+  - name: above-max-value
+    query: |
+      ((binary_expression operator: [">" "<="] right: (field_access field: (identifier) @limit)) @cmp
+       (#eq? @limit "MAX_VALUE"))
+  - name: n-vs-n-plus-minus
+    query: |
+      ((binary_expression
+         left: (identifier) @a
+         operator: ["==" "!="]
+         right: (parenthesized_expression (binary_expression left: (identifier) @b operator: ["-" "+"] right: (decimal_integer_literal)))) @cmp
+       (#eq? @a @b))
+  - name: equals-itself
+    query: |
+      ((method_invocation object: (identifier) @a name: (identifier) @m arguments: (argument_list . (identifier) @b .)) @cmp
+       (#eq? @m "equals")
+       (#eq? @a @b))
+message: "`{cmp}` always has the same value"
+examples:
+  bad:
+    - |
+      class A { void f(int n) { if (n < Integer.MIN_VALUE) { } } }
+    - |
+      class A { void f(int n) { if (n <= Integer.MAX_VALUE) { } } }
+    - |
+      class A { void f() { int intThirty = 30; if (intThirty == (intThirty - 1)) { } } }
+    - |
+      class A { void f(String s) { if (s.equals(s)) { } } }
+  good:
+    - |
+      class A { void f(int n) { if (n < Integer.MAX_VALUE) { } } }
+    - |
+      class A { void f(String s, String t) { if (s.equals(t)) { } } }
+---
+id: java-catch-generic-exception
+description: >-
+  A catch block takes Exception, Throwable, RuntimeException or Error: it
+  swallows failures it was not written for (CWE-396).
+severity: low
+tags: [CWE-396]
+language: java
+check-patterns:
+  - name: catch-generic
+    query: |
+      ((catch_clause (catch_formal_parameter (catch_type (_) @type))) @catch
+       (#match? @type "^(java\\.lang\\.)?(Exception|Throwable|RuntimeException|Error)$"))
+    at: type
+message: "catches {type}"
+examples:
+  bad:
+    - |
+      class A { void f() { try { Integer.parseInt("Test"); } catch (Exception exception) { } } }
+  good:
+    - |
+      class A { void f() { try { Integer.parseInt("Test"); } catch (NumberFormatException exception) { } } }
+---
+id: java-throw-generic-exception
+description: >-
+  A method throws, or declares it throws, the generic Exception (or throws a
+  new Throwable/RuntimeException), so callers cannot tell failures apart
+  (CWE-397).
+severity: low
+tags: [CWE-397]
+language: java
+check-patterns:
+  - name: throws-exception
+    query: |
+      ((throws (_) @type) @throws
+       (#match? @type "^(java\\.lang\\.)?Exception$"))
+  - name: throw-new-generic
+    query: |
+      ((throw_statement (object_creation_expression type: (_) @type)) @throw
+       (#match? @type "^(java\\.lang\\.)?(Exception|Throwable|RuntimeException)$"))
+message: "throws the generic {type}"
+examples:
+  bad:
+    - |
+      class A { public void bad() throws Exception { } }
+    - |
+      class A { void f() { throw new RuntimeException("x"); } }
+  good:
+    - |
+      class A { public void good() throws java.io.IOException { } }
+    - |
+      class A { void f() { throw new IllegalStateException("x"); } }

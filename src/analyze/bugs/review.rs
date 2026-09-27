@@ -55,18 +55,23 @@ pub struct ReviewPacket {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub callers: Vec<CallerRef>,
     /// What to decide, for this rule.
-    pub checklist: Vec<&'static str>,
+    pub checklist: Vec<String>,
 }
 
-/// A packet per finding, in the findings' order.
-pub fn review_packets(project: &mut Project, findings: &[Finding]) -> Vec<ReviewPacket> {
+/// A packet per finding, in the findings' order. `questions` adds a
+/// finding's own questions (a YAML rule's `review`) to its checklist.
+pub fn review_packets(
+    project: &mut Project,
+    findings: &[Finding],
+    questions: &dyn Fn(&Finding) -> Vec<String>,
+) -> Vec<ReviewPacket> {
     findings
         .iter()
-        .map(|finding| packet(project, finding))
+        .map(|finding| packet(project, finding, questions(finding)))
         .collect()
 }
 
-fn packet(project: &mut Project, finding: &Finding) -> ReviewPacket {
+fn packet(project: &mut Project, finding: &Finding, questions: Vec<String>) -> ReviewPacket {
     let span = project
         .enclosing_function(&finding.file, finding.line)
         .cloned();
@@ -111,7 +116,10 @@ fn packet(project: &mut Project, finding: &Finding) -> ReviewPacket {
         function,
         evidence,
         callers,
-        checklist: checklist(finding.rule),
+        checklist: questions
+            .into_iter()
+            .chain(checklist(&finding.rule).into_iter().map(str::to_string))
+            .collect(),
     }
 }
 

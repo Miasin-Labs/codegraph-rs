@@ -1,0 +1,225 @@
+# C/C++ rules about values that come from outside: random numbers, parsed
+# input, sockets, the environment.
+id: c-divide-by-unchecked-input
+description: >-
+  A value read from input (rand, atoi, strtol, fscanf…) is used as a divisor
+  with no comparison against zero on the way (CWE-369).
+severity: medium
+tags: [CWE-369]
+language: [c, cpp]
+check-patterns:
+  - name: divide-by-parsed
+    pattern: |
+      { $d = $src(); not: _($d) != _; not: _($d) == _; not: _($d) > _; not: _($d) < _; not: $d = _; _ / $d; }
+    regex: ["src=^(RAND32|RAND64|rand|random|atoi|atol|atoll|atof|strtol|strtoul|strtoll|strtod|strtof|wcstol|_wtoi)$"]
+  - name: modulo-by-parsed
+    pattern: |
+      { $d = $src(); not: _($d) != _; not: _($d) == _; not: _($d) > _; not: _($d) < _; not: $d = _; _ % $d; }
+    regex: ["src=^(RAND32|RAND64|rand|random|atoi|atol|atoll|strtol|strtoul|strtoll|wcstol|_wtoi)$"]
+  - name: divide-by-scanned
+    pattern: |
+      { $scan(_, _, &$d); not: _($d) != _; not: _($d) == _; not: _($d) > _; not: _($d) < _; not: $d = _; _ / $d; }
+    regex: ["scan=^(fscanf|sscanf|swscanf|fwscanf)$"]
+  - name: modulo-by-scanned
+    pattern: |
+      { $scan(_, _, &$d); not: _($d) != _; not: _($d) == _; not: _($d) > _; not: _($d) < _; not: $d = _; _ % $d; }
+    regex: ["scan=^(fscanf|sscanf|swscanf|fwscanf)$"]
+message: "`{d}` comes from input and divides without a zero check"
+examples:
+  bad:
+    - |
+      void f(void) {
+        int data = -1;
+        data = RAND32();
+        printIntLine(100 / data);
+      }
+    - |
+      void f(void) {
+        int data;
+        fscanf(stdin, "%d", &data);
+        printIntLine(100 % data);
+      }
+  good:
+    - |
+      void f(void) {
+        int data = RAND32();
+        if (data != 0) {
+          printIntLine(100 / data);
+        }
+      }
+    - |
+      void f(char *s) {
+        float data = (float)atof(s);
+        if (fabs(data) > 0.000001) {
+          printIntLine((int)(100.0 / data));
+        }
+      }
+    - |
+      void f(void) {
+        int data = -1;
+        data = 7;
+        printIntLine(100 / data);
+      }
+---
+id: c-arithmetic-on-unchecked-input
+description: >-
+  A value read from input is added, multiplied or incremented with no range
+  comparison on the way, or used as an allocation size factor (CWE-190,
+  CWE-191, CWE-680).
+severity: medium
+tags: [CWE-190, CWE-191, CWE-680]
+language: [c, cpp]
+check-patterns:
+  - name: add
+    pattern: |
+      { $x = $src(); not: _($x) < _; not: _($x) <= _; not: _($x) > _; not: _($x) >= _; not: $x = _; $x + _; }
+    regex: ["src=^(RAND32|RAND64|rand|atoi|atol|atoll|strtol|strtoul|strtoll|wcstol|_wtoi)$"]
+  - name: multiply
+    pattern: |
+      { $x = $src(); not: _($x) < _; not: _($x) <= _; not: _($x) > _; not: _($x) >= _; not: $x = _; _($x * _); }
+    regex: ["src=^(RAND32|RAND64|rand|atoi|atol|atoll|strtol|strtoul|strtoll|wcstol|_wtoi)$"]
+  - name: subtract
+    pattern: |
+      { $x = $src(); not: _($x) < _; not: _($x) <= _; not: _($x) > _; not: _($x) >= _; not: $x = _; $x - _; }
+    regex: ["src=^(RAND32|RAND64|rand|atoi|atol|atoll|strtol|strtoul|strtoll|wcstol|_wtoi)$"]
+  - name: scanned-add
+    pattern: |
+      { $scan(_, _, &$x); not: _($x) < _; not: _($x) <= _; not: _($x) > _; not: _($x) >= _; not: $x = _; $x + _; }
+    regex: ["scan=^(fscanf|sscanf|swscanf|fwscanf)$"]
+  - name: scanned-multiply
+    pattern: |
+      { $scan(_, _, &$x); not: _($x) < _; not: _($x) <= _; not: _($x) > _; not: _($x) >= _; not: $x = _; _($x * _); }
+    regex: ["scan=^(fscanf|sscanf|swscanf|fwscanf)$"]
+  - name: increment
+    pattern: |
+      { $x = $src(); not: _($x) < _; not: _($x) <= _; not: _($x) > _; not: _($x) >= _; not: $x = _; $x++; }
+    regex: ["src=^(RAND32|RAND64|rand|atoi|atol|atoll|strtol|strtoul|strtoll|wcstol|_wtoi)$"]
+  - name: at-type-maximum
+    pattern: |
+      { $x = $max; not: _($x) < _; not: _($x) <= _; not: _($x) > _; not: _($x) >= _; not: $x = _; $x + _; }
+    regex: ["max=^[A-Z]*_MAX$"]
+message: "`{x}` comes from input (or a type maximum) and overflows unchecked"
+examples:
+  bad:
+    - |
+      void f(void) {
+        int data = 0;
+        data = RAND32();
+        {
+          int result = data + 1;
+          printIntLine(result);
+        }
+      }
+    - |
+      void f(void) {
+        int data;
+        fscanf(stdin, "%d", &data);
+        int *p = (int *)malloc(data * sizeof(int));
+      }
+    - |
+      void f(void) {
+        short data = SHRT_MAX;
+        short result = data + 1;
+      }
+  good:
+    - |
+      void f(void) {
+        int data = RAND32();
+        if (data < INT_MAX) {
+          int result = data + 1;
+        }
+      }
+    - |
+      void f(void) {
+        int data = RAND32();
+        if (abs((long)data) <= (long)sqrt((double)INT_MAX)) {
+          int result = data * data;
+        }
+      }
+    - |
+      void f(void) {
+        int data = 0;
+        data = 2;
+        int result = data + 1;
+      }
+---
+id: c-command-from-input
+description: >-
+  A buffer filled from input (fgets, recv, read, scanf…) or extended with a
+  non-literal string (strcat of an environment value…) is run as a shell
+  command (system, popen, exec*) (CWE-78).
+severity: high
+tags: [CWE-78]
+language: [c, cpp]
+check-patterns:
+  - name: read-then-run
+    pattern: |
+      { $src(_($cmd)); $run($cmd); }
+    regex:
+      - "src=^(fgets|fgetws|recv|recvfrom|read|fread|gets|scanf|fscanf|getline)$"
+      - "run=^(system|SYSTEM|_wsystem|popen|POPEN|_popen|_wpopen|execl|execlp|execle|execv|execvp|execve|EXECL|EXECLP|EXECV|EXECVP)$"
+  - name: appended-then-run
+    pattern: |
+      { $cat(_($cmd), $in); $run($cmd); }
+    regex:
+      - "cat=^(strcat|strncat|wcscat|wcsncat)$"
+      - "run=^(system|SYSTEM|_wsystem|popen|POPEN|_popen|_wpopen|execl|execlp|execle|execv|execvp|execve|EXECL|EXECLP|EXECV|EXECVP)$"
+message: "`{cmd}` is filled from input and run by {run}()"
+examples:
+  bad:
+    - |
+      void f(void) {
+        char data[100] = "ls ";
+        size_t len = strlen(data);
+        fgets(data + len, (int)(100 - len), stdin);
+        if (SYSTEM(data) != 0) { exit(1); }
+      }
+    - |
+      void f(int sock) {
+        char data[100] = "ls ";
+        recv(sock, (char *)(data + 3), 50, 0);
+        FILE *pipe = popen(data, "w");
+      }
+  good:
+    - |
+      void f(void) {
+        char data[100] = "ls ";
+        strcat(data, "*.*");
+        system(data);
+      }
+---
+id: c-unchecked-io-result
+description: >-
+  The result of a call that fails silently (fgets, fread, fscanf, remove,
+  setuid…) is dropped: the call is a statement of its own (CWE-252).
+severity: low
+tags: [CWE-252]
+language: [c, cpp]
+check-patterns:
+  - name: dropped-result
+    pattern: |
+      { strict: $f(_); }
+    regex: ["f=^(fgets|fgetws|fread|fwrite|fscanf|fwscanf|scanf|wscanf|sscanf|swscanf|remove|_wremove|rename|_wrename|setuid|setgid|seteuid|setegid|setreuid|chdir|chroot|mkstemp|fputs|fputws|fputc|fputwc|putc|putwc|puts)$"]
+message: "the result of {f}() is not checked"
+examples:
+  bad:
+    - |
+      void f(char *data) {
+        fgets(data, 100, stdin);
+        printLine(data);
+      }
+    - |
+      void f(void) {
+        setuid(0);
+      }
+  good:
+    - |
+      void f(char *data) {
+        if (fgets(data, 100, stdin) == NULL) {
+          exit(1);
+        }
+      }
+    - |
+      void f(void) {
+        if (setuid(0) != 0) { exit(1); }
+      }

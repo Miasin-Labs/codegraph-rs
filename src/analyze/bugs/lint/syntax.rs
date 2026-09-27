@@ -363,6 +363,12 @@ fn scope_of(function: Node<'_>, rules: &Rules, source: &str) -> Scope {
             if let Some(&(_, field)) = rules.declarations.iter().find(|(k, _)| *k == kind) {
                 let mut cursor = n.walk();
                 for part in n.children_by_field_name(field, &mut cursor) {
+                    // A declarator with its own entry (C's `init_declarator`
+                    // in a `declaration`) names its variable there: its
+                    // initializer declares nothing.
+                    if rules.declarations.iter().any(|(k, _)| *k == part.kind()) {
+                        continue;
+                    }
                     idents_of(part, &mut scope.declared);
                 }
             }

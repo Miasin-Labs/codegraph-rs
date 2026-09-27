@@ -11,14 +11,16 @@
 //! index or a word of the file; a qualified `Op::Minus` must be spelled in
 //! the file). Catch-all arms (`_`, `default`), empty and diverging bodies
 //! (`unreachable!()`, `throw`), bodies using a variable their pattern binds
-//! and Go type switches are skipped. Ternaries whose two results are the same
+//! and Go type switches are skipped, as is a body whose shared word is the
+//! language's own value (`X::None => None` beside `Unset => None`: the
+//! first arm passes its case through; the second is no copy of it). Ternaries whose two results are the same
 //! literal (`c ? 0 : 0`) are placeholders and skipped too.
 
 use std::collections::{HashMap, HashSet};
 
 use tree_sitter::Node;
 
-use super::rules::{Alt, ArmBody, DIVERGING_MACROS};
+use super::rules::{Alt, ArmBody, DIVERGING_MACROS, PASSTHROUGH_VALUES};
 use super::syntax::{
     is_pure,
     named_children,
@@ -326,6 +328,12 @@ fn copy_slip(
             if whole && segment.chars().all(|c| !c.is_uppercase()) {
                 // A lone lowercase word (`map`, `int64`): a keyword or a
                 // type, not a case name.
+                continue;
+            }
+            if whole && PASSTHROUGH_VALUES.contains(name) {
+                // `BodyProj::None => Poll::Ready(None)` beside `Empty =>
+                // Poll::Ready(None)`: the language's own `None`/`null` is a
+                // value both arms mean, not the first arm's case.
                 continue;
             }
             for own in &only_own {

@@ -3,9 +3,24 @@
 //!
 //! Each resolved call is classified from its syntactic context: bound to a
 //! name, passed on, returned, tested, chained — used; an expression
-//! statement, `let _ =`, `_ =`, `void f()`, a `match`/`if let` whose success
-//! patterns bind nothing (`Ok(_)`), `.is_ok()` — discarded. `x.unwrap();`
-//! uses the result (to panic on failure). Belief: the result is used.
+//! statement — discarded. `x.unwrap();` uses the result (to panic on
+//! failure). Belief: the result is used.
+//!
+//! Engler's rule is about *unchecked* results. Syntax that names the discard
+//! (`let _ = f()`, `_ = f()`, `void f()`), or looks at the outcome and
+//! chooses to drop the payload (`if let Err(e) = f()`, `match f() { Ok(_) =>
+//! …, Err(e) => … }`, `f().is_ok()`), is a decision the author made, not an
+//! oversight: such a site is [`Use::Handled`]. It still weakens the belief
+//! (it is not a use), but it is never reported on its own — only as
+//! supporting evidence folded into an `arm-result-deviance` finding at the
+//! same call, where dropping the value is the arm's bug (the rms `KeepBoth`
+//! arm matched `download_file(..)` with `Ok(_)`).
+//!
+//! A bare statement discard is reported alone only when the result reports
+//! success or failure ([`reports_status`]: `Result`-like, `bool`): a
+//! returned reference, handle, builder or generic value called for its side
+//! effect (`parser.add_child(..);`, `next(src);` to advance a cursor,
+//! `with(|x| ..);`) is not an unchecked result.
 
 use std::collections::HashMap;
 
@@ -21,6 +36,10 @@ pub(super) const RULE: &str = "result-discarded";
 
 /// Sites that must use the result before a discard is a deviation.
 const MIN_USED: usize = 3;
+/// …before one is reported on its own: 3 of 4 (z = 1) paired with nothing
+/// else was noise on RustSec crates (`array_call`, `ref_dec`, `unsubscribe`
+/// each `bool`); 4 of 5 is the least that stands alone.
+const MIN_USED_ALONE: usize = 4;
 /// Share of the sites that must use it.
 const MIN_RATIO: f64 = 0.75;
 /// Agreeing sites listed as evidence.
@@ -30,16 +49,19 @@ const MAX_EVIDENCE: usize = 5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Use {
     Used,
-    Discarded(Discard),
+    /// `f();`: the value is dropped without a word.
+    Discarded,
+    /// Explicitly dropped or reduced to its outcome: a decision, not an
+    /// oversight. Not a use; never reported alone.
+    Handled(Explicit),
     /// Checked for failure, success value dropped (`f()?;`): counts neither
     /// way.
     Checked,
 }
 
+/// The explicit forms of dropping a result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Discard {
-    /// `f();`
-    Statement,
+pub(super) enum Explicit {
     /// `let _ = f()`, `_ = f()`
     Wildcard,
     /// `match f() { Ok(_) => …, Err(e) => … }`, `if let Err(e) = f()`
@@ -48,16 +70,31 @@ pub(super) enum Discard {
     PayloadDropped(&'static str),
     /// `void f()`
     Void,
+    /// `f().ok();`: the error turned into an `Option` and dropped — Rust's
+    /// spelling of "ignore this failure".
+    Silenced(&'static str),
 }
 
-impl Discard {
+impl Use {
+    /// The site drops the value (in any form): what `arm-result-deviance`
+    /// reads as work whose result the arm did not pass on.
+    pub(super) fn drops_value(self) -> bool {
+        !matches!(self, Use::Used)
+    }
+
     fn describe(self) -> String {
         match self {
-            Discard::Statement => "called as a statement".to_string(),
-            Discard::Wildcard => "bound to `_`".to_string(),
-            Discard::UnboundSuccess => "matched without binding the success value".to_string(),
-            Discard::PayloadDropped(method) => format!("reduced to `.{method}()`"),
-            Discard::Void => "`void`ed".to_string(),
+            Use::Discarded => "called as a statement".to_string(),
+            Use::Handled(Explicit::Wildcard) => "bound to `_`".to_string(),
+            Use::Handled(Explicit::UnboundSuccess) => {
+                "matched without binding the success value".to_string()
+            }
+            Use::Handled(Explicit::PayloadDropped(method)) => {
+                format!("reduced to `.{method}()`")
+            }
+            Use::Handled(Explicit::Void) => "`void`ed".to_string(),
+            Use::Handled(Explicit::Silenced(method)) => format!("silenced with `.{method}()`"),
+            Use::Used | Use::Checked => String::new(),
         }
     }
 }
@@ -73,14 +110,10 @@ pub(super) fn classify<'t>(
     let mut current = call;
     let mut depth = ancestors.len();
     let mut checked = false;
+    // Passed through a method that says the failure is ignored (`.ok()`).
+    let mut silenced: Option<&'static str> = None;
     // A discard after a check (`f()?;`) is a check.
-    let discard = |how: Discard, checked: bool| {
-        if checked {
-            Use::Checked
-        } else {
-            Use::Discarded(how)
-        }
-    };
+    let discard = |how: Use, checked: bool| if checked { Use::Checked } else { how };
     while depth > 0 {
         depth -= 1;
         let parent = ancestors[depth];
@@ -93,8 +126,10 @@ pub(super) fn classify<'t>(
         if rules.statements.contains(&kind) {
             return if rules.statement_needs_semicolon && !syntax::ends_with_semicolon(parent) {
                 Use::Used
+            } else if let Some(method) = silenced {
+                discard(Use::Handled(Explicit::Silenced(method)), checked)
             } else {
-                discard(Discard::Statement, checked)
+                discard(Use::Discarded, checked)
             };
         }
         if let Some((_, operator)) = rules.discarding_unary.iter().find(|(k, _)| *k == kind) {
@@ -102,7 +137,7 @@ pub(super) fn classify<'t>(
                 .child_by_field_name("operator")
                 .is_some_and(|op| syntax::text(op, source) == *operator);
             return if voided {
-                discard(Discard::Void, checked)
+                discard(Use::Handled(Explicit::Void), checked)
             } else {
                 Use::Used
             };
@@ -124,14 +159,14 @@ pub(super) fn classify<'t>(
             return if binds {
                 Use::Used
             } else {
-                discard(Discard::UnboundSuccess, checked)
+                discard(Use::Handled(Explicit::UnboundSuccess), checked)
             };
         }
         if rules.matches.contains(&kind)
             && parent.child_by_field_name(rules.match_subject) == Some(current)
         {
             return if match_discards(rules, source, parent) {
-                discard(Discard::UnboundSuccess, checked)
+                discard(Use::Handled(Explicit::UnboundSuccess), checked)
             } else {
                 Use::Used
             };
@@ -154,9 +189,12 @@ pub(super) fn classify<'t>(
                 .iter()
                 .find(|m| **m == method)
             {
-                return discard(Discard::PayloadDropped(dropping), checked);
+                return discard(Use::Handled(Explicit::PayloadDropped(dropping)), checked);
             }
-            if rules.forwarding_methods.contains(&method) {
+            if let Some(silencing) = rules.silencing_methods.iter().find(|m| **m == method) {
+                silenced = Some(silencing);
+            }
+            if silenced.is_some() || rules.forwarding_methods.contains(&method) {
                 depth -= 1;
                 current = ancestors[depth];
                 continue;
@@ -174,7 +212,7 @@ fn wildcard(pattern: Option<Node<'_>>, value: Node<'_>, source: &str, checked: b
             if checked {
                 Use::Checked
             } else {
-                Use::Discarded(Discard::Wildcard)
+                Use::Handled(Explicit::Wildcard)
             }
         }
         _ => Use::Used,
@@ -246,11 +284,20 @@ fn match_discards(rules: &Rules, source: &str, node: Node<'_>) -> bool {
     variant
 }
 
-/// The discarded sites that break a strong belief, with the site each is
+/// A site that departs from a strong belief, and whether it may be
+/// reported on its own (a bare statement discard of a status result) or
+/// only folded into an arm finding at the same call.
+pub(super) struct Departure {
+    pub finding: Finding,
+    pub site: usize,
+    pub standalone: bool,
+}
+
+/// The sites that drop a result most call sites use, with the site each is
 /// at (for merging into `arm-result-deviance`).
-pub(super) fn findings(project: &Project, uses: &[Option<Use>]) -> Vec<(Finding, usize)> {
+pub(super) fn findings(project: &Project, uses: &[Option<Use>]) -> Vec<Departure> {
     let calls = project.call_sites();
-    let mut by_callee: HashMap<&str, (Vec<usize>, Vec<(usize, Discard)>)> = HashMap::new();
+    let mut by_callee: HashMap<&str, (Vec<usize>, Vec<(usize, Use)>)> = HashMap::new();
     for (site, used) in uses.iter().enumerate() {
         let Some(used) = used else { continue };
         let call = &calls[site];
@@ -260,7 +307,7 @@ pub(super) fn findings(project: &Project, uses: &[Option<Use>]) -> Vec<(Finding,
         let entry = by_callee.entry(call.callee_id.as_str()).or_default();
         match used {
             Use::Used => entry.0.push(site),
-            Use::Discarded(how) => entry.1.push((site, *how)),
+            Use::Discarded | Use::Handled(_) => entry.1.push((site, *used)),
             Use::Checked => {}
         }
     }
@@ -283,6 +330,7 @@ pub(super) fn findings(project: &Project, uses: &[Option<Use>]) -> Vec<(Finding,
         let Returns::Value(returned) = returns(rules, first.callee_signature.as_deref()) else {
             continue;
         };
+        let status = reports_status(rules, &returned);
         let mut using: Vec<usize> = used.clone();
         using.sort_by(|&a, &b| {
             (&calls[a].file, calls[a].line).cmp(&(&calls[b].file, calls[b].line))
@@ -299,10 +347,10 @@ pub(super) fn findings(project: &Project, uses: &[Option<Use>]) -> Vec<(Finding,
         let confidence = z_confidence(used.len(), total);
         for (site, how) in discarded {
             let call = &calls[site];
-            out.push((
-                Finding {
+            out.push(Departure {
+                finding: Finding {
                     detector: Detector::Deviance,
-                    rule: RULE,
+                    rule: RULE.into(),
                     file: call.file.clone(),
                     line: call.line,
                     col: call.col,
@@ -318,8 +366,48 @@ pub(super) fn findings(project: &Project, uses: &[Option<Use>]) -> Vec<(Finding,
                     evidence: evidence.clone(),
                 },
                 site,
-            ));
+                standalone: how == Use::Discarded && status && used.len() >= MIN_USED_ALONE,
+            });
         }
     }
     out
+}
+
+/// Whether a declared result reports success or failure — what an
+/// unchecked-result rule is about: a `Result`-like type (`Result<T>`,
+/// `io::Result<T>`, `LockResult<G>`) or a boolean, through references and
+/// `Promise<…>`. A reference, handle, builder, `Option` (a maybe-value, not
+/// an error) or type parameter (`R` from `with(|x| ..)`) is not.
+pub(super) fn reports_status(rules: &Rules, declared: &str) -> bool {
+    let mut ty = declared.trim();
+    loop {
+        let before = ty;
+        ty = ty.trim_start_matches('&').trim_start();
+        if let Some(rest) = ty.strip_prefix('\'') {
+            // A lifetime: `&'a T`.
+            ty = rest
+                .trim_start_matches(|c: char| c.is_alphanumeric() || c == '_')
+                .trim_start();
+        }
+        ty = ty.strip_prefix("mut ").unwrap_or(ty).trim_start();
+        for wrapper in rules.status_transparent {
+            if let Some(inner) = ty
+                .strip_prefix(wrapper)
+                .and_then(|rest| rest.strip_prefix('<'))
+                .and_then(|rest| rest.strip_suffix('>'))
+            {
+                ty = inner.trim();
+            }
+        }
+        if ty == before {
+            break;
+        }
+    }
+    let head = ty.split('<').next().unwrap_or(ty).trim();
+    let name = head.rsplit([':', '.']).next().unwrap_or(head);
+    rules.status_types.contains(&name)
+        || rules
+            .status_suffixes
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
 }

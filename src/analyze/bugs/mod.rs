@@ -13,6 +13,11 @@
 //!   change, branches with identical bodies, stores overwritten before any
 //!   read, comparisons of a value with itself, constant conditions.
 //!
+//! - **Rule** (`crate::analyze::rules`): YAML rules — weggli patterns and
+//!   tree-sitter queries with semantic predicates — run by
+//!   `codegraph analyze rules`; their findings share this type so ranking
+//!   and review packets work the same.
+//!
 //! Both build on what is precise: resolved call edges from the index (a
 //! caller, a callee, and the line and column of each call site — every
 //! language the indexer resolves) and tree-sitter syntax re-parsed per file.
@@ -24,6 +29,7 @@ mod lint;
 mod project;
 mod review;
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -39,6 +45,8 @@ use crate::codegraph::CodeGraph;
 pub enum Detector {
     Deviance,
     Lint,
+    /// A YAML rule (`codegraph analyze rules`).
+    Rule,
 }
 
 /// A place that supports (or contradicts) a finding: another call site that
@@ -56,8 +64,9 @@ pub struct Evidence {
 #[serde(rename_all = "camelCase")]
 pub struct Finding {
     pub detector: Detector,
-    /// Stable id of the rule (`result-discarded`, `loop-no-progress`, …).
-    pub rule: &'static str,
+    /// Stable id of the rule (`result-discarded`, `loop-no-progress`, a
+    /// YAML rule's `id`…).
+    pub rule: Cow<'static, str>,
     pub file: String,
     pub line: u32,
     pub col: u32,
@@ -97,7 +106,7 @@ pub struct BugsReport {
     /// Findings left out by `top`.
     pub findings_omitted: usize,
     /// Findings per rule (before `top`).
-    pub by_rule: BTreeMap<&'static str, usize>,
+    pub by_rule: BTreeMap<String, usize>,
     /// Files not analysed, by reason (unsupported language, unreadable…).
     pub skipped: BTreeMap<String, usize>,
     pub note: String,
@@ -120,24 +129,37 @@ pub fn bugs_report(
 ) -> Result<BugsReport, String> {
     let mut project = Project::load(cg, project_root)?;
     let findings = detect(&mut project, options);
+    Ok(report(
+        &project,
+        project.files_parsed(),
+        findings,
+        "Deviance findings are departures from what the rest of the code does, with the \
+         agreeing sites as evidence; lint findings are syntactic bug shapes. Both are leads to \
+         confirm by reading the code (`codegraph analyze review`), not proofs.",
+    ))
+}
+
+/// A report of `findings` (already filtered and ranked) over `project`.
+pub(crate) fn report(
+    project: &Project,
+    files_scanned: usize,
+    findings: Vec<Finding>,
+    note: &str,
+) -> BugsReport {
     let mut by_rule = BTreeMap::new();
     for finding in &findings {
-        *by_rule.entry(finding.rule).or_default() += 1;
+        *by_rule.entry(finding.rule.to_string()).or_default() += 1;
     }
-
-    Ok(BugsReport {
-        files_scanned: project.files_parsed(),
+    BugsReport {
+        files_scanned,
         functions: project.function_count(),
         call_sites: project.call_sites().len(),
         findings,
         findings_omitted: 0,
         by_rule,
         skipped: project.skipped().clone(),
-        note: "Deviance findings are departures from what the rest of the code does, with the \
-               agreeing sites as evidence; lint findings are syntactic bug shapes. Both are \
-               leads to confirm by reading the code (`codegraph analyze review`), not proofs."
-            .to_string(),
-    })
+        note: note.to_string(),
+    }
 }
 
 /// Which findings to turn into review packets.
@@ -151,15 +173,26 @@ pub struct ReviewSelection {
     pub top: usize,
 }
 
-/// Run the detectors and build a [`ReviewPacket`] for each selected finding.
+/// Run the detectors (and `rules`, when given) and build a
+/// [`ReviewPacket`] for each selected finding.
 pub fn bugs_review(
     cg: &CodeGraph,
     project_root: &Path,
     options: &BugsOptions,
     selection: &ReviewSelection,
+    rules: Option<&crate::analyze::rules::RuleSet>,
 ) -> Result<Vec<ReviewPacket>, String> {
     let mut project = Project::load(cg, project_root)?;
     let mut findings = detect(&mut project, options);
+    if let Some(rules) = rules {
+        findings.extend(crate::analyze::rules::detect(
+            cg,
+            &mut project,
+            rules,
+            options,
+        )?);
+        rank(&mut findings);
+    }
     findings.retain(|finding| {
         selection
             .rule
@@ -170,12 +203,18 @@ pub fn bugs_review(
             })
     });
     findings.truncate(selection.top.max(1));
-    Ok(review_packets(&mut project, &findings))
+    Ok(review_packets(&mut project, &findings, &|finding| {
+        rules
+            .map(|rules| crate::analyze::rules::review_questions(rules, finding))
+            .unwrap_or_default()
+    }))
 }
 
 /// The selected detectors' findings, filtered by `options`, most confident
 /// first.
 fn detect(project: &mut Project, options: &BugsOptions) -> Vec<Finding> {
+    // `Rule` findings come from the rules engine: asking for only those
+    // runs neither family here.
     let wants = |detector| options.detectors.is_empty() || options.detectors.contains(&detector);
     let mut findings = Vec::new();
     if wants(Detector::Deviance) {
@@ -184,6 +223,18 @@ fn detect(project: &mut Project, options: &BugsOptions) -> Vec<Finding> {
     if wants(Detector::Lint) {
         findings.extend(lint::detect(project));
     }
+    retain_selected(project, &mut findings, options);
+    rank(&mut findings);
+    findings
+}
+
+/// Keep the findings `options` selects: in `only_files`, outside test code
+/// unless `include_tests`.
+pub(crate) fn retain_selected(
+    project: &Project,
+    findings: &mut Vec<Finding>,
+    options: &BugsOptions,
+) {
     findings.retain(|finding| {
         options
             .only_files
@@ -191,10 +242,14 @@ fn detect(project: &mut Project, options: &BugsOptions) -> Vec<Finding> {
             .is_none_or(|files| files.iter().any(|file| file == &finding.file))
             && (options.include_tests || !project.is_test_location(finding))
     });
+}
+
+/// Most confident first, then by place.
+pub(crate) fn rank(findings: &mut [Finding]) {
     findings.sort_by(|a, b| {
         b.confidence
             .total_cmp(&a.confidence)
             .then_with(|| (&a.file, a.line, a.col).cmp(&(&b.file, b.line, b.col)))
+            .then_with(|| a.rule.cmp(&b.rule))
     });
-    findings
 }

@@ -1,0 +1,242 @@
+# JavaScript / TypeScript rules (tree-sitter queries; the JS, TS and TSX
+# grammars share these node kinds).
+id: js-eval-of-data
+description: eval / new Function / vm.run* / string timers run code built at run time (CWE-95).
+severity: high
+tags: [CWE-95, CWE-94]
+language: [javascript, typescript, tsx]
+check-patterns:
+  - name: eval
+    query: |
+      ((call_expression function: (identifier) @fn arguments: (arguments . (_) @code)) @call
+       (#eq? @fn "eval"))
+    where:
+      - capture: code
+        not-regex: "^(\"[^\"]*\"|'[^']*')$"
+  - name: new-function
+    query: |
+      ((new_expression constructor: (identifier) @fn arguments: (arguments (_) @code)) @call
+       (#eq? @fn "Function"))
+  - name: string-timer
+    query: |
+      ((call_expression function: (identifier) @fn arguments: (arguments . [(binary_expression) (template_string)] @code)) @call
+       (#match? @fn "^(setTimeout|setInterval)$"))
+  - name: vm-run
+    query: |
+      ((call_expression function: (member_expression object: (identifier) @mod property: (property_identifier) @fn)) @call
+       (#eq? @mod "vm")
+       (#match? @fn "^(runInNewContext|runInThisContext|runInContext|compileFunction)$"))
+message: "{fn} runs code built at run time"
+examples:
+  bad:
+    - |
+      function handle(req, res) {
+        const preTax = eval(req.body.preTax);
+      }
+    - |
+      const f = new Function("a", body);
+  good:
+    - |
+      function handle(req, res) {
+        const preTax = parseInt(req.body.preTax);
+        const x = eval("1 + 1");
+      }
+---
+id: js-shell-command-built
+description: child_process exec/execSync gets a command built by concatenation or a template (CWE-78).
+severity: high
+tags: [CWE-78]
+language: [javascript, typescript, tsx]
+check-patterns:
+  - name: exec-built
+    query: |
+      ((call_expression
+         function: [(identifier) @fn (member_expression property: (property_identifier) @fn)]
+         arguments: (arguments . [(binary_expression) (template_string (template_substitution))] @cmd)) @call
+       (#match? @fn "^(exec|execSync)$"))
+  - name: spawn-shell
+    query: |
+      ((call_expression
+         function: [(identifier) @fn (member_expression property: (property_identifier) @fn)]
+         arguments: (arguments (object (pair key: (property_identifier) @k value: (true))))) @call
+       (#match? @fn "^(spawn|spawnSync|execFile|execFileSync)$")
+       (#eq? @k "shell"))
+message: "{fn} runs a shell command built at run time"
+examples:
+  bad:
+    - |
+      const { exec } = require("child_process");
+      function f(host) { exec("ping -c 1 " + host, cb); }
+    - |
+      function f(file) { require("child_process").execSync(`cat ${file}`); }
+  good:
+    - |
+      function f(host) { require("child_process").execFile("ping", ["-c", "1", host], cb); }
+---
+id: js-sql-built-from-strings
+description: A SQL query is built by concatenation or template substitution and passed to query/raw (CWE-89).
+severity: high
+tags: [CWE-89]
+language: [javascript, typescript, tsx]
+check-patterns:
+  - name: query-built
+    query: |
+      ((call_expression
+         function: (member_expression property: (property_identifier) @fn)
+         arguments: (arguments . [(binary_expression) (template_string (template_substitution))] @sql)) @call
+       (#match? @fn "^(query|raw|execute|exec|all|get|run|prepare)$"))
+    where:
+      - capture: sql
+        regex: "(?i)\\b(select|insert|update|delete)\\b"
+message: "{fn}() runs SQL built from strings"
+examples:
+  bad:
+    - |
+      function search(req, res) {
+        models.sequelize.query(`SELECT * FROM Products WHERE ((name LIKE '%${criteria}%') AND deletedAt IS NULL)`);
+      }
+    - |
+      function f(db, id) { db.query("SELECT * FROM users WHERE id = " + id); }
+  good:
+    - |
+      function f(db, id) { db.query("SELECT * FROM users WHERE id = ?", [id]); }
+---
+id: js-nosql-where
+description: A MongoDB query uses $where, which evaluates JavaScript built from the request (CWE-943).
+severity: high
+tags: [CWE-943, CWE-89]
+language: [javascript, typescript, tsx]
+check-patterns:
+  - name: where-operator
+    query: |
+      ((pair key: [(property_identifier) (string)] @key value: (_) @expr) @pair
+       (#match? @key "^[\"']?\\$where[\"']?$"))
+message: "$where evaluates `{expr}` as JavaScript"
+examples:
+  bad:
+    - |
+      function f(userId, threshold) {
+        return { $where: `this.userId == ${userId} && this.stocks > '${threshold}'` };
+      }
+  good:
+    - |
+      function f(userId) { return { userId: userId, stocks: { $gt: 5 } }; }
+---
+id: js-redirect-from-request
+description: A redirect goes to a URL taken straight from the request (open redirect, CWE-601).
+severity: medium
+tags: [CWE-601]
+language: [javascript, typescript, tsx]
+check-patterns:
+  - name: redirect-request-value
+    query: |
+      ((call_expression
+         function: (member_expression property: (property_identifier) @fn)
+         arguments: (arguments . [(member_expression) (subscript_expression)] @target)) @call
+       (#eq? @fn "redirect")
+       (#match? @target "^req(uest)?\\.(query|params|body)"))
+message: "redirects to `{target}` from the request"
+examples:
+  bad:
+    - |
+      app.get("/learn", (req, res) => { return res.redirect(req.query.url); });
+  good:
+    - |
+      app.get("/learn", (req, res) => { return res.redirect("/tutorial"); });
+---
+id: js-request-to-user-url
+description: An outbound HTTP request goes to a URL taken straight from the request (SSRF, CWE-918).
+severity: medium
+tags: [CWE-918]
+language: [javascript, typescript, tsx]
+check-patterns:
+  - name: fetch-request-url
+    query: |
+      ((call_expression
+         function: [(identifier) @fn (member_expression object: (identifier) @fn)]
+         arguments: (arguments . [(member_expression) (subscript_expression) (binary_expression) (template_string)] @url)) @call
+       (#match? @fn "^(needle|axios|request|got|superagent|fetch|http|https)$")
+       (#match? @url "req(uest)?\\.(query|params|body)"))
+message: "{fn} requests a URL from the request: `{url}`"
+examples:
+  bad:
+    - |
+      function f(req, res) { needle.get(req.query.url, (err, r) => res.send(r.body)); }
+  good:
+    - |
+      function f(req, res) { needle.get("https://example.com/api", cb); }
+---
+id: js-insecure-cookie-or-template
+description: >-
+  A cookie is set with httpOnly/secure false, or HTML escaping is switched
+  off (autoescape false) (CWE-1004, CWE-614, CWE-79).
+severity: medium
+tags: [CWE-1004, CWE-614, CWE-79]
+language: [javascript, typescript, tsx]
+check-patterns:
+  - name: flag-false
+    query: |
+      ((pair key: [(property_identifier) (string)] @key value: (false)) @pair
+       (#match? @key "^[\"']?(httpOnly|secure|autoescape)[\"']?$"))
+message: "`{pair}` turns a protection off"
+examples:
+  bad:
+    - |
+      app.use(session({ cookie: { httpOnly: false } }));
+    - |
+      swig.setDefaults({ autoescape: false });
+  good:
+    - |
+      app.use(session({ cookie: { httpOnly: true, secure: true } }));
+---
+id: js-html-sanitizer-bypass
+description: HTML from data is inserted without escaping (innerHTML, dangerouslySetInnerHTML, bypassSecurityTrust*) (CWE-79).
+severity: medium
+tags: [CWE-79]
+language: [javascript, typescript, tsx]
+check-patterns:
+  - name: bypass-trust
+    query: |
+      ((call_expression function: (member_expression property: (property_identifier) @fn) arguments: (arguments . (_) @value)) @call
+       (#match? @fn "^bypassSecurityTrust(Html|Script|Url|ResourceUrl|Style)$"))
+    where:
+      - capture: value
+        not-regex: "^(\"[^\"]*\"|'[^']*')$"
+  - name: inner-html
+    query: |
+      ((assignment_expression left: (member_expression property: (property_identifier) @fn) right: (_) @value) @assign
+       (#match? @fn "^(innerHTML|outerHTML)$"))
+    where:
+      - capture: value
+        not-regex: "^(\"[^\"]*\"|'[^']*'|``)$"
+message: "{fn} inserts `{value}` as HTML"
+examples:
+  bad:
+    - |
+      class C { f(data) { this.x = this.sanitizer.bypassSecurityTrustHtml(data.description); } }
+    - |
+      function f(el, msg) { el.innerHTML = "<p>" + msg + "</p>"; }
+  good:
+    - |
+      function f(el, msg) { el.textContent = msg; el.innerHTML = ""; }
+---
+id: js-weak-hash
+description: crypto.createHash with MD5 or SHA-1 (CWE-328).
+severity: low
+tags: [CWE-328, CWE-916]
+language: [javascript, typescript, tsx]
+check-patterns:
+  - name: create-hash
+    query: |
+      ((call_expression function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments . (string) @alg)) @call
+       (#eq? @fn "createHash")
+       (#match? @alg "(?i)^['\"](md5|sha1)['\"]$"))
+message: "createHash({alg}) is a broken hash"
+examples:
+  bad:
+    - |
+      const h = crypto.createHash("md5").update(password).digest("hex");
+  good:
+    - |
+      const h = crypto.createHash("sha256").update(data).digest("hex");

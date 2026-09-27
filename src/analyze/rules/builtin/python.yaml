@@ -1,0 +1,292 @@
+# Python rules (tree-sitter queries).
+id: py-yaml-unsafe-load
+description: >-
+  yaml.load / load_all without a safe loader (or yaml.unsafe_load) builds
+  arbitrary Python objects from the document (CWE-502).
+severity: high
+tags: [CWE-502, CWE-20]
+language: python
+check-patterns:
+  - name: load-without-safe-loader
+    query: |
+      ((call function: (attribute object: (identifier) @mod attribute: (identifier) @fn)
+             arguments: (argument_list) @args) @call
+       (#eq? @mod "yaml")
+       (#match? @fn "^(load|load_all)$"))
+    where:
+      - capture: args
+        not-regex: "Safe|BaseLoader"
+  - name: unsafe-load
+    query: |
+      ((call function: (attribute object: (identifier) @mod attribute: (identifier) @fn)) @call
+       (#eq? @mod "yaml")
+       (#match? @fn "^(unsafe_load|unsafe_load_all|full_load|full_load_all)$"))
+message: "yaml.{fn} can construct arbitrary objects"
+examples:
+  bad:
+    - |
+      def f(data):
+          return yaml.load(data)
+    - |
+      def f(file):
+          return yaml.load(file, yaml.Loader)
+  good:
+    - |
+      def f(data):
+          return yaml.load(data, Loader=yaml.SafeLoader)
+    - |
+      def f(data):
+          return yaml.safe_load(data)
+---
+id: py-unsafe-deserialization
+description: pickle/marshal/dill/jsonpickle turn bytes into arbitrary objects (CWE-502).
+severity: high
+tags: [CWE-502]
+language: python
+check-patterns:
+  - name: pickle-loads
+    query: |
+      ((call function: (attribute object: (identifier) @mod attribute: (identifier) @fn)) @call
+       (#match? @mod "^(pickle|cPickle|_pickle|dill|marshal|shelve|jsonpickle)$")
+       (#match? @fn "^(loads|load|Unpickler|open|decode)$"))
+message: "{mod}.{fn} deserializes untrusted data into objects"
+examples:
+  bad:
+    - |
+      def f(request):
+          token = request.COOKIES.get("token")
+          admin = pickle.loads(base64.b64decode(token))
+  good:
+    - |
+      def f(request):
+          admin = json.loads(request.body)
+---
+id: py-shell-command
+description: >-
+  A subprocess call with shell=True, or os.system/os.popen with a built
+  command: shell metacharacters in the input run as commands (CWE-78).
+severity: high
+tags: [CWE-78]
+language: python
+check-patterns:
+  - name: shell-true
+    query: |
+      ((call function: (_) @fn
+             arguments: (argument_list (keyword_argument name: (identifier) @k value: (true)))) @call
+       (#eq? @k "shell"))
+  - name: os-system
+    query: |
+      ((call function: (attribute object: (identifier) @mod attribute: (identifier) @fn)
+             arguments: (argument_list . (_) @cmd)) @call
+       (#eq? @mod "os")
+       (#match? @fn "^(system|popen|popen2|popen3|spawnl|spawnlp)$"))
+    where:
+      - capture: cmd
+        not-regex: "^[rbu]*(\"[^\"]*\"|'[^']*')$"
+message: "{fn} runs a shell command built at run time"
+examples:
+  bad:
+    - |
+      def f(domain):
+          output = subprocess.Popen(f"nslookup {domain}", shell=True, stdout=subprocess.PIPE)
+    - |
+      def f(host):
+          os.system("ping " + host)
+  good:
+    - |
+      def f(domain):
+          output = subprocess.run(["nslookup", domain], stdout=subprocess.PIPE)
+    - |
+      def f():
+          os.system("ls -l")
+---
+id: py-eval-of-data
+description: eval/exec (or PIL ImageMath.eval) of something other than a literal runs whatever it holds (CWE-95).
+severity: high
+tags: [CWE-95, CWE-94]
+language: python
+check-patterns:
+  - name: builtin-eval
+    query: |
+      ((call function: (identifier) @fn arguments: (argument_list . (_) @code)) @call
+       (#match? @fn "^(eval|exec)$"))
+    where:
+      - capture: code
+        not-regex: "^[rbu]*(\"[^\"]*\"|'[^']*')$"
+  - name: imagemath-eval
+    query: |
+      ((call function: (attribute object: (identifier) @mod attribute: (identifier) @fn)) @call
+       (#eq? @mod "ImageMath")
+       (#match? @fn "^(eval|unsafe_eval)$"))
+message: "{fn}() evaluates `{code}`"
+examples:
+  bad:
+    - |
+      def f(request):
+          val = request.POST.get("val")
+          output = eval(val)
+  good:
+    - |
+      def f():
+          output = eval("1 + 1")
+---
+id: py-template-injection
+description: A template is rendered from a string built at run time (render_template_string, Template(x).render) (CWE-1336).
+severity: high
+tags: [CWE-1336, CWE-94, CWE-79]
+language: python
+check-patterns:
+  - name: render-template-string
+    query: |
+      ((call function: [(identifier) @fn (attribute attribute: (identifier) @fn)]
+             arguments: (argument_list . (_) @tpl)) @call
+       (#eq? @fn "render_template_string"))
+    where:
+      - capture: tpl
+        not-regex: "^[rbu]*(\"[^\"]*\"|'[^']*')$"
+  - name: template-from-variable
+    query: |
+      ((call function: (attribute
+                         object: (call function: [(identifier) @cls (attribute attribute: (identifier) @cls)]
+                                       arguments: (argument_list . (identifier) @tpl))
+                         attribute: (identifier) @m)) @call
+       (#match? @cls "^(Template|Environment)$")
+       (#eq? @m "render"))
+message: "a template is rendered from `{tpl}`"
+examples:
+  bad:
+    - |
+      def f():
+          return render_template_string(template % request.url)
+    - |
+      def f(blog):
+          return Template(blog).render(Context({}))
+  good:
+    - |
+      def f(name):
+          return render_template_string("<p>{{ name }}</p>", name=name)
+---
+id: py-jwt-signature-not-verified
+description: A JWT is decoded without verifying its signature (verify=False, verify_signature False, algorithm none) (CWE-347).
+severity: high
+tags: [CWE-347, CWE-345]
+language: python
+check-patterns:
+  - name: verify-false
+    query: |
+      ((call function: (attribute object: (identifier) @mod attribute: (identifier) @fn)
+             arguments: (argument_list (keyword_argument name: (identifier) @k value: (false)))) @call
+       (#eq? @mod "jwt")
+       (#eq? @fn "decode")
+       (#eq? @k "verify"))
+  - name: verify-signature-false
+    query: |
+      ((call function: (attribute object: (identifier) @mod attribute: (identifier) @fn)
+             arguments: (argument_list) @args) @call
+       (#eq? @mod "jwt")
+       (#eq? @fn "decode"))
+    where:
+      - capture: args
+        regex: "[\"']verify_signature[\"']\\s*:\\s*False|algorithms\\s*=\\s*\\[\\s*[\"']none[\"']"
+message: "jwt.decode does not verify the token's signature"
+examples:
+  bad:
+    - |
+      def f(token):
+          return jwt.decode(token, verify=False)
+    - |
+      def f(token):
+          return jwt.decode(token, options={"verify_signature": False})
+  good:
+    - |
+      def f(token, key):
+          return jwt.decode(token, key, algorithms=["HS256"])
+---
+id: py-sql-built-from-strings
+description: >-
+  SQL is built with %, +, f-strings or .format and passed to execute/raw/extra,
+  or a raw()/extra() query is a variable — parameters belong in the second
+  argument (CWE-89).
+severity: high
+tags: [CWE-89]
+language: python
+check-patterns:
+  - name: execute-formatted
+    query: |
+      ((call function: (attribute attribute: (identifier) @fn)
+             arguments: (argument_list . [(binary_operator) (string (interpolation)) (call function: (attribute attribute: (identifier) @format))] @sql)) @call
+       (#match? @fn "^(execute|executemany|executescript|raw|extra|RawSQL)$"))
+  - name: raw-variable
+    query: |
+      ((call function: (attribute attribute: (identifier) @fn)
+             arguments: (argument_list . (identifier) @sql)) @call
+       (#match? @fn "^(raw|extra)$"))
+message: "{fn}() runs SQL built from strings: `{sql}`"
+examples:
+  bad:
+    - |
+      def f(cur, search):
+          cur.execute("select * from customer where username = '%s'" % search)
+    - |
+      def f(name, password):
+          sql_query = "SELECT * FROM introduction_login WHERE user='" + name + "'"
+          val = login.objects.raw(sql_query)
+    - |
+      def f(cur, name):
+          cur.execute(f"SELECT * FROM t WHERE name = '{name}'")
+  good:
+    - |
+      def f(cur, search):
+          cur.execute("select * from customer where username = %s", (search,))
+---
+id: py-weak-hash
+description: MD5 or SHA-1 used for hashing (passwords, integrity) is broken (CWE-328).
+severity: low
+tags: [CWE-328, CWE-916]
+language: python
+check-patterns:
+  - name: hashlib-md5-sha1
+    query: |
+      ((call function: (attribute object: (identifier) @mod attribute: (identifier) @fn)) @call
+       (#eq? @mod "hashlib")
+       (#match? @fn "^(md5|sha1)$"))
+  - name: hashlib-new
+    query: |
+      ((call function: (attribute object: (identifier) @mod attribute: (identifier) @fn)
+             arguments: (argument_list . (string) @alg)) @call
+       (#eq? @mod "hashlib")
+       (#eq? @fn "new")
+       (#match? @alg "(?i)^['\"](md5|sha1)['\"]$"))
+message: "hashlib.{fn} is a broken hash"
+examples:
+  bad:
+    - |
+      def f(password):
+          return hashlib.md5(password.encode()).hexdigest()
+  good:
+    - |
+      def f(password):
+          return hashlib.sha256(password.encode()).hexdigest()
+---
+id: py-tls-verify-disabled
+description: An HTTPS request with verify=False accepts any certificate (CWE-295).
+severity: medium
+tags: [CWE-295]
+language: python
+check-patterns:
+  - name: verify-false
+    query: |
+      ((call function: (attribute object: (identifier) @mod attribute: (identifier) @fn)
+             arguments: (argument_list (keyword_argument name: (identifier) @k value: (false)))) @call
+       (#match? @mod "^(requests|session|s|client|httpx)$")
+       (#eq? @k "verify"))
+message: "{mod}.{fn} with verify=False"
+examples:
+  bad:
+    - |
+      def f(url):
+          return requests.get(url, verify=False)
+  good:
+    - |
+      def f(url):
+          return requests.get(url, timeout=5)

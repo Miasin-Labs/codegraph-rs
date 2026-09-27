@@ -217,6 +217,11 @@ impl Project {
         }
     }
 
+    /// The project's root directory.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Whether the index holds a symbol named `name` (a constant, variant,
     /// function… anywhere in the project, generated code included).
     pub fn has_symbol_named(&self, name: &str) -> bool {

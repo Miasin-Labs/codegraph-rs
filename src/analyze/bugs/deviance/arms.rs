@@ -4,14 +4,23 @@
 //! project call and then yields a constant (`KeepBoth => { download(..);
 //! None }`) dropped what its work produced — the caller cannot tell it
 //! happened.
+//!
+//! Two shapes that look alike are not deviant. An arm yielding only success
+//! (`Ok(())`, `()`) reports all a sibling could when the work's failures
+//! went up through `?` (a `Result<()>` lowering, `Val::store`), so it is
+//! neutral. And the work must be *dropped*: an arm whose project calls all
+//! hand their value on (to a log line, a binding it reads) did not lose it —
+//! [`retain_dropped`] keeps only arms with a call whose result is discarded,
+//! explicitly dropped (`Ok(_) =>`) or only checked (`f()?;`).
 
 use tree_sitter::Node;
 
+use super::results::{Departure, Use};
 use super::returns::{Returns, returns};
 use super::rules::{self, ArmValue, Rules};
 use super::syntax::{self, Value};
 use super::{FileScan, sites_between, snippet};
-use crate::analyze::bugs::{Detector, Evidence, Finding};
+use crate::analyze::bugs::{CallSite, Detector, Evidence, Finding};
 use crate::ensure_sufficient_stack;
 use crate::extraction::detect_language;
 
@@ -29,6 +38,10 @@ pub(super) struct ArmDeviance {
     pub lines: (u32, u32),
     /// The project call sites the arm makes.
     pub sites: Vec<usize>,
+    /// The message after the calls it names (`but yields …`): completed by
+    /// [`retain_dropped`] once the dropped calls are known.
+    label: String,
+    tail: String,
 }
 
 /// The `match` nodes whose value is the value of `node` (a function body,
@@ -269,6 +282,10 @@ pub(super) fn check(scan: &FileScan<'_>, node: Node<'_>) -> Option<Vec<ArmDevian
             ArmValue::Expression => syntax::resolve(rules, body),
             ArmValue::Returned => syntax::final_value(rules, body, skip),
         };
+        let success_only = matches!(
+            value,
+            Value::Expr(v) if syntax::is_unit_value(rules, v, scan.source)
+        );
         let yielded = match value {
             Value::Expr(value) => classify_value(scan, value),
             Value::Unit => Yield::Constant("()".to_string()),
@@ -278,6 +295,8 @@ pub(super) fn check(scan: &FileScan<'_>, node: Node<'_>) -> Option<Vec<ArmDevian
             // A call returning nothing reports nothing (`() => lower_if(..)`).
             Yield::Work(site) if returns_something(scan, site) => ArmKind::Work(site),
             Yield::Work(_) => ArmKind::Neutral,
+            // Success and nothing else: all a `Result<()>` arm can report.
+            Yield::Constant(_) if success_only => ArmKind::Neutral,
             Yield::Constant(constant) => {
                 let from = skip.map_or(syntax::start(body), syntax::end);
                 let sites: Vec<usize> = sites_between(scan.sites, from, syntax::end(body))
@@ -357,19 +376,9 @@ pub(super) fn check(scan: &FileScan<'_>, node: Node<'_>) -> Option<Vec<ArmDevian
                 return None;
             };
             let (line, col) = syntax::start(info.arm);
-            let mut made: Vec<&str> = sites.iter().map(|&site| callee(site)).collect();
-            made.dedup();
-            let made = made
-                .iter()
-                .take(3)
-                .map(|name| format!("`{name}`"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let message = format!(
-                "arm `{}` calls {made} but yields `{constant}`, while {} of {with_values} arms \
-                 that do work yield a project call's result ({}): what this arm did is not \
-                 reported to the caller",
-                info.label,
+            let tail = format!(
+                "but yields `{constant}`, while {} of {with_values} arms that do work yield a \
+                 project call's result ({}): what this arm did is not reported to the caller",
                 agreeing.len(),
                 agreeing_names
                     .iter()
@@ -380,7 +389,7 @@ pub(super) fn check(scan: &FileScan<'_>, node: Node<'_>) -> Option<Vec<ArmDevian
             Some(ArmDeviance {
                 finding: Finding {
                     detector: Detector::Deviance,
-                    rule: RULE,
+                    rule: RULE.into(),
                     file: scan.file.to_string(),
                     line,
                     col,
@@ -388,25 +397,65 @@ pub(super) fn check(scan: &FileScan<'_>, node: Node<'_>) -> Option<Vec<ArmDevian
                         .project
                         .enclosing_function(scan.file, line)
                         .map(|span| span.qualified_name.clone()),
-                    message,
+                    message: String::new(),
                     confidence: 0.4 + 0.5 * ratio,
                     evidence: evidence.clone(),
                 },
                 lines: *body,
                 sites: sites.clone(),
+                label: info.label.clone(),
+                tail,
             })
         })
         .collect();
     Some(deviances)
 }
 
-/// The arm findings, with each `result-discarded` finding at a call the
-/// deviant arm makes folded into it (one lead, one root cause: the arm
-/// drops the value; the discarded call is how). Merged findings gain
-/// confidence (noisy-or of the two); the rest pass through.
-pub(super) fn merge(mut arms: Vec<ArmDeviance>, discarded: Vec<(Finding, usize)>) -> Vec<Finding> {
+/// Keep the deviant arms that drop a project call's result — discarded,
+/// explicitly dropped or only checked — narrowed to those calls. An arm
+/// whose calls all pass their value on (`warn!("{}", c.algorithm())`,
+/// `let (p, n) = lower_list(..)?` read later) did not lose its work.
+pub(super) fn retain_dropped(
+    arms: &mut Vec<ArmDeviance>,
+    uses: &[Option<Use>],
+    calls: &[CallSite],
+) {
+    arms.retain_mut(|arm| {
+        arm.sites
+            .retain(|&site| uses[site].is_some_and(Use::drops_value));
+        if arm.sites.is_empty() {
+            return false;
+        }
+        let mut made: Vec<&str> = arm
+            .sites
+            .iter()
+            .map(|&site| calls[site].callee_name.as_str())
+            .collect();
+        made.dedup();
+        let made = made
+            .iter()
+            .take(3)
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        arm.finding.message = format!("arm `{}` calls {made} {}", arm.label, arm.tail);
+        true
+    });
+}
+
+/// The arm findings, with each `result-discarded` departure at a call the
+/// deviant arm makes folded into it (one lead, one root cause: the arm drops
+/// the value; the discarded call is how). Merged findings gain confidence
+/// (noisy-or of the two); unmerged departures pass through only when they
+/// may stand alone (see [`Departure`]).
+pub(super) fn merge(mut arms: Vec<ArmDeviance>, departures: Vec<Departure>) -> Vec<Finding> {
     let mut out = Vec::new();
-    for (finding, site) in discarded {
+    for Departure {
+        finding,
+        site,
+        standalone,
+    } in departures
+    {
         let host = arms.iter_mut().find(|arm| {
             arm.finding.file == finding.file
                 && arm.lines.0 <= finding.line
@@ -425,7 +474,8 @@ pub(super) fn merge(mut arms: Vec<ArmDeviance>, discarded: Vec<(Finding, usize)>
                 });
                 arm.finding.evidence.extend(finding.evidence);
             }
-            None => out.push(finding),
+            None if standalone => out.push(finding),
+            None => {}
         }
     }
     out.extend(arms.into_iter().map(|arm| arm.finding));

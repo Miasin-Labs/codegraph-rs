@@ -322,16 +322,49 @@ cargo test --workspace
   `arm-result-deviance` (an arm does project work but yields a constant
   while ≥2 sibling arms yield a call's result — caught the rms KeepBoth
   bug, silent on its fix), `result-discarded`, `missing-companion-call`;
-  per-language tables in `deviance/rules.rs`. `lint/` holds syntactic
-  shapes per `lint/rules.rs` (`loop-no-progress`, `identical-branches`,
-  `self-comparison`, `constant-condition`, `dead-store`), each rule's
-  guards documented where measured false positives forced them; skip
-  minified/bundled files. Confidence is the belief's strength (deviance) or
-  the rule's measured precision (lint). `review` turns findings into
-  packets (function source windowed ≤160 lines, evidence with context,
-  callers, a per-rule checklist) for a person or model to decide. Test
-  code is excluded unless `--tests`; `--base` narrows the report (beliefs
-  are still learned project-wide).
+  per-language tables in `deviance/rules.rs`; `arm-result-deviance` needs
+  the arm to drop a call's result and never flags unit arms,
+  `missing-companion-call` needs a named release pair (get/close,
+  lock/unlock, begin/commit…) on the same object, and explicit discards
+  (`let _ =`, `if let Err`, `Ok(_)`) count as handled, never reported
+  alone. `lint/` holds syntactic shapes per `lint/rules.rs` (C/C++ tables
+  too: `loop-no-progress`, `identical-branches`, `self-comparison`,
+  `constant-condition`, `dead-store`, `comparison-discarded` (CWE-482),
+  `assignment-in-condition` (CWE-481)), each rule's guards documented where
+  measured false positives forced them; skip minified/bundled files.
+  Confidence is the belief's strength (deviance) or the rule's measured
+  precision (lint). `review` turns findings into packets (function source
+  windowed ≤160 lines, evidence with context, callers, a per-rule checklist)
+  for a person or model to decide. Test code is excluded unless `--tests`;
+  `--base` narrows the report (beliefs are still learned project-wide).
+- **Rules engine** (`src/analyze/rules/`, `codegraph analyze rules`,
+  `analyze review --rules|--builtin`): model-writable YAML rules
+  (weggli-ruleset format, `deny_unknown_fields`, `serde_yaml_ng`) whose
+  matches are `Finding`s of `Detector::Rule` (ranked by severity or
+  `confidence`, reviewed like the rest). A `check-pattern` is a weggli
+  `pattern` (C/C++; `rules/weggli/` is weggli 0.2.5's compiler/matcher
+  ported to our tree-sitter 0.26 grammars — Apache-2.0, see `NOTICE`; its
+  query tests ported) or a tree-sitter `query` (any grammar; only text
+  predicates, others rejected), plus `regex` constraints, `unique`/`limit`,
+  `at`, and `where` predicates (`semantics.rs`): `resolves-to`/
+  `not-resolves-to` (the call's resolved callee — `calls` edges matched by
+  the call's start line/col, plus `external_edges` as `<pkg>::<qname>`),
+  `enclosing-function` {`calls`, `calls-not` (resolved callees, or the
+  callee as written when unresolved), `name-regex`, `is-test`},
+  `inside`/`not-inside` (an ancestor matches a query), capture `regex`/
+  `not-regex`. `ignore-patterns` drop check matches reported inside their
+  span. Every rule must carry `examples: {bad, good}`; `--check` runs them
+  with no index (calls resolve as written, or per the example's `resolves`
+  map) and explains each failure (which pattern matched where, which
+  predicate or ignore-pattern rejected it); load errors name file, line,
+  rule, pattern and the key meant. Language specifics live in `lang.rs`
+  tables; per-match work is O(depth) (tree positions, a per-file line →
+  function table, per-function facts cached). Built-ins
+  (`rules/builtin/*.yaml`, `--builtin`, examples tested by
+  `rules_builtin_examples_pass`): C/C++ memory/format/input rules, Java
+  crypto/random/cookie/logic, Python/JS/PHP injection, Rust Send/Sync,
+  uninit and panic-safety. Measured with `tools/bugbench/` (juliet-c
+  55.7% P / 21.8% R, OWASP 76.3% / 38.2%, 2026-09).
 - **Concurrency lint** (`analysis/src/concurrency.rs`, per-language rules in
   `concurrency_rules.rs`): flags lossy best-effort sends. Library-only since
   the vuln engine (its sole CLI surface) was deleted.

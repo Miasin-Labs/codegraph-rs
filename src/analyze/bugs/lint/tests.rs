@@ -820,3 +820,223 @@ fn messages_quote_code_on_one_line() {
         "{ f(a, b) }"
     );
 }
+
+// ---------------------------------------------------------------- slips
+
+/// RustSec false positives: arms passing the language's own `None` on are
+/// not copies of each other, though `Empty`/`Unspecified` exist.
+#[test]
+fn arms_passing_the_languages_own_value_are_not_identical() {
+    let rust = r#"
+fn poll(p: Proj) -> Poll<Option<u8>> {
+    match p {
+        BodyProj::None => Poll::Ready(None),
+        BodyProj::Empty => Poll::Ready(None),
+        BodyProj::Bytes(b) => take(b),
+    }
+}
+fn from(v: DefaultValue) -> Option<Value> {
+    match v {
+        DefaultValue::None => None,
+        DefaultValue::ContextDependent => None,
+        DefaultValue::Unspecified => None,
+        DefaultValue::Undefined(s) => Some(s),
+    }
+}
+fn slip(k: Kind) -> Op {
+    match k {
+        Kind::Plus => Op::Plus,
+        Kind::Minus => Op::Plus,
+    }
+}
+enum E { Empty, Unspecified, ContextDependent }
+enum Op { Plus, Minus }
+fn minus() -> Op { Op::Minus }
+"#;
+    assert_eq!(
+        rule_lines(&lint(Language::Rust, rust), "identical-branches"),
+        vec![20]
+    );
+}
+
+/// CWE-482: a comparison as a statement.
+#[test]
+fn comparison_dropped_as_a_statement_fires() {
+    let c = r#"
+void f(int x, int y) {
+    x == 5;
+    (y != x);
+    int z = x == y;
+    if (x == y) { g(); }
+    x = 5;
+    x < y && g();
+}
+"#;
+    assert_eq!(
+        rule_lines(&lint(Language::C, c), "comparison-discarded"),
+        vec![3, 4]
+    );
+    let cpp = "void f(int x) { x == 5; }\n";
+    assert_eq!(
+        rule_lines(&lint(Language::Cpp, cpp), "comparison-discarded"),
+        vec![1]
+    );
+    let js = "function f(x) {\n  x === 5;\n  const y = x === 5;\n  x == 5 || fail();\n}\n";
+    assert_eq!(
+        rule_lines(&lint(Language::Javascript, js), "comparison-discarded"),
+        vec![2]
+    );
+    let py = "def f(x):\n    x == 5\n    assert x == 5\n    y = x == 5\n";
+    assert_eq!(
+        rule_lines(&lint(Language::Python, py), "comparison-discarded"),
+        vec![2]
+    );
+    let rust = "fn f(x: u8) -> bool {\n    x == 5;\n    x == 6\n}\n";
+    assert_eq!(
+        rule_lines(&lint(Language::Rust, rust), "comparison-discarded"),
+        vec![2]
+    );
+}
+
+/// CWE-481: an assignment tested as a condition.
+#[test]
+fn assignment_used_as_a_condition_fires() {
+    let c = r#"
+void f(int x, int *p, int *q) {
+    if (x = 5) { g(); }
+    if ((x = 5)) { g(); }
+    if ((p = q)) { g(); }
+    if (p = q) { g(); }
+    if ((p = next())) { g(); }
+    if (p = next()) { g(); }
+    while ((c = getchar()) != EOF) { g(); }
+    if (x += 1) { g(); }
+    if (x == 5) { g(); }
+}
+"#;
+    assert_eq!(
+        rule_lines(&lint(Language::C, c), "assignment-in-condition"),
+        vec![3, 4, 6]
+    );
+    let cpp = "void f(int x) {\n  if (x = 5) {}\n  while (x = 0) {}\n}\n";
+    assert_eq!(
+        rule_lines(&lint(Language::Cpp, cpp), "assignment-in-condition"),
+        vec![2, 3]
+    );
+    let java = r#"
+class A { void f(boolean isZero, boolean b, boolean c) {
+    if (isZero = true) { g(); }
+    if ((b = c)) { g(); }
+    if ((b = check())) { g(); }
+    if (b == c) { g(); }
+} }
+"#;
+    assert_eq!(
+        rule_lines(&lint(Language::Java, java), "assignment-in-condition"),
+        vec![3, 4]
+    );
+    let js = "function f(x, y, re, s) {\n  if (x = y) {}\n  if ((x = y)) {}\n  while (m = re.exec(s)) {}\n}\n";
+    assert_eq!(
+        rule_lines(&lint(Language::Javascript, js), "assignment-in-condition"),
+        vec![2]
+    );
+}
+
+#[test]
+fn java_equals_on_itself_is_a_self_comparison() {
+    let java = r#"
+class A { void f(String s, String t, P p) {
+    if (s.equals(s)) { g(); }
+    if (p.name.equalsIgnoreCase(p.name)) { g(); }
+    if (s.equals(t)) { g(); }
+    if (get().equals(get())) { g(); }
+    if (s.equals(s, t)) { g(); }
+} }
+"#;
+    assert_eq!(
+        rule_lines(&lint(Language::Java, java), "self-comparison"),
+        vec![3, 4]
+    );
+}
+
+/// CWE-570/571: a variable compared past its own type's bound; a wider
+/// variable against a narrower bound is the overflow check.
+#[test]
+fn comparison_past_the_declared_types_bound_is_constant() {
+    let java = r#"
+class A { void f(int x, long wide) {
+    int y = random();
+    if (y < Integer.MIN_VALUE) { g(); }
+    if (x > Integer.MAX_VALUE) { g(); }
+    if (Integer.MAX_VALUE < x) { g(); }
+    if (x <= Integer.MAX_VALUE) { g(); }
+    if (wide > Integer.MAX_VALUE) { g(); }
+    if (x < Integer.MAX_VALUE) { g(); }
+    if (field < Integer.MIN_VALUE) { g(); }
+    if (wide < Long.MIN_VALUE) { g(); }
+} }
+"#;
+    assert_eq!(
+        rule_lines(&lint(Language::Java, java), "constant-condition"),
+        vec![4, 5, 6, 7, 11]
+    );
+    let c = r#"
+void f(int n, long long big, int *p) {
+    short s = 1;
+    if (n > INT_MAX) { g(); }
+    if (s < SHRT_MIN) { g(); }
+    if (big > INT_MAX) { g(); }
+    if (n < INT_MAX) { g(); }
+    if (*p > INT_MAX) { g(); }
+}
+"#;
+    assert_eq!(
+        rule_lines(&lint(Language::C, c), "constant-condition"),
+        vec![4, 5]
+    );
+}
+
+/// The C/C++ tables drive the shared rules.
+#[test]
+fn c_and_cpp_run_the_shared_rules() {
+    let c = r#"
+int f(int n, int a, int b) {
+    int i = 0;
+    int total = 0;
+    while (i < n) {
+        total += 2;
+    }
+    if (a > b) { total = 1; } else { total = 1; }
+    if (a < a) { g(); }
+    int x = compute(a);
+    x = 2;
+    return x + total;
+}
+void g(void) {
+    int j = 0;
+    while (j < 10) { j++; }
+    int *p = &j;
+    while (j < 10) { step(p); }
+}
+"#;
+    let found = lint(Language::C, c);
+    assert_eq!(rule_lines(&found, "loop-no-progress"), vec![5]);
+    assert_eq!(rule_lines(&found, "identical-branches"), vec![8]);
+    assert_eq!(rule_lines(&found, "self-comparison"), vec![9]);
+    assert_eq!(rule_lines(&found, "dead-store"), vec![10]);
+
+    let cpp = r#"
+int f(int n) {
+    int i = 0;
+    while (i < n) { log(n); }
+    auto bump = [&]() { i++; };
+    return n > 0 ? n : n;
+}
+"#;
+    let found = lint(Language::Cpp, cpp);
+    assert!(
+        rule_lines(&found, "loop-no-progress").is_empty(),
+        "{found:?}"
+    );
+    assert_eq!(rule_lines(&found, "identical-branches"), vec![6]);
+}

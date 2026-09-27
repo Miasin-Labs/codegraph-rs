@@ -38,9 +38,10 @@ use crate::ensure_sufficient_stack;
 use crate::extraction::detect_language;
 
 pub(super) fn detect(project: &mut Project) -> Vec<Finding> {
-    let scanned = scan(project);
-    let discarded = results::findings(project, &scanned.uses);
-    let mut findings = arms::merge(scanned.arms, discarded);
+    let mut scanned = scan(project);
+    arms::retain_dropped(&mut scanned.arms, &scanned.uses, project.call_sites());
+    let departures = results::findings(project, &scanned.uses);
+    let mut findings = arms::merge(scanned.arms, departures);
     findings.extend(companions::findings(
         project,
         &scanned.test_regions,

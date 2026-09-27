@@ -263,14 +263,68 @@ confirm or dismiss each finding: `codegraph analyze review --at src/sync.rs:1922
         /// Report only files changed since this git revision
         #[arg(long, value_name = "rev")]
         base: Option<String>,
-        /// Run only this detector family (deviance, lint); repeatable
+        /// Run only this detector family (deviance, lint, rule); repeatable
         #[arg(long = "detector", value_name = "name")]
         detectors: Vec<String>,
+        /// Also review the findings of these YAML rules (file or directory;
+        /// repeatable)
+        #[arg(long = "rules", value_name = "file|dir")]
+        rules: Vec<String>,
+        /// Also review the findings of this inline rule YAML (`-` = stdin)
+        #[arg(long = "rule-text", value_name = "yaml|-")]
+        rule_text: Vec<String>,
+        /// Also review the findings of the built-in rules
+        #[arg(long)]
+        builtin: bool,
         /// Include findings in test code
         #[arg(long)]
         tests: bool,
         /// Review at most N findings
         #[arg(short = 't', long, value_name = "number", default_value = "10")]
+        top: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Run YAML bug rules (weggli patterns, tree-sitter queries, semantic
+    /// predicates) over the index, or check their examples with `--check`
+    #[command(
+        after_help = "A rule file holds one rule or a list (`---` documents too): `id`, \
+`severity`, `tags`, `language`, `check-patterns` (each a weggli `pattern` for C/C++ or a \
+tree-sitter `query`, with `regex` constraints and `where` predicates: resolves-to, \
+not-resolves-to, regex, not-regex, enclosing-function {calls, calls-not, name-regex, \
+is-test}, inside, not-inside), `ignore-patterns`, `message` ({capture} interpolates) and \
+`examples` {bad, good}. `--check` runs every rule's examples without an index and exits \
+nonzero when a bad example does not match or a good one does, saying why: \
+`codegraph analyze rules --check my-rules/`, or `--rule-text -` to read YAML from stdin."
+    )]
+    Rules {
+        /// Rule files or directories (same as --rules)
+        #[arg(value_name = "rules")]
+        paths: Vec<String>,
+        /// Rule file or directory of *.yml/*.yaml (repeatable)
+        #[arg(long = "rules", value_name = "file|dir")]
+        rules: Vec<String>,
+        /// Inline rule YAML; `-` reads it from stdin (repeatable)
+        #[arg(long = "rule-text", value_name = "yaml|-")]
+        rule_text: Vec<String>,
+        /// Include the built-in rules
+        #[arg(long)]
+        builtin: bool,
+        /// Validate the rules and run their examples (no index needed)
+        #[arg(long)]
+        check: bool,
+        /// Report only files changed since this git revision
+        #[arg(long, value_name = "rev")]
+        base: Option<String>,
+        /// Include findings in test code
+        #[arg(long)]
+        tests: bool,
+        /// Show at most N findings
+        #[arg(short = 't', long, value_name = "number", default_value = "50")]
         top: String,
         /// Project path
         #[arg(short = 'p', long, value_name = "path")]

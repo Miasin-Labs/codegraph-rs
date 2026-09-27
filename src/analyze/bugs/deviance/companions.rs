@@ -6,6 +6,14 @@
 //! (a non-test function), the set of project functions it calls; per `A`,
 //! how many of its callers also call each `B`. Everything is hash maps over
 //! the call sites — no source is read.
+//!
+//! Co-occurrence alone is not a belief worth reporting: on 306 RustSec fix
+//! pairs it paired unrelated helpers (`device_id`/`user_id`, `raw`/`new`,
+//! `hash_algo`/`context`) 328 times and never found a fix. A companion must
+//! also *name* the release of what `A` acquires ([`is_companion_pair`]):
+//! an acquire/release verb pair over the same object — `getDirContext`/
+//! `closeDirContext`, `lock`/`unlock`, `begin_transaction`/`commit_transaction`,
+//! `push_limit`/`pop_limit`, `pthread_mutex_lock`/`pthread_mutex_unlock`.
 
 use std::collections::HashMap;
 
@@ -17,7 +25,7 @@ pub(super) const RULE: &str = "missing-companion-call";
 /// Distinct callers `A` needs before its callers make a belief.
 const MIN_CALLERS: usize = 5;
 /// Callers of `A` that must also call `B`, and their share.
-const MIN_SUPPORT: usize = 4;
+const MIN_SUPPORT: usize = 5;
 const MIN_RATIO: f64 = 0.8;
 /// A `B` called by more than this share of all functions is a utility
 /// (logging, formatting) that co-occurs with everything.
@@ -163,6 +171,8 @@ pub(super) fn findings(
                 || &span(b).name == a_name
                 // `A` calls `B` itself: its callers need not.
                 || a_calls.contains_key(&b)
+                // `B` must release what `A` acquires, by name.
+                || !is_companion_pair(a_name, &span(b).name)
             {
                 continue;
             }
@@ -268,7 +278,7 @@ pub(super) fn findings(
             .collect();
         out.push(Finding {
             detector: Detector::Deviance,
-            rule: RULE,
+            rule: RULE.into(),
             file: a_site.file.clone(),
             line: a_site.line,
             col: a_site.col,
@@ -284,4 +294,113 @@ pub(super) fn findings(
         });
     }
     out
+}
+
+/// Acquire/release verb pairs: `A` holding the first word, `B` the second.
+const PAIRS: &[(&str, &str)] = &[
+    ("open", "close"),
+    ("get", "close"),
+    ("get", "release"),
+    ("acquire", "release"),
+    ("retain", "release"),
+    ("lock", "unlock"),
+    ("begin", "commit"),
+    ("begin", "end"),
+    ("begin", "rollback"),
+    ("start", "stop"),
+    ("start", "finish"),
+    ("start", "end"),
+    ("enter", "exit"),
+    ("enter", "leave"),
+    ("push", "pop"),
+    ("alloc", "free"),
+    ("malloc", "free"),
+    ("allocate", "deallocate"),
+    ("allocate", "free"),
+    ("new", "free"),
+    ("new", "delete"),
+    ("new", "destroy"),
+    ("create", "destroy"),
+    ("create", "delete"),
+    ("init", "deinit"),
+    ("init", "destroy"),
+    ("init", "cleanup"),
+    ("connect", "disconnect"),
+    ("attach", "detach"),
+    ("register", "unregister"),
+    ("subscribe", "unsubscribe"),
+    ("ref", "unref"),
+    ("incref", "decref"),
+    ("map", "unmap"),
+    ("mmap", "munmap"),
+    ("setup", "teardown"),
+    ("save", "restore"),
+    ("suspend", "resume"),
+    ("pause", "resume"),
+    ("prepare", "finalize"),
+    ("transaction", "commit"),
+    ("tx", "commit"),
+    ("txn", "commit"),
+];
+
+/// Acquire verbs too common to pair without a shared object: `getX` pairs
+/// only with `closeX`, never with a bare `close`.
+const GENERIC_VERBS: &[&str] = &[
+    "get", "new", "create", "init", "start", "push", "map", "save",
+];
+
+/// Whether `b` releases what `a` acquires: an acquire/release verb pair
+/// ([`PAIRS`]) over the same remaining words (`getDirContext`/
+/// `closeDirContext`), or with one side bare when the verb says it alone
+/// (`begin_transaction`/`commit`, `lock_state`/`unlock`).
+pub(super) fn is_companion_pair(a: &str, b: &str) -> bool {
+    let a_words = name_words(a);
+    let b_words = name_words(b);
+    PAIRS.iter().any(|&(acquire, release)| {
+        let (Some(i), Some(j)) = (
+            a_words.iter().position(|w| w == acquire),
+            b_words.iter().position(|w| w == release),
+        ) else {
+            return false;
+        };
+        let mut a_rest = a_words.clone();
+        a_rest.remove(i);
+        let mut b_rest = b_words.clone();
+        b_rest.remove(j);
+        a_rest == b_rest
+            || (!GENERIC_VERBS.contains(&acquire) && (a_rest.is_empty() || b_rest.is_empty()))
+    })
+}
+
+/// A name's lowercased words, split at `_`, `$`, digits-to-letters and case
+/// changes (`getDirContext` → get, dir, context; `HTTPServer_open` → http,
+/// server, open).
+fn name_words(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut words = Vec::new();
+    let mut current = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        if !c.is_alphanumeric() {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        let prev = i.checked_sub(1).map(|p| chars[p]);
+        let next = chars.get(i + 1).copied();
+        let boundary = c.is_uppercase()
+            && prev.is_some_and(|p| {
+                p.is_lowercase()
+                    || p.is_ascii_digit()
+                    || (p.is_uppercase() && next.is_some_and(char::is_lowercase))
+            });
+        if boundary && !current.is_empty() {
+            words.push(std::mem::take(&mut current));
+        }
+        current.extend(c.to_lowercase());
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
 }

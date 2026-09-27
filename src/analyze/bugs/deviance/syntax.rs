@@ -154,6 +154,19 @@ pub(super) fn is_constant(rules: &Rules, node: Node<'_>, source: &str) -> bool {
     rules.constant_words.contains(&text(node, source))
 }
 
+/// A constant carrying only success: `()`, `Ok(())`, `Some(())`.
+pub(super) fn is_unit_value(rules: &Rules, node: Node<'_>, source: &str) -> bool {
+    let node = strip(rules, node);
+    if let Some(inner) = wrapped(rules, node, source) {
+        return is_unit_value(rules, inner, source);
+    }
+    let compact: String = text(node, source)
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    rules.unit_values.contains(&compact.as_str())
+}
+
 /// The value a block, arm body or expression ends with.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Value<'t> {

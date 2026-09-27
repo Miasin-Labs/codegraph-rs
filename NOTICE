@@ -1,0 +1,15 @@
+codegraph-rs
+Copyright (c) 2026 Cole Leavitt and contributors (MIT, see LICENSE).
+
+This product includes software developed at Google LLC:
+  weggli 0.2.5 (https://github.com/weggli-rs/weggli), Copyright 2021 Google
+  LLC, licensed under the Apache License, Version 2.0
+  (https://www.apache.org/licenses/LICENSE-2.0). Its query compiler and
+  matcher are ported, with modifications listed in each file's header, in
+  src/analyze/rules/weggli/.
+
+The rule format of src/analyze/rules/ follows weggli-ruleset
+(https://github.com/xorpse/weggli-ruleset), Copyright Sam L. Thomas, MIT
+License; its example rule `call-to-unbounded-copy-functions` (adapted from
+https://github.com/0xdea/weggli-patterns) is included, modified, in
+src/analyze/rules/builtin/c-strings.yaml.

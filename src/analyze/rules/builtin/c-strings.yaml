@@ -1,0 +1,210 @@
+# C/C++ string, buffer and format rules.
+#
+# `call-to-unbounded-copy-functions` is the example rule of weggli-ruleset
+# (github.com/xorpse/weggli-ruleset, MIT; its README adapts the pattern from
+# github.com/0xdea/weggli-patterns), with `wcs*` names fixed (the original
+# regex `wc(r|p)(cpy|cat)` never matches `wcscpy`) and examples added.
+id: call-to-unbounded-copy-functions
+description: >-
+  call to unbounded copy functions (a string or wide-string copy from a
+  literal is left out: its length is known)
+severity: medium
+tags: [CWE-120, CWE-242, CWE-676]
+language: [c, cpp]
+check-patterns:
+  - name: gets
+    regex: func=^gets$
+    pattern: |
+      { $func(); }
+  - name: st(r|p)(cpy|cat)
+    regex: func=^st(r|p)(cpy|cat)$
+    pattern: |
+      { $func(); }
+  - name: wcs(cpy|cat)
+    regex: func=^wc(s|p)(cpy|cat)$
+    pattern: |
+      { $func(); }
+  - name: sprintf
+    regex: func=^v?sprintf$
+    pattern: |
+      { $func(); }
+  - name: scanf
+    regex: func=^scanf$
+    pattern: |
+      { $func(); }
+ignore-patterns:
+  - name: literal-source
+    pattern: |
+      { $func($dst, "$lit"); }
+    regex: ["func=^(st(r|p)(cpy|cat)|wc(s|p)(cpy|cat))$"]
+message: "{func}() copies without a bound"
+examples:
+  bad:
+    - |
+      void f(char *data) {
+        char dest[50] = "";
+        strcpy(dest, data);
+      }
+    - |
+      void f(wchar_t *data) {
+        wchar_t dest[50];
+        wcscat(dest, data);
+      }
+  good:
+    - |
+      void f(char *data) {
+        char dest[50] = "";
+        strncpy(dest, data, sizeof(dest) - 1);
+      }
+    - |
+      void f(char *data) {
+        strcpy(data, "fixedstringtest");
+      }
+---
+id: c-copy-length-from-source
+description: >-
+  A bounded copy takes its length from the source (`strlen(src)`,
+  `sizeof(src)`) instead of the destination, so it is no bound at all
+  (CWE-805, CWE-806).
+severity: medium
+tags: [CWE-805, CWE-806, CWE-121, CWE-122]
+language: [c, cpp]
+check-patterns:
+  - name: strlen-of-source
+    pattern: |
+      { $copy($dst, $src, _($len($src))); }
+    regex:
+      - "copy=^(strncpy|strncat|memcpy|memmove|wcsncpy|wcsncat|wmemcpy|wmemmove)$"
+      - "len=^(strlen|wcslen)$"
+  - name: sizeof-source
+    pattern: |
+      { $copy($dst, $src, sizeof($src)); }
+    regex: ["copy=^(strncpy|strncat|memcpy|memmove|wcsncpy|wcsncat)$"]
+    unique: true
+message: "{copy}() into `{dst}` is bounded by the length of its source `{src}`"
+examples:
+  bad:
+    - |
+      void f(char *data) {
+        char dest[50] = "";
+        strncpy(dest, data, strlen(data));
+      }
+    - |
+      void f(char *data) {
+        char dest[50];
+        memcpy(dest, data, strlen(data) * sizeof(char));
+      }
+  good:
+    - |
+      void f(char *data) {
+        char dest[50] = "";
+        strncpy(dest, data, sizeof(dest) - 1);
+      }
+---
+id: c-format-string-not-literal
+description: >-
+  The format argument of a printf-family call is not a string literal, so
+  whoever controls it controls the format (CWE-134).
+severity: high
+tags: [CWE-134]
+language: [c, cpp]
+check-patterns:
+  - name: format-first
+    query: |
+      ((call_expression function: (identifier) @fn arguments: (argument_list . (_) @fmt))
+       (#match? @fn "^(printf|vprintf|wprintf|vwprintf|_tprintf)$"))
+    at: fmt
+    where:
+      - capture: fmt
+        not-regex: '^\s*(L|u8|u|U)?"|^_T\(|^TEXT\('
+  - name: format-second
+    query: |
+      ((call_expression function: (identifier) @fn arguments: (argument_list . (_) . (_) @fmt))
+       (#match? @fn "^(fprintf|vfprintf|fwprintf|vfwprintf|sprintf|vsprintf|dprintf|syslog|_ftprintf|_stprintf)$"))
+    at: fmt
+    where:
+      - capture: fmt
+        not-regex: '^\s*(L|u8|u|U)?"|^_T\(|^TEXT\('
+  - name: format-third
+    query: |
+      ((call_expression function: (identifier) @fn arguments: (argument_list . (_) . (_) . (_) @fmt))
+       (#match? @fn "^(snprintf|vsnprintf|_snprintf|_vsnprintf|swprintf|vswprintf|_snwprintf)$"))
+    at: fmt
+    where:
+      - capture: fmt
+        not-regex: '^\s*(L|u8|u|U)?"|^_T\(|^TEXT\('
+ignore-patterns:
+  - name: literal-copied-in
+    pattern: |
+      { $cpy($fmt, "$lit"); not: $fmt = _; $out(_($fmt)); }
+    regex:
+      - "cpy=^(strcpy|wcscpy|strncpy|wcsncpy|strcat|wcscat)$"
+      - "out=printf$|^(printf|vprintf|wprintf|vwprintf|snprintf|swprintf|vsnprintf|vswprintf|_snprintf|syslog)$"
+message: "{fn}() uses `{fmt}` as its format string"
+examples:
+  bad:
+    - |
+      void f(char *data) { printf(data); }
+    - |
+      void f(char *data) { fprintf(stdout, data); }
+    - |
+      void f(char *data) { char dest[100]; snprintf(dest, 100 - 1, data); }
+    - |
+      void f(wchar_t *data, va_list args) { vfwprintf(stdout, data, args); }
+  good:
+    - |
+      void f(char *data) { printf("%s\n", data); }
+    - |
+      void f(char *data) { fprintf(stdout, "%s\n", data); }
+    - |
+      void f(wchar_t *data) { wprintf(L"%s\n", data); }
+    - |
+      void f(char *data) {
+        strcpy(data, "fixedstringtest");
+        printf(data);
+      }
+---
+id: c-index-lower-bound-only
+description: >-
+  An array is indexed by a value checked only against its lower bound
+  (`if (i >= 0) buf[i]`), never against the array's size, and not set to a
+  constant before (CWE-129).
+severity: high
+tags: [CWE-129, CWE-121, CWE-122, CWE-126]
+language: [c, cpp]
+check-patterns:
+  - name: nonnegative-check-only
+    pattern: |
+      { not: $i = $1; if ($i >= 0) { $buf[$i]; } }
+    at: buf
+  - name: greater-than-minus-one
+    pattern: |
+      { not: $i = $1; if ($i > -1) { $buf[$i]; } }
+    at: buf
+message: "`{buf}[{i}]`: `{i}` is checked against 0 but not against the size of `{buf}`"
+examples:
+  bad:
+    - |
+      void f(int data) {
+        int buffer[10] = { 0 };
+        if (data >= 0) {
+          buffer[data] = 1;
+        }
+      }
+  good:
+    - |
+      void f(void) {
+        int data = -1;
+        data = 7;
+        int buffer[10] = { 0 };
+        if (data >= 0) {
+          buffer[data] = 1;
+        }
+      }
+    - |
+      void f(int data) {
+        int buffer[10] = { 0 };
+        if (data >= 0 && data < (10)) {
+          buffer[data] = 1;
+        }
+      }

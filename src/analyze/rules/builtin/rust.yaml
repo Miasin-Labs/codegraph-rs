@@ -1,0 +1,247 @@
+# Rust soundness rules (tree-sitter queries), after the bug classes of the
+# RustSec advisory database and Rudra (SOSP '21): Send/Sync variance, panic
+# safety, uninitialized memory.
+id: rust-send-sync-without-bound
+description: >-
+  `unsafe impl Send` (or `Sync`) for a generic type does not require the type
+  parameters to be Send (or Sync) themselves, so a non-thread-safe `T` can
+  cross threads through it (CWE-362, RUSTSEC thread-safety).
+severity: high
+tags: [CWE-362, CWE-662, thread-safety]
+language: rust
+check-patterns:
+  - name: send-without-send-bound
+    query: |
+      ((impl_item "unsafe" type_parameters: (type_parameters) @params trait: (type_identifier) @trait type: (_) @type (where_clause)? @bounds) @impl
+       (#eq? @trait "Send"))
+    at: trait
+    where:
+      - capture: params
+        regex: "[<,]\\s*[A-Z]"
+      - capture: params
+        not-regex: "\\bSend\\b"
+      - capture: bounds
+        not-regex: "\\bSend\\b"
+  - name: sync-without-sync-bound
+    query: |
+      ((impl_item "unsafe" type_parameters: (type_parameters) @params trait: (type_identifier) @trait type: (_) @type (where_clause)? @bounds) @impl
+       (#eq? @trait "Sync"))
+    at: trait
+    where:
+      - capture: params
+        regex: "[<,]\\s*[A-Z]"
+      - capture: params
+        not-regex: "\\bSync\\b"
+      - capture: bounds
+        not-regex: "\\bSync\\b"
+message: "`unsafe impl {trait} for {type}` does not bound its type parameters by {trait}"
+review:
+  - Does the type own or hand out its `T` (values, references, guards)? Then `T` must be Send (for Send) / Sync (for Sync).
+examples:
+  bad:
+    - |
+      pub struct SyncRef<T>(*const T);
+      unsafe impl<T> Sync for SyncRef<T> {}
+    - |
+      unsafe impl<'a, R: RawMutex + 'a, T: ?Sized + 'a> Send for MappedMutexGuard<'a, R, T> where R: Sync {}
+  good:
+    - |
+      unsafe impl<T: Send> Send for Sender<T> {}
+    - |
+      unsafe impl<T> Sync for Channel<T> where T: Send + Sync {}
+    - |
+      unsafe impl Send for WaiterCell {}
+---
+id: rust-vec-from-raw-parts-swapped
+description: >-
+  `Vec::from_raw_parts(ptr, length, capacity)` is called with a capacity where
+  the length goes and a length where the capacity goes (CWE-119).
+severity: high
+tags: [CWE-119, memory-corruption]
+language: rust
+check-patterns:
+  - name: capacity-then-length
+    query: |
+      ((call_expression
+         function: (scoped_identifier path: (identifier) @ty name: (identifier) @fn)
+         arguments: (arguments . (_) . (_) @second . (_) @third .)) @call
+       (#match? @ty "^(Vec|String)$")
+       (#eq? @fn "from_raw_parts")
+       (#match? @second "(?i)cap")
+       (#match? @third "(?i)len"))
+message: "from_raw_parts gets `{second}` as the length and `{third}` as the capacity"
+examples:
+  bad:
+    - |
+      unsafe fn f(ptr: *mut u8, len: usize, capacity: usize) -> Vec<u8> {
+          Vec::from_raw_parts(ptr as *mut u8, capacity, len)
+      }
+  good:
+    - |
+      unsafe fn f(ptr: *mut u8, len: usize, capacity: usize) -> Vec<u8> {
+          Vec::from_raw_parts(ptr as *mut u8, len, capacity)
+      }
+---
+id: rust-set-len-on-uninit
+description: >-
+  `set_len` exposes a buffer's spare capacity as initialized elements; in a
+  function that just reserved that capacity (with_capacity/reserve) the new
+  elements are uninitialized memory (CWE-908).
+severity: medium
+tags: [CWE-908, memory-corruption, uninitialized]
+language: rust
+check-patterns:
+  - name: set-len-after-reserve
+    query: |
+      ((call_expression function: (field_expression field: (field_identifier) @m)) @call
+       (#eq? @m "set_len"))
+    where:
+      - enclosing-function:
+          calls: "(^|::|\\.)(with_capacity|reserve|reserve_exact)$"
+message: "set_len exposes memory reserved in this function before it is written"
+review:
+  - Is every element below the new length written before anything reads it (or before a panic can drop the vector)?
+examples:
+  bad:
+    - |
+      fn read_into(r: &mut impl Read, n: usize) -> Vec<u8> {
+          let mut buf = Vec::with_capacity(n);
+          unsafe { buf.set_len(n) };
+          r.read(&mut buf).unwrap();
+          buf
+      }
+  good:
+    - |
+      fn truncate(v: &mut Vec<u8>, n: usize) {
+          unsafe { v.set_len(n) };
+      }
+---
+id: rust-uninit-assume-init
+description: >-
+  Memory is declared initialized without being written:
+  `MaybeUninit::uninit().assume_init()`, `mem::uninitialized()`, or
+  `mem::zeroed()` in generic code where zero may not be a valid `T` (CWE-908).
+severity: high
+tags: [CWE-908, uninitialized, unsound]
+language: rust
+check-patterns:
+  - name: uninit-assume-init
+    query: |
+      ((call_expression
+         function: (field_expression
+           value: (call_expression function: (scoped_identifier name: (identifier) @ctor))
+           field: (field_identifier) @m)) @call
+       (#eq? @ctor "uninit")
+       (#eq? @m "assume_init"))
+  - name: mem-uninitialized
+    query: |
+      ((call_expression function: (scoped_identifier path: (_) @path name: (identifier) @fn)) @call
+       (#match? @path "(^|::)mem$")
+       (#eq? @fn "uninitialized"))
+  - name: zeroed-generic
+    query: |
+      ((call_expression function: [(scoped_identifier name: (identifier) @fn)
+                                   (generic_function function: (scoped_identifier name: (identifier) @fn))]) @call
+       (#eq? @fn "zeroed"))
+    where:
+      - inside: "(function_item type_parameters: (type_parameters)) @generic"
+message: "`{call}` treats memory as initialized that was never written"
+examples:
+  bad:
+    - |
+      fn f<T>() -> [T; 4] {
+          unsafe { MaybeUninit::uninit().assume_init() }
+      }
+    - |
+      fn f<T>() -> T { unsafe { std::mem::uninitialized() } }
+    - |
+      fn f<T>() -> T { unsafe { std::mem::zeroed() } }
+  good:
+    - |
+      fn f() -> [MaybeUninit<u8>; 4] {
+          unsafe { MaybeUninit::uninit().assume_init() };
+          [MaybeUninit::uninit(); 4]
+      }
+    - |
+      fn f() -> libc::stat { unsafe { std::mem::zeroed() } }
+ignore-patterns:
+  - name: array-of-maybe-uninit
+    query: |
+      ((function_item return_type: (array_type element: (generic_type type: (type_identifier) @t)) body: (_) @body)
+       (#eq? @t "MaybeUninit"))
+---
+id: rust-panic-unsafe-ptr-read
+description: >-
+  `ptr::read` duplicates a value in a generic function that also runs caller
+  code (a closure or trait callback): if that code panics, the duplicate is
+  dropped twice (panic safety, CWE-415).
+severity: medium
+tags: [CWE-415, panic-safety, memory-corruption]
+language: rust
+check-patterns:
+  - name: read-with-callback
+    query: |
+      ((call_expression function: [(scoped_identifier name: (identifier) @fn) (field_expression field: (field_identifier) @fn)]) @call
+       (#match? @fn "^(read|read_unaligned)$"))
+    where:
+      - capture: call
+        regex: "^(std::|core::)?ptr::read|\\.read(_unaligned)?\\(\\)$"
+      - inside: |
+          ((function_item) @generic
+           (#match? @generic "(F|G|P)\\s*:\\s*(Fn|FnMut|FnOnce)\\b|impl\\s+(Fn|FnMut|FnOnce)\\b"))
+message: "`{call}` duplicates a value while caller code that may panic runs"
+review:
+  - Between the read and the matching write/forget, can the closure panic? Then the value is dropped twice.
+examples:
+  bad:
+    - |
+      fn map_in_place<T, F: FnMut(T) -> T>(v: &mut [T], mut f: F) {
+          for x in v.iter_mut() {
+              unsafe {
+                  let old = ptr::read(x);
+                  ptr::write(x, f(old));
+              }
+          }
+      }
+  good:
+    - |
+      fn copy_out<T: Copy>(x: &T) -> T { unsafe { ptr::read(x) } }
+---
+id: rust-transmute-in-generic
+description: >-
+  `mem::transmute` between types named by generic parameters
+  (`transmute::<T, U>`), or `transmute_copy` in generic code: the sizes and
+  alignments depend on the caller's types, which nothing checks (CWE-704,
+  unsound).
+severity: low
+tags: [CWE-704, unsound]
+language: rust
+check-patterns:
+  - name: turbofish-generic
+    query: |
+      ((call_expression function: (generic_function
+                                     function: [(identifier) @fn (scoped_identifier name: (identifier) @fn)]
+                                     type_arguments: (type_arguments) @types)) @call
+       (#eq? @fn "transmute")
+       (#match? @types "^<\\s*&?(mut\\s+)?[A-Z]\\b\\s*,|,\\s*&?(mut\\s+)?[A-Z]\\s*>$"))
+  - name: transmute-copy-generic
+    query: |
+      ((call_expression function: [(identifier) @fn (scoped_identifier name: (identifier) @fn)
+                                   (generic_function function: [(identifier) @fn (scoped_identifier name: (identifier) @fn)])]) @call
+       (#eq? @fn "transmute_copy"))
+    where:
+      - inside: |
+          ((function_item type_parameters: (type_parameters) @tp) @generic
+           (#match? @tp "[<,]\\s*[A-Z]"))
+message: "`{call}` reinterprets types chosen by generic parameters"
+examples:
+  bad:
+    - |
+      fn cast<T, U>(t: T) -> U { unsafe { std::mem::transmute_copy(&t) } }
+    - |
+      fn cast<T, U>(t: T) -> U { unsafe { mem::transmute::<T, U>(t) } }
+  good:
+    - |
+      fn bits(f: f32) -> u32 { unsafe { std::mem::transmute(f) } }
+    - |
+      fn bits<T>(f: f32) -> u32 { unsafe { std::mem::transmute::<f32, u32>(f) } }

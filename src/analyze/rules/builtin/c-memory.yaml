@@ -1,0 +1,363 @@
+# C/C++ memory-lifetime rules (weggli patterns).
+# `c-double-free` and `c-use-after-free` follow the examples in the weggli
+# README (github.com/weggli-rs/weggli, Apache-2.0).
+id: c-double-free
+description: >-
+  A pointer is freed twice with no new value and no return in between
+  (CWE-415).
+severity: high
+tags: [CWE-415]
+language: [c, cpp]
+check-patterns:
+  - name: free-free
+    pattern: |
+      { free($p); not: $p = _; not: return; free($p); }
+  - name: delete-delete
+    language: cpp
+    pattern: |
+      { delete $p; not: $p = _; not: return; delete $p; }
+  - name: delete-array-twice
+    language: cpp
+    pattern: |
+      { delete [] $p; not: $p = _; not: return; delete [] $p; }
+ignore-patterns:
+  - name: exclusive-branches
+    pattern: |
+      { if (_) { free($p); } else { free($p); } }
+  - name: exclusive-branches-delete
+    language: cpp
+    pattern: |
+      { if (_) { delete $p; } else { delete $p; } }
+message: "`{p}` is freed a second time"
+review:
+  - Can both frees run on one path, or does a branch or return separate them?
+examples:
+  bad:
+    - |
+      void f(void) {
+        char *data = malloc(100);
+        free(data);
+        free(data);
+      }
+    - code: |
+        void f() {
+          int *p = new int[4];
+          delete [] p;
+          delete [] p;
+        }
+      language: cpp
+  good:
+    - |
+      void f(void) {
+        char *data = malloc(100);
+        free(data);
+        data = NULL;
+        free(data);
+      }
+    - |
+      int f(void) {
+        char *t = malloc(8);
+        if (start(t) != 0) {
+          free(t);
+          return 0;
+        }
+        free(t);
+        return 1;
+      }
+    - |
+      void f(void) {
+        char *data = malloc(100);
+        free(data);
+      }
+    - |
+      void f(void) {
+        char *data = malloc(100);
+        if (flag()) {
+          free(data);
+        } else {
+          free(data);
+        }
+      }
+---
+id: c-use-after-free
+description: >-
+  A pointer is dereferenced, indexed, or handed to a function that reads
+  through it (printing, string and memory functions) after it was freed
+  (CWE-416).
+severity: high
+tags: [CWE-416]
+language: [c, cpp]
+check-patterns:
+  - name: read-after-free
+    pattern: |
+      { free($p); not: $p = _; not: return; $fn(_($p)); }
+    regex: ["fn=^(print\\w*|puts|fputs|fwrite|write|send|str\\w+|wcs\\w+|mem\\w+|w?mem\\w+|v?s?n?w?printf|fprintf|atoi|atol)$"]
+  - name: index-after-free
+    pattern: |
+      { free($p); not: $p = _; not: return; $p[_]; }
+  - name: deref-after-free
+    pattern: |
+      { free($p); not: $p = _; not: return; *$p; }
+  - name: member-after-free
+    pattern: |
+      { free($p); not: $p = _; not: return; $p->_; }
+  - name: read-after-delete
+    language: cpp
+    pattern: |
+      { delete $p; not: $p = _; not: return; $fn(_($p)); }
+    regex: ["fn=^(print\\w*|puts|fputs|fwrite|write|send|str\\w+|wcs\\w+|mem\\w+|v?s?n?w?printf|fprintf)$"]
+  - name: member-after-delete
+    language: cpp
+    pattern: |
+      { delete $p; not: $p = _; not: return; $p->_; }
+message: "`{p}` is used after it was freed"
+examples:
+  bad:
+    - |
+      void f(void) {
+        char *data = malloc(100);
+        free(data);
+        printLine(data);
+      }
+    - |
+      void f(struct s *p) {
+        free(p);
+        p->len = 0;
+      }
+  good:
+    - |
+      void f(void) {
+        char *data = malloc(100);
+        printLine(data);
+        free(data);
+      }
+    - |
+      void f(void) {
+        char *data = malloc(100);
+        free(data);
+        data = malloc(10);
+        printLine(data);
+      }
+---
+id: c-memory-leak
+description: >-
+  Memory is allocated into a pointer declared in the function (a local), and
+  the function neither frees it,
+  returns it, stores it elsewhere, nor hands it to a function that could take
+  ownership (CWE-401).
+severity: medium
+tags: [CWE-401]
+language: [c, cpp]
+check-patterns:
+  - name: malloc-never-freed
+    pattern: |
+      { _ *$p; $p = $alloc(_); not: free($p); not: return $p; not: _ = $p; not: $fn($p); }
+    regex:
+      - "alloc=^(malloc|calloc|realloc|strdup|wcsdup)$"
+      - "fn!=^(printLine|printWLine|printIntLine|printf|puts|strcpy|strcat|strncpy|strncat|wcscpy|wcscat|memset|memcpy|memmove|strlen|wcslen|sprintf|snprintf|fprintf)$"
+  - name: malloc-into-new-local
+    pattern: |
+      { _ *$p = $alloc(_); not: free($p); not: return $p; not: _ = $p; not: $fn($p); }
+    regex:
+      - "alloc=^(malloc|calloc|realloc|strdup|wcsdup)$"
+      - "fn!=^(printLine|printWLine|printIntLine|printf|puts|strcpy|strcat|strncpy|strncat|wcscpy|wcscat|memset|memcpy|memmove|strlen|wcslen|sprintf|snprintf|fprintf)$"
+  - name: new-never-deleted
+    language: cpp
+    pattern: |
+      { _ *$p; $p = new _; not: delete $p; not: delete [] $p; not: return $p; not: _ = $p; not: $fn($p); }
+    regex:
+      - "fn!=^(printLine|printWLine|printIntLine|printf|puts|strcpy|strcat|wcscpy|memset|memcpy|strlen|wcslen)$"
+message: "`{p}` is allocated and never freed or handed on"
+review:
+  - Is the pointer stored or released on some path the pattern cannot see (a macro, a goto cleanup)?
+examples:
+  bad:
+    - |
+      void f(void) {
+        char *data = (char *)malloc(100);
+        if (data == NULL) exit(-1);
+        strcpy(data, "A String");
+        printLine(data);
+      }
+  good:
+    - |
+      void f(void) {
+        char *data = (char *)malloc(100);
+        strcpy(data, "A String");
+        printLine(data);
+        free(data);
+      }
+    - |
+      char *f(void) {
+        char *data = malloc(100);
+        return data;
+      }
+    - |
+      void f(struct holder *h) {
+        char *data = malloc(100);
+        h->buf = data;
+      }
+    - |
+      void f(void) {
+        char *data = malloc(100);
+        takeOwnership(data);
+      }
+    - code: |
+        Holder::Holder() {
+          data = (char *)malloc(100);
+        }
+      language: cpp
+---
+id: c-unchecked-alloc-deref
+description: >-
+  The result of an allocation is written through before anything compares it
+  with NULL (CWE-690, CWE-476).
+severity: medium
+tags: [CWE-690, CWE-476, CWE-252]
+language: [c, cpp]
+check-patterns:
+  - name: index-store
+    pattern: |
+      { $p = $alloc(_); not: _($p) == _; not: _($p) != _; not: !$p; not: if ($p) {} $p[_] = _; }
+    regex: ["alloc=^(malloc|calloc|realloc|strdup|wcsdup|ALLOCA|alloca)$"]
+  - name: deref-store
+    pattern: |
+      { $p = $alloc(_); not: _($p) == _; not: _($p) != _; not: !$p; not: if ($p) {} *$p = _; }
+    regex: ["alloc=^(malloc|calloc|realloc)$"]
+  - name: member-store
+    pattern: |
+      { $p = $alloc(_); not: _($p) == _; not: _($p) != _; not: !$p; not: if ($p) {} $p->_ = _; }
+    regex: ["alloc=^(malloc|calloc|realloc)$"]
+  - name: copy-into
+    pattern: |
+      { $p = $alloc(_); not: _($p) == _; not: _($p) != _; not: !$p; not: if ($p) {} $copy($p, _); }
+    regex:
+      - "alloc=^(malloc|calloc|realloc)$"
+      - "copy=^(strcpy|strncpy|strcat|wcscpy|wcsncpy|memcpy|memmove|memset|sprintf|snprintf)$"
+message: "`{p}` from {alloc}() is used before a NULL check"
+examples:
+  bad:
+    - |
+      void f(void) {
+        char *data = (char *)malloc(20 * sizeof(char));
+        strcpy(data, "Initialize");
+        printLine(data);
+        free(data);
+      }
+    - |
+      void f(int n) {
+        int *v = calloc(n, sizeof(int));
+        v[0] = 5;
+      }
+  good:
+    - |
+      void f(void) {
+        char *data = (char *)malloc(20 * sizeof(char));
+        if (data != NULL) {
+          strcpy(data, "Initialize");
+          free(data);
+        }
+      }
+    - |
+      void f(int n) {
+        int *v = calloc(n, sizeof(int));
+        if (!v) return;
+        v[0] = 5;
+      }
+---
+id: c-null-deref
+description: >-
+  A pointer is dereferenced where it is NULL: after `p = NULL` with no new
+  value, inside `if (p == NULL)`, or before a later NULL check (CWE-476).
+severity: high
+tags: [CWE-476]
+language: [c, cpp]
+check-patterns:
+  - name: deref-after-null-store
+    pattern: |
+      { $p = NULL; not: $p = _; not: _($p) != _; not: _($p) == _; *$p; }
+  - name: member-after-null-store
+    pattern: |
+      { $p = NULL; not: $p = _; not: _($p) != _; not: _($p) == _; $p->_; }
+  - name: deref-inside-null-branch
+    pattern: |
+      { if ($p == NULL) { *$p; } }
+  - name: member-inside-null-branch
+    pattern: |
+      { if ($p == NULL) { $p->_; } }
+  - name: check-after-deref
+    pattern: |
+      { *$p = _; if ($p != NULL) {} }
+  - name: bitwise-and-null-guard
+    pattern: |
+      { if (($p != NULL) & _) {} }
+message: "`{p}` may be NULL where it is dereferenced"
+examples:
+  bad:
+    - |
+      void f(void) {
+        int *data;
+        data = NULL;
+        printIntLine(*data);
+      }
+    - |
+      void f(twoints *p) {
+        if (p == NULL) {
+          printIntLine(p->intOne);
+        }
+      }
+    - |
+      void f(int *p) {
+        *p = 5;
+        if (p != NULL) { printIntLine(*p); }
+      }
+  good:
+    - |
+      void f(void) {
+        int *data;
+        int tmp = 5;
+        data = NULL;
+        data = &tmp;
+        printIntLine(*data);
+      }
+    - |
+      void f(twoints *p) {
+        if (p != NULL) {
+          printIntLine(p->intOne);
+        }
+      }
+---
+id: c-alloc-count-without-sizeof
+description: >-
+  An element-typed pointer is allocated a bare element count, not count *
+  sizeof(element) (CWE-131).
+severity: medium
+tags: [CWE-131, CWE-122, CWE-121]
+language: [c, cpp]
+check-patterns:
+  - name: cast-alloc-number
+    pattern: |
+      { $p = ($t *)$alloc($1); }
+    regex:
+      - "alloc=^(malloc|ALLOCA|alloca|_alloca)$"
+      - "t!=^(char|void|unsigned char|signed char|uint8_t|int8_t|u8|BYTE|byte)$"
+message: "`{p}` gets {alloc}({1}) bytes for `{t}` elements"
+examples:
+  bad:
+    - |
+      void f(void) {
+        int *data;
+        data = (int *)malloc(10);
+        data[0] = 0;
+      }
+  good:
+    - |
+      void f(void) {
+        int *data;
+        data = (int *)malloc(10 * sizeof(int));
+      }
+    - |
+      void f(void) {
+        char *data;
+        data = (char *)malloc(10);
+      }
