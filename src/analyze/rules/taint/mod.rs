@@ -163,20 +163,31 @@ pub(super) fn run_files(
             &mut results[index],
         ));
     }
-    // Seeds: every function a rule marks something in.
+    // Seeds: every function a rule marks something in, then the other
+    // functions of their files (callers holding no mark of their own: a
+    // function that stores a value and calls the sink's).
     let mut seeds: Vec<usize> = Vec::new();
     let mut seen: HashSet<usize> = HashSet::new();
+    let mut marked_files: HashSet<usize> = HashSet::new();
     for rule_marks in &marks {
-        let candidates = rule_marks
+        let marked = rule_marks
             .sinks
             .iter()
             .chain(&rule_marks.sources)
-            .chain(&rule_marks.sanitizers)
-            .filter_map(|m| m.candidate);
-        for candidate in candidates {
-            if seen.insert(candidate) {
-                seeds.push(candidate);
+            .chain(&rule_marks.sanitizers);
+        for m in marked {
+            if let Some(candidate) = m.candidate {
+                if seen.insert(candidate) {
+                    seeds.push(candidate);
+                }
             }
+            marked_files.insert(m.file);
+        }
+    }
+    for candidate in 0..table.candidates.len() {
+        let c = &table.candidates[candidate];
+        if !c.top_level && marked_files.contains(&c.file) && seen.insert(candidate) {
+            seeds.push(candidate);
         }
     }
     table.include(&seeds, semantics, max_ops);

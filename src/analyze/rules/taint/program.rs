@@ -33,6 +33,7 @@ use super::super::engine::FileInput;
 use super::super::lang::{self, LangRules};
 use super::super::semantics::Semantics;
 use super::facts::{Facts, simple_type};
+use crate::types::Language;
 
 /// Implementations an interface call may run, at most.
 pub(super) const MAX_IMPLEMENTATIONS: usize = 4;
@@ -48,6 +49,8 @@ pub(super) struct Candidate {
     pub owner: Option<String>,
     /// A script's top-level code (the file's root).
     pub top_level: bool,
+    /// The C++ namespaces around it (`a::b`), when any.
+    pub namespace: Option<String>,
 }
 
 /// A call's resolution before its targets are program ids.
@@ -70,6 +73,8 @@ pub(super) struct Table<'a> {
     by_name: HashMap<(usize, String), Vec<usize>>,
     /// (owner, name) → candidates.
     by_owner: HashMap<(String, String), Vec<usize>>,
+    /// name → candidates, in every file.
+    by_name_any: HashMap<String, Vec<usize>>,
     pub facts: Facts,
     /// Candidate → program id, once included.
     pub ids: HashMap<usize, FuncId>,
@@ -80,6 +85,27 @@ pub(super) struct Table<'a> {
     pub ops: usize,
     /// Stopped including functions: the budget ran out.
     pub partial: bool,
+}
+
+/// The C++ namespaces around a node, outermost first (`a::b`).
+fn namespace_of(node: Node, source: &str) -> Option<String> {
+    let mut names: Vec<&str> = Vec::new();
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "namespace_definition" {
+            names.push(
+                n.child_by_field_name("name")
+                    .and_then(|name| source.get(name.byte_range()))
+                    .unwrap_or(""),
+            );
+        }
+        current = n.parent();
+    }
+    if names.is_empty() {
+        return None;
+    }
+    names.reverse();
+    Some(names.join("::"))
 }
 
 /// The class-like ancestor's simple name.
@@ -115,6 +141,7 @@ impl<'a> Table<'a> {
             by_path: HashMap::new(),
             by_name: HashMap::new(),
             by_owner: HashMap::new(),
+            by_name_any: HashMap::new(),
             facts: Facts::read(files),
             ids: HashMap::new(),
             candidate_of: Vec::new(),
@@ -143,6 +170,7 @@ impl<'a> Table<'a> {
                         name: short,
                         owner,
                         top_level: false,
+                        namespace: namespace_of(node, file.source),
                     });
                 }
                 let mut cursor = node.walk();
@@ -161,6 +189,10 @@ impl<'a> Table<'a> {
         if !candidate.top_level {
             self.by_name
                 .entry((candidate.file, candidate.name.clone()))
+                .or_default()
+                .push(index);
+            self.by_name_any
+                .entry(candidate.name.clone())
                 .or_default()
                 .push(index);
             if let Some(owner) = &candidate.owner {
@@ -189,6 +221,7 @@ impl<'a> Table<'a> {
             name: "the top-level code".to_string(),
             owner: None,
             top_level: node.parent().is_none(),
+            namespace: None,
         })
     }
 
@@ -456,6 +489,9 @@ impl<'a> Table<'a> {
                     }
                 }
             }
+            if receiver.is_none() && !callee.contains("::") {
+                self.scope_c_call(&mut pending, candidate, &name, args.len());
+            }
             if pending.targets.is_empty() {
                 self.fallback(
                     &mut pending,
@@ -480,6 +516,41 @@ impl<'a> Table<'a> {
             }
         }
         out
+    }
+
+    /// C/C++ scoping for an unqualified call: a function of the caller's
+    /// file (a `static` one shadows the rest), else of the caller's
+    /// namespace, wins over what the index picked by name alone (it keys
+    /// C++ functions without their namespace, so every testcase's
+    /// `badSink` looks the same to it).
+    fn scope_c_call(&self, pending: &mut Pending, caller: usize, name: &str, args: usize) {
+        let c = &self.candidates[caller];
+        if !matches!(self.files[c.file].language, Language::C | Language::Cpp) {
+            return;
+        }
+        let local = self.by_arity(self.same_file(c.file, name), args);
+        let scoped = if local.len() == 1 {
+            local
+        } else if let Some(namespace) = &c.namespace {
+            let in_namespace: Vec<usize> = self
+                .by_short_name(name)
+                .into_iter()
+                .filter(|&f| self.candidates[f].namespace.as_ref() == Some(namespace))
+                .filter(|&f| self.has_body(f))
+                .collect();
+            self.by_arity(in_namespace, args)
+        } else {
+            return;
+        };
+        if scoped.len() == 1 && pending.targets != scoped {
+            pending.targets = scoped;
+            pending.in_project = true;
+        }
+    }
+
+    /// Every candidate named `name`, in any file.
+    fn by_short_name(&self, name: &str) -> Vec<usize> {
+        self.by_name_any.get(name).cloned().unwrap_or_default()
     }
 
     /// The syntax's answer for a call the index did not resolve to a body.
@@ -516,7 +587,24 @@ impl<'a> Table<'a> {
                 .get(call.callee)
                 .into_iter()
                 .flatten()
-                .flat_map(|function| self.same_file(call.file, function))
+                .flat_map(|function| {
+                    let local = self.same_file(call.file, function);
+                    if local.is_empty() {
+                        // A function another file defines (`extern`).
+                        let anywhere: Vec<usize> = self
+                            .by_short_name(function)
+                            .into_iter()
+                            .filter(|&c| self.has_body(c))
+                            .collect();
+                        if anywhere.len() == 1 {
+                            anywhere
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        local
+                    }
+                })
                 .collect();
             let found = if !pointed.is_empty() {
                 pointed
