@@ -333,6 +333,107 @@ nonzero when a bad example does not match or a good one does, saying why: \
         #[arg(short = 'j', long)]
         json: bool,
     },
+    /// Functions worth fuzzing: public entry points that take bytes, text
+    /// or `Arbitrary` input, ranked by the risk they reach
+    #[command(
+        name = "fuzz-targets",
+        after_help = "Ranks the functions an outside crate can call (Rust: cargo-fuzz) by what a \
+fuzzer can feed them (&[u8], &str, readers, Arbitrary values; a method needs a constructor) \
+and why: parse/decode-style names, unsafe blocks, indexing, panics and overflowing arithmetic \
+in the body and its callees, recursion, fan-in and bug findings (`analyze bugs` + built-in \
+rules). Functions an existing fuzz/fuzz_targets/*.rs already calls are left out. \
+`--finding src/lib.rs:180` or `--function decode` ranks only targets that reach it."
+    )]
+    FuzzTargets {
+        /// Only targets that reach the function containing FILE:LINE
+        #[arg(long, value_name = "file:line")]
+        finding: Option<String>,
+        /// Only targets that reach this function (qualified name or path)
+        #[arg(long, value_name = "qname")]
+        function: Option<String>,
+        /// Skip running the bug detectors (faster; no findings feature)
+        #[arg(long = "no-findings")]
+        no_findings: bool,
+        /// Show the N best targets
+        #[arg(short = 't', long, value_name = "number", default_value = "20")]
+        top: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Write a cargo-fuzz harness (fuzz/Cargo.toml + fuzz_targets/<name>.rs)
+    /// for a function, or for the best target reaching a finding
+    #[command(
+        name = "fuzz-harness",
+        after_help = "`--function blurhash::decode` (or a qualified name) harnesses that function; \
+when it is not callable from outside the crate, the best public target reaching it is used, \
+as with `--finding src/lib.rs:180`. Bytes go straight in, &str through from_utf8, several or \
+scalar parameters through a derived arbitrary::Arbitrary input struct; a method's receiver \
+comes from new/from_*/Default. Values it cannot build are todo!() with a TODO comment. Run it \
+with `codegraph analyze fuzz-run --target <name>`."
+    )]
+    FuzzHarness {
+        /// The function to fuzz (qualified name or public path)
+        #[arg(long, value_name = "qname")]
+        function: Option<String>,
+        /// Or: the best target reaching this FILE:LINE
+        #[arg(long, value_name = "file:line")]
+        finding: Option<String>,
+        /// cargo-fuzz directory (default: <crate>/fuzz)
+        #[arg(long, value_name = "dir")]
+        out: Option<String>,
+        /// Overwrite an existing target file with other content
+        #[arg(long)]
+        force: bool,
+        /// Print the harness without writing it
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Run a cargo-fuzz target for a bounded time and map a crash back to
+    /// the indexed function (needs cargo-fuzz and a nightly toolchain)
+    #[command(
+        name = "fuzz-run",
+        after_help = "Wraps `cargo +nightly fuzz run <target> --debug-assertions -- \
+-max_total_time=N`, with the build and the run each killed at a wall-clock deadline. \
+Reports crash/timeout/oom with the reproducer path, the panic message or sanitizer error, \
+and the project function at the first project frame. `--input <file>` replays one input \
+(e.g. a reproducer against a fixed version)."
+    )]
+    FuzzRun {
+        /// cargo-fuzz target name (fuzz_targets/<name>.rs)
+        #[arg(long, value_name = "name")]
+        target: String,
+        /// Fuzzing time in seconds (1-3600)
+        #[arg(long, value_name = "number", default_value = "60")]
+        seconds: String,
+        /// Replay this input once instead of fuzzing
+        #[arg(long, value_name = "file")]
+        input: Option<String>,
+        /// cargo-fuzz directory (default: <project>/fuzz)
+        #[arg(long = "fuzz-dir", value_name = "dir")]
+        fuzz_dir: Option<String>,
+        /// Sanitizer (address, none, ...); cargo-fuzz's default otherwise
+        #[arg(long, value_name = "name")]
+        sanitizer: Option<String>,
+        /// Wall-clock limit for the build, in seconds
+        #[arg(long = "build-timeout", value_name = "number", default_value = "900")]
+        build_timeout: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
     /// Change risk: the functions changed since a git base, ranked by how
     /// much depends on them and how few tests reach them
     #[command(
