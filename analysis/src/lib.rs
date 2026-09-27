@@ -75,6 +75,7 @@ pub mod points_to;
 pub mod polyglot;
 pub mod possible_types;
 pub mod predicates;
+pub mod reaching_defs;
 pub mod reactive;
 pub mod resolver;
 pub mod schema;
