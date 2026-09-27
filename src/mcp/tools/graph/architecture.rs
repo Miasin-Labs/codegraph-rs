@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
 use super::super::format::{mcp_output_budget, num_or};
-use super::super::output::{ArchFile, ArchOutput, ArchSymbol, fitted};
+use super::super::output::{ArchFile, ArchOutput, ArchSymbol, Trim, fitted};
 use super::super::schema::ToolResult;
 use crate::error::Result;
 use crate::types::{Node, NodeKind};
@@ -171,7 +171,11 @@ impl ToolHandler {
         let payload = fitted(
             &output,
             mcp_output_budget(),
-            &["dependedOnBy", "dependsOn", "files"],
+            &[
+                Trim::counted("dependedOnBy", "dependedOnByOmitted"),
+                Trim::counted("dependsOn", "dependsOnOmitted"),
+                Trim::counted("files", "filesOmitted"),
+            ],
         );
         self.structured_result(&self.truncate_output(&report), &payload)
     }

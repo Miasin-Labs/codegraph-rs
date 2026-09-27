@@ -73,15 +73,34 @@ class Result:
 
     @property
     def rows(self) -> List[Dict[str, Any]]:
-        """The payload's rows, flat: ``results`` as-is (search, callers,
-        callees), or file groups (``files: [{file, symbols|tests|diagnostics:
-        [...]}]`` from impact, tests, diagnostics, arch) flattened so each row
-        carries its ``file``. ``[]`` for payloads without rows."""
+        """The payload's rows as flat dicts, whatever its shape:
+
+        - ``results`` as-is (search, callers, callees);
+        - file groups (impact, tests, diagnostics, arch:
+          ``files: [{file, symbols|tests|diagnostics: [...]}]``), each row
+          carrying its ``file``;
+        - xref's references, each with its ``edgeKind`` and the ``target``
+          definition (``name``/``file``/``line``) it references;
+        - history's co-change ``pairs`` and paths' ``steps``.
+
+        ``[]`` for payloads without rows (status, a miss)."""
         d = self.data or {}
         r = d.get("results")
         if isinstance(r, list):
             return r
-        out: List[Dict[str, Any]] = []
+        kind = d.get("kind")
+        if kind == "xref":
+            out: List[Dict[str, Any]] = []
+            for target in d.get("definitions") or []:
+                ref_target = {k: target.get(k) for k in ("name", "kind", "file", "line")}
+                for group in target.get("byKind") or []:
+                    for ref in group.get("references") or []:
+                        out.append({**ref, "edgeKind": group.get("edgeKind"), "target": ref_target})
+            return out
+        for key in ("pairs", "steps"):
+            if isinstance(d.get(key), list):
+                return d[key]
+        out = []
         for group in d.get("files") or []:
             if not isinstance(group, dict):
                 continue

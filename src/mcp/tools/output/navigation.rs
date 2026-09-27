@@ -60,6 +60,9 @@ pub(in crate::mcp::tools) struct ArchOutput {
     /// Key definitions (functions, methods, types) in those files.
     pub definition_count: usize,
     pub files: Vec<ArchFile>,
+    /// Files the budget left out of `files` (`fileCount` includes them).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub files_omitted: usize,
     /// Files outside the area that its files depend on.
     pub depends_on: Vec<String>,
     #[serde(skip_serializing_if = "is_zero")]
@@ -80,6 +83,7 @@ impl ArchOutput {
             file_count: 0,
             definition_count: 0,
             files: Vec::new(),
+            files_omitted: 0,
             depends_on: Vec::new(),
             depends_on_omitted: 0,
             depended_on_by: Vec::new(),
@@ -293,6 +297,7 @@ pub(in crate::mcp::tools) fn arch_output_schema() -> Value {
             "fileCount": { "type": "integer" },
             "definitionCount": { "type": "integer" },
             "files": { "type": "array", "items": file },
+            "filesOmitted": { "type": "integer" },
             "dependsOn": string_array(),
             "dependsOnOmitted": { "type": "integer" },
             "dependedOnBy": string_array(),

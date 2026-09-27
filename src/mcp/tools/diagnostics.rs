@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 
 use super::context::ToolHandler;
 use super::format::{is_callable_kind, mcp_output_budget, now_ms, num_or};
-use super::output::{DiagnosticFile, DiagnosticRow, DiagnosticsOutput, fitted};
+use super::output::{DiagnosticFile, DiagnosticRow, DiagnosticsOutput, Trim, fitted};
 use super::schema::ToolResult;
 use crate::codegraph::CodeGraph;
 use crate::diagnostics::{Checker, Diagnostic, DiagnosticsRun, RunStatus, Severity, check_or_poll};
@@ -95,7 +95,11 @@ impl ToolHandler {
     }
 
     fn diagnostics_result(&self, text: &str, output: &DiagnosticsOutput) -> Result<ToolResult> {
-        let payload = fitted(output, mcp_output_budget(), &["files"]);
+        let payload = fitted(
+            output,
+            mcp_output_budget(),
+            &[Trim::groups("files", "diagnostics", "omitted")],
+        );
         self.structured_result(&self.truncate_output(text), &payload)
     }
 }

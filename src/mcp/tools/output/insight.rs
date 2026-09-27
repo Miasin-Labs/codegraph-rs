@@ -323,7 +323,7 @@ pub(in crate::mcp::tools) fn diagnostics_output_schema() -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fitted;
+    use super::super::{Trim, fitted};
     use super::*;
     use crate::analyze::{CoChangePairSummary, SymbolRef as AnalysisSymbol};
 
@@ -451,14 +451,22 @@ mod tests {
                 line: 2,
             },
         ];
-        let value = fitted(&output, 24_000, &["files"]);
+        let value = fitted(
+            &output,
+            24_000,
+            &[Trim::groups("files", "tests", "testsOmitted")],
+        );
         assert_valid(&schema, &value);
         assert_eq!(value["testsOmitted"], 1);
         assert_valid(
             &schema,
             &serde_json::to_value(TestsOutput::not_found(4)).unwrap(),
         );
-        let cut = fitted(&output, 60, &["files"]);
+        let cut = fitted(
+            &output,
+            60,
+            &[Trim::groups("files", "tests", "testsOmitted")],
+        );
         assert_eq!(cut["truncated"], true);
         assert_valid(&schema, &cut);
     }
@@ -484,7 +492,11 @@ mod tests {
             }],
             note: String::new(),
         };
-        let value = fitted(&HistoryOutput::new(&report), 24_000, &["pairs"]);
+        let value = fitted(
+            &HistoryOutput::new(&report),
+            24_000,
+            &[Trim::plain("pairs")],
+        );
         assert_valid(&schema, &value);
         assert_eq!(value["kind"], "history");
         assert_eq!(value["commitsAnalyzed"], 12);
@@ -528,7 +540,14 @@ mod tests {
         }];
         output.filtered_out = 2;
         output.omitted = 3;
-        assert_valid(&schema, &fitted(&output, 24_000, &["files"]));
+        assert_valid(
+            &schema,
+            &fitted(
+                &output,
+                24_000,
+                &[Trim::groups("files", "tests", "testsOmitted")],
+            ),
+        );
 
         let mut running = DiagnosticsOutput::new("clippy", "running");
         running.elapsed_ms = Some(4_000);

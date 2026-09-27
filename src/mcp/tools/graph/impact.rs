@@ -23,6 +23,7 @@ use super::super::output::{
     ForeignImpactOutput,
     ImpactOutput,
     SymbolRef,
+    Trim,
     fitted,
     foreign_ref,
     group_by_file,
@@ -133,7 +134,11 @@ impl ToolHandler {
         let payload = fitted(
             output,
             mcp_output_budget(),
-            &["foreign", "otherProjects", "files"],
+            &[
+                Trim::plain("foreign"),
+                Trim::plain("otherProjects"),
+                Trim::groups("files", "symbols", "symbolsOmitted"),
+            ],
         );
         self.structured_result(&self.truncate_output(text), &payload)
     }

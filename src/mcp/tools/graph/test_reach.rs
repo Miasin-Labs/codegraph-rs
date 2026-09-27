@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
 use super::super::format::{mcp_output_budget, num_or};
-use super::super::output::{SymbolRef, TestFile, TestRow, TestsOutput, fitted};
+use super::super::output::{SymbolRef, TestFile, TestRow, TestsOutput, Trim, fitted};
 use super::super::schema::ToolResult;
 use crate::error::Result;
 use crate::types::{Node, NodeKind};
@@ -120,7 +120,14 @@ impl ToolHandler {
     }
 
     fn tests_result(&self, text: &str, output: &TestsOutput) -> Result<ToolResult> {
-        let payload = fitted(output, mcp_output_budget(), &["matches", "files"]);
+        let payload = fitted(
+            output,
+            mcp_output_budget(),
+            &[
+                Trim::plain("matches"),
+                Trim::groups("files", "tests", "testsOmitted"),
+            ],
+        );
         self.structured_result(&self.truncate_output(text), &payload)
     }
 }

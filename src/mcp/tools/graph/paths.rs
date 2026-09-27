@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 
 use super::super::context::ToolHandler;
 use super::super::format::mcp_output_budget;
-use super::super::output::{PathStepOutput, PathsOutput, PathsSearched, fitted};
+use super::super::output::{PathStepOutput, PathsOutput, PathsSearched, Trim, fitted};
 use super::super::schema::ToolResult;
 use crate::error::Result;
 use crate::types::{EdgeKind, Node};
@@ -107,7 +107,7 @@ impl ToolHandler {
                         .collect(),
                     ..PathsOutput::new()
                 };
-                let payload = fitted(&output, mcp_output_budget(), &["steps"]);
+                let payload = fitted(&output, mcp_output_budget(), &[Trim::plain("steps")]);
                 return self.structured_result(&self.truncate_output(&s), &payload);
             }
         }

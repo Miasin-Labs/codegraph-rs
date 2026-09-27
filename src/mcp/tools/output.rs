@@ -26,6 +26,7 @@ pub(in crate::mcp::tools) use graph::{
     ForeignCallsOutput,
     ForeignImpactOutput,
     ImpactOutput,
+    Trim,
     calls_output_schema,
     fitted,
     foreign_ref,

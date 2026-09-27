@@ -35,6 +35,9 @@ hits = [row for row in g.impact("spawn") if row["file"].startswith("src/mcp/")]
 g.callers("x").data["otherProjects"]           # cross-project sections
 ```
 
-`r.rows` flattens file-grouped payloads (`impact`, `tests`, `diagnostics`,
-`arch`) so each row carries its `file`; `r.results` is the raw `results`
-array of `search`/`callers`/`callees`.
+`r.rows` flattens every shape: file-grouped payloads (`impact`, `tests`, `diagnostics`,
+`arch`) get each row's `file`, `xref` references get their `edgeKind` and
+`target`, and `history`/`paths` yield their pairs/steps; `r.results` is the
+raw `results` array of `search`/`callers`/`callees`. Where the budget cut a
+list, `truncated` is set and the matching `…Omitted` field counts every row
+left out, so listed + omitted always equals the total.

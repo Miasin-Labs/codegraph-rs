@@ -326,6 +326,9 @@ pub(in crate::mcp::tools) struct ImpactOutput {
     /// Symbols affected in this project (the changed ones included).
     pub count: usize,
     pub files: Vec<FileSymbols>,
+    /// Symbols the budget left out of `files` (`count` includes them).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub symbols_omitted: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub matches: Vec<SymbolRef>,
     #[serde(flatten)]
@@ -345,6 +348,7 @@ impl ImpactOutput {
             kind: "impact",
             count: 0,
             files: Vec::new(),
+            symbols_omitted: 0,
             matches: Vec::new(),
             cross: CrossImpactOutput::default(),
             foreign: Vec::new(),
@@ -364,26 +368,78 @@ impl ImpactOutput {
 // =============================================================================
 // Budget
 
+/// One array [`fitted`] may shorten, and the count that must still add up
+/// after it does: what the payload leaves out is always counted, whether the
+/// tool's own limit or the budget cut it.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::mcp::tools) struct Trim {
+    array: &'static str,
+    /// The field that counts left-out items (created if absent).
+    omitted: Option<&'static str>,
+    /// For a list of groups (`files: [{file, tests: [...]}]`): the inner
+    /// array whose rows a dropped group takes with it.
+    rows: Option<&'static str>,
+}
+
+impl Trim {
+    /// An array whose items another field already totals (or that has no
+    /// count): only `truncated` records the cut.
+    pub const fn plain(array: &'static str) -> Self {
+        Self {
+            array,
+            omitted: None,
+            rows: None,
+        }
+    }
+
+    /// A flat list: each dropped item adds one to `omitted`.
+    pub const fn counted(array: &'static str, omitted: &'static str) -> Self {
+        Self {
+            array,
+            omitted: Some(omitted),
+            rows: None,
+        }
+    }
+
+    /// A list of groups: each dropped group adds its `rows` to `omitted`.
+    pub const fn groups(array: &'static str, rows: &'static str, omitted: &'static str) -> Self {
+        Self {
+            array,
+            omitted: Some(omitted),
+            rows: Some(rows),
+        }
+    }
+}
+
 /// Serialize `payload` and bound it to `budget` by dropping trailing items of
-/// its top-level arrays, trimming the `arrays` in the order given (least
-/// important first) and flagging `truncated`. Items are never cut inside.
+/// its top-level arrays, trimming them in the order given (least important
+/// first), adding what each drop leaves out to its count, and flagging
+/// `truncated`. Items are never cut inside.
 pub(in crate::mcp::tools) fn fitted<T: Serialize>(
     payload: &T,
     budget: usize,
-    arrays: &[&str],
+    trims: &[Trim],
 ) -> Value {
     let mut value = serde_json::to_value(payload).unwrap_or(Value::Null);
     if json_len(&value) <= budget {
         return value;
     }
     value["truncated"] = Value::Bool(true);
-    for key in arrays {
+    for trim in trims {
         while json_len(&value) > budget {
-            let Some(items) = value.get_mut(*key).and_then(Value::as_array_mut) else {
+            let Some(items) = value.get_mut(trim.array).and_then(Value::as_array_mut) else {
                 break;
             };
-            if items.pop().is_none() {
+            let Some(dropped) = items.pop() else {
                 break;
+            };
+            if let Some(omitted) = trim.omitted {
+                let rows = match trim.rows {
+                    Some(inner) => dropped[inner].as_array().map_or(0, Vec::len),
+                    None => 1,
+                };
+                let before = value[omitted].as_u64().unwrap_or(0);
+                value[omitted] = Value::from(before + rows as u64);
             }
         }
     }
@@ -550,6 +606,7 @@ pub(in crate::mcp::tools) fn impact_output_schema() -> Value {
         ("notices", notices_schema()),
         ("count", json!({ "type": "integer" })),
         ("files", files),
+        ("symbolsOmitted", json!({ "type": "integer" })),
         (
             "matches",
             json!({ "type": "array", "items": symbol_ref_schema() }),
@@ -629,16 +686,50 @@ mod tests {
     }
 
     #[test]
+    fn dropped_file_groups_count_their_symbols() {
+        let nodes: Vec<Node> = (0..300)
+            .map(|i| node(&format!("affected_{i}"), &format!("src/f{}.rs", i / 3), i))
+            .collect();
+        let mut output = ImpactOutput::new();
+        output.count = nodes.len();
+        output.files = group_by_file(&nodes);
+        let value = fitted(
+            &output,
+            2_000,
+            &[Trim::groups("files", "symbols", "symbolsOmitted")],
+        );
+        assert!(json_len(&value) <= 2_000);
+        assert_eq!(value["truncated"], true);
+        let listed: u64 = value["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|group| group["symbols"].as_array().unwrap().len() as u64)
+            .sum();
+        assert!(listed > 0);
+        assert_eq!(listed + value["symbolsOmitted"].as_u64().unwrap(), 300);
+    }
+
+    #[test]
     fn fitting_drops_trailing_items_and_flags_it() {
         let mut output = CallsOutput::new("callers");
         output.results = (0..200)
             .map(|i| SymbolRef::from(&node(&format!("caller_{i}"), "src/lib.rs", i)))
             .collect();
-        let value = fitted(&output, 1_000, &["results"]);
+        let value = fitted(
+            &output,
+            1_000,
+            &[Trim::counted("results", "resultsOmitted")],
+        );
         assert!(json_len(&value) <= 1_000);
         assert_eq!(value["truncated"], true);
         let kept = value["results"].as_array().unwrap();
         assert!(!kept.is_empty() && kept.len() < 200);
         assert_eq!(kept[0]["name"], "caller_0");
+        // Every caller is either listed or counted.
+        assert_eq!(
+            kept.len() as u64 + value["resultsOmitted"].as_u64().unwrap(),
+            200
+        );
     }
 }

@@ -19,6 +19,7 @@ use super::super::output::{
     ExternalRef,
     ForeignCallsOutput,
     SymbolRef,
+    Trim,
     fitted,
     foreign_ref,
 };
@@ -193,7 +194,12 @@ impl ToolHandler {
         let payload = fitted(
             output,
             mcp_output_budget(),
-            &["foreign", "otherProjects", "external", "results"],
+            &[
+                Trim::plain("foreign"),
+                Trim::plain("otherProjects"),
+                Trim::counted("external", "externalOmitted"),
+                Trim::counted("results", "resultsOmitted"),
+            ],
         );
         self.structured_result(&self.truncate_output(text), &payload)
     }

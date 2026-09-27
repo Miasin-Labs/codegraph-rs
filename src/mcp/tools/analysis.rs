@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 
 use super::context::ToolHandler;
 use super::format::{mcp_output_budget, num_or};
-use super::output::{HistoryOutput, fitted};
+use super::output::{HistoryOutput, Trim, fitted};
 use super::schema::ToolResult;
 use crate::analysis_bridge::{BridgeOptions, build_analysis_graph_cached_with_options};
 use crate::analyze::CoChangeReport;
@@ -79,7 +79,8 @@ impl ToolHandler {
         let payload = fitted(
             &HistoryOutput::new(&report),
             mcp_output_budget(),
-            &["pairs"],
+            // The report's pair counts total what is left out.
+            &[Trim::plain("pairs")],
         );
         self.structured_result(&self.truncate_output(&text), &payload)
     }
