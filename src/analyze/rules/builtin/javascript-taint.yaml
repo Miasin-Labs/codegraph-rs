@@ -1,0 +1,147 @@
+# JavaScript/TypeScript taint rules: Express request input reaching SQL,
+# a shell, eval, a redirect or a file path in the same function.
+- id: js-sql-injection
+  description: Request input reaches a SQL query built as a string (CWE-89).
+  severity: high
+  confidence: 0.8
+  tags: [CWE-89, taint]
+  language: [javascript, typescript]
+  message: "request input `{source}` reaches SQL"
+  taint:
+    sources: &js-sources
+      - name: express-request
+        query: |
+          ((member_expression object: (identifier) @r property: (property_identifier) @p) @src
+           (#match? @r "^(req|request)$")
+           (#match? @p "^(query|body|params|cookies|headers|signedCookies)$"))
+        value: src
+    sinks:
+      - name: query
+        query: |
+          ((call_expression function: (member_expression property: (property_identifier) @m) arguments: (arguments . (_) @arg))
+           (#match? @m "^(query|raw|execute|exec)$"))
+        where:
+          - capture: m
+            not-resolves-to: "(?i)child_process|exec(Sync|File)"
+        argument: arg
+    sanitizers:
+      - query: |
+          ((call_expression function: [(identifier) @f (member_expression property: (property_identifier) @f)]) @v
+           (#match? @f "^(escape|parseInt|Number|escapeId|format)$"))
+        value: v
+  examples:
+    bad:
+      - |
+        function f(req, res) {
+          const id = req.query.id;
+          db.query("SELECT * FROM users WHERE id = '" + id + "'");
+        }
+      - |
+        const f = (req, res) => {
+          models.sequelize.query(`SELECT * FROM Users WHERE email = '${req.body.email}'`);
+        };
+    good:
+      - |
+        function f(req, res) {
+          const id = req.query.id;
+          db.query("SELECT * FROM users WHERE id = ?", [id]);
+        }
+
+- id: js-command-injection
+  description: Request input reaches a shell command or eval (CWE-78, CWE-95).
+  severity: high
+  confidence: 0.8
+  tags: [CWE-78, CWE-95, taint]
+  language: [javascript, typescript]
+  message: "request input `{source}` reaches a shell command or eval"
+  taint:
+    sources: *js-sources
+    sinks:
+      - name: child-process
+        query: |
+          ((call_expression function: [(identifier) @m (member_expression property: (property_identifier) @m)] arguments: (arguments . (_) @arg))
+           (#match? @m "^(exec|execSync|spawn|spawnSync|execFile|execFileSync)$"))
+        where:
+          - enclosing-function:
+              calls: "(?i)exec|spawn"
+        argument: arg
+      - name: eval
+        query: |
+          ((call_expression function: (identifier) @f arguments: (arguments . (_) @arg))
+           (#match? @f "^(eval|Function|setTimeout|setInterval)$"))
+        argument: arg
+  examples:
+    bad:
+      - |
+        function f(req, res) {
+          const host = req.body.host;
+          child_process.exec("ping -c 1 " + host);
+        }
+      - |
+        function f(req, res) {
+          eval("var x = " + req.query.x);
+        }
+    good:
+      - |
+        function f(req, res) {
+          child_process.execFile("ping", ["-c", "1", "localhost"]);
+        }
+
+- id: js-open-redirect
+  description: Request input chooses a redirect target (CWE-601).
+  severity: medium
+  confidence: 0.7
+  tags: [CWE-601, taint]
+  language: [javascript, typescript]
+  message: "request input `{source}` chooses the redirect target"
+  taint:
+    sources: *js-sources
+    sinks:
+      - name: redirect
+        query: |
+          ((call_expression function: (member_expression property: (property_identifier) @m) arguments: (arguments . (_) @arg))
+           (#eq? @m "redirect"))
+        argument: arg
+  examples:
+    bad:
+      - |
+        function f(req, res) {
+          res.redirect(req.query.to);
+        }
+    good:
+      - |
+        function f(req, res) {
+          res.redirect("/home");
+        }
+
+- id: js-path-from-input
+  description: Request input names a file to read or send (CWE-22).
+  severity: medium
+  confidence: 0.7
+  tags: [CWE-22, taint]
+  language: [javascript, typescript]
+  message: "request input `{source}` names a file"
+  taint:
+    sources: *js-sources
+    sinks:
+      - name: fs
+        query: |
+          ((call_expression function: (member_expression property: (property_identifier) @m) arguments: (arguments . (_) @arg))
+           (#match? @m "^(readFile|readFileSync|createReadStream|sendFile|download|unlink|unlinkSync|writeFile|writeFileSync)$"))
+        argument: arg
+    sanitizers:
+      - query: |
+          ((call_expression function: (member_expression property: (property_identifier) @m)) @v
+           (#eq? @m "basename"))
+        value: v
+  examples:
+    bad:
+      - |
+        function f(req, res) {
+          res.sendFile("/srv/files/" + req.params.name);
+        }
+    good:
+      - |
+        function f(req, res) {
+          res.sendFile("/srv/files/" + path.basename(req.params.name));
+        }

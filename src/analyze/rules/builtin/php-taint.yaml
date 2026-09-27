@@ -1,0 +1,169 @@
+# PHP taint rules: request input ($_GET, $_POST, $_REQUEST, $_COOKIE,
+# $_SERVER, $_FILES) reaching SQL, a shell, the page or an include, in the
+# same function or in a script's top-level code.
+- id: php-sql-injection
+  description: Request input reaches a SQL query without escaping or binding (CWE-89).
+  severity: high
+  confidence: 0.8
+  tags: [CWE-89, taint]
+  language: php
+  message: "request input `{source}` reaches a SQL query"
+  taint:
+    sources: &php-sources
+      - name: superglobal
+        query: |
+          ((subscript_expression . (variable_name) @g) @src
+           (#match? @g "^\\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)$"))
+        value: src
+    sinks:
+      - name: query-first
+        query: |
+          ((function_call_expression function: (name) @f arguments: (arguments . (argument) @arg))
+           (#match? @f "^(mysql_query|pg_query|sqlite_query|mysql_unbuffered_query)$"))
+        argument: arg
+      - name: query-second
+        query: |
+          ((function_call_expression function: (name) @f arguments: (arguments . (argument) . (argument) @arg))
+           (#match? @f "^(mysqli_query|mysqli_real_query|mysqli_multi_query|pg_query)$"))
+        argument: arg
+      - name: query-method
+        query: |
+          ((member_call_expression name: (name) @m arguments: (arguments . (argument) @arg))
+           (#match? @m "^(query|exec|multi_query|real_query|querySingle)$"))
+        argument: arg
+    sanitizers:
+      - query: |
+          ((function_call_expression function: (name) @f) @v
+           (#match? @f "^(mysqli_real_escape_string|mysql_real_escape_string|mysql_escape_string|pg_escape_string|addslashes|intval|floatval|is_numeric)$"))
+        value: v
+      - query: |
+          ((member_call_expression name: (name) @m) @v (#match? @m "^(quote|escapeString|real_escape_string)$"))
+        value: v
+  examples:
+    bad:
+      - |
+        <?php
+        $id = $_REQUEST['id'];
+        $query = "SELECT first_name FROM users WHERE user_id = '$id';";
+        $result = mysqli_query($conn, $query);
+    good:
+      - |
+        <?php
+        $id = mysqli_real_escape_string($conn, $_REQUEST['id']);
+        $query = "SELECT first_name FROM users WHERE user_id = '$id';";
+        $result = mysqli_query($conn, $query);
+
+- id: php-command-injection
+  description: Request input reaches a shell command (CWE-78).
+  severity: high
+  confidence: 0.8
+  tags: [CWE-78, taint]
+  language: php
+  message: "request input `{source}` reaches a shell command"
+  taint:
+    sources: *php-sources
+    sinks:
+      - name: shell
+        query: |
+          ((function_call_expression function: (name) @f arguments: (arguments . (argument) @arg))
+           (#match? @f "^(shell_exec|exec|system|passthru|popen|proc_open|pcntl_exec)$"))
+        where:
+          # Run only once the input was validated.
+          - not-inside: |
+              ((if_statement condition: (_) @c) (#match? @c "is_numeric|ctype_digit|ctype_alnum|filter_var|preg_match"))
+        argument: arg
+      - name: backticks
+        query: |
+          (shell_command_expression) @arg
+        argument: arg
+    sanitizers:
+      - query: |
+          ((function_call_expression function: (name) @f) @v
+           (#match? @f "^(escapeshellarg|escapeshellcmd|intval)$"))
+        value: v
+  examples:
+    bad:
+      - |
+        <?php
+        $target = $_REQUEST['ip'];
+        $cmd = shell_exec('ping -c 4 ' . $target);
+    good:
+      - |
+        <?php
+        $target = escapeshellarg($_REQUEST['ip']);
+        $cmd = shell_exec('ping -c 4 ' . $target);
+      - |
+        <?php
+        $target = $_REQUEST['ip'];
+        if (filter_var($target, FILTER_VALIDATE_IP)) { $cmd = shell_exec('ping -c 4 ' . $target); }
+
+- id: php-xss
+  description: Request input is echoed into the page without HTML escaping (CWE-79).
+  severity: medium
+  confidence: 0.7
+  tags: [CWE-79, taint]
+  language: php
+  message: "request input `{source}` is written into the page"
+  taint:
+    sources: *php-sources
+    sinks:
+      - name: echo
+        query: |
+          (echo_statement (_) @arg)
+        argument: arg
+      - name: print
+        query: |
+          (print_intrinsic (_) @arg)
+        argument: arg
+    sanitizers:
+      - query: |
+          ((function_call_expression function: (name) @f) @v
+           (#match? @f "^(htmlspecialchars|htmlentities|strip_tags|intval|urlencode|rawurlencode|json_encode)$"))
+        value: v
+  examples:
+    bad:
+      - |
+        <?php
+        $name = $_GET['name'];
+        echo "Hello " . $name;
+    good:
+      - |
+        <?php
+        $name = htmlspecialchars($_GET['name'], ENT_QUOTES);
+        echo "Hello " . $name;
+
+- id: php-file-inclusion
+  description: Request input chooses a file to include or read (CWE-98, CWE-22).
+  severity: high
+  confidence: 0.75
+  tags: [CWE-98, CWE-22, taint]
+  language: php
+  message: "request input `{source}` chooses a file"
+  taint:
+    sources: *php-sources
+    sinks:
+      - name: include
+        query: |
+          ([(include_expression (_) @arg) (include_once_expression (_) @arg)
+            (require_expression (_) @arg) (require_once_expression (_) @arg)])
+        argument: arg
+      - name: file-read
+        query: |
+          ((function_call_expression function: (name) @f arguments: (arguments . (argument) @arg))
+           (#match? @f "^(file_get_contents|fopen|readfile|file|unlink|include|highlight_file|show_source)$"))
+        argument: arg
+    sanitizers:
+      - query: |
+          ((function_call_expression function: (name) @f) @v (#match? @f "^(basename|realpath)$"))
+        value: v
+  examples:
+    bad:
+      - |
+        <?php
+        $file = $_GET['page'];
+        include($file);
+    good:
+      - |
+        <?php
+        $file = basename($_GET['page']);
+        include($file);

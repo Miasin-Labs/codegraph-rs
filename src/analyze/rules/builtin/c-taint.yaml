@@ -1,0 +1,291 @@
+# C/C++ taint rules: external input (environment, console, files, sockets)
+# reaching a command, a format string, a file path, an LDAP filter or
+# arithmetic in the same function. Input read into a buffer (`fgets(buf,
+# …)`, `recv(s, buf, …)`, `fscanf(f, "%d", &n)`) taints that buffer from
+# the call on; string copies (`strcpy`, `strncat`, `snprintf`…) carry it
+# into their destination.
+- id: c-command-injection
+  description: External input reaches a shell command (system, popen) (CWE-78).
+  severity: high
+  confidence: 0.8
+  tags: [CWE-78, taint]
+  language: [c, cpp]
+  message: "external input `{source}` reaches a shell command"
+  taint:
+    sources: &c-sources
+      - name: environment
+        query: |
+          ((call_expression function: (identifier) @f) @src
+           (#match? @f "^(getenv|_wgetenv|secure_getenv|GETENV)$"))
+        value: src
+      - name: read-into-first
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list . (_) @buf))
+           (#match? @f "^(fgets|fgetws|gets|_getws|fread|FGETS|FGETWS)$"))
+        value: buf
+      - name: read-into-second
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list . (_) . (_) @buf))
+           (#match? @f "^(recv|recvfrom|read|_read|RECV)$"))
+        value: buf
+      - name: scan-into
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list . (_) . (_) (_) @buf))
+           (#match? @f "^(fscanf|fwscanf|sscanf|swscanf)$"))
+        value: buf
+      - name: scanf-into
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list . (_) (_) @buf))
+           (#match? @f "^(scanf|wscanf)$"))
+        value: buf
+    sinks:
+      - name: shell
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list . (_) @arg))
+           (#match? @f "^(system|_wsystem|popen|_popen|_wpopen|SYSTEM|POPEN)$"))
+        argument: arg
+      - name: exec
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list (_) @arg))
+           (#match? @f "^_?w?(exec|spawn)(l|le|lp|lpe|v|ve|vp|vpe)$|^(EXECL|EXECLP|EXECV|EXECVP|SPAWNL|SPAWNLP|SPAWNV|SPAWNVP)$"))
+        argument: arg
+  examples:
+    bad:
+      - |
+        void f(void) {
+            char data[100] = "ls ";
+            size_t n = strlen(data);
+            if (fgets(data + n, (int)(100 - n), stdin) != NULL) { data[strlen(data) - 1] = '\0'; }
+            system(data);
+        }
+      - |
+        void f(void) {
+            char data[100] = "ls ";
+            char *env = getenv("ADD");
+            if (env != NULL) { strncat(data + strlen(data), env, 100 - strlen(data) - 1); }
+            system(data);
+        }
+      - |
+        #define COMMAND_ARG3 data
+        void f(void) {
+            char data[100] = "";
+            recv(sock, data, 99, 0);
+            char *args[] = {"/bin/sh", "-c", COMMAND_ARG3, NULL};
+            execv("/bin/sh", args);
+        }
+    good:
+      - |
+        void f(void) {
+            char data[100] = "ls ";
+            strcat(data, "*.txt");
+            system(data);
+        }
+
+- id: c-format-string-from-input
+  description: External input is used as a printf-style format string (CWE-134).
+  severity: high
+  confidence: 0.8
+  tags: [CWE-134, taint]
+  language: [c, cpp]
+  message: "external input `{source}` is a format string"
+  taint:
+    sources: *c-sources
+    sinks:
+      - name: format-first
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list . (_) @arg))
+           (#match? @f "^(printf|wprintf|vprintf|vwprintf)$"))
+        argument: arg
+      - name: format-second
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list . (_) . (_) @arg))
+           (#match? @f "^(fprintf|fwprintf|vfprintf|vfwprintf|sprintf|vsprintf|syslog)$"))
+        argument: arg
+      - name: format-third
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list . (_) . (_) . (_) @arg))
+           (#match? @f "^(snprintf|_snprintf|vsnprintf|_vsnprintf|swprintf|_snwprintf|vswprintf|SNPRINTF)$"))
+        argument: arg
+  examples:
+    bad:
+      - |
+        void f(void) {
+            char data[100] = "";
+            fgets(data, 100, stdin);
+            printf(data);
+        }
+      - |
+        void f(void) {
+            char *data = getenv("FMT");
+            fprintf(stdout, data);
+        }
+    good:
+      - |
+        void f(void) {
+            char data[100] = "";
+            fgets(data, 100, stdin);
+            printf("%s\n", data);
+        }
+
+- id: c-path-from-input
+  description: External input names a file to open or remove (CWE-22, CWE-23, CWE-36).
+  severity: high
+  confidence: 0.7
+  tags: [CWE-22, CWE-23, CWE-36, taint]
+  language: [c, cpp]
+  message: "external input `{source}` names a file"
+  taint:
+    sources: *c-sources
+    sinks:
+      - name: open
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list . (_) @arg))
+           (#match? @f "^(fopen|FOPEN|_wfopen|open|OPEN|_open|_wopen|freopen|creat|remove|unlink|_unlink|CreateFileA|CreateFileW|CreateFile)$"))
+        argument: arg
+      - name: stream-open
+        language: cpp
+        query: |
+          ((call_expression function: (field_expression field: (field_identifier) @m) arguments: (argument_list . (_) @arg))
+           (#eq? @m "open"))
+        argument: arg
+  examples:
+    bad:
+      - |
+        void f(void) {
+            char data[100] = "/tmp/";
+            fgets(data + strlen(data), 50, stdin);
+            FILE *file = fopen(data, "wb+");
+        }
+    good:
+      - |
+        void f(void) {
+            char data[100] = "/tmp/file.txt";
+            FILE *file = fopen(data, "wb+");
+        }
+
+- id: c-ldap-injection
+  description: External input reaches an LDAP search (CWE-90).
+  severity: high
+  confidence: 0.75
+  tags: [CWE-90, taint]
+  language: [c, cpp]
+  message: "external input `{source}` reaches an LDAP search"
+  taint:
+    sources: *c-sources
+    sinks:
+      - name: ldap-search
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list (_) @arg))
+           (#match? @f "^ldap_search"))
+        argument: arg
+  examples:
+    bad:
+      - |
+        void f(LDAP *ld) {
+            char data[100] = "";
+            char filter[256];
+            fgets(data, 100, stdin);
+            _snprintf(filter, 256 - 1, "(cn=%s)", data);
+            ldap_search_ext_sA(ld, "base", 2, filter, NULL, 0, NULL, NULL, 0, 0, NULL);
+        }
+    good:
+      - |
+        void f(LDAP *ld) {
+            char filter[256];
+            _snprintf(filter, 256 - 1, "(cn=%s)", "admin");
+            ldap_search_ext_sA(ld, "base", 2, filter, NULL, 0, NULL, NULL, 0, 0, NULL);
+        }
+
+- id: c-arithmetic-on-input
+  description: >-
+    Arithmetic on an externally chosen number (or a type's extreme value),
+    with no range check around it, may overflow or underflow (CWE-190,
+    CWE-191).
+  severity: medium
+  confidence: 0.6
+  tags: [CWE-190, CWE-191, taint]
+  language: [c, cpp]
+  message: "arithmetic on `{source}` without a range check"
+  taint:
+    sources:
+      - name: environment
+        query: |
+          ((call_expression function: (identifier) @f) @src
+           (#match? @f "^(getenv|_wgetenv|secure_getenv|GETENV)$"))
+        value: src
+      - name: read-into-first
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list . (_) @buf))
+           (#match? @f "^(fgets|fgetws|gets|_getws|fread|FGETS|FGETWS)$"))
+        value: buf
+      - name: read-into-second
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list . (_) . (_) @buf))
+           (#match? @f "^(recv|recvfrom|read|_read|RECV)$"))
+        value: buf
+      - name: scan-into
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list . (_) . (_) (_) @buf))
+           (#match? @f "^(fscanf|fwscanf|sscanf|swscanf)$"))
+        value: buf
+      - name: scanf-into
+        query: |
+          ((call_expression function: (identifier) @f arguments: (argument_list . (_) (_) @buf))
+           (#match? @f "^(scanf|wscanf)$"))
+        value: buf
+      - name: random
+        query: |
+          ((call_expression function: (identifier) @f) @src
+           (#match? @f "^(rand|random|RAND32|RAND64)$"))
+        value: src
+      - name: extreme
+        query: |
+          ((identifier) @src
+           (#match? @src "^(CHAR|SCHAR|UCHAR|SHRT|USHRT|INT|UINT|LONG|ULONG|LLONG|ULLONG|INT64|UINT64|INT32|INT16|INT8)_M(AX|IN)$"))
+        value: src
+    sinks:
+      - name: add-sub-mul
+        query: |
+          (binary_expression left: (identifier) @arg operator: ["+" "-" "*"] right: (number_literal))
+        where: &c-range-checked
+          - not-inside: |
+              ((if_statement condition: (_) @c) (#match? @c "_MAX|_MIN|abs|sqrt"))
+        argument: arg
+      - name: square
+        query: |
+          ((binary_expression left: (identifier) @arg operator: "*" right: (identifier) @other)
+           (#eq? @arg @other))
+        where: *c-range-checked
+        argument: arg
+      - name: increment
+        query: |
+          (update_expression argument: (identifier) @arg)
+        where: *c-range-checked
+        argument: arg
+  examples:
+    bad:
+      - |
+        void f(void) {
+            int data = 0;
+            fscanf(stdin, "%d", &data);
+            int result = data + 1;
+        }
+      - |
+        void f(void) {
+            char buf[32] = "";
+            int data = 0;
+            if (fgets(buf, 32, stdin) != NULL) { data = atoi(buf); }
+            data++;
+        }
+    good:
+      - |
+        void f(void) {
+            int data = 0;
+            fscanf(stdin, "%d", &data);
+            if (data < INT_MAX) { int result = data + 1; }
+        }
+      - |
+        void f(void) {
+            int data = 2;
+            int result = data * 2;
+        }

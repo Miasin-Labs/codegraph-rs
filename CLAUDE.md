@@ -249,7 +249,20 @@ cargo test --workspace
 - **Analysis IR: `IrFunction.params` excludes the receiver and a method call's
   `args` exclude its receiver** (both live in `receiver` fields). Points-to
   binds a call op to a `Calls` edge target only when exactly one same-named
-  target fits (`points_to/binding.rs`); ambiguity binds nothing.
+  target fits (`points_to/binding.rs`); ambiguity binds nothing. Every op
+  has a source span (`IrFunction.spans`, parallel to `body` — the call
+  node's start line/col, the index's call-edge key). Rust/Python/TS/Go keep
+  their bespoke lowerers; Java/C/C++/PHP (and taint for Python/JS) use the
+  rules-driven lowering (`ir/lower/`, tables `ir_rules.rs` + `cfg_rules.rs`),
+  which also records every expression's value (`values`) and each call's
+  argument places (`call_places`, for out-parameters). Unknown syntax
+  becomes a synthetic `<kind>(children…)` call, never dropped.
+  `reaching_defs/` is flow-sensitive over IR blocks: access paths ≤3 deep,
+  strong writes kill the place and below, constant branches prune
+  (`consts.rs`). `taint_flow/` marks rule captures onto it and searches
+  backward from sinks; library propagation is the static
+  `propagation_rules.rs`, and a call into project code (index-resolved, or
+  a name the file defines) propagates nothing in phase 1.
 - **SQLite schema is versioned** (`src/db/schema.sql` + `src/db/migrations.rs`,
   currently through v10: `external_edges`). A schema change must bump
   `schema_versions`, add an idempotent migration, treat new columns as
@@ -317,8 +330,8 @@ cargo test --workspace
 - **Bug detectors** (`src/analyze/bugs/`, `codegraph analyze bugs|review`):
   leads, not proofs, over the index's resolved call edges (which carry
   line/col) plus tree-sitter re-parsed per file (`Project`: bulk SQL load,
-  parse cache) — never the analysis crate's IR (no lines, no `match`/
-  `break`). `deviance/` mines beliefs from the code itself (Engler):
+  parse cache); only taint rules lower to the analysis IR. `deviance/`
+  mines beliefs from the code itself (Engler):
   `arm-result-deviance` (an arm does project work but yields a constant
   while ≥2 sibling arms yield a call's result — caught the rms KeepBoth
   bug, silent on its fix), `result-discarded`, `missing-companion-call`;
@@ -363,8 +376,19 @@ cargo test --workspace
   (`rules/builtin/*.yaml`, `--builtin`, examples tested by
   `rules_builtin_examples_pass`): C/C++ memory/format/input rules, Java
   crypto/random/cookie/logic, Python/JS/PHP injection, Rust Send/Sync,
-  uninit and panic-safety. Measured with `tools/bugbench/` (juliet-c
-  55.7% P / 21.8% R, OWASP 76.3% / 38.2%, 2026-09).
+  uninit and panic-safety. A rule may be `taint:` instead of
+  `check-patterns` (`rules/taint.rs`): `sources`/`sanitizers` name a
+  `value` capture, `sinks` an `argument`, `propagators` `from`/`to`; a
+  finding is a sink reached by a source in the same function (or a
+  script's top level), with source/hop/sink lines as evidence. Only
+  functions holding both are lowered (cached per file); IR call ops join
+  the index by line/col + last name (`Semantics::call_at`); object-like
+  C macros naming a variable read as it (`macro_aliases`). `*-taint.yaml`
+  cover OWASP/Juliet injection classes (Java, C/C++, Python/JS/PHP).
+  Measured with `tools/bugbench/` (2026-09, with taint: OWASP 79.6% P /
+  53.5% R, juliet-java 98.6% / 18.1%, juliet-c 60.1% / 24.4%; before:
+  76.3/38.2, 97.3/9.2, 55.7/21.8). Most remaining OWASP/Juliet misses are
+  interprocedural (helper methods, `badSink(data)`): phase 2 summaries.
 - **Concurrency lint** (`analysis/src/concurrency.rs`, per-language rules in
   `concurrency_rules.rs`): flags lossy best-effort sends. Library-only since
   the vuln engine (its sole CLI surface) was deleted.

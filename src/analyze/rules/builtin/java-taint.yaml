@@ -1,0 +1,538 @@
+# Java taint rules: untrusted input (servlet requests, environment,
+# console/socket/file lines, property files, database rows) reaching an
+# injection sink in the same method. One list document, so the sources are
+# shared through YAML anchors.
+- id: java-sql-injection
+  description: >-
+    Untrusted input reaches a SQL statement (JDBC execute/prepare, Spring
+    JdbcTemplate, JPA/Hibernate queries) without a parameterized query
+    (CWE-89).
+  severity: high
+  confidence: 0.8
+  tags: [CWE-89, taint]
+  language: java
+  message: "untrusted `{source}` reaches the SQL of {m}()"
+  taint:
+    sources: &java-sources
+      - name: servlet-request
+        query: |
+          ((method_invocation name: (identifier) @m) @src
+           (#match? @m "^(getParameter|getParameterValues|getParameterMap|getParameterNames|getHeader|getHeaders|getHeaderNames|getQueryString|getCookies|getInputStream|getReader|getRequestURI|getRequestURL|getPathInfo|getPart|getParts)$"))
+        value: src
+      - name: environment
+        query: |
+          ((method_invocation object: (_) @o name: (identifier) @m) @src
+           (#match? @o "^(java\\.lang\\.)?System$") (#eq? @m "getenv"))
+        value: src
+      - name: read-line
+        query: |
+          ((method_invocation name: (identifier) @m) @src (#eq? @m "readLine"))
+        value: src
+      - name: properties-file
+        query: |
+          ((method_invocation object: (_) @o name: (identifier) @m) @src
+           (#eq? @m "getProperty") (#not-match? @o "(^|\\.)System$"))
+        value: src
+      - name: database-row
+        query: |
+          ((method_invocation object: (identifier) @o name: (identifier) @m) @src
+           (#match? @m "^get(String|NString|Object)$") (#match? @o "(?i)result|^rs$"))
+        value: src
+    sinks:
+      - name: jdbc
+        query: |
+          ((method_invocation name: (identifier) @m arguments: (argument_list . (_) @arg))
+           (#match? @m "^(execute|executeQuery|executeUpdate|executeLargeUpdate|addBatch|prepareStatement|prepareCall|nativeSQL)$"))
+        argument: arg
+      - name: spring-jdbc
+        query: |
+          ((method_invocation object: (_) @o name: (identifier) @m arguments: (argument_list . (_) @arg))
+           (#match? @m "^(query|queryForObject|queryForList|queryForMap|queryForRowSet|queryForLong|queryForInt|update|batchUpdate)$")
+           (#match? @o "(?i)jdbc|template"))
+        argument: arg
+      - name: jpa
+        query: |
+          ((method_invocation name: (identifier) @m arguments: (argument_list . (_) @arg))
+           (#match? @m "^(createQuery|createNativeQuery|createSQLQuery)$"))
+        argument: arg
+    sanitizers:
+      - query: |
+          ((method_invocation name: (identifier) @m) @v (#eq? @m "encodeForSQL"))
+        value: v
+  review:
+    - Is the statement built from the input, or is the input bound as a parameter?
+  examples:
+    bad:
+      - |
+        class A { void f(HttpServletRequest request, Statement st) throws Exception {
+          String p = request.getParameter("id");
+          String sql = "SELECT * FROM users WHERE id='" + p + "'";
+          st.executeQuery(sql);
+        } }
+      - |
+        class A { void f(HttpServletRequest request, java.sql.Connection c) throws Exception {
+          StringBuilder sb = new StringBuilder("{call ");
+          sb.append(request.getHeader("h")).append("}");
+          c.prepareCall(sb.toString());
+        } }
+    good:
+      - |
+        class A { void f(HttpServletRequest request, java.sql.Connection c) throws Exception {
+          String p = request.getParameter("id");
+          java.sql.PreparedStatement ps = c.prepareStatement("SELECT * FROM users WHERE id=?");
+          ps.setString(1, p);
+          ps.executeQuery();
+        } }
+      - |
+        class A { void f(HttpServletRequest request, Statement st) throws Exception {
+          String param = request.getParameter("id");
+          String bar = "safe";
+          java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
+          map.put("keyA", "a_Value");
+          map.put("keyB", param);
+          bar = (String) map.get("keyB");
+          bar = (String) map.get("keyA");
+          st.execute("SELECT * FROM t WHERE x='" + bar + "'");
+        } }
+      - |
+        class A { void f(HttpServletRequest request, Statement st) throws Exception {
+          String param = request.getParameter("id");
+          String bar;
+          int num = 86;
+          if ((7 * 42) - num > 200) bar = "This_should_always_happen";
+          else bar = param;
+          st.executeUpdate("UPDATE t SET x='" + bar + "'");
+        } }
+
+- id: java-command-injection
+  description: >-
+    Untrusted input reaches an OS command (Runtime.exec, ProcessBuilder)
+    (CWE-78).
+  severity: high
+  confidence: 0.8
+  tags: [CWE-78, taint]
+  language: java
+  message: "untrusted `{source}` reaches an OS command"
+  taint:
+    sources: *java-sources
+    sinks:
+      - name: runtime-exec
+        query: |
+          ((method_invocation name: (identifier) @m arguments: (argument_list (_) @arg))
+           (#eq? @m "exec"))
+        argument: arg
+      - name: process-builder
+        query: |
+          ((object_creation_expression type: (_) @t arguments: (argument_list (_) @arg))
+           (#match? @t "ProcessBuilder$"))
+        argument: arg
+      - name: process-builder-command
+        query: |
+          ((method_invocation name: (identifier) @m arguments: (argument_list (_) @arg))
+           (#eq? @m "command"))
+        argument: arg
+    sanitizers:
+      - query: |
+          ((method_invocation name: (identifier) @m) @v (#eq? @m "encodeForOS"))
+        value: v
+  examples:
+    bad:
+      - |
+        class A { void f(HttpServletRequest request) throws Exception {
+          String p = request.getHeader("h");
+          p = java.net.URLDecoder.decode(p, "UTF-8");
+          Runtime r = Runtime.getRuntime();
+          r.exec("ls " + p);
+        } }
+      - |
+        class A { void f() throws Exception {
+          String data = System.getenv("ADD");
+          java.util.List<String> args = new java.util.ArrayList<String>();
+          args.add("sh");
+          args.add(data);
+          ProcessBuilder pb = new ProcessBuilder();
+          pb.command(args);
+        } }
+    good:
+      - |
+        class A { void f(HttpServletRequest request) throws Exception {
+          String p = request.getHeader("h");
+          String bar = "safe!";
+          Runtime.getRuntime().exec("ls " + bar);
+        } }
+
+- id: java-path-traversal
+  description: >-
+    Untrusted input names a file to open, create or delete (CWE-22, CWE-23,
+    CWE-36).
+  severity: high
+  confidence: 0.7
+  tags: [CWE-22, CWE-23, CWE-36, taint]
+  language: java
+  message: "untrusted `{source}` names a file"
+  taint:
+    sources: *java-sources
+    sinks:
+      - name: file-constructor
+        query: |
+          ((object_creation_expression type: (_) @t arguments: (argument_list (_) @arg))
+           (#match? @t "(^|\\.)(File|FileInputStream|FileOutputStream|FileReader|FileWriter|RandomAccessFile)$"))
+        argument: arg
+      - name: nio
+        query: |
+          ((method_invocation object: (_) @o name: (identifier) @m arguments: (argument_list (_) @arg))
+           (#match? @o "(^|\\.)(Paths|Path|Files)$")
+           (#match? @m "^(get|of|newInputStream|newOutputStream|newBufferedReader|newBufferedWriter|readAllBytes|readAllLines|readString|write|writeString|delete|deleteIfExists|createFile)$"))
+        argument: arg
+    sanitizers:
+      - query: |
+          ((method_invocation name: (identifier) @m) @v (#match? @m "^(getName|normalizeFilename|encodeForURL)$"))
+        value: v
+  examples:
+    bad:
+      - |
+        class A { void f(HttpServletRequest request) throws Exception {
+          String p = request.getParameter("file");
+          java.io.File f = new java.io.File("/srv/data/", p);
+        } }
+      - |
+        class A { void f(HttpServletRequest request) throws Exception {
+          String p = request.getParameter("file");
+          java.nio.file.Path path = java.nio.file.Paths.get("/srv/" + p);
+        } }
+    good:
+      - |
+        class A { void f(HttpServletRequest request) throws Exception {
+          String p = request.getParameter("file");
+          java.io.File f = new java.io.File("/srv/data/", "fixed.txt");
+        } }
+
+- id: java-xss
+  description: >-
+    Untrusted input is written into an HTTP response without HTML encoding
+    (CWE-79, CWE-80, CWE-81, CWE-83).
+  severity: high
+  confidence: 0.75
+  tags: [CWE-79, CWE-80, CWE-81, CWE-83, taint]
+  language: java
+  message: "untrusted `{source}` is written into the response"
+  taint:
+    sources: *java-sources
+    sinks:
+      - name: response-writer
+        query: |
+          ((method_invocation object: (_) @o name: (identifier) @m arguments: (argument_list (_) @arg))
+           (#match? @m "^(print|println|write|format|printf|append)$")
+           (#match? @o "(getWriter|getOutputStream)\\(\\)$"))
+        argument: arg
+      - name: send-error
+        query: |
+          ((method_invocation name: (identifier) @m arguments: (argument_list . (_) . (_) @arg))
+           (#eq? @m "sendError"))
+        argument: arg
+    sanitizers:
+      - query: |
+          ((method_invocation name: (identifier) @m) @v
+           (#match? @m "^(encodeForHTML|encodeForHTMLAttribute|encodeForJavaScript|htmlEscape|escapeHtml|escapeHtml4|escapeXml|forHtml)$"))
+        value: v
+  examples:
+    bad:
+      - |
+        class A { void f(HttpServletRequest request, HttpServletResponse response) throws Exception {
+          String p = request.getParameter("q");
+          response.getWriter().println("<p>" + p + "</p>");
+        } }
+    good:
+      - |
+        class A { void f(HttpServletRequest request, HttpServletResponse response) throws Exception {
+          String p = request.getParameter("q");
+          response.getWriter().println(org.owasp.esapi.ESAPI.encoder().encodeForHTML(p));
+        } }
+
+- id: java-ldap-injection
+  description: Untrusted input reaches an LDAP search filter (CWE-90).
+  severity: high
+  confidence: 0.75
+  tags: [CWE-90, taint]
+  language: java
+  message: "untrusted `{source}` reaches an LDAP search"
+  taint:
+    sources: *java-sources
+    sinks:
+      - name: dir-context-search
+        query: |
+          ((method_invocation name: (identifier) @m arguments: (argument_list (_) @arg))
+           (#eq? @m "search"))
+        where:
+          - enclosing-function:
+              calls: "(?i)dircontext|ldapcontext|ldapconnection"
+        argument: arg
+    sanitizers:
+      - query: |
+          ((method_invocation name: (identifier) @m) @v (#match? @m "^(encodeForLDAP|encodeForDN)$"))
+        value: v
+  examples:
+    bad:
+      - |
+        class A { void f(HttpServletRequest request) throws Exception {
+          String p = request.getParameter("user");
+          javax.naming.directory.DirContext ctx = new javax.naming.directory.InitialDirContext();
+          ctx.search("ou=users", "(uid=" + p + ")", null);
+        } }
+    good:
+      - |
+        class A { void f(HttpServletRequest request) throws Exception {
+          String p = request.getParameter("user");
+          javax.naming.directory.DirContext ctx = new javax.naming.directory.InitialDirContext();
+          ctx.search("ou=users", "(uid=admin)", null);
+        } }
+
+- id: java-xpath-injection
+  description: Untrusted input reaches an XPath expression (CWE-643).
+  severity: high
+  confidence: 0.75
+  tags: [CWE-643, taint]
+  language: java
+  message: "untrusted `{source}` reaches an XPath expression"
+  taint:
+    sources: *java-sources
+    sinks:
+      - name: xpath-evaluate
+        query: |
+          ((method_invocation name: (identifier) @m arguments: (argument_list . (_) @arg))
+           (#match? @m "^(evaluate|compile|selectNodes|selectSingleNode)$"))
+        where:
+          - enclosing-function:
+              calls: "(?i)xpath"
+        argument: arg
+    sanitizers:
+      - query: |
+          ((method_invocation name: (identifier) @m) @v
+           (#match? @m "^(encodeForXPath|escapeXml|escapeXml10|escapeXml11)$"))
+        value: v
+  examples:
+    bad:
+      - |
+        class A { void f(HttpServletRequest request, org.w3c.dom.Document doc) throws Exception {
+          String p = request.getParameter("name");
+          javax.xml.xpath.XPath xp = javax.xml.xpath.XPathFactory.newInstance().newXPath();
+          xp.evaluate("/users/user[@name='" + p + "']", doc);
+        } }
+    good:
+      - |
+        class A { void f(HttpServletRequest request, org.w3c.dom.Document doc) throws Exception {
+          String p = request.getParameter("name");
+          javax.xml.xpath.XPath xp = javax.xml.xpath.XPathFactory.newInstance().newXPath();
+          xp.evaluate("/users/user[@name='admin']", doc);
+        } }
+
+- id: java-trust-boundary
+  description: >-
+    Untrusted input is stored in the HTTP session, where later code trusts
+    it (CWE-501).
+  severity: medium
+  confidence: 0.7
+  tags: [CWE-501, taint]
+  language: java
+  message: "untrusted `{source}` is stored in the session"
+  taint:
+    sources: *java-sources
+    sinks:
+      - name: session-attribute
+        query: |
+          ((method_invocation object: (_) @o name: (identifier) @m arguments: (argument_list (_) @arg))
+           (#match? @m "^(setAttribute|putValue)$") (#match? @o "(?i)session"))
+        argument: arg
+  examples:
+    bad:
+      - |
+        class A { void f(HttpServletRequest request) {
+          String p = request.getParameter("user");
+          request.getSession().setAttribute("userid", p);
+        } }
+    good:
+      - |
+        class A { void f(HttpServletRequest request) {
+          String p = request.getParameter("user");
+          request.getSession().setAttribute("userid", "guest");
+        } }
+
+- id: java-response-splitting
+  description: >-
+    Untrusted input reaches an HTTP header or cookie without URL encoding
+    (CWE-113).
+  severity: medium
+  confidence: 0.7
+  tags: [CWE-113, taint]
+  language: java
+  message: "untrusted `{source}` reaches an HTTP header"
+  taint:
+    sources: *java-sources
+    sinks:
+      - name: header
+        query: |
+          ((method_invocation name: (identifier) @m arguments: (argument_list (_) @arg))
+           (#match? @m "^(setHeader|addHeader)$"))
+        argument: arg
+    sanitizers:
+      - query: |
+          ((method_invocation name: (identifier) @m) @v (#match? @m "^(encode|encodeForURL)$"))
+        value: v
+  examples:
+    bad:
+      - |
+        class A { void f(HttpServletRequest request, HttpServletResponse response) {
+          String p = request.getParameter("lang");
+          response.addHeader("Set-Cookie", "lang=" + p);
+        } }
+    good:
+      - |
+        class A { void f(HttpServletRequest request, HttpServletResponse response) throws Exception {
+          String p = java.net.URLEncoder.encode(request.getParameter("lang"), "UTF-8");
+          response.setHeader("Location", "/a?lang=" + p);
+        } }
+
+- id: java-open-redirect
+  description: Untrusted input chooses a redirect target (CWE-601).
+  severity: medium
+  confidence: 0.7
+  tags: [CWE-601, taint]
+  language: java
+  message: "untrusted `{source}` chooses the redirect target"
+  taint:
+    sources: *java-sources
+    sinks:
+      - name: send-redirect
+        query: |
+          ((method_invocation name: (identifier) @m arguments: (argument_list . (_) @arg))
+           (#eq? @m "sendRedirect"))
+        argument: arg
+  examples:
+    bad:
+      - |
+        class A { void f(HttpServletRequest request, HttpServletResponse response) throws Exception {
+          response.sendRedirect(request.getParameter("next"));
+        } }
+    good:
+      - |
+        class A { void f(HttpServletRequest request, HttpServletResponse response) throws Exception {
+          String p = request.getParameter("next");
+          response.sendRedirect("/home");
+        } }
+
+- id: java-format-string
+  description: Untrusted input is used as a format string (CWE-134).
+  severity: medium
+  confidence: 0.7
+  tags: [CWE-134, taint]
+  language: java
+  message: "untrusted `{source}` is a format string"
+  taint:
+    sources: *java-sources
+    sinks:
+      - name: format
+        query: |
+          ((method_invocation object: (_) @o name: (identifier) @m arguments: (argument_list . (_) @arg))
+           (#match? @m "^(format|printf)$") (#match? @o "(^|\\.)(String|out|err)$"))
+        argument: arg
+  examples:
+    bad:
+      - |
+        class A { void f() {
+          String data = System.getenv("ADD");
+          System.out.format(data);
+        } }
+    good:
+      - |
+        class A { void f() {
+          String data = System.getenv("ADD");
+          System.out.format("%s%n", data);
+        } }
+
+- id: java-arithmetic-on-input
+  description: >-
+    Arithmetic on an untrusted number, with no range check around it, may
+    overflow or underflow (CWE-190, CWE-191).
+  severity: medium
+  confidence: 0.6
+  tags: [CWE-190, CWE-191, taint]
+  language: java
+  message: "arithmetic on untrusted `{source}` without a range check"
+  taint:
+    sources:
+      - name: random
+        query: |
+          ((method_invocation name: (identifier) @m arguments: (argument_list)) @src
+           (#match? @m "^(nextInt|nextLong)$"))
+        value: src
+      - name: extreme
+        query: |
+          ((field_access object: (identifier) @o field: (identifier) @f) @src
+           (#match? @o "^(Integer|Long|Short|Byte)$") (#match? @f "^M(AX|IN)_VALUE$"))
+        value: src
+      - name: servlet-request
+        query: |
+          ((method_invocation name: (identifier) @m) @src
+           (#match? @m "^(getParameter|getParameterValues|getHeader|getQueryString|getCookies)$"))
+        value: src
+      - name: environment
+        query: |
+          ((method_invocation object: (_) @o name: (identifier) @m) @src
+           (#match? @o "^(java\\.lang\\.)?System$") (#eq? @m "getenv"))
+        value: src
+      - name: read-line
+        query: |
+          ((method_invocation name: (identifier) @m) @src (#eq? @m "readLine"))
+        value: src
+      - name: properties-file
+        query: |
+          ((method_invocation object: (_) @o name: (identifier) @m) @src
+           (#eq? @m "getProperty") (#not-match? @o "(^|\\.)System$"))
+        value: src
+    sinks:
+      - name: add-sub-mul
+        query: |
+          (binary_expression left: (identifier) @arg operator: ["+" "-" "*"] right: (decimal_integer_literal))
+        where:
+          - not-inside: |
+              ((if_statement condition: (_) @c) (#match? @c "MAX_VALUE|MIN_VALUE|abs|sqrt"))
+        argument: arg
+      - name: square
+        query: |
+          ((binary_expression left: (identifier) @arg operator: "*" right: (identifier) @other)
+           (#eq? @arg @other))
+        where:
+          - not-inside: |
+              ((if_statement condition: (_) @c) (#match? @c "MAX_VALUE|MIN_VALUE|abs|sqrt"))
+        argument: arg
+      - name: increment
+        query: |
+          (update_expression (identifier) @arg)
+        where:
+          - not-inside: |
+              ((if_statement condition: (_) @c) (#match? @c "MAX_VALUE|MIN_VALUE|abs|sqrt"))
+          - not-inside: "(for_statement)"
+        argument: arg
+  examples:
+    bad:
+      - |
+        class A { void f() throws Exception {
+          int data = Integer.parseInt(System.getenv("N").trim());
+          int result = (int)(data + 1);
+        } }
+      - |
+        class A { void f() {
+          int data = (new java.security.SecureRandom()).nextInt();
+          data++;
+        } }
+    good:
+      - |
+        class A { void f() throws Exception {
+          int data = Integer.parseInt(System.getenv("N").trim());
+          if (data < Integer.MAX_VALUE) { int result = (int)(data + 1); }
+        } }
+      - |
+        class A { void f() {
+          int data = 2;
+          int result = data * 2;
+        } }

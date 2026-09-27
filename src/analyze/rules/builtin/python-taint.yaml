@@ -1,0 +1,153 @@
+# Python taint rules: web request input (Flask, Django), `input()` and
+# `sys.argv` reaching SQL, a shell, eval, templates or file paths in the
+# same function (or a script's top-level code).
+- id: py-sql-injection
+  description: Request input reaches a SQL statement built as a string (CWE-89).
+  severity: high
+  confidence: 0.8
+  tags: [CWE-89, taint]
+  language: python
+  message: "request input `{source}` reaches SQL"
+  taint:
+    sources: &py-sources
+      - name: request
+        query: |
+          ((attribute object: (identifier) @r attribute: (identifier) @a) @src
+           (#match? @r "^(request|req)$")
+           (#match? @a "^(args|form|values|cookies|headers|json|data|files|GET|POST|COOKIES|META|body|query_params|path_params)$"))
+        value: src
+      - name: request-method
+        query: |
+          ((call function: (attribute object: (identifier) @r attribute: (identifier) @a)) @src
+           (#match? @r "^(request|req)$") (#match? @a "^(get_json|get_data)$"))
+        value: src
+      - name: input
+        query: |
+          ((call function: (identifier) @f) @src (#match? @f "^(input|raw_input)$"))
+        value: src
+      - name: argv
+        query: |
+          ((attribute object: (identifier) @m attribute: (identifier) @a) @src
+           (#eq? @m "sys") (#eq? @a "argv"))
+        value: src
+    sinks:
+      - name: execute
+        query: |
+          ((call function: (attribute attribute: (identifier) @m) arguments: (argument_list . (_) @arg))
+           (#match? @m "^(execute|executemany|executescript|raw|extra|RawSQL|text)$"))
+        argument: arg
+  examples:
+    bad:
+      - |
+        def f(request, cur):
+            name = request.POST.get('name')
+            cur.execute("SELECT * FROM t WHERE name = '%s'" % name)
+      - |
+        def f(cur):
+            q = request.args['q']
+            cur.execute(f"SELECT * FROM t WHERE q = '{q}'")
+    good:
+      - |
+        def f(request, cur):
+            name = request.POST.get('name')
+            cur.execute("SELECT * FROM t WHERE name = %s", (name,))
+
+- id: py-command-injection
+  description: Request input reaches a shell command or eval (CWE-78, CWE-95).
+  severity: high
+  confidence: 0.8
+  tags: [CWE-78, CWE-95, taint]
+  language: python
+  message: "request input `{source}` reaches a shell command or eval"
+  taint:
+    sources: *py-sources
+    sinks:
+      - name: os
+        query: |
+          ((call function: (attribute object: (identifier) @o attribute: (identifier) @m) arguments: (argument_list . (_) @arg))
+           (#eq? @o "os") (#match? @m "^(system|popen|popen2|popen3|execl|execlp|execv|execvp|spawnl)$"))
+        argument: arg
+      - name: subprocess
+        query: |
+          ((call function: (attribute object: (identifier) @o attribute: (identifier) @m) arguments: (argument_list . (_) @arg))
+           (#eq? @o "subprocess") (#match? @m "^(call|run|Popen|check_output|check_call|getoutput|getstatusoutput)$"))
+        argument: arg
+      - name: eval
+        query: |
+          ((call function: (identifier) @f arguments: (argument_list . (_) @arg))
+           (#match? @f "^(eval|exec)$"))
+        argument: arg
+    sanitizers:
+      - query: |
+          ((call function: (attribute attribute: (identifier) @m)) @v (#eq? @m "quote"))
+        value: v
+  examples:
+    bad:
+      - |
+        def f(request):
+            domain = request.POST.get('domain')
+            os.system("nslookup " + domain)
+    good:
+      - |
+        def f(request):
+            domain = shlex.quote(request.POST.get('domain'))
+            os.system("nslookup " + domain)
+
+- id: py-template-from-input
+  description: Request input is rendered as a template (server-side template injection, CWE-1336).
+  severity: high
+  confidence: 0.75
+  tags: [CWE-1336, CWE-94, taint]
+  language: python
+  message: "request input `{source}` is rendered as a template"
+  taint:
+    sources: *py-sources
+    sinks:
+      - name: template-string
+        query: |
+          ((call function: [(identifier) @f (attribute attribute: (identifier) @f)] arguments: (argument_list . (_) @arg))
+           (#match? @f "^(render_template_string|Template|from_string)$"))
+        argument: arg
+  examples:
+    bad:
+      - |
+        def f():
+            name = request.args.get('name')
+            return render_template_string("<p>" + name + "</p>")
+    good:
+      - |
+        def f():
+            name = request.args.get('name')
+            return render_template("page.html", name=name)
+
+- id: py-path-from-input
+  description: Request input names a file to open or send (CWE-22).
+  severity: medium
+  confidence: 0.7
+  tags: [CWE-22, taint]
+  language: python
+  message: "request input `{source}` names a file"
+  taint:
+    sources: *py-sources
+    sinks:
+      - name: open
+        query: |
+          ((call function: [(identifier) @f (attribute attribute: (identifier) @f)] arguments: (argument_list . (_) @arg))
+           (#match? @f "^(open|send_file|send_from_directory|FileResponse)$"))
+        argument: arg
+    sanitizers:
+      - query: |
+          ((call function: [(identifier) @f (attribute attribute: (identifier) @f)]) @v
+           (#match? @f "^(secure_filename|basename)$"))
+        value: v
+  examples:
+    bad:
+      - |
+        def f():
+            name = request.args.get('file')
+            return open("/srv/" + name).read()
+    good:
+      - |
+        def f():
+            name = secure_filename(request.args.get('file'))
+            return open("/srv/" + name).read()
