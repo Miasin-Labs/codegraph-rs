@@ -8,10 +8,12 @@
 //! first of a query match). An ignore-pattern match drops every check match
 //! reported inside its span.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::rc::Rc;
 
+use codegraph_analysis::ir::IrFunction;
 use tree_sitter::{Node, QueryCursor, StreamingIterator, Tree};
 
 use super::compile::{Backend, Pattern, PredicateKind, Rule};
@@ -27,6 +29,15 @@ pub(super) struct FileInput<'a> {
     pub tree: &'a Tree,
     /// Facts per function node (by start byte), computed once per file.
     pub facts: RefCell<HashMap<usize, FunctionFacts>>,
+    /// Lowered IR per function node (by byte range), for taint rules.
+    pub ir: RefCell<HashMap<(usize, usize), Option<Rc<IrFunction>>>>,
+    /// Byte offset of each line's start, built on first use.
+    line_starts: OnceCell<Vec<usize>>,
+    /// Names of the functions the file defines, built on first use.
+    defined: OnceCell<HashSet<String>>,
+    /// Object-like macros that stand for a name or literal, built on
+    /// first use (C/C++).
+    macros: OnceCell<HashMap<String, String>>,
 }
 
 impl<'a> FileInput<'a> {
@@ -37,7 +48,66 @@ impl<'a> FileInput<'a> {
             source,
             tree,
             facts: RefCell::new(HashMap::new()),
+            ir: RefCell::new(HashMap::new()),
+            line_starts: OnceCell::new(),
+            defined: OnceCell::new(),
+            macros: OnceCell::new(),
         }
+    }
+
+    /// Whether the file defines a function (or method) named `name`.
+    pub fn defines(&self, rules: &LangRules, name: &str) -> bool {
+        self.defined
+            .get_or_init(|| {
+                // Iterative walk: depth is bounded by the input.
+                let mut names = HashSet::new();
+                let mut stack = vec![self.tree.root_node()];
+                while let Some(node) = stack.pop() {
+                    if rules.functions.contains(&node.kind()) {
+                        names.insert(lang::function_name(node, self.source));
+                    }
+                    let mut cursor = node.walk();
+                    stack.extend(node.named_children(&mut cursor));
+                }
+                names
+            })
+            .contains(name)
+    }
+
+    /// The text of 1-based line `line`.
+    pub fn line_text(&self, line: u32) -> &'a str {
+        let starts = self.line_starts.get_or_init(|| {
+            std::iter::once(0)
+                .chain(self.source.match_indices('\n').map(|(i, _)| i + 1))
+                .collect()
+        });
+        let Some(&start) = starts.get(line.saturating_sub(1) as usize) else {
+            return "";
+        };
+        let end = starts
+            .get(line as usize)
+            .map_or(self.source.len(), |next| next - 1);
+        self.source.get(start..end).unwrap_or_default()
+    }
+
+    /// The function node lowered to IR (cached per file), when the
+    /// language lowers.
+    pub fn lowered(&self, rules: &LangRules, function: Node) -> Option<Rc<IrFunction>> {
+        let key = (function.start_byte(), function.end_byte());
+        if let Some(ir) = self.ir.borrow().get(&key) {
+            return ir.clone();
+        }
+        let ir = rules
+            .ir
+            .and_then(|lang| {
+                let macros = self.macros.get_or_init(|| {
+                    codegraph_analysis::ir::macro_aliases(lang, self.tree.root_node(), self.source)
+                });
+                codegraph_analysis::ir::lower_with_macros(lang, function, self.source, macros)
+            })
+            .map(Rc::new);
+        self.ir.borrow_mut().insert(key, ir.clone());
+        ir
     }
 
     fn function_facts(
@@ -69,6 +139,8 @@ pub(super) struct Hit {
     /// Facts the predicates established (what a call resolved to…), as
     /// evidence notes.
     pub notes: Vec<String>,
+    /// For a taint rule: the flow that reaches this sink.
+    pub flow: Option<super::taint::Trace>,
 }
 
 impl Hit {
@@ -102,21 +174,17 @@ pub(super) fn run_rule(
     semantics: &dyn Semantics,
     trace: bool,
 ) -> FileResult {
-    let mut result = FileResult::default();
     let rules = lang::for_language(file.language);
-    for (index, pattern) in rule.checks.iter().enumerate() {
-        for hit in raw_hits(pattern, index, file, rules) {
-            match check_predicates(pattern, &hit, file, rules, semantics) {
-                Ok(notes) => result.hits.push(Hit { notes, ..hit }),
-                Err(reason) if trace => result.rejected.push(Rejection {
-                    pattern: pattern.label.clone(),
-                    line: position(file.tree, hit.at.start).0,
-                    reason,
-                }),
-                Err(_) => {}
+    let mut result = match &rule.taint {
+        Some(taint) => super::taint::run(rule, taint, file, semantics, trace),
+        None => {
+            let mut result = FileResult::default();
+            for (index, pattern) in rule.checks.iter().enumerate() {
+                result.accept(pattern_hits(pattern, index, file, semantics, trace));
             }
+            result
         }
-    }
+    };
     if result.hits.is_empty() || rule.ignores.is_empty() {
         return result;
     }
@@ -144,6 +212,39 @@ pub(super) fn run_rule(
                 }
             }
             None => result.hits.push(hit),
+        }
+    }
+    result
+}
+
+impl FileResult {
+    /// Add another result's hits and rejections.
+    pub fn accept(&mut self, other: FileResult) {
+        self.hits.extend(other.hits);
+        self.rejected.extend(other.rejected);
+    }
+}
+
+/// The matches of `pattern` in `file` its predicates accept (and, with
+/// `trace`, the ones they turned down).
+pub(super) fn pattern_hits(
+    pattern: &Pattern,
+    index: usize,
+    file: &FileInput,
+    semantics: &dyn Semantics,
+    trace: bool,
+) -> FileResult {
+    let rules = lang::for_language(file.language);
+    let mut result = FileResult::default();
+    for hit in raw_hits(pattern, index, file, rules) {
+        match check_predicates(pattern, &hit, file, rules, semantics) {
+            Ok(notes) => result.hits.push(Hit { notes, ..hit }),
+            Err(reason) if trace => result.rejected.push(Rejection {
+                pattern: pattern.label.clone(),
+                line: position(file.tree, hit.at.start).0,
+                reason,
+            }),
+            Err(_) => {}
         }
     }
     result
@@ -228,6 +329,7 @@ fn raw_hits(pattern: &Pattern, index: usize, file: &FileInput, rules: &LangRules
                         span,
                         at,
                         notes: Vec::new(),
+                        flow: None,
                     })
                 })
                 .collect::<Vec<_>>()
@@ -279,6 +381,7 @@ fn raw_hits(pattern: &Pattern, index: usize, file: &FileInput, rules: &LangRules
                     span: start..end,
                     at,
                     notes: Vec::new(),
+                    flow: None,
                 });
             }
             hits
@@ -487,13 +590,15 @@ pub(super) fn one_line(text: &str, max: usize) -> String {
 }
 
 /// The finding text: `message` with `{capture}` replaced by the capture's
-/// code and `{function}` by the enclosing function's name.
+/// code, `{function}` by the enclosing function's name and `{source}` by a
+/// taint flow's source.
 pub(super) fn render_message(
     template: &str,
     hit: &Hit,
     source: &str,
     function: Option<&str>,
 ) -> String {
+    let flow_source = hit.flow.as_ref().map(|flow| flow.source_code.clone());
     let values: HashMap<&str, String> = hit
         .captures
         .iter()
@@ -509,6 +614,8 @@ pub(super) fn render_message(
         let value = name.and_then(|name| {
             if name == "function" {
                 function.map(str::to_string)
+            } else if name == "source" && !values.contains_key(name) {
+                flow_source.clone()
             } else {
                 values.get(name).cloned()
             }

@@ -21,6 +21,9 @@ pub(super) struct LangRules {
     /// Module node kinds whose name (`tests`) makes the functions inside
     /// test code.
     pub test_modules: &'static [&'static str],
+    /// The language id the analysis crate lowers it to IR as (taint
+    /// rules run where there is one).
+    pub ir: Option<&'static str>,
 }
 
 const C: LangRules = LangRules {
@@ -29,6 +32,7 @@ const C: LangRules = LangRules {
     functions: &["function_definition"],
     test_markers: &[],
     test_modules: &[],
+    ir: Some("c"),
 };
 
 const CPP: LangRules = LangRules {
@@ -37,6 +41,7 @@ const CPP: LangRules = LangRules {
     functions: &["function_definition", "lambda_expression"],
     test_markers: &[],
     test_modules: &[],
+    ir: Some("cpp"),
 };
 
 const RUST: LangRules = LangRules {
@@ -45,6 +50,7 @@ const RUST: LangRules = LangRules {
     functions: &["function_item", "closure_expression"],
     test_markers: &["attribute_item"],
     test_modules: &["mod_item"],
+    ir: None,
 };
 
 const GO: LangRules = LangRules {
@@ -53,6 +59,7 @@ const GO: LangRules = LangRules {
     functions: &["function_declaration", "method_declaration", "func_literal"],
     test_markers: &[],
     test_modules: &[],
+    ir: None,
 };
 
 const PYTHON: LangRules = LangRules {
@@ -61,6 +68,7 @@ const PYTHON: LangRules = LangRules {
     functions: &["function_definition", "lambda"],
     test_markers: &["decorator"],
     test_modules: &[],
+    ir: Some("python"),
 };
 
 const JS: LangRules = LangRules {
@@ -77,6 +85,7 @@ const JS: LangRules = LangRules {
     ],
     test_markers: &[],
     test_modules: &[],
+    ir: Some("javascript"),
 };
 
 const JAVA: LangRules = LangRules {
@@ -89,6 +98,7 @@ const JAVA: LangRules = LangRules {
     ],
     test_markers: &["modifiers"],
     test_modules: &[],
+    ir: Some("java"),
 };
 
 const CSHARP: LangRules = LangRules {
@@ -102,6 +112,7 @@ const CSHARP: LangRules = LangRules {
     ],
     test_markers: &["attribute_list"],
     test_modules: &[],
+    ir: None,
 };
 
 const PHP: LangRules = LangRules {
@@ -120,6 +131,7 @@ const PHP: LangRules = LangRules {
     ],
     test_markers: &[],
     test_modules: &[],
+    ir: Some("php"),
 };
 
 const RUBY: LangRules = LangRules {
@@ -128,6 +140,7 @@ const RUBY: LangRules = LangRules {
     functions: &["method", "singleton_method", "lambda", "block", "do_block"],
     test_markers: &[],
     test_modules: &[],
+    ir: None,
 };
 
 /// Any other language with a grammar: the common names.
@@ -148,6 +161,7 @@ const GENERIC: LangRules = LangRules {
     ],
     test_markers: &[],
     test_modules: &[],
+    ir: None,
 };
 
 pub(super) fn for_language(language: Language) -> &'static LangRules {
@@ -249,13 +263,18 @@ pub(super) fn callee(rules: &LangRules, call: Node, source: &str) -> (String, St
             .collect::<String>(),
     );
     let text = text.trim_end_matches(['?', '.', '(']).to_string();
-    let name = text
+    let name = last_name(&text).to_string();
+    (text, name)
+}
+
+/// The last name of a callee as written (`client.send` → `send`,
+/// `println!` → `println`, `new Foo` → `Foo`).
+pub(super) fn last_name(callee: &str) -> &str {
+    callee
         .rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$' || c == '!'))
         .find(|part| !part.is_empty())
         .unwrap_or_default()
         .trim_end_matches('!')
-        .to_string();
-    (text, name)
 }
 
 /// `a::<T>::b<U>` → `a::::b`: drop balanced `<…>` groups.

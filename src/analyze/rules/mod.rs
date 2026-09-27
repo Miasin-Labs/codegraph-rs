@@ -20,6 +20,12 @@
 //! `inside`/`not-inside` (a structural ancestor), and capture
 //! `regex`/`not-regex`.
 //!
+//! A rule may instead be a **taint** rule (`taint:` with `sources`,
+//! `sinks`, `sanitizers`, `propagators`, each a list of such patterns plus
+//! the capture its role reads): a finding is a sink whose value a source's
+//! value reaches in the same function ([`taint`]), with the path as
+//! evidence.
+//!
 //! Every rule carries `examples` (`bad` code it must match, `good` code it
 //! must not); `--check` runs them without an index, so a rule can be tried
 //! in many permutations in seconds. Findings are
@@ -34,6 +40,7 @@ mod lang;
 mod locate;
 mod semantics;
 mod spec;
+mod taint;
 #[cfg(test)]
 mod tests;
 pub mod weggli;
@@ -55,6 +62,8 @@ use crate::extraction::{create_parser, detect_language};
 const MAX_SOURCE_BYTES: usize = 2 * 1024 * 1024;
 /// Other captures listed as evidence of a finding.
 const MAX_CAPTURE_EVIDENCE: usize = 4;
+/// Steps of a taint flow listed as evidence (between source and sink).
+const MAX_TAINT_HOPS: usize = 8;
 
 impl RuleSet {
     /// Rules from files and directories (`*.yml`/`*.yaml`, recursively,
@@ -304,6 +313,36 @@ fn finding(
             note: note.clone(),
         })
         .collect();
+    if let Some(flow) = &hit.flow {
+        evidence.push(Evidence {
+            file: file.path.to_string(),
+            line: flow.source_line,
+            note: format!("source: `{}` ({})", flow.source_code, flow.source_pattern),
+        });
+        for &hop in flow.hops.iter().take(MAX_TAINT_HOPS) {
+            evidence.push(Evidence {
+                file: file.path.to_string(),
+                line: hop,
+                note: format!("flows through `{}`", one_line(file.line_text(hop), 80)),
+            });
+        }
+        evidence.push(Evidence {
+            file: file.path.to_string(),
+            line,
+            note: format!("sink: `{}`", one_line(file.line_text(line), 80)),
+        });
+        return Finding {
+            detector: Detector::Rule,
+            rule: rule.id.clone().into(),
+            file: file.path.to_string(),
+            line,
+            col,
+            function: function.map(|f| f.qualified_name.clone()),
+            message,
+            confidence: rule.confidence,
+            evidence,
+        };
+    }
     for (name, range) in &hit.captures {
         if evidence.len() >= MAX_CAPTURE_EVIDENCE + hit.notes.len() {
             break;

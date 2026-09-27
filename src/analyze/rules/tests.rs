@@ -63,7 +63,7 @@ fn rules_builtin_examples_pass() {
             rule.id
         );
     }
-    assert_eq!(BUILTIN_RULES.len(), 8);
+    assert_eq!(BUILTIN_RULES.len(), 13);
 }
 
 #[test]
@@ -637,4 +637,195 @@ examples:
         "{finding:?}"
     );
     assert_eq!(finding.rule, "unvalidated-client-send");
+}
+
+const TAINT_RULE: &str = r#"
+id: env-to-exec
+language: java
+message: "`{source}` reaches exec"
+taint:
+  sources:
+    - name: env
+      query: '((method_invocation name: (identifier) @m) @src (#eq? @m "getenv"))'
+      value: src
+  sinks:
+    - name: exec
+      query: '((method_invocation name: (identifier) @m arguments: (argument_list (_) @arg)) (#eq? @m "exec"))'
+      argument: arg
+  sanitizers:
+    - query: '((method_invocation name: (identifier) @m) @v (#eq? @m "quote"))'
+      value: v
+examples:
+  bad:
+    - "class A { void f(Runtime r) { String v = System.getenv(\"X\"); r.exec(\"ls \" + v); } }"
+  good:
+    - "class A { void f(Runtime r) { String v = System.getenv(\"X\"); r.exec(\"ls \" + quote(v)); } }"
+    - "class A { void f(Runtime r) { String v = System.getenv(\"X\"); v = \"x\"; r.exec(v); } }"
+"#;
+
+#[test]
+fn taint_rules_load_and_check_their_examples() {
+    all_pass(TAINT_RULE);
+    let set = load(TAINT_RULE);
+    let rule = &set.rules[0];
+    let taint = rule.taint.as_ref().expect("a taint rule");
+    assert_eq!(rule.checks.len(), 1, "the sinks are the checks");
+    assert_eq!(taint.sink_values, vec!["arg".to_string()]);
+    assert_eq!(taint.sources[0].value, "src");
+    assert_eq!(taint.sanitizers[0].value, "v");
+    assert!(!rule.uses_index());
+}
+
+#[test]
+fn taint_rule_errors_are_located() {
+    // A rule is check-patterns or taint.
+    let both = TAINT_RULE.replace(
+        "taint:\n",
+        "check-patterns:\n  - query: \"(identifier) @i\"\ntaint:\n",
+    );
+    let e = error(&both);
+    assert!(
+        e.message.contains("both `check-patterns` and `taint`"),
+        "{e}"
+    );
+    let e = error("id: a\nlanguage: java\nexamples:\n  bad: [\"class A {}\"]\n");
+    assert!(e.message.contains("needs `check-patterns`"), "{e}");
+    assert!(e.message.contains("or `taint`"), "{e}");
+
+    // A misspelt role, with the key meant.
+    let e = error(&TAINT_RULE.replace("  sinks:", "  sink:"));
+    assert!(e.message.contains("unknown field `sink`"), "{e}");
+    assert!(e.message.contains("did you mean `sinks`?"), "{e}");
+    assert_eq!(e.line, Some(10));
+
+    // A role key that belongs to another role.
+    let e = error(&TAINT_RULE.replace("      value: src", "      argument: src"));
+    assert!(
+        e.message
+            .contains("taint.sources[0] `env`: `argument` does not apply to sources"),
+        "{e}"
+    );
+    assert_eq!(e.line, Some(9));
+    // A missing one.
+    let e = error(&TAINT_RULE.replace("      argument: arg\n", ""));
+    assert!(
+        e.message.contains("sinks need `argument: <capture>`"),
+        "{e}"
+    );
+    // A capture the pattern does not have.
+    let e = error(&TAINT_RULE.replace("      value: src", "      value: nope"));
+    assert!(
+        e.message
+            .contains("`value: nope` names no capture (captures: m, src)"),
+        "{e}"
+    );
+    assert_eq!(e.line, Some(9));
+    // A language the IR does not lower.
+    let e = error(
+        "id: a\nlanguage: rust\ntaint:\n  sources:\n    - query: \"(identifier) @v\"\n      value: v\n  sinks:\n    - query: \"(identifier) @v\"\n      argument: v\nexamples:\n  bad: [\"fn f() {}\"]\n",
+    );
+    assert!(
+        e.message
+            .contains("taint rules run on the languages the IR lowers"),
+        "{e}"
+    );
+    // Messages are for sinks.
+    let e = error(&TAINT_RULE.replace("      value: src", "      value: src\n      message: hi"));
+    assert!(e.message.contains("`message` is for sinks"), "{e}");
+}
+
+#[test]
+fn taint_check_explains_why_a_sink_is_not_reported() {
+    let yaml = TAINT_RULE.replace(
+        "  good:\n",
+        "  good:\n    - \"class A { void f(Runtime r) { r.exec(\\\"ls\\\"); } }\"\n",
+    );
+    let set = load(&yaml.replace(
+        "    - \"class A { void f(Runtime r) { String v = System.getenv(\\\"X\\\"); r.exec(\\\"ls \\\" + v); } }\"",
+        "    - \"class A { void f(Runtime r) { String v = System.getenv(\\\"X\\\"); r.exec(\\\"ls\\\"); } }\"",
+    ));
+    assert!(set.errors.is_empty(), "{:?}", set.errors);
+    let report = check_rules(&set);
+    let bad = &report.rules[0].examples[0];
+    assert!(!bad.passed);
+    assert!(
+        bad.explain()
+            .contains("taint.sinks[0] `exec` matched at example line 1 but no source reaches it"),
+        "{}",
+        bad.explain()
+    );
+}
+
+#[test]
+fn index_call_join_names_resolved_callees_and_project_code() {
+    let source = "class A {\n    void run(Client c) {\n        c.get().send(x);\n    }\n}\n";
+    let run = span("f1", "run", "src/A.java", (2, 4));
+    let calls = vec![
+        call(&run, 3, 8, "get", "app.Client::get"),
+        call(&run, 3, 8, "send", "app.Conn::send"),
+    ];
+    let (_dir, project) = project(&[("src/A.java", source)], vec![run], calls);
+    let semantics = IndexSemantics::for_tests(&project);
+    let tree = crate::extraction::create_parser(crate::types::Language::Java)
+        .unwrap()
+        .parse(source, None)
+        .unwrap();
+    let file =
+        super::engine::FileInput::new("src/A.java", crate::types::Language::Java, source, &tree);
+    use super::semantics::Semantics;
+    // Chained calls share a start; the callee's last name picks.
+    let send = semantics.call_at(&file, 3, 8, "c.get().send");
+    assert_eq!(send.names, vec!["app.Conn::send".to_string()]);
+    assert!(send.in_project);
+    let get = semantics.call_at(&file, 3, 8, "c.get");
+    assert_eq!(get.names, vec!["app.Client::get".to_string()]);
+    // Unresolved library calls resolve to nothing (the text as written is
+    // the fallback the taint engine reads).
+    let none = semantics.call_at(&file, 9, 0, "stmt.executeQuery");
+    assert!(none.names.is_empty() && !none.in_project);
+}
+
+#[test]
+fn taint_findings_carry_source_hops_and_sink() {
+    let source = "class A {\n    void run(Runtime r) {\n        String v = System.getenv(\"X\");\n        String cmd = \"ls \" + v;\n        r.exec(cmd);\n    }\n}\n";
+    let run = span("f1", "run", "src/A.java", (2, 6));
+    let (_dir, project) = project(&[("src/A.java", source)], vec![run], Vec::new());
+    let rules = load(TAINT_RULE);
+    let semantics = IndexSemantics::for_tests(&project);
+    let found = scan(&project, &semantics, &rules, &BugsOptions::default()).findings;
+    assert_eq!(found.len(), 1, "{found:#?}");
+    let finding = &found[0];
+    assert_eq!(
+        (finding.line, finding.message.as_str()),
+        (5, "`System.getenv(\"X\")` reaches exec")
+    );
+    let lines: Vec<u32> = finding.evidence.iter().map(|e| e.line).collect();
+    assert_eq!(lines, vec![3, 4, 5], "{:?}", finding.evidence);
+    assert!(
+        finding.evidence[0]
+            .note
+            .starts_with("source: `System.getenv(\"X\")`")
+    );
+    assert_eq!(
+        finding.evidence[1].note,
+        "flows through `String cmd = \"ls \" + v;`"
+    );
+    assert_eq!(finding.evidence[2].note, "sink: `r.exec(cmd);`");
+}
+
+#[test]
+fn a_yaml_syntax_error_is_reported_once() {
+    // An unquoted query holding `: ` used to make the document iterator
+    // yield the same error forever.
+    let set = load(
+        "id: a\nlanguage: java\ntaint:\n  sources:\n    - query: (a name: (b) @m) @src\n      value: src\n",
+    );
+    assert_eq!(set.errors.len(), 1, "{:?}", set.errors);
+    assert!(
+        set.errors[0]
+            .message
+            .contains("mapping values are not allowed"),
+        "{:?}",
+        set.errors
+    );
 }
