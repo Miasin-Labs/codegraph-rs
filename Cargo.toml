@@ -1,5 +1,5 @@
 [workspace]
-members = ["analysis"]
+members = ["analysis", "python"]
 
 [package]
 name = "codegraph-rs"

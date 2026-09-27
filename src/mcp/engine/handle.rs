@@ -58,6 +58,17 @@ impl EngineHandle {
         Self::spawn_on(opts, Handle::current())
     }
 
+    /// Spawn an engine for embedding in a host process (e.g. the Python
+    /// bindings). Unlike [`EngineHandle::spawn`], a worker failure invokes
+    /// `on_fatal` instead of terminating the process, and the caller supplies
+    /// the tokio runtime handle (it must outlive the engine).
+    pub fn spawn_embedded<F>(opts: MCPEngineOptions, runtime: Handle, on_fatal: F) -> EngineHandle
+    where
+        F: Fn(&str) + Send + Sync + 'static,
+    {
+        Self::spawn_on_with_fatal(opts, runtime, Arc::new(on_fatal))
+    }
+
     fn spawn_on(opts: MCPEngineOptions, runtime: Handle) -> EngineHandle {
         Self::spawn_on_with_fatal(
             opts,
