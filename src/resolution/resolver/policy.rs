@@ -23,5 +23,9 @@ pub(super) use jvm::{
     JVM_STDLIB_TYPES,
 };
 pub(super) use pascal::{PASCAL_BUILT_INS, PASCAL_UNIT_PREFIXES};
-pub(super) use prefilter::{capitalize_first, has_any_possible_match_in};
+pub(super) use prefilter::{
+    capitalize_first,
+    has_any_possible_match_by,
+    has_any_possible_match_in,
+};
 pub(super) use python::{PYTHON_BUILT_IN_METHODS, PYTHON_BUILT_IN_TYPES, PYTHON_BUILT_INS};
