@@ -365,8 +365,18 @@ cargo test --workspace
   (`rules/builtin/*.yaml`, `--builtin`, examples tested by
   `rules_builtin_examples_pass`): C/C++ memory/format/input rules, Java
   crypto/random/cookie/logic, Python/JS/PHP injection, Rust Send/Sync,
-  uninit and panic-safety. Measured with `tools/bugbench/` (juliet-c
-  55.7% P / 21.8% R, OWASP 76.3% / 38.2%, 2026-09).
+  uninit, panic-safety (`ptr::read` + caller code, `drop_in_place` before
+  the length shrinks) and memory corruption (unchecked `alloc`, lifetime
+  `transmute`, wrapping `w * h` length asserts, unchecked `get_unchecked`
+  windows, `from_utf8_unchecked` on caller bytes, bytes of a generic `T`).
+  Rules are kept only if they discriminate on RustSec vuln/fixed pairs
+  (fire near the fix, not in fixed/); a generic shape that also fires all
+  over fixed code (any `copy_nonoverlapping`, unsafe `Deref`) is not a
+  rule. Measured with `tools/bugbench/` (juliet-c 58.4% P / 21.4% R,
+  OWASP 76.3% / 38.2%, rustsec-adjacent 12.8% of pairs, rudra 74.7% of
+  reported spans, 2026-09); score a C rule on its own CWE too (`--cwe`),
+  since Juliet's "good" twins of other CWEs leak and skip NULL checks on
+  purpose.
 - **Concurrency lint** (`analysis/src/concurrency.rs`, per-language rules in
   `concurrency_rules.rs`): flags lossy best-effort sends. Library-only since
   the vuln engine (its sole CLI surface) was deleted.

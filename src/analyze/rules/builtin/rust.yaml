@@ -144,7 +144,13 @@ check-patterns:
                                    (generic_function function: (scoped_identifier name: (identifier) @fn))]) @call
        (#eq? @fn "zeroed"))
     where:
-      - inside: "(function_item type_parameters: (type_parameters)) @generic"
+      # `mem::zeroed` (not `MaybeUninit::zeroed`, which stays uninit-typed)
+      - capture: call
+        regex: "^(((::)?(std|core)::)?mem::)?zeroed\\b"
+      # in code generic over the type: the function's or its impl's parameters
+      - inside: |
+          [((function_item type_parameters: (type_parameters)) @generic)
+           ((impl_item type_parameters: (type_parameters) @tp) @generic (#match? @tp "[<,]\\s*[A-Z]"))]
 message: "`{call}` treats memory as initialized that was never written"
 examples:
   bad:
@@ -156,6 +162,12 @@ examples:
       fn f<T>() -> T { unsafe { std::mem::uninitialized() } }
     - |
       fn f<T>() -> T { unsafe { std::mem::zeroed() } }
+    - |
+      impl<T> Block<T> {
+          fn new() -> Block<T> {
+              unsafe { mem::zeroed() }
+          }
+      }
   good:
     - |
       fn f() -> [MaybeUninit<u8>; 4] {
@@ -164,6 +176,10 @@ examples:
       }
     - |
       fn f() -> libc::stat { unsafe { std::mem::zeroed() } }
+    - |
+      impl<T> Block<T> {
+          fn new() -> Block<T> { unsafe { MaybeUninit::zeroed().assume_init() } }
+      }
 ignore-patterns:
   - name: array-of-maybe-uninit
     query: |
@@ -172,12 +188,17 @@ ignore-patterns:
 ---
 id: rust-panic-unsafe-ptr-read
 description: >-
-  `ptr::read` duplicates a value in a generic function that also runs caller
-  code (a closure or trait callback): if that code panics, the duplicate is
-  dropped twice (panic safety, CWE-415).
+  `ptr::read` duplicates a value, and caller code (a closure, or a trait
+  method of a generic type) runs before the duplicate is written back or the
+  original forgotten: if that code panics, both copies are dropped (panic
+  safety, CWE-415; Rudra's UnsafeDataflow class).
 severity: medium
 tags: [CWE-415, panic-safety, memory-corruption]
 language: rust
+# Measured on Rudra's panic-safety reports and RustSec pairs (2026-09): the
+# fixes keep the `ptr::read` and make the duplicate safe instead (wrap the
+# source in ManuallyDrop, abort on unwind, or a drop guard), so a function
+# doing any of those is not reported.
 check-patterns:
   - name: read-with-callback
     query: |
@@ -186,12 +207,49 @@ check-patterns:
     where:
       - capture: call
         regex: "^(std::|core::)?ptr::read|\\.read(_unaligned)?\\(\\)$"
+      # moving the callback itself out of storage is not a duplicate
+      - capture: call
+        not-regex: "::<\\s*(Box<\\s*)?[A-Z]\\s*>?\\s*>"
+      # a raw read needs unsafe (`.read()` elsewhere is a lock or an io read)
+      - inside: |
+          [(unsafe_block) @u
+           ((function_item (function_modifiers) @m) @u (#match? @m "unsafe"))]
       - inside: |
           ((function_item) @generic
-           (#match? @generic "(F|G|P)\\s*:\\s*(Fn|FnMut|FnOnce)\\b|impl\\s+(Fn|FnMut|FnOnce)\\b"))
-message: "`{call}` duplicates a value while caller code that may panic runs"
+           (#match? @generic "(F|G|P|Func|Fun|Op)\\s*:\\s*(Fn|FnMut|FnOnce)\\b|impl\\s+(Fn|FnMut|FnOnce)\\b"))
+      - not-inside: &guarded |
+          ((function_item) @guarded
+           (#match? @guarded "ManuallyDrop|catch_unwind|abort|impl(<[^>]*>)?\\s+Drop\\s+for|[A-Z]\\w*Guard\\b"))
+  - name: read-in-macro-with-callback
+    query: |
+      ((macro_invocation (token_tree) @args) @call
+       (#match? @args "ptr::read(_unaligned)?\\s*\\("))
+    where:
+      - inside: |
+          ((function_item) @generic
+           (#match? @generic "(F|G|P|Func|Fun|Op)\\s*:\\s*(Fn|FnMut|FnOnce)\\b|impl\\s+(Fn|FnMut|FnOnce)\\b"))
+      - not-inside: *guarded
+  - name: read-modify-write
+    query: |
+      ((call_expression
+         function: (scoped_identifier name: (identifier) @w)
+         arguments: (arguments . (_) @dst . (call_expression) @value .)) @call
+       (#eq? @w "write")
+       (#match? @value "ptr::read(_unaligned)?\\s*\\("))
+    where:
+      - capture: call
+        regex: "^(std::|core::)?ptr::write"
+      - inside: |
+          [((function_item type_parameters: (type_parameters)) @generic)
+           ((impl_item type_parameters: (type_parameters)) @generic)]
+      - not-inside: *guarded
+      # A closure-taking function is read-with-callback's (one finding per bug).
+      - not-inside: |
+          ((function_item) @generic
+           (#match? @generic "(F|G|P|Func|Fun|Op)\\s*:\\s*(Fn|FnMut|FnOnce)\\b|impl\\s+(Fn|FnMut|FnOnce)\\b"))
+message: "`{call}`: a panic in the caller's code before the value is written back drops it twice"
 review:
-  - Between the read and the matching write/forget, can the closure panic? Then the value is dropped twice.
+  - Between the read and the matching write/forget, can the closure or the generic type's method panic? Then the value is dropped twice.
 examples:
   bad:
     - |
@@ -203,9 +261,57 @@ examples:
               }
           }
       }
+    - |
+      pub fn mutate<T, F: FnOnce(T) -> T>(p: &mut T, f: F) { unsafe { ptr::write(p, f(ptr::read(p))) } }
+    - |
+      impl<T: Endian> Endian for &mut [T] {
+          fn from_be(self) -> Self {
+              for elt in self.iter_mut() { unsafe {
+                  ptr::write(elt, ptr::read(elt).from_be());
+              } }
+              self
+          }
+      }
+    - |
+      fn transform_res<F>(self, mut conversion: F) -> TransRes<Self::Output>
+      where
+          F: FnMut(S) -> TransRes<D>,
+      {
+          unsafe {
+              let first = try_conv!(conversion(ptr::read(&self[0])), error);
+              mem::forget(self);
+              first
+          }
+      }
   good:
     - |
       fn copy_out<T: Copy>(x: &T) -> T { unsafe { ptr::read(x) } }
+    - |
+      fn transform<F>(self, mut conversion: F) -> Self::Output
+      where
+          F: FnMut(S) -> D,
+      {
+          let self_forget = ManuallyDrop::new(self);
+          unsafe { [conversion(ptr::read(&self_forget[0]))] }
+      }
+    - |
+      pub fn mutate<T, F: FnOnce(T) -> T>(p: &mut T, f: F) { unsafe {
+          let x = ptr::read(p);
+          let x = abort_on_unwind(move || f(x));
+          ptr::write(p, x)
+      } }
+    - |
+      fn swap_halves(p: &mut u64) { unsafe { ptr::write(p, ptr::read(p).rotate_left(32)) } }
+    - |
+      pub fn with_ref<F, R>(&self, f: F) -> R where F: FnOnce(&T) -> R {
+          let inner = self.inner.read();
+          f(inner.get())
+      }
+    - |
+      unsafe fn call<F: FnOnce()>(raw: *mut u8) {
+          let f: F = ptr::read(raw.cast::<F>());
+          f();
+      }
 ---
 id: rust-transmute-in-generic
 description: >-
@@ -245,3 +351,461 @@ examples:
       fn bits(f: f32) -> u32 { unsafe { std::mem::transmute(f) } }
     - |
       fn bits<T>(f: f32) -> u32 { unsafe { std::mem::transmute::<f32, u32>(f) } }
+---
+id: rust-drop-in-place-before-set-len
+description: >-
+  A container drops its elements in place (`ptr::drop_in_place` of a slice)
+  and only then shrinks its length: if an element's `Drop` panics, the
+  length still covers the dropped elements and the container's own drop runs
+  them again (double drop, use after free; panic safety, CWE-415).
+severity: high
+tags: [CWE-415, CWE-416, panic-safety, memory-corruption]
+language: rust
+check-patterns:
+  - name: drop-then-shrink
+    query: |
+      ((call_expression
+         function: [(scoped_identifier name: (identifier) @fn) (field_expression field: (field_identifier) @fn)]
+         arguments: (arguments) @args) @call
+       (#eq? @fn "drop_in_place"))
+    where:
+      # a range of elements, not one
+      - capture: args
+        regex: "\\.\\.|slice_from_raw_parts|as_mut_slice|as_slice"
+      # the length is set after the drop in this function...
+      - inside: |
+          ((function_item) @f
+           (#match? @f "drop_in_place[\\s\\S]*(\\.set_len\\w*\\s*\\(|\\blen\\s*=[^=])"))
+      # ...and not before it, and no drop guard fixes it up on unwind
+      - not-inside: |
+          ((function_item) @f
+           (#match? @f "(\\.set_len\\w*\\s*\\(|\\blen\\s*=[^=])[\\s\\S]*drop_in_place|impl(<[^>]*>)?\\s+Drop\\s+for|[A-Z]\\w*Guard\\b|catch_unwind|abort"))
+message: "`{call}` runs element destructors before the length shrinks: a panicking `Drop` leaves them to be dropped again"
+review:
+  - Can an element's destructor panic (a generic `T`)? Then set the length first (as `Vec::truncate` does) or use a guard.
+examples:
+  bad:
+    - |
+      impl<T> ThinVec<T> {
+          pub fn clear(&mut self) {
+              unsafe {
+                  ptr::drop_in_place(&mut self[..]);
+                  self.set_len(0);
+              }
+          }
+      }
+  good:
+    - |
+      impl<T> Vec<T> {
+          pub fn truncate(&mut self, len: usize) {
+              unsafe {
+                  let s = ptr::slice_from_raw_parts_mut(self.as_mut_ptr().add(len), self.len - len);
+                  self.len = len;
+                  ptr::drop_in_place(s);
+              }
+          }
+      }
+    - |
+      impl<T> ThinVec<T> {
+          pub fn clear(&mut self) {
+              struct DropGuard<'a, T>(&'a mut ThinVec<T>);
+              impl<T> Drop for DropGuard<'_, T> {
+                  fn drop(&mut self) { unsafe { self.0.set_len(0); } }
+              }
+              let guard = DropGuard(self);
+              unsafe { ptr::drop_in_place(&mut guard.0[..]); }
+          }
+      }
+    - |
+      impl<T> Drop for RawVec<T> {
+          fn drop(&mut self) {
+              unsafe { ptr::drop_in_place(&mut self.buf[..]); }
+          }
+      }
+---
+id: rust-alloc-unchecked-null
+description: >-
+  A raw `std::alloc::alloc`/`alloc_zeroed`/`realloc` result is used without
+  a NULL check: on allocation failure the code writes through (or builds a
+  Box/slice from) a null pointer (CWE-690, CWE-476).
+severity: medium
+tags: [CWE-690, CWE-476, memory-corruption]
+language: rust
+check-patterns:
+  - name: raw-alloc
+    query: |
+      ((call_expression function: [(scoped_identifier path: (_) @path name: (identifier) @fn)
+                                   (identifier) @fn]) @call
+       (#match? @fn "^(alloc|alloc_zeroed|realloc)$"))
+    where:
+      # `alloc::alloc(..)`, `std::alloc::alloc(..)`, or a bare imported `alloc(..)`
+      - capture: call
+        regex: "^((::)?(std|core|alloc)::)?(alloc::)?(alloc|alloc_zeroed|realloc)\\s*\\("
+      - capture: call
+        not-regex: "^(std|core)::(alloc|alloc_zeroed|realloc)\\s*\\("
+      # checked in the closure or function it sits in
+      - not-inside: |
+          [((closure_expression) @f (#match? @f "is_null|handle_alloc_error|NonNull::new|null_mut\\(\\)\\s*\\{|==\\s*ptr::null|\\.is_none"))
+           ((function_item) @f (#match? @f "is_null|handle_alloc_error|NonNull::new|==\\s*(ptr::|core::ptr::|std::ptr::)?null(_mut)?\\(\\)"))]
+      - enclosing-function:
+          is-test: false
+      # an allocator that hands the pointer (null included) to its caller
+      - not-inside: |
+          [((function_item return_type: (pointer_type)) @f)
+           ((impl_item trait: (_) @t) @i (#match? @t "Alloc"))]
+message: "`{call}` can return null, and nothing here checks it"
+review:
+  - Is the pointer checked (or passed to `handle_alloc_error`) before anything writes through it or wraps it in a Box/slice?
+examples:
+  bad:
+    - |
+      fn deserialize(&self) -> Result<Box<T>, E> {
+          let data_address = self.get().deserialize_unsized(deserializer, |layout| alloc::alloc(layout))?;
+          Ok(Box::from_raw(data_address))
+      }
+    - |
+      fn ensure_guard_node(&mut self) {
+          let node_layout = std::alloc::Layout::new::<Node<K, V>>();
+          unsafe {
+              self.head = std::alloc::alloc(node_layout) as *mut Node<K, V>;
+              (*self.head).next = self.head;
+          }
+      }
+  good:
+    - |
+      fn deserialize(&self) -> Result<Box<T>, E> {
+          let data_address = self.get().deserialize_unsized(deserializer, |layout| {
+              let ptr = alloc::alloc(layout);
+              if ptr.is_null() {
+                  alloc::handle_alloc_error(layout);
+              }
+              ptr
+          })?;
+          Ok(Box::from_raw(data_address))
+      }
+    - |
+      unsafe impl GlobalAlloc for Counting {
+          unsafe fn alloc(&self, layout: Layout) -> *mut u8 { std::alloc::alloc(layout) }
+      }
+    - |
+      fn buffer(n: usize) -> NonNull<u8> {
+          let layout = Layout::array::<u8>(n).unwrap();
+          NonNull::new(unsafe { alloc::alloc(layout) }).unwrap()
+      }
+---
+id: rust-transmute-lifetime-extension
+description: >-
+  `transmute` produces a reference whose lifetime the annotation chooses
+  (`let x: &'a T = transmute(y)`, `transmute::<_, &'static T>`): the borrow
+  checker no longer ties it to what it points into, so it can outlive it
+  (use after free, CWE-416, unsound).
+severity: medium
+tags: [CWE-416, CWE-704, unsound, memory-corruption]
+language: rust
+check-patterns:
+  - name: let-annotated-lifetime
+    query: |
+      ((let_declaration
+         type: (reference_type (lifetime) @lt)
+         value: [(call_expression function: [(identifier) @fn (scoped_identifier name: (identifier) @fn)]) @call
+                 (unsafe_block (block (call_expression function: [(identifier) @fn (scoped_identifier name: (identifier) @fn)]) @call .))])
+       (#eq? @fn "transmute"))
+    at: call
+  - name: turbofish-static
+    query: |
+      ((call_expression function: (generic_function
+                                     function: [(identifier) @fn (scoped_identifier name: (identifier) @fn)]
+                                     type_arguments: (type_arguments) @types)) @call
+       (#eq? @fn "transmute")
+       (#match? @types ",\\s*&\\s*'static\\b"))
+message: "`{call}` picks the reference's lifetime instead of the borrow checker"
+review:
+  - Does the source outlive every use of the result? Prefer a cast of the pointer or a function whose signature ties the lifetimes.
+examples:
+  bad:
+    - |
+      pub fn as_string<'a>(&'a self) -> &'a str {
+          unsafe {
+              let slice = slice::from_raw_parts(self as *const Self as *const u8, 12);
+              let byte_array: &'a [u8] = transmute(slice);
+              str::from_utf8_unchecked(byte_array)
+          }
+      }
+    - |
+      fn leak(s: &str) -> &'static str { unsafe { std::mem::transmute::<&str, &'static str>(s) } }
+  good:
+    - |
+      fn bits(f: f32) -> u32 { let b: u32 = unsafe { std::mem::transmute(f) }; b }
+    - |
+      pub fn as_string<'a>(&'a self) -> &'a str {
+          let slice: &'a [u8] = unsafe { slice::from_raw_parts(self as *const Self as *const u8, 12) };
+          unsafe { str::from_utf8_unchecked(slice) }
+      }
+---
+id: rust-length-product-overflow
+description: >-
+  A length check multiplies two sizes (`assert_eq!(w * h, buf.len())`): in
+  release builds the product wraps, so the check passes for sizes whose real
+  product is far larger than the buffer that unsafe or unchecked code then
+  indexes (CWE-190 leading to CWE-787/125).
+severity: medium
+tags: [CWE-190, CWE-787, CWE-125, memory-corruption]
+language: rust
+check-patterns:
+  - name: assert-product-vs-len
+    query: |
+      ((macro_invocation macro: (identifier) @m (token_tree) @args) @check
+       (#match? @m "^(assert|assert_eq|assert_ne)$")
+       (#match? @args "([A-Za-z_][\\w.]*(\\(\\))?|\\))\\s*\\*\\s*[A-Za-z_(]"))
+    where:
+      # both factors variable (`n * 8` cannot reach the overflow), and not
+      # just a pointer cast (`as *const _`)
+      - capture: args
+        not-regex: "^[^*]*(as\\s*\\*\\s*(const|mut)\\b[^*]*)+$"
+      - capture: args
+        regex: "\\.len\\(\\)|\\.capacity\\(\\)"
+      # a checked or widened product cannot wrap
+      - capture: args
+        not-regex: "checked_mul|saturating_mul|overflowing_mul|wrapping_mul|as\\s+u128|as\\s+u64[^,]*\\*[^,]*as\\s+u64"
+      # tests pick their own sizes
+      - enclosing-function:
+          is-test: false
+message: "`{check}`: the product can overflow and wrap, so the length check can pass for a too-small buffer"
+review:
+  - Can the factors come from the caller (dimensions, counts)? Then use `checked_mul` and compare `Some(len)`.
+examples:
+  bad:
+    - |
+      pub fn transpose<T: Copy>(input: &[T], output: &mut [T], input_width: usize, input_height: usize) {
+          assert_eq!(input_width*input_height, input.len());
+          unsafe { transpose_small(input, output, input_width, input_height) };
+      }
+    - |
+      pub fn new(data: &'a [K], width: u32, height: u32) -> Kernel<'a, K> {
+          assert!(
+              width * height == data.len() as u32,
+              "Invalid kernel len: expecting {}, found {}",
+              width * height,
+              data.len()
+          );
+          Kernel { data, width, height }
+      }
+  good:
+    - |
+      pub fn transpose<T: Copy>(input: &[T], output: &mut [T], input_width: usize, input_height: usize) {
+          assert_eq!(input_width.checked_mul(input_height), Some(input.len()));
+      }
+    - |
+      pub fn new(data: &'a [K], width: u32, height: u32) -> Kernel<'a, K> {
+          assert!(width as u64 * height as u64 == data.len() as u64);
+          Kernel { data, width, height }
+      }
+    - |
+      fn f(v: &[u8], x: &usize) { assert_eq!(*x, v.len()); }
+    - |
+      fn from_bytes(bytes: &[u8], length: usize) { assert!(length <= bytes.len() * 8); }
+    - |
+      fn sub(inner: &[u8], outer: &[u8]) {
+          assert!((&inner[inner.len() - 1] as *const _) <= (&outer[outer.len() - 1] as *const _));
+      }
+---
+id: rust-get-unchecked-unvalidated
+description: >-
+  A safe public function takes a `get_unchecked(pos..pos + n)` window at a
+  position that nothing in the function checks against the length: the
+  caller controls it, so safe code reads or writes out of bounds (CWE-125,
+  CWE-787, unsound). `debug_assert!` does not count: it is gone in release.
+severity: medium
+tags: [CWE-125, CWE-787, CWE-129, unsound, memory-corruption]
+language: rust
+check-patterns:
+  - name: get-unchecked
+    query: |
+      ((call_expression
+         function: (field_expression field: (field_identifier) @m)
+         arguments: (arguments . (range_expression) @index .)) @call
+       (#match? @m "^get_unchecked(_mut)?$"))
+    where:
+      # a window at a computed position (`pos..pos + 4`); a single index is
+      # usually kept in bounds by the container's own invariants (a free
+      # list, a lookup), which no pattern can see
+      - capture: index
+        regex: "[A-Za-z_]"
+      - inside: |
+          ((function_item (visibility_modifier) @vis) @f
+           (#match? @vis "^pub$"))
+      - not-inside: |
+          ((function_item (function_modifiers) @mods) @f
+           (#match? @mods "unsafe"))
+      # something bounds the index: a real assert, an `if`/`match` on a
+      # length, `min`/`clamp`, a checked `get`, or a loop over the length
+      - not-inside: |
+          ((function_item) @f
+           (#match? @f "(^|[^_\\w])assert(_eq|_ne)?!|\\bif\\b[^{;]*(len|size|capacity|count)|\\.min\\(|\\bmin\\(|clamp\\(|\\.get(_mut)?\\(|\\.\\.\\s*[\\w.]*\\.len\\(\\)|\\.\\.\\s*len\\b|\\.iter\\(|chunks|windows|\\bwhile\\b[^{;]*(len|size)|\\breturn\\b|\\?;"))
+message: "`{call}` in a safe public function: nothing here keeps the position in bounds"
+review:
+  - Can a caller of this safe function pass a position past the end? Then check it (`assert!`/`get`) or make the function `unsafe`.
+examples:
+  bad:
+    - |
+      pub fn into_arr2(slice: &[u8], pos: usize) -> [u8; 2] {
+          let mut arr = [0; 2];
+          arr.copy_from_slice(unsafe { slice.get_unchecked(pos..pos + 2) });
+          arr
+      }
+    - |
+      pub fn u32_at(v: &[u8], i: usize) -> u32 {
+          debug_assert!(i + 4 <= v.len());
+          let mut b = [0; 4];
+          b.copy_from_slice(unsafe { v.get_unchecked(i..i + 4) });
+          u32::from_le_bytes(b)
+      }
+  good:
+    - |
+      pub fn get(&self, id: Id) -> Option<&T> {
+          if self.ids.contains(id) { Some(unsafe { self.values.get_unchecked(id) }) } else { None }
+      }
+    - |
+      pub fn into_arr2(slice: &[u8], pos: usize) -> [u8; 2] {
+          let mut arr = [0; 2];
+          arr.copy_from_slice(&slice[pos..pos + 2]);
+          arr
+      }
+    - |
+      pub fn window(v: &[u32], i: usize) -> &[u32] {
+          assert!(i + 2 <= v.len());
+          unsafe { v.get_unchecked(i..i + 2) }
+      }
+    - |
+      pub unsafe fn window_unchecked(v: &[u32], i: usize) -> &[u32] { v.get_unchecked(i..i + 2) }
+    - |
+      fn private_window(v: &[u32], i: usize) -> &[u32] { unsafe { v.get_unchecked(i..i + 2) } }
+---
+id: rust-from-utf8-unchecked-on-input
+description: >-
+  A safe public function turns a byte-slice parameter into a `str` with
+  `from_utf8_unchecked` and never validates it: a caller passing non-UTF-8
+  bytes creates an invalid `str`, which later string code reads out of
+  bounds (CWE-20, unsound).
+severity: medium
+tags: [CWE-20, CWE-116, unsound, memory-corruption]
+language: rust
+check-patterns:
+  - name: unchecked-param
+    query: |
+      ((call_expression
+         function: [(identifier) @fn (scoped_identifier name: (identifier) @fn)]
+         arguments: (arguments . (identifier) @bytes .)) @call
+       (#match? @fn "^from_utf8_unchecked(_mut)?$"))
+    where:
+      # `String::from_utf8_unchecked` takes a Vec: a buffer the function
+      # filled itself, not the caller's slice
+      - capture: call
+        not-regex: "String::from_utf8_unchecked"
+      # the argument is one of the function's `&[u8]` parameters
+      - inside: |
+          ((function_item
+             (visibility_modifier) @vis
+             parameters: (parameters (parameter pattern: (identifier) @p
+                                                type: (reference_type type: (array_type element: (primitive_type) @u8 .))))) @f
+           (#eq? @vis "pub")
+           (#eq? @u8 "u8"))
+      - not-inside: |
+          ((function_item (function_modifiers) @mods) @f
+           (#match? @mods "unsafe"))
+      # validated somewhere in the function
+      - not-inside: |
+          ((function_item) @f
+           (#match? @f "from_utf8\\s*\\(|is_ascii|is_utf8|utf8::|simdutf8|validate"))
+message: "`{call}` trusts the caller's bytes to be UTF-8"
+review:
+  - Can a caller of this safe function pass arbitrary bytes? Then validate (`str::from_utf8`), take `&str`, or make the function `unsafe`.
+examples:
+  bad:
+    - |
+      pub fn say<W>(input: &[u8], max_width: usize, writer: &mut W) -> Result<()> {
+          let wrapped = fill(unsafe { str::from_utf8_unchecked(input) }, max_width);
+          writer.write_all(wrapped.as_bytes())
+      }
+    - |
+      impl<'a> ValueRef<'a> {
+          pub fn from_bytes(input: &'a [u8]) -> Self {
+              Self(KStringRef::from_ref(unsafe { std::str::from_utf8_unchecked(input) }))
+          }
+      }
+  good:
+    - |
+      pub fn say<W>(input: &str, max_width: usize, writer: &mut W) -> Result<()> {
+          writer.write_all(fill(input, max_width).as_bytes())
+      }
+    - |
+      pub fn name(bytes: &[u8]) -> &str {
+          std::str::from_utf8(bytes).expect("utf8");
+          unsafe { std::str::from_utf8_unchecked(bytes) }
+      }
+    - |
+      pub unsafe fn from_bytes_unchecked(input: &[u8]) -> &str { std::str::from_utf8_unchecked(input) }
+    - |
+      pub fn encode_block(src: &[u8]) -> String {
+          let mut out = Vec::with_capacity(src.len() * 2);
+          encode(&mut out, src);
+          unsafe { String::from_utf8_unchecked(out) }
+      }
+---
+id: rust-bytes-of-generic-value
+description: >-
+  A safe function views any `T` as its raw bytes
+  (`slice::from_raw_parts(p as *const T as *const u8, size_of::<T>())`):
+  padding bytes are uninitialized, so reading them is undefined behaviour,
+  and a `&mut [u8]` view lets safe code write invalid values (CWE-908,
+  unsound).
+severity: medium
+tags: [CWE-908, CWE-200, unsound, memory-exposure]
+language: rust
+check-patterns:
+  - name: generic-as-bytes
+    query: |
+      ((call_expression
+         function: [(identifier) @fn (scoped_identifier name: (identifier) @fn)]
+         arguments: (arguments . (_) @ptr . (_) @len .)) @call
+       (#match? @fn "^from_raw_parts(_mut)?$")
+       (#match? @ptr "as\\s+\\*(const|mut)\\s+u8")
+       (#match? @len "size_of(_val)?\\s*(::\\s*<\\s*[A-Z]\\w{0,2}\\s*>)?\\s*\\("))
+    where:
+      # the type is a type parameter the caller picks
+      - capture: len
+        regex: "size_of\\s*::\\s*<\\s*[A-Z]\\w{0,2}\\s*>|size_of_val"
+      - inside: |
+          [((function_item type_parameters: (type_parameters)) @f)
+           ((impl_item type_parameters: (type_parameters)) @f)]
+      - not-inside: |
+          ((function_item (function_modifiers) @mods) @f
+           (#match? @mods "unsafe"))
+      # bounded to plain-old-data types
+      - not-inside: |
+          [((function_item) @f (#match? @f "\\b(Pod|AsBytes|IntoBytes|NoUninit|Plain|ByteValued|zerocopy|bytemuck)\\b"))
+           ((impl_item) @f (#match? @f "\\b(Pod|AsBytes|IntoBytes|NoUninit|Plain|ByteValued|zerocopy|bytemuck)\\b"))]
+message: "`{call}` exposes the bytes of a caller-chosen type, padding included"
+review:
+  - Can `T` have padding (or invalid bit patterns, for a `&mut` view)? Bound it by a POD trait (bytemuck/zerocopy) or make the function `unsafe`.
+examples:
+  bad:
+    - |
+      pub fn any_as_u8_slice<'a, T: Sized>(p: &'a T) -> &'a [u8] {
+          unsafe {
+              ::core::slice::from_raw_parts((p as *const T) as *const u8, ::core::mem::size_of::<T>())
+          }
+      }
+  good:
+    - |
+      pub unsafe fn any_as_u8_slice<'a, T: Sized>(p: &'a T) -> &'a [u8] {
+          ::core::slice::from_raw_parts((p as *const T) as *const u8, ::core::mem::size_of::<T>())
+      }
+    - |
+      pub fn as_bytes<T: bytemuck::Pod>(p: &T) -> &[u8] {
+          unsafe { slice::from_raw_parts(p as *const T as *const u8, mem::size_of::<T>()) }
+      }
+    - |
+      pub fn u32_bytes(p: &u32) -> &[u8] {
+          unsafe { slice::from_raw_parts(p as *const u32 as *const u8, 4) }
+      }
