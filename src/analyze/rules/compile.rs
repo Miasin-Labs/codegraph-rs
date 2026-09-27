@@ -90,6 +90,7 @@ impl Rule {
                 .chain(&taint.sanitizers)
                 .map(|role| &role.pattern)
                 .chain(taint.propagators.iter().map(|p| &p.pattern))
+                .chain(taint.guards.iter().map(|g| &g.pattern))
         });
         self.checks.iter().chain(&self.ignores).chain(taint)
     }
@@ -120,6 +121,16 @@ pub struct TaintRule {
     pub sources: Vec<RolePattern>,
     pub sanitizers: Vec<RolePattern>,
     pub propagators: Vec<PropagatorPattern>,
+    pub guards: Vec<GuardPattern>,
+}
+
+/// A validation guard: the condition `check` tests the value `value`; the
+/// branch where the check holds (`safe_when_true`) or fails is safe.
+pub struct GuardPattern {
+    pub pattern: Pattern,
+    pub value: String,
+    pub check: String,
+    pub safe_when_true: bool,
 }
 
 /// A source or sanitizer: a pattern and the capture whose value it marks.
@@ -554,6 +565,10 @@ fn role_keys(role: &str) -> (&'static [&'static str], &'static str) {
             &["from", "to"],
             "`from: <capture>` and `to: <capture>` — the data of `from` flows into `to`",
         ),
+        "guards" => (
+            &["value", "check"],
+            "`value: <capture>` (the checked value) and `check: <capture>` (the condition)",
+        ),
         _ => (&["value"], "`value: <capture>` — the value it marks"),
     }
 }
@@ -573,6 +588,7 @@ fn compile_taint(
         sources: Vec::new(),
         sanitizers: Vec::new(),
         propagators: Vec::new(),
+        guards: Vec::new(),
     };
     let mut sinks = Vec::new();
     let lists = [
@@ -586,6 +602,7 @@ fn compile_taint(
             "propagators",
             spec.propagators.map(|p| p.0).unwrap_or_default(),
         ),
+        ("guards", spec.guards.map(|p| p.0).unwrap_or_default()),
     ];
     for (role, list) in lists {
         let role_line = at.key(taint_line, at.range.1, &[role]).map(|k| k.line);
@@ -598,6 +615,27 @@ fn compile_taint(
         }
         for (index, pattern) in list.into_iter().enumerate() {
             let item = at.item(taint_line, at.range.1, &[role], index);
+            let safe_when_true = match pattern.safe.as_deref() {
+                None | Some("when-true") => true,
+                Some("when-false") => false,
+                Some(other) => {
+                    return Err(at.error(
+                        id,
+                        item.map(|(line, _)| line),
+                        format!(
+                            "taint.{role}[{index}]: `safe: {other}` — a guard is safe \
+                             `when-true` (the branch where the check holds) or `when-false`"
+                        ),
+                    ));
+                }
+            };
+            if pattern.safe.is_some() && role != "guards" {
+                return Err(at.error(
+                    id,
+                    item.map(|(line, _)| line),
+                    format!("taint.{role}[{index}]: `safe` is for guards, not {role}"),
+                ));
+            }
             let (pattern, captures) =
                 compile_taint_pattern(pattern, role, index, item, rule_languages, at, id)?;
             match role {
@@ -613,6 +651,12 @@ fn compile_taint(
                     pattern,
                     from: captures[0].clone(),
                     to: captures[1].clone(),
+                }),
+                "guards" => taint.guards.push(GuardPattern {
+                    pattern,
+                    value: captures[0].clone(),
+                    check: captures[1].clone(),
+                    safe_when_true,
                 }),
                 _ => {
                     taint.sink_values.push(captures[0].clone());
@@ -655,6 +699,7 @@ fn compile_taint_pattern(
         ("argument", &spec.argument),
         ("from", &spec.from),
         ("to", &spec.to),
+        ("check", &spec.check),
     ];
     for (key, value) in given {
         if value.is_some() && !wanted.contains(&key) {

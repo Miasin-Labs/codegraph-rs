@@ -90,6 +90,21 @@ impl<'a> FileInput<'a> {
         self.source.get(start..end).unwrap_or_default()
     }
 
+    /// Read the object-like macros of headers the file includes (`extra`)
+    /// as well as its own, which win. Only before the file's first
+    /// lowering; later calls change nothing.
+    pub fn include_macros(&self, lang: &str, extra: &HashMap<String, String>) {
+        if self.macros.get().is_some() || extra.is_empty() {
+            return;
+        }
+        let mut macros =
+            codegraph_analysis::ir::macro_aliases(lang, self.tree.root_node(), self.source);
+        for (name, value) in extra {
+            macros.entry(name.clone()).or_insert_with(|| value.clone());
+        }
+        let _ = self.macros.set(macros);
+    }
+
     /// The function node lowered to IR (cached per file), when the
     /// language lowers.
     pub fn lowered(&self, rules: &LangRules, function: Node) -> Option<Rc<IrFunction>> {
@@ -174,8 +189,7 @@ pub(super) fn run_rule(
     semantics: &dyn Semantics,
     trace: bool,
 ) -> FileResult {
-    let rules = lang::for_language(file.language);
-    let mut result = match &rule.taint {
+    let result = match &rule.taint {
         Some(taint) => super::taint::run(rule, taint, file, semantics, trace),
         None => {
             let mut result = FileResult::default();
@@ -185,6 +199,18 @@ pub(super) fn run_rule(
             result
         }
     };
+    drop_ignored(rule, file, semantics, result, trace)
+}
+
+/// `result` without the hits an ignore-pattern match covers.
+pub(super) fn drop_ignored(
+    rule: &Rule,
+    file: &FileInput,
+    semantics: &dyn Semantics,
+    mut result: FileResult,
+    trace: bool,
+) -> FileResult {
+    let rules = lang::for_language(file.language);
     if result.hits.is_empty() || rule.ignores.is_empty() {
         return result;
     }

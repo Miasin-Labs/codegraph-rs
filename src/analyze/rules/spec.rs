@@ -154,6 +154,11 @@ pub struct TaintSpec {
     /// Extra steps: the data of capture `from` flows into capture `to`.
     #[serde(default)]
     pub propagators: Option<OneOrMany<TaintPatternSpec>>,
+    /// Validation guards: `check` names the condition, `value` the value it
+    /// checks; reads of the value on the safe branch (`safe: when-true`,
+    /// the default, or `when-false`) that the branch dominates are clean.
+    #[serde(default)]
+    pub guards: Option<OneOrMany<TaintPatternSpec>>,
 }
 
 /// A pattern of a taint rule: a weggli `pattern` or a tree-sitter `query`
@@ -191,6 +196,13 @@ pub struct TaintPatternSpec {
     /// …into this capture's value.
     #[serde(default)]
     pub to: Option<String>,
+    /// Guards: the capture holding the condition.
+    #[serde(default)]
+    pub check: Option<String>,
+    /// Guards: `when-true` (default) or `when-false` — the branch where the
+    /// value is safe.
+    #[serde(default)]
+    pub safe: Option<String>,
 }
 
 impl TaintPatternSpec {

@@ -92,6 +92,9 @@ pub struct BugsOptions {
     pub only_files: Option<Vec<String>>,
     /// Include findings inside test code.
     pub include_tests: bool,
+    /// Time the taint rules' pass may take (a default when `None`); spent,
+    /// it reports what it found and says the rest was not followed.
+    pub taint_budget: Option<std::time::Duration>,
 }
 
 /// Result of [`bugs_report`].

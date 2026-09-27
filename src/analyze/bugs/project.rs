@@ -55,6 +55,8 @@ pub struct CallSite {
     pub callee_signature: Option<String>,
     pub callee_return_type: Option<String>,
     pub callee_file: String,
+    /// 1-based line where the callee starts.
+    pub callee_line: u32,
     /// The caller is test code.
     pub in_test: bool,
 }
@@ -137,7 +139,7 @@ impl Project {
                 .prepare(
                     "SELECT e.source, s.qualified_name, s.file_path, e.line, IFNULL(e.col, 0), \
                             e.target, t.name, t.qualified_name, t.kind, t.signature, \
-                            t.return_type, t.file_path \
+                            t.return_type, t.file_path, IFNULL(t.start_line, 0) \
                      FROM edges e \
                      JOIN nodes s ON s.id = e.source \
                      JOIN nodes t ON t.id = e.target \
@@ -162,6 +164,7 @@ impl Project {
                         callee_signature: row.get(9)?,
                         callee_return_type: row.get(10)?,
                         callee_file: row.get(11)?,
+                        callee_line: row.get(12)?,
                     })
                 })
                 .map_err(err)?;

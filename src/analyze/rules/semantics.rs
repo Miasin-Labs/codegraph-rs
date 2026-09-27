@@ -23,6 +23,16 @@ use super::lang::{self, LangRules};
 use crate::analyze::bugs::{FnSpan, Project};
 use crate::codegraph::CodeGraph;
 
+/// A project function a call resolves to, as the index records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CalleeRef {
+    pub file: String,
+    /// 1-based line where it starts.
+    pub line: u32,
+    pub name: String,
+    pub qualified_name: String,
+}
+
 /// The function a match sits in.
 #[derive(Debug, Clone)]
 pub(super) struct FunctionFacts {
@@ -41,6 +51,17 @@ pub(super) trait Semantics {
     /// carries its call's start and callee text) with the index. Chained
     /// calls share a start, so the callee's last name picks among them.
     fn call_at(&self, file: &FileInput, line: u32, col: u32, callee: &str) -> CallResolution;
+    /// The project functions the call [`Semantics::call_at`] joins resolves
+    /// to (none without an index).
+    fn callee_functions(
+        &self,
+        _file: &FileInput,
+        _line: u32,
+        _col: u32,
+        _callee: &str,
+    ) -> Vec<CalleeRef> {
+        Vec::new()
+    }
     /// Facts about the function node `function`.
     fn function(&self, file: &FileInput, rules: &LangRules, function: Node) -> FunctionFacts;
 }
@@ -135,6 +156,8 @@ struct Target {
     names: Vec<String>,
     /// A project function (else code in another graph).
     in_project: bool,
+    /// Where it is, for a project function.
+    callee: Option<CalleeRef>,
 }
 
 /// Calls and functions from the index.
@@ -171,6 +194,12 @@ impl<'p> IndexSemantics<'p> {
                     name: site.callee_name.clone(),
                     names,
                     in_project: true,
+                    callee: Some(CalleeRef {
+                        file: site.callee_file.clone(),
+                        line: site.callee_line,
+                        name: site.callee_name.clone(),
+                        qualified_name: site.callee_qualified.clone(),
+                    }),
                 });
         }
         for external in external {
@@ -235,6 +264,20 @@ fn push_unique(list: &mut Vec<String>, names: &[String]) {
 }
 
 impl IndexSemantics<'_> {
+    /// The targets of the call at `file:line:col` named `name` (the ones
+    /// named like it when chained calls share the start).
+    fn chosen(&self, file: &str, line: u32, col: u32, name: &str) -> Vec<&Target> {
+        let Some(targets) = self.calls_at.get(&(file.to_string(), line, col)) else {
+            return Vec::new();
+        };
+        let named: Vec<&Target> = targets.iter().filter(|t| t.name == name).collect();
+        if named.is_empty() {
+            targets.iter().collect()
+        } else {
+            named
+        }
+    }
+
     /// The resolved callees of the call at `file:line:col` named `name`.
     fn targets_at(&self, file: &str, line: u32, col: u32, name: &str) -> Vec<String> {
         self.resolve_at(file, line, col, name).names
@@ -242,17 +285,9 @@ impl IndexSemantics<'_> {
 
     /// [`Self::targets_at`], and whether a target is project code.
     fn resolve_at(&self, file: &str, line: u32, col: u32, name: &str) -> CallResolution {
-        let Some(targets) = self.calls_at.get(&(file.to_string(), line, col)) else {
-            return CallResolution::default();
-        };
         // Chained calls (`a.b().c()`) share a start; keep the callee named
         // like this call when one is.
-        let named: Vec<&Target> = targets.iter().filter(|t| t.name == name).collect();
-        let chosen: Vec<&Target> = if named.is_empty() {
-            targets.iter().collect()
-        } else {
-            named
-        };
+        let chosen = self.chosen(file, line, col, name);
         let mut names = Vec::new();
         for target in &chosen {
             push_unique(&mut names, &target.names);
@@ -274,6 +309,19 @@ impl Semantics for IndexSemantics<'_> {
 
     fn call_at(&self, file: &FileInput, line: u32, col: u32, callee: &str) -> CallResolution {
         self.resolve_at(file.path, line, col, lang::last_name(callee))
+    }
+
+    fn callee_functions(
+        &self,
+        file: &FileInput,
+        line: u32,
+        col: u32,
+        callee: &str,
+    ) -> Vec<CalleeRef> {
+        self.chosen(file.path, line, col, lang::last_name(callee))
+            .into_iter()
+            .filter_map(|target| target.callee.clone())
+            .collect()
     }
 
     fn function(&self, file: &FileInput, rules: &LangRules, function: Node) -> FunctionFacts {
@@ -351,6 +399,7 @@ fn load_external_calls(cg: &CodeGraph) -> Result<Vec<ExternalCall>, String> {
                     name: row.get(4)?,
                     names,
                     in_project: false,
+                    callee: None,
                 },
             })
         })

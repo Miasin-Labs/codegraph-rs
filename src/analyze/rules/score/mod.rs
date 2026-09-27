@@ -551,6 +551,7 @@ fn run_unit(
             detectors: vec![Detector::Rule],
             only_files: None,
             include_tests: true,
+            taint_budget: None,
         };
         let findings = super::detect(&cg, &mut project, rules, &options)?;
         let findings = findings

@@ -37,6 +37,7 @@ fn site(caller: &FnSpan, callee: &FnSpan, at: (u32, u32)) -> CallSite {
         callee_signature: callee.signature.clone(),
         callee_return_type: None,
         callee_file: callee.file.clone(),
+        callee_line: callee.start_line,
         in_test: false,
     }
 }

@@ -126,6 +126,7 @@ fn bugs_options(
         detectors,
         only_files,
         include_tests,
+        taint_budget: None,
     })
 }
 
@@ -399,6 +400,7 @@ pub(crate) fn cmd_analyze_rules(
             detectors: vec![Detector::Rule],
             only_files,
             include_tests,
+            taint_budget: None,
         };
         let top = findings_limit(top_arg, json);
         let cg =

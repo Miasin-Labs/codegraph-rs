@@ -49,9 +49,11 @@ mod variant;
 pub mod weggli;
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 pub use builtin::BUILTIN_RULES;
 pub use check::{CheckReport, ExampleCheck, RuleCheck, check_rules};
+use codegraph_analysis::taint_flow::Budget;
 pub use compile::{LoadError, Rule, RuleSet};
 use engine::{FileInput, one_line, position, render_message};
 pub use saved::{SaveError, SaveOutcome, rules_dir, save_rule, saved_rule_texts};
@@ -70,13 +72,20 @@ pub use variant::{
 use super::bugs::{self, BugsOptions, BugsReport, Detector, Evidence, Finding, Project};
 use crate::codegraph::CodeGraph;
 use crate::extraction::{create_parser, detect_language};
+use crate::types::Language;
 
 /// Files larger than this are bundles or generated code in practice.
 const MAX_SOURCE_BYTES: usize = 2 * 1024 * 1024;
 /// Other captures listed as evidence of a finding.
 const MAX_CAPTURE_EVIDENCE: usize = 4;
 /// Steps of a taint flow listed as evidence (between source and sink).
-const MAX_TAINT_HOPS: usize = 8;
+const MAX_TAINT_HOPS: usize = 12;
+/// Source bytes one sweep keeps parsed for the taint pass, at most.
+const MAX_TAINT_SOURCE_BYTES: usize = 64 * 1024 * 1024;
+/// Time the taint pass may take when the caller sets none.
+const DEFAULT_TAINT_BUDGET: Duration = Duration::from_secs(60);
+/// A flow through a guessed call target is this much less certain.
+const GUESSED_CONFIDENCE: f64 = 0.8;
 
 /// The `(label, yaml)` of rule files and directories (`*.yml`/`*.yaml`,
 /// recursively, in path order), inline texts, and the built-in rules — what
@@ -262,7 +271,9 @@ struct Scan {
 }
 
 /// Run `rules` over every file of `project` they apply to (`only_files`
-/// honoured; test filtering is the caller's).
+/// honoured; test filtering is the caller's). Check rules run file by
+/// file; taint rules run once over every file they apply to, together, so
+/// flows cross files (their findings are narrowed to `only_files` later).
 fn scan(
     project: &Project,
     semantics: &IndexSemantics,
@@ -280,9 +291,19 @@ fn scan(
             .as_ref()
             .is_none_or(|only| only.iter().any(|f| f == file))
     };
-    for file in project.files().iter().filter(|file| wanted(file)) {
+    let taint_rules: Vec<(&Rule, &compile::TaintRule)> = rules
+        .rules
+        .iter()
+        .filter_map(|rule| rule.taint.as_ref().map(|taint| (rule, taint)))
+        .collect();
+    // Files taint rules apply to, kept for the project-wide pass.
+    let mut kept: Vec<(String, Language, String, tree_sitter::Tree)> = Vec::new();
+    let mut kept_bytes = 0usize;
+    for file in project.files() {
+        let is_wanted = wanted(file);
         let language = detect_language(file, None);
-        if !rules.rules.iter().any(|rule| rule.runs_on(language)) {
+        let runs = |rule: &&Rule| rule.runs_on(language) && (is_wanted || rule.taint.is_some());
+        if !rules.rules.iter().any(|rule| runs(&rule)) {
             continue;
         }
         let Ok(source) = std::fs::read_to_string(project.root().join(file)) else {
@@ -308,11 +329,57 @@ fn scan(
                 .push(format!("no parser ({})", language.as_str()));
             continue;
         };
-        out.scanned += 1;
-        let input = FileInput::new(file, language, &source, &tree);
-        for rule in applicable {
-            for hit in &engine::run_rule(rule, &input, semantics, false).hits {
-                out.findings.push(finding(rule, hit, &input, semantics));
+        if is_wanted {
+            out.scanned += 1;
+            let input = FileInput::new(file, language, &source, &tree);
+            for rule in applicable.iter().filter(|rule| rule.taint.is_none()) {
+                for hit in &engine::run_rule(rule, &input, semantics, false).hits {
+                    out.findings.push(finding(rule, hit, &input, semantics));
+                }
+            }
+        }
+        if applicable.iter().any(|rule| rule.taint.is_some()) {
+            if kept_bytes + source.len() > MAX_TAINT_SOURCE_BYTES {
+                out.skipped
+                    .push("taint: over the source budget of one sweep".to_string());
+                continue;
+            }
+            kept_bytes += source.len();
+            kept.push((file.clone(), language, source, tree));
+        }
+    }
+    if kept.is_empty() || taint_rules.is_empty() {
+        return out;
+    }
+    let inputs: Vec<FileInput> = kept
+        .iter()
+        .map(|(path, language, source, tree)| FileInput::new(path, *language, source, tree))
+        .collect();
+    let refs: Vec<&FileInput> = inputs.iter().collect();
+    let deadline = Instant::now() + options.taint_budget.unwrap_or(DEFAULT_TAINT_BUDGET);
+    let mut budget = Budget::new(taint::MAX_STEPS, Some(deadline));
+    let outcome = taint::run_files(
+        &taint_rules,
+        &refs,
+        semantics,
+        &mut budget,
+        taint::MAX_PROGRAM_OPS,
+        false,
+    );
+    if outcome.partial {
+        out.skipped.push(
+            "taint: the budget ran out, so some flows across functions were not followed"
+                .to_string(),
+        );
+    }
+    for ((rule, _), per_file) in taint_rules.iter().zip(outcome.results) {
+        for (input, result) in inputs.iter().zip(per_file) {
+            if result.hits.is_empty() {
+                continue;
+            }
+            let result = engine::drop_ignored(rule, input, semantics, result, false);
+            for hit in &result.hits {
+                out.findings.push(finding(rule, hit, input, semantics));
             }
         }
     }
@@ -361,15 +428,31 @@ fn finding(
         .collect();
     if let Some(flow) = &hit.flow {
         evidence.push(Evidence {
-            file: file.path.to_string(),
+            file: flow.source_file.clone(),
             line: flow.source_line,
             note: format!("source: `{}` ({})", flow.source_code, flow.source_pattern),
         });
-        for &hop in flow.hops.iter().take(MAX_TAINT_HOPS) {
+        for hop in flow.hops.iter().take(MAX_TAINT_HOPS) {
+            evidence.push(Evidence {
+                file: hop.file.clone(),
+                line: hop.line,
+                note: format!("flows through `{}`", hop.code),
+            });
+        }
+        if flow.hops.len() > MAX_TAINT_HOPS {
             evidence.push(Evidence {
                 file: file.path.to_string(),
-                line: hop,
-                note: format!("flows through `{}`", one_line(file.line_text(hop), 80)),
+                line,
+                note: format!("… {} more steps", flow.hops.len() - MAX_TAINT_HOPS),
+            });
+        }
+        if flow.guessed {
+            evidence.push(Evidence {
+                file: file.path.to_string(),
+                line,
+                note: "crosses a call whose target was inferred from the syntax, not an index \
+                       edge"
+                    .to_string(),
             });
         }
         evidence.push(Evidence {
@@ -385,7 +468,11 @@ fn finding(
             col,
             function: function.map(|f| f.qualified_name.clone()),
             message,
-            confidence: rule.confidence,
+            confidence: if flow.guessed {
+                rule.confidence * GUESSED_CONFIDENCE
+            } else {
+                rule.confidence
+            },
             evidence,
         };
     }

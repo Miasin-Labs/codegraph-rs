@@ -52,6 +52,9 @@ use crate::error::Result;
 use crate::mcp::explore_session::{ProjectState, SESSION_ARG, range_already_sent};
 use crate::utils::clamp;
 
+/// Time a `run`'s taint pass may take.
+const RUN_TAINT_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Default and longest `wait` of a score, seconds.
 const SCORE_WAIT: f64 = 25.0;
 const SCORE_WAIT_MAX: f64 = 55.0;
@@ -195,6 +198,8 @@ impl ToolHandler {
             detectors: vec![Detector::Rule],
             only_files: None,
             include_tests: args.get("tests").and_then(Value::as_bool) == Some(true),
+            // A request must answer: the taint pass stops here and says so.
+            taint_budget: Some(RUN_TAINT_BUDGET),
         };
         let report = rules_report(&cg, &root, &rules, &options)
             .map_err(crate::error::CodeGraphError::other)?;

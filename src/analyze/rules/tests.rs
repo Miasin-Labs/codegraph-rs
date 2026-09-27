@@ -587,6 +587,7 @@ fn call(caller: &FnSpan, line: u32, col: u32, callee: &str, qualified: &str) -> 
         callee_signature: None,
         callee_return_type: None,
         callee_file: "src/client.rs".to_string(),
+        callee_line: 1,
         in_test: false,
     }
 }
