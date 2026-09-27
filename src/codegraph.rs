@@ -1603,6 +1603,12 @@ impl CodeGraph {
     // =========================================================================
 
     /// Get outgoing edges from a node.
+    /// The index's query layer, for in-crate analyses that read it in bulk
+    /// (one join instead of a query per node).
+    pub(crate) fn query_builder(&self) -> &QueryBuilder {
+        &self.queries
+    }
+
     pub fn get_outgoing_edges(&self, node_id: &str) -> Result<Vec<Edge>> {
         self.queries.get_outgoing_edges(node_id, None, None)
     }

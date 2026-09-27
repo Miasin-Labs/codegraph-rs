@@ -174,8 +174,9 @@ fn rank(entries: &mut [RiskEntry]) {
     });
 }
 
-/// Files changed since `base` (and untracked ones), relative to the root.
-fn changed_files(project_root: &Path, base: &str) -> Result<Vec<String>, String> {
+/// Files changed since `base` (and untracked ones), relative to the root
+/// (`git diff --relative <base>` plus `git ls-files --others`).
+pub fn changed_files(project_root: &Path, base: &str) -> Result<Vec<String>, String> {
     let diff = git(
         project_root,
         &["diff", "--name-only", "--relative", base, "--"],

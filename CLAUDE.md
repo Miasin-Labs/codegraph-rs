@@ -212,7 +212,13 @@ cargo test --workspace
   `iter().find/next`). Locals bound by `let (a, b) =`, `for x in`, a closure
   param of an iterator/`Option` combinator (`closures.rs`), a tuple-variant
   pattern (`variants.rs`), or `self.0` of a tuple struct are typed the same
-  way. The first unknown or external link ends the chain — never guess the
+  way, and so is a newtype pattern `W(x): W<T>` (param, `let`, closure):
+  `x` gets `W`'s one field — a project tuple struct's declared field, or
+  from the static table in `receiver/rust/newtypes.rs` (axum `State`/
+  `Json`/`Path`/…, actix `web::Json`/…; never `web::Data`). A call made
+  directly on a lock result runs on the guarded `T` (`through_guard`)
+  unless it is a `Result` method.
+  The first unknown or external link ends the chain — never guess the
   rest — and a generic parameter (`T`, `Self::Item`) is unknown, not a type.
   (Only the external pass continues past a dependency type, below; an
   external type carries the crate its path named: `Home::External { krate }`.)
@@ -308,6 +314,24 @@ cargo test --workspace
   Never from MCP or the prompt hook.
   `CODEGRAPH_NO_BACKGROUND_SYNC=1` stops the spawn, `CODEGRAPH_DEPS=0`
   the whole hook.
+- **Bug detectors** (`src/analyze/bugs/`, `codegraph analyze bugs|review`):
+  leads, not proofs, over the index's resolved call edges (which carry
+  line/col) plus tree-sitter re-parsed per file (`Project`: bulk SQL load,
+  parse cache) — never the analysis crate's IR (no lines, no `match`/
+  `break`). `deviance/` mines beliefs from the code itself (Engler):
+  `arm-result-deviance` (an arm does project work but yields a constant
+  while ≥2 sibling arms yield a call's result — caught the rms KeepBoth
+  bug, silent on its fix), `result-discarded`, `missing-companion-call`;
+  per-language tables in `deviance/rules.rs`. `lint/` holds syntactic
+  shapes per `lint/rules.rs` (`loop-no-progress`, `identical-branches`,
+  `self-comparison`, `constant-condition`, `dead-store`), each rule's
+  guards documented where measured false positives forced them; skip
+  minified/bundled files. Confidence is the belief's strength (deviance) or
+  the rule's measured precision (lint). `review` turns findings into
+  packets (function source windowed ≤160 lines, evidence with context,
+  callers, a per-rule checklist) for a person or model to decide. Test
+  code is excluded unless `--tests`; `--base` narrows the report (beliefs
+  are still learned project-wide).
 - **Concurrency lint** (`analysis/src/concurrency.rs`, per-language rules in
   `concurrency_rules.rs`): flags lossy best-effort sends. Library-only since
   the vuln engine (its sole CLI surface) was deleted.

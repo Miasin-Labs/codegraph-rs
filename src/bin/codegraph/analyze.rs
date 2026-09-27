@@ -45,6 +45,7 @@ use super::{
 
 mod boundaries;
 mod bridge;
+mod bugs;
 mod capabilities;
 mod centrality;
 mod cfg;
@@ -73,6 +74,7 @@ mod validate;
 
 use boundaries::cmd_analyze_boundaries;
 pub(crate) use bridge::{bridge_project_with_options, print_json, *};
+use bugs::{cmd_analyze_bugs, cmd_analyze_review};
 use capabilities::cmd_analyze_capabilities;
 use centrality::cmd_analyze_centrality;
 use cfg::cmd_analyze_cfg;

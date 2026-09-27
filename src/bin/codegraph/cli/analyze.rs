@@ -217,6 +217,68 @@ annotate the graph before the query runs (see `analyze coverage`).")]
         #[arg(short = 'j', long)]
         json: bool,
     },
+    /// Suspected logic bugs: departures from what the rest of the code does
+    /// (deviance) and classic bug shapes (lint)
+    #[command(
+        after_help = "Deviance learns beliefs from the whole project (how call sites use a \
+function's result, which calls go together, what the arms of a match do) and reports the \
+sites that depart from them, with the agreeing sites as evidence. Lint reads bug shapes \
+from the syntax. `--base <rev>` reports only files changed since then; confirm a finding \
+with `codegraph analyze review`."
+    )]
+    Bugs {
+        /// Report only files changed since this git revision
+        #[arg(long, value_name = "rev")]
+        base: Option<String>,
+        /// Run only this detector family (deviance, lint); repeatable
+        #[arg(long = "detector", value_name = "name")]
+        detectors: Vec<String>,
+        /// Include findings in test code
+        #[arg(long)]
+        tests: bool,
+        /// Show at most N findings
+        #[arg(short = 't', long, value_name = "number", default_value = "50")]
+        top: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Review packets for suspected bugs: each finding with its function's
+    /// source, the evidence sites, its callers and a checklist to decide it
+    #[command(
+        after_help = "Reruns `analyze bugs` and prints what a reader (you, or a model) needs to \
+confirm or dismiss each finding: `codegraph analyze review --at src/sync.rs:1922` or \
+`--rule arm-result-deviance --top 5`. --json gives the packets as data."
+    )]
+    Review {
+        /// Only findings at FILE or FILE:LINE (project-relative)
+        #[arg(long, value_name = "file[:line]")]
+        at: Option<String>,
+        /// Only this rule (e.g. arm-result-deviance)
+        #[arg(long, value_name = "rule")]
+        rule: Option<String>,
+        /// Report only files changed since this git revision
+        #[arg(long, value_name = "rev")]
+        base: Option<String>,
+        /// Run only this detector family (deviance, lint); repeatable
+        #[arg(long = "detector", value_name = "name")]
+        detectors: Vec<String>,
+        /// Include findings in test code
+        #[arg(long)]
+        tests: bool,
+        /// Review at most N findings
+        #[arg(short = 't', long, value_name = "number", default_value = "10")]
+        top: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
     /// Change risk: the functions changed since a git base, ranked by how
     /// much depends on them and how few tests reach them
     #[command(
