@@ -9,6 +9,7 @@
 
 mod arkui;
 mod chains;
+mod constructed;
 mod dependency_names;
 mod exact;
 pub(crate) mod external;
@@ -134,6 +135,12 @@ pub fn match_reference_full_hints(
 
     // 1. Qualified name match (highest confidence)
     if let Some(result) = qualified_name(reference, context) {
+        return Some(result);
+    }
+
+    // 1a'. A method of an object constructed in place: `new X().m()` runs
+    // `X::m`.
+    if let Some(result) = constructed::match_constructed_call(reference, context) {
         return Some(result);
     }
 
