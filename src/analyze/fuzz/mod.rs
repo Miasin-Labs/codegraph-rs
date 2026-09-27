@@ -268,10 +268,26 @@ impl Analysis {
                                 || span.qualified_name.ends_with(&format!("::{tail}")))
                     })
                     .collect();
-                if loose.is_empty() {
+                if !loose.is_empty() {
+                    return Ok(loose);
+                }
+                // A public path through a re-export or alias
+                // (`multihash::Multihash::from_bytes` for
+                // `MultihashGeneric::from_bytes`), as `fuzz-targets` prints.
+                let context = self.context();
+                let by_path: Vec<usize> = (0..self.graph.functions.len())
+                    .filter(|&i| {
+                        let span = &self.graph.functions[i];
+                        span.name == name.rsplit("::").next().unwrap_or(name)
+                            && context
+                                .callable(span)
+                                .is_some_and(|callable| callable.display_path() == *name)
+                    })
+                    .collect();
+                if by_path.is_empty() {
                     Err(format!("no indexed function named `{name}`"))
                 } else {
-                    Ok(loose)
+                    Ok(by_path)
                 }
             }
         }

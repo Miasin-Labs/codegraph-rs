@@ -232,3 +232,88 @@ impl<'a> Walker<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span(id: &str, name: &str, qualified: &str, start: u32, end: u32) -> FnSpan {
+        FnSpan {
+            id: id.into(),
+            name: name.into(),
+            qualified_name: qualified.into(),
+            kind: "function".into(),
+            file: "src/lib.rs".into(),
+            start_line: start,
+            end_line: end,
+            start_col: 0,
+            signature: None,
+            return_type: None,
+            is_test: false,
+        }
+    }
+
+    #[test]
+    fn sites_and_declarations_are_attributed_to_their_function() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = "\
+pub fn decode<R: Read>(input: &[u8], r: R) -> u8 where R: Send {
+    let first = input[0];
+    let n = input.len() - 1;
+    let v = input.get(1).copied().unwrap();
+    loop {
+        if n > 3 { break; }
+    }
+    unsafe { std::ptr::read(input.as_ptr()) }
+}
+
+impl std::str::FromStr for Thing {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
+        assert!(!s.is_empty());
+        Ok(Thing)
+    }
+}
+
+pub(crate) fn quiet() {}
+";
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), source).unwrap();
+        let functions = vec![
+            span("a", "decode", "decode", 1, 9),
+            span("b", "from_str", "Thing::from_str", 13, 16),
+            span("c", "quiet", "quiet", 19, 19),
+        ];
+        let mut project = Project::from_parts(
+            dir.path(),
+            vec!["src/lib.rs".to_string()],
+            functions,
+            Vec::new(),
+        );
+        let facts = collect(&mut project, &["src/lib.rs".to_string()]);
+
+        let decode = &facts["a"];
+        assert_eq!(
+            decode.sites,
+            SiteCounts {
+                unsafe_blocks: 1,
+                index: 1,
+                panics: 1,
+                arithmetic: 1,
+                loops: 1,
+            }
+        );
+        assert_eq!(decode.visibility, "pub");
+        assert_eq!(decode.generics, "<R: Read> where R: Send");
+        assert_eq!(decode.impl_trait, None);
+
+        let from_str = &facts["b"];
+        assert_eq!(from_str.impl_trait.as_deref(), Some("std::str::FromStr"));
+        assert_eq!(from_str.sites.panics, 1);
+        assert_eq!(from_str.visibility, "");
+
+        let quiet = &facts["c"];
+        assert_eq!(quiet.visibility, "pub(crate)");
+        assert!(quiet.sites.is_empty());
+    }
+}
