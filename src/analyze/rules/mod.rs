@@ -21,10 +21,10 @@
 //! `regex`/`not-regex`.
 //!
 //! A rule may instead be a **taint** rule (`taint:` with `sources`,
-//! `sinks`, `sanitizers`, `propagators`, each a list of such patterns plus
-//! the capture its role reads): a finding is a sink whose value a source's
-//! value reaches in the same function ([`taint`]), with the path as
-//! evidence.
+//! `sinks`, `sanitizers`, `propagators` and `guards`, each a list of such
+//! patterns plus the capture its role reads): a finding is a sink whose
+//! value a source's value reaches — in one function or across the
+//! project's calls and files ([`taint`]) — with every step as evidence.
 //!
 //! Every rule carries `examples` (`bad` code it must match, `good` code it
 //! must not); `--check` runs them without an index, so a rule can be tried
@@ -81,7 +81,7 @@ const MAX_CAPTURE_EVIDENCE: usize = 4;
 /// Steps of a taint flow listed as evidence (between source and sink).
 const MAX_TAINT_HOPS: usize = 12;
 /// Source bytes one sweep keeps parsed for the taint pass, at most.
-const MAX_TAINT_SOURCE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_TAINT_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 /// Time the taint pass may take when the caller sets none.
 const DEFAULT_TAINT_BUDGET: Duration = Duration::from_secs(60);
 /// A flow through a guessed call target is this much less certain.

@@ -11,7 +11,6 @@
 use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
-use std::rc::Rc;
 
 use codegraph_analysis::ir::IrFunction;
 use tree_sitter::{Node, QueryCursor, StreamingIterator, Tree};
@@ -29,8 +28,6 @@ pub(super) struct FileInput<'a> {
     pub tree: &'a Tree,
     /// Facts per function node (by start byte), computed once per file.
     pub facts: RefCell<HashMap<usize, FunctionFacts>>,
-    /// Lowered IR per function node (by byte range), for taint rules.
-    pub ir: RefCell<HashMap<(usize, usize), Option<Rc<IrFunction>>>>,
     /// Byte offset of each line's start, built on first use.
     line_starts: OnceCell<Vec<usize>>,
     /// Names of the functions the file defines, built on first use.
@@ -48,7 +45,6 @@ impl<'a> FileInput<'a> {
             source,
             tree,
             facts: RefCell::new(HashMap::new()),
-            ir: RefCell::new(HashMap::new()),
             line_starts: OnceCell::new(),
             defined: OnceCell::new(),
             macros: OnceCell::new(),
@@ -105,24 +101,15 @@ impl<'a> FileInput<'a> {
         let _ = self.macros.set(macros);
     }
 
-    /// The function node lowered to IR (cached per file), when the
-    /// language lowers.
-    pub fn lowered(&self, rules: &LangRules, function: Node) -> Option<Rc<IrFunction>> {
-        let key = (function.start_byte(), function.end_byte());
-        if let Some(ir) = self.ir.borrow().get(&key) {
-            return ir.clone();
-        }
-        let ir = rules
-            .ir
-            .and_then(|lang| {
-                let macros = self.macros.get_or_init(|| {
-                    codegraph_analysis::ir::macro_aliases(lang, self.tree.root_node(), self.source)
-                });
-                codegraph_analysis::ir::lower_with_macros(lang, function, self.source, macros)
-            })
-            .map(Rc::new);
-        self.ir.borrow_mut().insert(key, ir.clone());
-        ir
+    /// The function node lowered to IR, when the language lowers (each
+    /// function is lowered once, by the taint pass that keeps it).
+    pub fn lowered(&self, rules: &LangRules, function: Node) -> Option<IrFunction> {
+        rules.ir.and_then(|lang| {
+            let macros = self.macros.get_or_init(|| {
+                codegraph_analysis::ir::macro_aliases(lang, self.tree.root_node(), self.source)
+            });
+            codegraph_analysis::ir::lower_with_macros(lang, function, self.source, macros)
+        })
     }
 
     fn function_facts(

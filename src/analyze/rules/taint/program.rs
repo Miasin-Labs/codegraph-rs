@@ -21,7 +21,6 @@
 //! Only functions holding a rule's marks, and what they call, are lowered.
 
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 use std::sync::Arc;
 
 use codegraph_analysis::ir::{IrFunction, IrOp, Operand, Var, shared};
@@ -318,8 +317,7 @@ impl<'a> Table<'a> {
         let file = self.files[c.file];
         let rules = lang::for_language(file.language);
         let node = self.node(candidate)?;
-        let ir: Rc<IrFunction> = file.lowered(rules, node)?;
-        let mut ir = (*ir).clone();
+        let mut ir = file.lowered(rules, node)?;
         let scope = self.facts.scope(c.owner.as_deref());
         shared::canonicalize(&mut ir, &scope);
         Some(Arc::new(ir))

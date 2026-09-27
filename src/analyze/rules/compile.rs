@@ -166,6 +166,10 @@ pub struct Pattern {
     pub unique: bool,
     /// Every weggli identifier the pattern needs in the file's text.
     pub identifiers: Vec<String>,
+    /// What it matches, as written (its code, language, regexes and
+    /// predicates): equal keys match the same syntax, so their matches in
+    /// a file can be shared (taint roles aliased across rules).
+    pub key: String,
 }
 
 impl Pattern {
@@ -866,6 +870,10 @@ fn compile_pattern(
     at: &RuleAt,
     rule: &str,
 ) -> Result<Pattern, LoadError> {
+    let key = format!(
+        "{:?}\u{1}{:?}\u{1}{:?}\u{1}{:?}\u{1}{:?}",
+        spec.language, spec.pattern, spec.query, spec.regex, spec.where_
+    );
     let name = spec
         .name
         .clone()
@@ -1073,6 +1081,7 @@ fn compile_pattern(
         limit: spec.limit,
         unique: spec.unique,
         identifiers,
+        key,
     };
     if let Some(message) = &pattern.message {
         check_placeholders(message, &pattern).map_err(|m| err(key_line(&["message"]), m))?;

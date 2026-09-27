@@ -145,6 +145,7 @@ pub(super) fn run_files(
     max_ops: usize,
     trace: bool,
 ) -> Outcome {
+    let started = std::time::Instant::now();
     let mut results: Vec<Vec<FileResult>> = rules
         .iter()
         .map(|_| files.iter().map(|_| FileResult::default()).collect())
@@ -152,10 +153,12 @@ pub(super) fn run_files(
     headers::link(files);
     let mut table = program::Table::new(files);
     let mut marks: Vec<RuleMarks> = Vec::new();
+    let mut shared = SharedHits::default();
     for (index, (rule, taint)) in rules.iter().enumerate() {
         marks.push(collect_marks(
             rule,
             taint,
+            &mut shared,
             files,
             &mut table,
             semantics,
@@ -190,10 +193,17 @@ pub(super) fn run_files(
             seeds.push(candidate);
         }
     }
+    let tracing = std::env::var_os("CODEGRAPH_TAINT_TRACE").is_some();
+    let marked_at = std::time::Instant::now();
     table.include(&seeds, semantics, max_ops);
     let table = table;
-    if std::env::var_os("CODEGRAPH_TAINT_TRACE").is_some() {
+    if tracing {
         trace_program(&table, files);
+        eprintln!(
+            "taint: marks {:?}, program {:?}",
+            marked_at.duration_since(started),
+            marked_at.elapsed()
+        );
     }
     let mut solver = Solver::new(&table.functions);
     let mut partial = table.partial;
@@ -202,7 +212,16 @@ pub(super) fn run_files(
             continue;
         }
         let specs = Specs::build(rule_marks, &table, files);
+        let solve_at = std::time::Instant::now();
         let solution = solver.run(&specs.specs, budget);
+        if tracing {
+            eprintln!(
+                "taint: {} solved in {:?}: {} flows",
+                rule.id,
+                solve_at.elapsed(),
+                solution.flows.len()
+            );
+        }
         partial |= solution.partial;
         let mut reached: HashSet<usize> = HashSet::new();
         // The best flow per sink: sure before guessed, then shortest.
@@ -275,9 +294,11 @@ fn candidate_of(
 
 /// Every role's matches of one rule over the files. Without a sink
 /// anywhere, the other roles are not matched.
+#[allow(clippy::too_many_arguments)]
 fn collect_marks(
     rule: &Rule,
     taint: &TaintRule,
+    shared: &mut SharedHits,
     files: &[&FileInput],
     table: &mut program::Table,
     semantics: &dyn Semantics,
@@ -324,18 +345,17 @@ fn collect_marks(
     }
     for (file_index, file) in files.iter().enumerate() {
         for (index, role) in taint.sources.iter().enumerate() {
-            let found = engine::pattern_hits(&role.pattern, index, file, semantics, false);
-            let sources = marked(found.hits, &role.value, &role.pattern, file_index, table);
+            let hits = shared.hits(&role.pattern, index, file_index, file, semantics);
+            let sources = marked(hits, &role.value, &role.pattern, file_index, table);
             marks.sources.extend(sources);
         }
         for (index, role) in taint.sanitizers.iter().enumerate() {
-            let found = engine::pattern_hits(&role.pattern, index, file, semantics, false);
-            let sanitizers = marked(found.hits, &role.value, &role.pattern, file_index, table);
+            let hits = shared.hits(&role.pattern, index, file_index, file, semantics);
+            let sanitizers = marked(hits, &role.value, &role.pattern, file_index, table);
             marks.sanitizers.extend(sanitizers);
         }
         for (index, propagator) in taint.propagators.iter().enumerate() {
-            let found = engine::pattern_hits(&propagator.pattern, index, file, semantics, false);
-            for hit in found.hits {
+            for hit in shared.hits(&propagator.pattern, index, file_index, file, semantics) {
                 let (Some(from), Some(to)) = (
                     hit.capture(&propagator.from).cloned(),
                     hit.capture(&propagator.to).cloned(),
@@ -350,8 +370,7 @@ fn collect_marks(
             }
         }
         for (index, guard) in taint.guards.iter().enumerate() {
-            let found = engine::pattern_hits(&guard.pattern, index, file, semantics, false);
-            for hit in found.hits {
+            for hit in shared.hits(&guard.pattern, index, file_index, file, semantics) {
                 let (Some(value), Some(check)) = (
                     hit.capture(&guard.value).cloned(),
                     hit.capture(&guard.check).cloned(),
@@ -370,6 +389,30 @@ fn collect_marks(
         }
     }
     marks
+}
+
+/// Role matches per file, shared by the rules whose patterns match the
+/// same syntax (sources aliased across a language's rules): each such
+/// pattern runs once per file.
+#[derive(Default)]
+struct SharedHits {
+    hits: HashMap<(String, usize), Vec<Hit>>,
+}
+
+impl SharedHits {
+    fn hits(
+        &mut self,
+        pattern: &Pattern,
+        index: usize,
+        file_index: usize,
+        file: &FileInput,
+        semantics: &dyn Semantics,
+    ) -> Vec<Hit> {
+        self.hits
+            .entry((pattern.key.clone(), file_index))
+            .or_insert_with(|| engine::pattern_hits(pattern, index, file, semantics, false).hits)
+            .clone()
+    }
 }
 
 /// A rule's marks as the solver takes them, per program function, and
