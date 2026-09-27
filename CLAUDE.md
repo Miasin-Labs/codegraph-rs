@@ -394,7 +394,8 @@ cargo test --workspace
   build and run by wall clock (process group killed), writes logs to
   `fuzz/logs/` (never `artifacts/`: cargo-fuzz reports every file there as
   a failing input), and maps the panic site / first project ASan frame to
-  the indexed function. Tests never run cargo-fuzz.
+  the indexed function; it refuses a harness still holding `todo!()` (its
+  own panic would read as a crash). Tests never run cargo-fuzz.
 - **Concurrency lint** (`analysis/src/concurrency.rs`, per-language rules in
   `concurrency_rules.rs`): flags lossy best-effort sends. Library-only since
   the vuln engine (its sole CLI surface) was deleted.
