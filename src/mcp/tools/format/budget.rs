@@ -7,14 +7,29 @@
 /// session ledger would record source the model never saw.
 pub(in crate::mcp::tools) const DEFAULT_MCP_OUTPUT_CHARS: usize = 24_000;
 
+/// `CODEGRAPH_MAX_OUTPUT_CHARS` as a number: `None` when unset or not a
+/// number. A value that does not parse falls back like an unset one, but is
+/// traced so a typo (`24k`) is not silently ignored.
+fn max_output_chars_setting() -> Option<usize> {
+    let value = std::env::var("CODEGRAPH_MAX_OUTPUT_CHARS").ok()?;
+    match value.trim().parse() {
+        Ok(chars) => Some(chars),
+        Err(_) => {
+            linkscope::event_fields(
+                "codegraph.config.invalid_max_output_chars",
+                [linkscope::TraceField::text("value", value.as_str())],
+            );
+            None
+        }
+    }
+}
+
 /// The explicit `CODEGRAPH_MAX_OUTPUT_CHARS` setting, if any. Explore treats
 /// it as a stricter ceiling on its adaptive budget, and the human-readable
 /// text (what the CLI prints) is truncated to it; unset or zero leaves that
 /// text whole.
 pub(in crate::mcp::tools) fn output_char_cap() -> Option<usize> {
-    let v = std::env::var("CODEGRAPH_MAX_OUTPUT_CHARS").ok()?;
-    let n: usize = v.trim().parse().ok()?;
-    (n > 0).then_some(n)
+    max_output_chars_setting().filter(|&chars| chars > 0)
 }
 
 /// Size bound for what an MCP tool result puts on the wire: the structured
@@ -22,13 +37,10 @@ pub(in crate::mcp::tools) fn output_char_cap() -> Option<usize> {
 /// `CODEGRAPH_MAX_OUTPUT_CHARS` overrides [`DEFAULT_MCP_OUTPUT_CHARS`] in
 /// either direction; `0` removes the bound.
 pub(in crate::mcp::tools) fn mcp_output_budget() -> usize {
-    match std::env::var("CODEGRAPH_MAX_OUTPUT_CHARS") {
-        Ok(value) => match value.trim().parse::<usize>() {
-            Ok(0) => usize::MAX,
-            Ok(chars) => chars,
-            Err(_) => DEFAULT_MCP_OUTPUT_CHARS,
-        },
-        Err(_) => DEFAULT_MCP_OUTPUT_CHARS,
+    match max_output_chars_setting() {
+        Some(0) => usize::MAX,
+        Some(chars) => chars,
+        None => DEFAULT_MCP_OUTPUT_CHARS,
     }
 }
 
