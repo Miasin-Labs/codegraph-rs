@@ -143,28 +143,33 @@ id: c-memory-leak
 description: >-
   Memory is allocated into a pointer declared in the function (a local), and
   the function neither frees it,
-  returns it, stores it elsewhere, nor hands it to a function that could take
-  ownership (CWE-401).
+  returns it, stores it elsewhere, nor hands it (or its address) to a
+  function that could take ownership (CWE-401).
 severity: medium
 tags: [CWE-401]
 language: [c, cpp]
+# Measured on Juliet (2026-09): what this reports in functions Juliet labels
+# good for another CWE (use-after-free, double-free, overflow "good" twins)
+# are real leaks the testcase makes on purpose ("POTENTIAL INCIDENTAL -
+# Possible memory leak"). The one imprecision was ownership passed by
+# address (`sink(&data)`), now an escape like any other call.
 check-patterns:
   - name: malloc-never-freed
     pattern: |
-      { _ *$p; $p = $alloc(_); not: free($p); not: return $p; not: _ = $p; not: $fn($p); }
+      { _ *$p; $p = $alloc(_); not: free($p); not: return $p; not: return (_)$p; not: _ = $p; not: $fn($p); not: $fn(&$p); }
     regex:
       - "alloc=^(malloc|calloc|realloc|strdup|wcsdup)$"
       - "fn!=^(printLine|printWLine|printIntLine|printf|puts|strcpy|strcat|strncpy|strncat|wcscpy|wcscat|memset|memcpy|memmove|strlen|wcslen|sprintf|snprintf|fprintf)$"
   - name: malloc-into-new-local
     pattern: |
-      { _ *$p = $alloc(_); not: free($p); not: return $p; not: _ = $p; not: $fn($p); }
+      { _ *$p = $alloc(_); not: free($p); not: return $p; not: return (_)$p; not: _ = $p; not: $fn($p); not: $fn(&$p); }
     regex:
       - "alloc=^(malloc|calloc|realloc|strdup|wcsdup)$"
       - "fn!=^(printLine|printWLine|printIntLine|printf|puts|strcpy|strcat|strncpy|strncat|wcscpy|wcscat|memset|memcpy|memmove|strlen|wcslen|sprintf|snprintf|fprintf)$"
   - name: new-never-deleted
     language: cpp
     pattern: |
-      { _ *$p; $p = new _; not: delete $p; not: delete [] $p; not: return $p; not: _ = $p; not: $fn($p); }
+      { _ *$p; $p = new _; not: delete $p; not: delete [] $p; not: return $p; not: return (_)$p; not: _ = $p; not: $fn($p); not: $fn(&$p); }
     regex:
       - "fn!=^(printLine|printWLine|printIntLine|printf|puts|strcpy|strcat|wcscpy|memset|memcpy|strlen|wcslen)$"
 message: "`{p}` is allocated and never freed or handed on"
@@ -179,7 +184,27 @@ examples:
         strcpy(data, "A String");
         printLine(data);
       }
+    - |
+      void f(void) {
+        int64_t * data;
+        data = (int64_t *)calloc(100, sizeof(int64_t));
+        if (data == NULL) {exit(-1);}
+        data[0] = 5LL;
+        printLongLongLine(data[0]);
+      }
   good:
+    - |
+      void f(void) {
+        char *data;
+        data = (char *)malloc(100);
+        if (data == NULL) {exit(-1);}
+        sink(&data);
+      }
+    - |
+      void *f(void) {
+        char *data = malloc(100);
+        return (void *)data;
+      }
     - |
       void f(void) {
         char *data = (char *)malloc(100);
@@ -210,30 +235,58 @@ examples:
 ---
 id: c-unchecked-alloc-deref
 description: >-
-  The result of an allocation is written through before anything compares it
-  with NULL (CWE-690, CWE-476).
+  The result of an allocation (or of fopen) is written through, or handed to
+  a function that reads through it, before anything compares it with NULL
+  (CWE-690, CWE-476).
 severity: medium
 tags: [CWE-690, CWE-476, CWE-252]
 language: [c, cpp]
+# A NULL check is any comparison either way round, `!p`, `if (p)`, `p &&`,
+# or assert(p); an alias (`q = p`) may be checked instead, so it ends the
+# match too. alloca/ALLOCA never return NULL (they fail by overflowing the
+# stack), so they are not sources: they were every Juliet CWE-401 "good"
+# finding this rule made (measured 2026-09).
 check-patterns:
   - name: index-store
     pattern: |
-      { $p = $alloc(_); not: _($p) == _; not: _($p) != _; not: !$p; not: if ($p) {} $p[_] = _; }
-    regex: ["alloc=^(malloc|calloc|realloc|strdup|wcsdup|ALLOCA|alloca)$"]
+      { $p = $alloc(_); not: _($p) == _; not: _ == _($p); not: _($p) != _; not: _ != _($p); not: !$p; not: if ($p) {} not: $p && _; not: _ && $p; not: assert(_($p)); not: _ = $p; $p[_] = _; }
+    regex: ["alloc=^(malloc|calloc|realloc|strdup|wcsdup)$"]
+  - name: index-member-store
+    pattern: |
+      { $p = $alloc(_); not: _($p) == _; not: _ == _($p); not: _($p) != _; not: _ != _($p); not: !$p; not: if ($p) {} not: $p && _; not: _ && $p; not: assert(_($p)); not: _ = $p; $p[_]._ = _; }
+    regex: ["alloc=^(malloc|calloc|realloc)$"]
   - name: deref-store
     pattern: |
-      { $p = $alloc(_); not: _($p) == _; not: _($p) != _; not: !$p; not: if ($p) {} *$p = _; }
+      { $p = $alloc(_); not: _($p) == _; not: _ == _($p); not: _($p) != _; not: _ != _($p); not: !$p; not: if ($p) {} not: $p && _; not: _ && $p; not: assert(_($p)); not: _ = $p; *$p = _; }
     regex: ["alloc=^(malloc|calloc|realloc)$"]
   - name: member-store
     pattern: |
-      { $p = $alloc(_); not: _($p) == _; not: _($p) != _; not: !$p; not: if ($p) {} $p->_ = _; }
+      { $p = $alloc(_); not: _($p) == _; not: _ == _($p); not: _($p) != _; not: _ != _($p); not: !$p; not: if ($p) {} not: $p && _; not: _ && $p; not: assert(_($p)); not: _ = $p; $p->_ = _; }
     regex: ["alloc=^(malloc|calloc|realloc)$"]
   - name: copy-into
     pattern: |
-      { $p = $alloc(_); not: _($p) == _; not: _($p) != _; not: !$p; not: if ($p) {} $copy($p, _); }
+      { $p = $alloc(_); not: _($p) == _; not: _ == _($p); not: _($p) != _; not: _ != _($p); not: !$p; not: if ($p) {} not: $p && _; not: _ && $p; not: assert(_($p)); not: _ = $p; $copy($p, _); }
     regex:
       - "alloc=^(malloc|calloc|realloc)$"
       - "copy=^(strcpy|strncpy|strcat|wcscpy|wcsncpy|memcpy|memmove|memset|sprintf|snprintf)$"
+  - name: index-store-through-alias
+    pattern: |
+      { $p = $alloc(_); not: _($p) == _; not: _ == _($p); not: _($p) != _; not: _ != _($p); not: !$p; not: if ($p) {} not: $p && _; not: _ && $p; not: assert(_($p)); $q = $p; not: _($p) == _; not: _ == _($p); not: _($p) != _; not: _ != _($p); not: !$p; not: if ($p) {} not: $p && _; not: _ && $p; not: assert(_($p)); not: _($q) == _; not: _ == _($q); not: _($q) != _; not: _ != _($q); not: !$q; not: if ($q) {} not: $q && _; not: _ && $q; not: assert(_($q)); not: _ = $q; $q[_] = _; }
+    regex: ["alloc=^(malloc|calloc|realloc|strdup|wcsdup)$"]
+    unique: true
+  - name: copy-into-alias
+    pattern: |
+      { $p = $alloc(_); not: _($p) == _; not: _ == _($p); not: _($p) != _; not: _ != _($p); not: !$p; not: if ($p) {} not: $p && _; not: _ && $p; not: assert(_($p)); $q = $p; not: _($p) == _; not: _ == _($p); not: _($p) != _; not: _ != _($p); not: !$p; not: if ($p) {} not: $p && _; not: _ && $p; not: assert(_($p)); not: _($q) == _; not: _ == _($q); not: _($q) != _; not: _ != _($q); not: !$q; not: if ($q) {} not: $q && _; not: _ && $q; not: assert(_($q)); not: _ = $q; $copy($q, _); }
+    regex:
+      - "alloc=^(malloc|calloc|realloc)$"
+      - "copy=^(strcpy|strncpy|strcat|wcscpy|wcsncpy|memcpy|memmove|memset|sprintf|snprintf)$"
+    unique: true
+  - name: unchecked-file
+    pattern: |
+      { $p = $alloc(_); not: _($p) == _; not: _ == _($p); not: _($p) != _; not: _ != _($p); not: !$p; not: if ($p) {} not: $p && _; not: _ && $p; not: assert(_($p)); not: _ = $p; $io($p); }
+    regex:
+      - "alloc=^(fopen|_wfopen|fdopen|freopen|popen)$"
+      - "io=^(fclose|fprintf|fwprintf|fputs|fputws|fputc|fgets|fgetws|fgetc|fread|fwrite|fscanf|fseek|ftell|rewind|fflush|pclose)$"
 message: "`{p}` from {alloc}() is used before a NULL check"
 examples:
   bad:
@@ -249,6 +302,27 @@ examples:
         int *v = calloc(n, sizeof(int));
         v[0] = 5;
       }
+    - |
+      void f(void) {
+        twoIntsStruct * data;
+        data = (twoIntsStruct *)malloc(1*sizeof(twoIntsStruct));
+        data[0].intOne = 1;
+      }
+    - |
+      void f(void) {
+        FILE * data;
+        data = fopen("file.txt", "w+");
+        fclose(data);
+      }
+    - |
+      void f(void) {
+        int * data;
+        data = (int *)calloc(1, sizeof(int));
+        {
+          int * dataCopy = data;
+          dataCopy[0] = 5;
+        }
+      }
   good:
     - |
       void f(void) {
@@ -263,6 +337,40 @@ examples:
         int *v = calloc(n, sizeof(int));
         if (!v) return;
         v[0] = 5;
+      }
+    - |
+      void f(void) {
+        int64_t * data;
+        data = (int64_t *)ALLOCA(100*sizeof(int64_t));
+        data[0] = 5LL;
+      }
+    - |
+      void f(int n) {
+        int *v = calloc(n, sizeof(int));
+        if (NULL == v) exit(1);
+        v[0] = 5;
+      }
+    - |
+      void f(int n) {
+        int *v = calloc(n, sizeof(int));
+        assert(v != NULL);
+        v[0] = 5;
+      }
+    - |
+      void f(int n) {
+        char *buf = malloc(n);
+        char *p = buf;
+        if (!p) return;
+        p[0] = 0;
+        buf[1] = 0;
+      }
+    - |
+      void f(void) {
+        FILE * data;
+        data = fopen("file.txt", "w+");
+        if (data != NULL) {
+          fclose(data);
+        }
       }
 ---
 id: c-null-deref
