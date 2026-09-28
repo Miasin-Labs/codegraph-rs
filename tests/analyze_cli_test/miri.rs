@@ -145,7 +145,9 @@ fn analyze_miri_runs_miri_and_maps_ub_back_to_the_graph() {
     let (_dir, root) = temp_project();
     write_miri_fixture(&root);
     init_fixture_files_only(&root);
-    let target_dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("miri-fixture-target");
+    // Its own target dir: cargo-miri caches the run invocation (with the
+    // crate's directory), so one shared across temp projects goes stale.
+    let target_dir = root.join("miri-target");
 
     let out = run_cli(
         &root,
@@ -168,7 +170,7 @@ fn analyze_miri_runs_miri_and_maps_ub_back_to_the_graph() {
             .map(|r| r["status"].as_str().unwrap().to_string())
             .unwrap_or_else(|| panic!("no run {test}: {report}"))
     };
-    assert_eq!(status_of("tests::reads_first"), "ub");
+    assert_eq!(status_of("tests::reads_first"), "ub", "{report}");
     assert_eq!(status_of("tests::sums"), "clean");
     // FFI is Miri's limit, not a clean pass.
     assert_eq!(status_of("tests::calls_c"), "unsupported");

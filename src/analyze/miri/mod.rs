@@ -407,7 +407,18 @@ pub fn report_from_log(cg: &CodeGraph, root: &Path, output: &str) -> Result<Miri
     // failed build, and anything else is unrecognized.
     let (status, reason) = if parsed.primary().is_some() || parsed.ran_tests {
         let passed = parsed.failed == 0 && parsed.panics.is_empty();
-        (run::status_of(&parsed, passed, false, false), None)
+        let status = run::status_of(&parsed, passed, false, false);
+        let reason = match status {
+            RunStatus::TestFailed => parsed
+                .panics
+                .first()
+                .map(|p| format!("panicked: {}", p.message)),
+            RunStatus::Unsupported | RunStatus::Aborted | RunStatus::Deadlock => {
+                parsed.primary().map(|d| d.message.clone())
+            }
+            _ => None,
+        };
+        (status, reason)
     } else {
         let reason = run::build_reason(output, RunStatus::BuildFailed);
         let offline = reason.starts_with("a dependency is not in the local cargo cache");
