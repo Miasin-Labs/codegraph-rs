@@ -1,0 +1,239 @@
+# Rust network-server hardening: timing-unsafe secret compares, HTTP clients
+# that follow redirects (SSRF), accept loops that die on one error or never
+# cap connections, subprocesses and peer reads with no deadline. Written from
+# a real server's security audit (each rule caught its fixed bug before the
+# fix and was silent after). Suppress a site that is fine with
+# `// codegraph: ignore <rule-id> — why`.
+id: rust-secret-compare-not-constant-time
+description: >-
+  A secret (token, password, key, signature) is compared with `==`/`!=`,
+  which returns at the first differing byte: response timing leaks how much
+  of a guess was right (CWE-208).
+severity: medium
+tags: [CWE-208, timing]
+language: rust
+check-patterns:
+  - name: secret-on-the-left
+    query: |
+      (binary_expression left: (_) @secret operator: ["==" "!="] right: (_) @other) @cmp
+    at: cmp
+    where:
+      - capture: secret
+        regex: "(?i)(token|secret|password|passwd|passcode|api_?key|hmac|signature|expected)"
+      - capture: secret
+        not-regex: "(?i)(\\.len\\(\\)|is_empty|_len\\b|count|kind|type|name|header|none|epoch|generation|version|crc|checksum|default\\(\\))|^b?\"|(?-i:^[A-Z0-9_]+$)"
+      - capture: other
+        not-regex: "^(None|Some\\(\\w+\\)|\"\"|0|true|false)$|\\.len\\(\\)|^b?\"|default\\(\\)|(?i)crc|checksum|generation|epoch|version|(?-i:^[A-Z0-9_]+$)"
+  - name: secret-on-the-right
+    query: |
+      (binary_expression left: (_) @other operator: ["==" "!="] right: (_) @secret) @cmp
+    at: cmp
+    where:
+      - capture: secret
+        regex: "(?i)(token|secret|password|passwd|passcode|api_?key|hmac|signature|expected)"
+      - capture: secret
+        not-regex: "(?i)(\\.len\\(\\)|is_empty|_len\\b|count|kind|type|name|header|none|epoch|generation|version|crc|checksum|default\\(\\))|^b?\"|(?-i:^[A-Z0-9_]+$)"
+      - capture: other
+        not-regex: "^(None|Some\\(\\w+\\)|\"\"|0|true|false)$|\\.len\\(\\)|^b?\"|default\\(\\)|(?i)crc|checksum|generation|epoch|version|(?-i:^[A-Z0-9_]+$)"
+message: "`{cmp}` compares a secret with a short-circuiting comparison"
+review:
+  - Is the compared value a credential an attacker can guess against (a header, a cookie, a query param)?
+  - Use a constant-time compare (`subtle::ConstantTimeEq`, or fold over XORed bytes after a length check).
+examples:
+  bad:
+    - |
+      fn check(given: &str, expected: &str) -> bool { given.as_bytes() != expected.as_bytes() }
+    - |
+      fn ok(req_token: &str, cfg: &Cfg) -> bool { req_token == cfg.admin_token }
+    - |
+      fn validate_state(expected: &str, received: &str) -> bool { expected != received }
+  good:
+    - |
+      fn check(given: &str, expected: &str) -> bool { token_matches(given, expected) }
+    - |
+      fn empty(token: &str) -> bool { token.len() == 0 }
+    - |
+      fn missing(token: Option<&str>) -> bool { token == None }
+    - |
+      fn grant(grant: &str) -> bool { grant == "refresh_token" }
+    - |
+      fn live(epoch: Option<i64>, token_epoch: i64) -> bool { epoch != Some(token_epoch) }
+    - |
+      fn ok(data: &[u8], expected: u32) -> bool { crc32c(data) == expected }
+    - |
+      fn none(secrets: &Secrets) -> bool { secrets == Secrets::default() }
+    - |
+      fn raw(key: &str) -> bool { key == RAW_VALUE_TOKEN }
+    - |
+      fn cas(expected: Option<u64>, generation: u64) -> bool { expected.is_some_and(|expected| expected != generation) }
+---
+id: rust-http-client-follows-redirects
+description: >-
+  A reqwest client is built without a redirect policy, so it follows up to 10
+  redirects by default. A client pointed at a user-configured host can be
+  redirected to an internal address, with whatever credentials the request
+  carries (CWE-918, SSRF).
+severity: medium
+tags: [CWE-918, ssrf]
+language: rust
+check-patterns:
+  - name: builder-without-redirect-policy
+    query: |
+      ((call_expression function: (field_expression field: (field_identifier) @m)) @call
+       (#eq? @m "build"))
+    at: call
+    where:
+      - capture: call
+        regex: "Client::builder\\(\\)|ClientBuilder::new\\(\\)"
+      - capture: call
+        not-regex: "\\.redirect\\("
+  - name: default-client
+    query: |
+      ((call_expression function: (scoped_identifier path: (_) @ty name: (identifier) @f)) @call
+       (#eq? @f "new"))
+    at: call
+    where:
+      - capture: ty
+        regex: "^(reqwest::)?Client$"
+message: "reqwest client without a redirect policy (follows redirects by default)"
+review:
+  - Does this client ever talk to a URL a user or tenant configures? Then a redirect can point it at localhost or the cloud metadata address.
+  - "`.redirect(reqwest::redirect::Policy::none())` unless the API is known to redirect."
+examples:
+  bad:
+    - |
+      fn c() -> reqwest::Client { reqwest::Client::builder().timeout(T).build().unwrap() }
+    - |
+      fn c() -> Client { Client::new() }
+  good:
+    - |
+      fn c() -> reqwest::Client { reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap() }
+    - |
+      fn c() -> Foo { Foo::new() }
+---
+id: rust-accept-error-ends-server
+description: >-
+  `listener.accept().await?` inside the accept loop: one failed accept
+  (EMFILE when file descriptors run out, ECONNABORTED) returns from the loop
+  and the server stops listening for good (CWE-400).
+severity: medium
+tags: [CWE-400, dos]
+language: rust
+check-patterns:
+  - name: accept-with-question-mark
+    query: |
+      ((try_expression (await_expression (call_expression function: (field_expression field: (field_identifier) @m)))) @try
+       (#eq? @m "accept"))
+    at: try
+    where:
+      - inside: "(loop_expression) @loop"
+message: "`{try}` ends the accept loop on the first accept error"
+review:
+  - Log the error, back off briefly (EMFILE clears as connections close) and `continue`.
+examples:
+  bad:
+    - |
+      async fn run(l: TcpListener) -> io::Result<()> { loop { let (s, _) = l.accept().await?; spawn(s); } }
+  good:
+    - |
+      async fn run(l: TcpListener) { loop { let (s, _) = match l.accept().await { Ok(a) => a, Err(_) => continue }; spawn(s); } }
+    - |
+      async fn once(l: TcpListener) -> io::Result<()> { let (s, _) = l.accept().await?; spawn(s); Ok(()) }
+---
+id: rust-subprocess-without-deadline
+description: >-
+  A child process is run to completion (`output()`/`status()`/`wait()`) with
+  no deadline anywhere in the function: input that makes the tool spin ties
+  up the caller forever, and on an async worker, the whole runtime (CWE-400).
+severity: medium
+tags: [CWE-400, dos]
+language: rust
+check-patterns:
+  - name: run-to-completion
+    query: |
+      ((call_expression function: (field_expression field: (field_identifier) @m)) @call
+       (#match? @m "^(output|status|wait|wait_with_output)$"))
+    at: call
+    where:
+      - enclosing-function:
+          calls: "Command::new|^new$"
+          calls-not: "(?i)timeout|wait_timeout|kill|run_bounded|deadline"
+      - capture: call
+        regex: "Command::new|\\.arg|\\.spawn\\(|child|\\.stdout"
+message: "`{m}()` waits for a child process with no deadline"
+review:
+  - Can the input (a user file, a URL) make this tool run for a long time or print without end?
+  - Bound it (a timeout that kills the process group, and a cap on output).
+examples:
+  bad:
+    - |
+      fn text(p: &Path) -> io::Result<Output> { Command::new("pdftotext").arg(p).output() }
+  good:
+    - |
+      async fn text(p: &Path) -> io::Result<Output> { tokio::time::timeout(T, Command::new("pdftotext").arg(p).output()).await? }
+    - |
+      fn n(v: &[u8]) -> usize { v.iter().map(|b| b.status()).count() }
+---
+id: rust-network-read-without-deadline
+description: >-
+  An async read from a network peer (`read_line`/`read_until`/`read_exact`/
+  `read_buf`) with no timeout anywhere in the function: a client that sends
+  nothing holds the task, its buffer and its file descriptor forever
+  (slowloris, CWE-400).
+severity: low
+tags: [CWE-400, dos]
+language: rust
+check-patterns:
+  - name: read-without-timeout
+    query: |
+      ((await_expression (call_expression function: (field_expression field: (field_identifier) @m))) @read
+       (#match? @m "^(read_line|read_until|read_exact|read_buf|read_to_end|read_to_string)$"))
+    at: read
+    where:
+      - enclosing-function:
+          calls-not: "(?i)timeout|deadline"
+          is-test: false
+      - capture: read
+        not-regex: "(?i)file|fs::|stdin|body|response|resp\\b|res\\b"
+message: "`{read}` waits on a peer with no deadline"
+review:
+  - Is the reader a socket a remote client controls (not a file, not a trusted child)?
+  - Is a timeout applied by the caller instead (`tokio::time::timeout` around the session)?
+examples:
+  bad:
+    - |
+      async fn cmd(r: &mut BufReader<TcpStream>, b: &mut String) -> io::Result<usize> { r.read_line(b).await }
+  good:
+    - |
+      async fn cmd(r: &mut BufReader<TcpStream>, b: &mut String) -> io::Result<usize> { timeout(IDLE, r.read_line(b)).await? }
+---
+id: rust-unbounded-accept-spawn
+description: >-
+  Every accepted connection gets a task, with no cap on how many run at once
+  (no semaphore, no permit): connections alone can exhaust memory and file
+  descriptors (CWE-770).
+severity: low
+tags: [CWE-770, dos]
+language: rust
+check-patterns:
+  - name: spawn-per-accept
+    query: |
+      ((call_expression function: (field_expression field: (field_identifier) @m)) @accept
+       (#eq? @m "accept"))
+    at: accept
+    where:
+      - inside: "(loop_expression) @loop"
+      - enclosing-function:
+          calls: "spawn"
+          calls-not: "(?i)semaphore|acquire|permit|limit"
+message: "a task per accepted connection, with no cap on how many"
+review:
+  - Is this listener reachable from the internet (or from untrusted local users)?
+  - Cap concurrent sessions (`tokio::sync::Semaphore::try_acquire_owned`) and refuse the rest.
+examples:
+  bad:
+    - |
+      async fn run(l: TcpListener) { loop { if let Ok((s, _)) = l.accept().await { tokio::spawn(serve(s)); } } }
+  good:
+    - |
+      async fn run(l: TcpListener, sem: Arc<Semaphore>) { loop { if let Ok((s, _)) = l.accept().await { let Ok(p) = sem.clone().try_acquire_owned() else { continue }; tokio::spawn(serve(s, p)); } } }

@@ -420,8 +420,14 @@ cargo test --workspace
   uninit, panic-safety (`ptr::read` + caller code, `drop_in_place` before
   the length shrinks) and memory corruption (unchecked `alloc`, lifetime
   `transmute`, wrapping `w * h` length asserts, unchecked `get_unchecked`
-  windows, `from_utf8_unchecked` on caller bytes, bytes of a generic `T`).
-  Rules are kept only if they discriminate on RustSec vuln/fixed pairs
+  windows, `from_utf8_unchecked` on caller bytes, bytes of a generic `T`),
+  and Rust network-server hardening (`rust-server.yaml`: timing-unsafe
+  secret compares, redirect-following reqwest clients, `accept()?` and
+  uncapped accept loops, subprocesses and peer reads with no deadline;
+  written from rms's audit, each caught its bug before the fix and not
+  after). Any detector's finding is dropped by `codegraph: ignore
+  <rule-id>[, …]` (and the reason) on its line or the line above
+  (`bugs::suppressed_at`, via the line index). Rules are kept only if they discriminate on RustSec vuln/fixed pairs
   (fire near the fix, not in fixed/); a generic shape that also fires all
   over fixed code (any `copy_nonoverlapping`, unsafe `Deref`) is not a
   rule. Measured with `tools/bugbench/` (juliet-c 58.4% P / 21.4% R,

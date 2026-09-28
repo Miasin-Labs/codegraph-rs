@@ -30,7 +30,7 @@ mod project;
 mod review;
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 pub use project::{CallSite, FnSpan, Project};
@@ -38,6 +38,7 @@ pub use review::{ReviewPacket, review_packets};
 use serde::Serialize;
 
 use crate::codegraph::CodeGraph;
+use crate::resolution::line_index::LineStarts;
 
 /// Which detector family found it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -238,21 +239,64 @@ pub(crate) fn retain_selected(
     findings: &mut Vec<Finding>,
     options: &BugsOptions,
 ) {
-    if !options.include_tests {
-        // Test items the syntax marks are read from the parsed file.
-        let files: HashSet<String> = findings.iter().map(|f| f.file.clone()).collect();
-        for file in files {
-            project.parsed(&file);
+    // Test items the syntax marks, and suppression comments, are read from
+    // the parsed file.
+    let files: HashSet<String> = findings.iter().map(|f| f.file.clone()).collect();
+    let mut line_starts: HashMap<String, LineStarts> = HashMap::new();
+    for file in files {
+        if let Some(parsed) = project.parsed(&file) {
+            line_starts.insert(file, LineStarts::new(&parsed.source));
         }
     }
     let project = &*project;
     findings.retain(|finding| {
+        let suppressed = project
+            .parsed_cached(&finding.file)
+            .zip(line_starts.get(&finding.file))
+            .is_some_and(|(parsed, starts)| {
+                suppressed_at(&parsed.source, starts, finding.line, &finding.rule)
+            });
+        if suppressed {
+            return false;
+        }
         options
             .only_files
             .as_ref()
             .is_none_or(|files| files.iter().any(|file| file == &finding.file))
             && (options.include_tests || !project.is_test_location(finding))
     });
+}
+
+/// Whether `line` (1-based) or the line above it carries a suppression
+/// comment for `rule`: `codegraph: ignore <rule-id>[, <rule-id>…]`, followed
+/// by the reason (`// codegraph: ignore rust-http-client-follows-redirects —
+/// the providers' downloads redirect`). The comment syntax is the
+/// language's own; only the marker is read.
+fn suppressed_at(source: &str, starts: &LineStarts, line: u32, rule: &str) -> bool {
+    const MARKER: &str = "codegraph: ignore";
+    [line.saturating_sub(1), line]
+        .into_iter()
+        .filter(|&at| at > 0)
+        .any(|at| {
+            let start = starts.line_start(at).min(source.len());
+            let end = starts
+                .line_start(at + 1)
+                .saturating_sub(1)
+                .min(source.len());
+            let Some(text) = source.get(start..end.max(start)) else {
+                return false;
+            };
+            text.match_indices(MARKER).any(|(i, _)| {
+                text[i + MARKER.len()..]
+                    .split(|c: char| c == ',' || c.is_whitespace())
+                    .filter(|word| !word.is_empty())
+                    .take_while(|word| {
+                        word.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                    })
+                    .any(|word| word == rule)
+            })
+        })
 }
 
 /// Most confident first, then by place.
@@ -263,4 +307,26 @@ pub(crate) fn rank(findings: &mut [Finding]) {
             .then_with(|| (&a.file, a.line, a.col).cmp(&(&b.file, b.line, b.col)))
             .then_with(|| a.rule.cmp(&b.rule))
     });
+}
+
+#[cfg(test)]
+mod suppression_tests {
+    use super::*;
+
+    #[test]
+    fn a_suppression_comment_names_the_rule_on_its_line_or_the_line_above() {
+        let source = "fn a() {\n\
+                      // codegraph: ignore rule-a, rule-b — both are fine here\n\
+                      call();\n\
+                      other(); // codegraph: ignore rule-c\n\
+                      last();\n}\n";
+        let starts = LineStarts::new(source);
+        let at = |line, rule| suppressed_at(source, &starts, line, rule);
+        assert!(at(3, "rule-a") && at(3, "rule-b"));
+        assert!(!at(3, "rule-c"), "another rule stays reported");
+        assert!(at(4, "rule-c"), "a trailing comment covers its own line");
+        assert!(!at(5, "rule-a"), "only the next line is covered");
+        assert!(!at(3, "rule"), "ids match whole");
+        assert!(!at(99, "rule-a"), "past the end");
+    }
 }
