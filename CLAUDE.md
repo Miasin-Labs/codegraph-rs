@@ -391,6 +391,32 @@ cargo test --workspace
   `--base` narrows the report (beliefs are still learned project-wide).
   `analyze bugs|rules --json` lists every finding (a consumer filters it);
   the human form shows the 50 most confident; `--top` caps either.
+  **Ecosystem beliefs** (`deviance/ecosystem/`, `src/deps/beliefs/`,
+  `codegraph deps beliefs build|show`): Engler at cargo-cache scale.
+  `build` (CLI only, `--detach` = one detached builder; `--max-crates`,
+  `--budget-ms`, per-crate resolution budget) takes one version per cached
+  crate, builds its shard + its direct deps' shards from the cache (reqs →
+  newest cached match, never the network) + `std`/`core`/`alloc` shards
+  from local rust-src (`deps/beliefs/toolchain/`), runs a READ-ONLY
+  external pass over a private copy (`resolve_read_only`: explicit
+  `Reach`, writes nothing; bare prelude types map to alloc/core only
+  there), and walks the syntax (`observe.rs`: use class, receiver-root
+  object, APIs before/after on it, escapes, constructed-in-view, guard
+  alive at a later `.await`). Observations cache per crate
+  (`deps/beliefs/obs/`, input fingerprint) → `beliefs.json` (keys
+  `crate@compat::Qname`, compat = major or `0.minor`): result-used
+  (status returns only), followed-by (methods only — `new`→`insert` is a
+  habit) / preceded-by (constructors never count), named release pairs
+  (`into_raw`/`from_raw`, `alloc`/`dealloc`), not-held-across-await; ≥5
+  agreeing crates, ≥10 sites, 90% sites + 85% crates, ≤20 sites/crate/API,
+  lift ≥3. `analyze bugs|review` load it read-only (`--no-ecosystem`
+  skips) and report `ecosystem-*`; ordering departures need the object
+  abandoned (nothing after / nothing before but its constructor). Whole
+  cache 2026-09: 1,975 crates, 311k sites, 201 beliefs, ~7 min cold /
+  90 s warm; 8 real projects (51k library calls): 23 → 1 finding after
+  the fixes. Thin where the cache is (it holds libraries, few apps; tokio
+  `sync` sits in `cfg_*!` macros; `[const]`-bound `impl`s in nightly std
+  lose their methods to the grammar, e.g. `Vec::push`).
 - **Rules engine** (`src/analyze/rules/`, `codegraph analyze rules`,
   `analyze review --rules|--builtin`): model-writable YAML rules
   (weggli-ruleset format, `deny_unknown_fields`, `serde_yaml_ng`) whose
@@ -426,7 +452,10 @@ cargo test --workspace
   uncapped accept loops, subprocesses and peer reads with no deadline, a
   guarded `dns_resolver` that proxies bypass (no `.no_proxy()`);
   written from rms's audit, each caught its bug before the fix and not
-  after). Any detector's finding is dropped by `codegraph: ignore
+  after; on 10 real projects, 2026-09: secret-compare's `expected` counts
+  only in credential fns, only a zero-arg listener `accept()` counts, child
+  pipes are no peer reads; python command injection needs a shell,
+  py-path-from-input web input — 12% real / 89% real-or-harmless after). Any detector's finding is dropped by `codegraph: ignore
   <rule-id>[, …]` (and the reason) on its line or the line above
   (`bugs::suppressed_at`, via the line index). Rules are kept only if they discriminate on RustSec vuln/fixed pairs
   (fire near the fix, not in fixed/); a generic shape that also fires all
@@ -596,8 +625,11 @@ external pass only reads `unresolved_refs`, and the in-project contexts'
 
 - **Rust only** (`external/rust/`): paths and `use`d names go to the crate
   their first segment names (`crate::…` from its lib root via
-  `match_rust_path`, then another crate's `pub use` ≤2 hops, then the unique
-  item of that shape); `recv.m()`/dropped receivers go to `Type::m` of the
+  `match_rust_path`, then another crate's `pub use` ≤2 hops — at the root
+  or through a module's own `pub use self::…` chain (≤4 in-crate hops:
+  `std::ffi::CString` → `alloc`) — then the unique item of that shape);
+  a method on a re-exported type is looked up in its defining crate, and
+  `lookup_method` returns the graph it was found in; `recv.m()`/dropped receivers go to `Type::m` of the
   crate whose type inference found, typing chains through dependency return
   types (`resolution/foreign.rs` → `external/declarations.rs`). External
   types carry their in-crate path (`Home::External { krate, path }`) so
