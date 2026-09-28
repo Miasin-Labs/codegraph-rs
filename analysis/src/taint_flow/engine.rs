@@ -50,6 +50,10 @@ struct CallModel {
     result: ResultRule,
     /// The receiver takes its arguments' data.
     receiver_from_args: bool,
+    /// Its result is its receiver (or first argument) itself, wrapped or
+    /// borrowed ([`PropagationRules::projections`]): a field of the result
+    /// is that field of it.
+    projects: bool,
 }
 
 /// A read a definition's value depends on.
@@ -152,6 +156,9 @@ pub(super) struct Engine<'f> {
     /// `Call` ops by the operands they take as arguments.
     calls_taking: HashMap<&'f Operand, Vec<usize>>,
 }
+
+/// Fields of a returned struct searched apart, at most.
+const MAX_RETURN_FIELDS: usize = 16;
 
 /// The last name of a callee or qualified name (`a.b.c` → `c`,
 /// `x::Y::z` → `z`, `new Foo` → `Foo`).
@@ -262,6 +269,7 @@ impl<'f> Engine<'f> {
                             CallModel {
                                 result,
                                 receiver_from_args: false,
+                                projects: false,
                             },
                         );
                         continue;
@@ -273,6 +281,7 @@ impl<'f> Engine<'f> {
                     let mut model = CallModel {
                         result: ResultRule::Default,
                         receiver_from_args: find(&|name| rules.is_receiver_write(name)),
+                        projects: find(&|name| rules.is_projection(name)),
                     };
                     if let Some((arg, append)) = positional.get(&index) {
                         model.result =
@@ -713,10 +722,22 @@ impl<'f> Engine<'f> {
             })
     }
 
-    /// What a definition's value is computed from.
-    fn inputs(&self, def: DefId) -> Vec<Input> {
+    /// What a definition's value is computed from, for a search that got
+    /// to it reading `read`: a read below the defined place (`x.f` of
+    /// `x = y`) reads that far below what the value came from (`y.f`).
+    fn inputs(&self, def: DefId, read: Option<&Place>) -> Vec<Input> {
         let rd = self.rd();
         let the_def = &rd.defs[def];
+        let suffix: &[String] = match read {
+            Some(read)
+                if read.base == the_def.place.base
+                    && read.fields.len() > the_def.place.fields.len()
+                    && read.fields.starts_with(&the_def.place.fields) =>
+            {
+                &read.fields[the_def.place.fields.len()..]
+            }
+            _ => &[],
+        };
         let op = match the_def.origin {
             DefOrigin::Entry => return Vec::new(),
             DefOrigin::Extra(index) => {
@@ -733,6 +754,13 @@ impl<'f> Engine<'f> {
         };
         let operand = |operand: &Operand| (Read::Operand(operand.clone()), op, None);
         let mut reads = match &self.func.body[op] {
+            IrOp::Assign {
+                src: src @ Operand::Var(_),
+                ..
+            } if !suffix.is_empty() => match rd.place_of(src) {
+                Some(place) => vec![(Read::Place(below(&place, suffix)), op, None)],
+                None => vec![operand(src)],
+            },
             IrOp::Assign { src, .. } => vec![operand(src)],
             IrOp::BinOp {
                 lhs, op: kind, rhs, ..
@@ -748,7 +776,7 @@ impl<'f> Engine<'f> {
                 // result, the result.
                 match rd.place_of(&Operand::Var(dst.clone())) {
                     Some(place) if place != Place::var(dst.clone()) => {
-                        vec![(Read::Place(place), op, None)]
+                        vec![(Read::Place(below(&place, suffix)), op, None)]
                     }
                     _ => vec![operand(base)],
                 }
@@ -771,15 +799,32 @@ impl<'f> Engine<'f> {
                             .iter()
                             .map(|(read, at)| (read.clone(), *at, None))
                             .collect(),
-                        Some(ResultRule::Summary(summary)) => summary
-                            .returns
-                            .inputs
-                            .iter()
-                            .filter_map(|(access, path)| {
-                                self.map_access(op, access)
-                                    .map(|read| (read, op, Some(path.clone())))
-                            })
-                            .collect(),
+                        Some(ResultRule::Summary(summary)) => {
+                            // `r.f` of `r = f()` reads what `.f` of its
+                            // return value carries, and below it.
+                            let (field, rest) = match suffix.split_first() {
+                                Some((field, rest)) => (Some(field.as_str()), rest),
+                                None => (None, &[][..]),
+                            };
+                            let narrowed = field.is_some()
+                                && summary
+                                    .returns_fields
+                                    .iter()
+                                    .any(|(f, _)| Some(f.as_str()) == field);
+                            let rest = if narrowed { rest } else { &[][..] };
+                            summary
+                                .returned(field)
+                                .inputs
+                                .iter()
+                                .filter_map(|(access, path)| {
+                                    let mut access = access.clone();
+                                    access.fields.extend(rest.iter().cloned());
+                                    access.fields.truncate(crate::ir::MAX_PLACE_DEPTH);
+                                    self.map_access(op, &access)
+                                        .map(|read| (read, op, Some(path.clone())))
+                                })
+                                .collect()
+                        }
                         Some(ResultRule::KeyedRead(key)) => {
                             let receiver_place = self
                                 .func
@@ -791,6 +836,30 @@ impl<'f> Engine<'f> {
                                     vec![(Read::Place(place.field(key).0), op, None)]
                                 }
                                 _ => receiver.iter().map(operand).collect(),
+                            }
+                        }
+                        _ if !suffix.is_empty() && model.is_some_and(|m| m.projects) => {
+                            // `Arc::new(s).f`, `x.clone().f`: that field of
+                            // the wrapped value.
+                            // The receiver, or the one argument of a
+                            // wrapper (`Config::new(a, b)` is no wrapper).
+                            let places = self.func.call_places(op);
+                            let inner = if receiver.is_some() {
+                                places
+                                    .and_then(|p| p.receiver.clone())
+                                    .or_else(|| receiver.as_ref().and_then(|r| rd.place_of(r)))
+                            } else if args.len() == 1 {
+                                places
+                                    .and_then(|p| p.args.first().cloned().flatten())
+                                    .or_else(|| args.first().and_then(|a| rd.place_of(a)))
+                            } else {
+                                None
+                            };
+                            match inner {
+                                Some(place) => {
+                                    vec![(Read::Place(below(&place, suffix)), op, None)]
+                                }
+                                None => receiver.iter().chain(args).map(operand).collect(),
                             }
                         }
                         _ => receiver.iter().chain(args).map(operand).collect(),
@@ -853,9 +922,13 @@ impl<'f> Engine<'f> {
                         ..
                     }) = self.models.get(&op)
                     {
+                        let field = read
+                            .filter(|place| place.base == the_def.place.base)
+                            .and_then(|place| place.fields.first())
+                            .map(String::as_str);
                         roots.extend(
                             summary
-                                .returns
+                                .returned(field)
                                 .sources
                                 .iter()
                                 .map(|fact| Root::External(fact.clone())),
@@ -970,7 +1043,7 @@ impl<'f> Engine<'f> {
             for root in self.roots_of(def, read.as_ref()) {
                 found.roots.push((root, def));
             }
-            for (read, point, via) in self.inputs(def) {
+            for (read, point, via) in self.inputs(def, read.as_ref()) {
                 let place = Self::read_place(&read);
                 for next in self.resolve(&read, point) {
                     if let std::collections::hash_map::Entry::Vacant(entry) =
@@ -1082,21 +1155,26 @@ impl<'f> Engine<'f> {
                 .collect();
             let found = self.search(&start, budget);
             let end = self.op_step(returns[0].0);
-            for (root, def) in &found.roots {
-                let mut steps = self.chain(&found, root, *def);
-                steps.push(end);
-                match root {
-                    Root::Input(access) => {
-                        summary.add_return_input(access.clone(), summary::path(steps))
-                    }
-                    _ => {
-                        if let Some(source) = self.source_ref(root) {
-                            summary.add_return_source(SourceFact {
-                                source,
-                                path: summary::path(steps),
-                            });
-                        }
-                    }
+            summary.returns = self.output_of(&found, end);
+            // A returned struct's fields, where one carries less than the
+            // whole (`Self { a: x, b: y }`).
+            for field in self.returned_fields(&returns) {
+                let start: Vec<(Read, usize)> = returns
+                    .iter()
+                    .filter_map(|(index, value)| {
+                        let place = self.rd().place_of(value)?;
+                        Some((
+                            Read::Place(below(&place, std::slice::from_ref(&field))),
+                            *index,
+                        ))
+                    })
+                    .collect();
+                let found = self.search(&start, budget);
+                let output = self.output_of(&found, end);
+                if output.inputs.len() < summary.returns.inputs.len()
+                    || output.sources.len() < summary.returns.sources.len()
+                {
+                    summary.set_return_field(field, output);
                 }
             }
         }
@@ -1116,45 +1194,180 @@ impl<'f> Engine<'f> {
             .collect();
         if !exits.is_empty() {
             for (slot, place) in self.outputs() {
-                let start: Vec<(Read, usize)> = exits
-                    .iter()
-                    .map(|&at| (Read::Place(place.clone()), at))
-                    .collect();
                 if self.rebound_at_exit(&place, &exits) {
                     continue;
                 }
-                let found = self.search(&start, budget);
-                let end = self.op_step(exits[0]);
-                let mut output = summary::Output::default();
-                for (root, def) in &found.roots {
-                    // What the caller passed in stays what it was.
-                    if matches!(root, Root::Input(a) if a.slot == slot && a.fields.is_empty()) {
-                        continue;
-                    }
-                    let mut steps = self.chain(&found, root, *def);
-                    steps.push(end);
-                    match root {
-                        Root::Input(access) => {
-                            if !output.inputs.iter().any(|(a, _)| a == access) {
-                                output.inputs.push((access.clone(), summary::path(steps)));
-                            }
-                        }
-                        _ => {
-                            if let Some(source) = self.source_ref(root) {
-                                if !output.sources.iter().any(|f| f.source == source) {
-                                    output.sources.push(SourceFact {
-                                        source,
-                                        path: summary::path(steps),
-                                    });
-                                }
-                            }
-                        }
-                    }
+                // Written only field by field (`self.out.write_all(x)`):
+                // each field its own output, so `self.path` stays clean.
+                let targets: Vec<(Access, Place)> = match self.written_fields(&place) {
+                    Some(fields) => fields
+                        .into_iter()
+                        .map(|field| {
+                            let target = Access {
+                                slot: slot.clone(),
+                                fields: vec![field.clone()],
+                            };
+                            (target, place.field(&field).0)
+                        })
+                        .collect(),
+                    None => vec![(Access::slot(slot), place.clone())],
+                };
+                for (target, place) in targets {
+                    self.add_output_write(&mut summary, target, &place, &exits, budget);
                 }
-                summary.add_write(Access::slot(slot), output);
             }
         }
         (flows, summary)
+    }
+
+    /// The first fields below `place` the function writes, when it never
+    /// writes `place` itself (at most [`MAX_RETURN_FIELDS`]; `None`: some
+    /// write is to the whole, or too many fields).
+    fn written_fields(&self, place: &Place) -> Option<Vec<String>> {
+        let rd = self.rd();
+        let mut fields: Vec<String> = Vec::new();
+        for def in &rd.defs {
+            if def.place.base != place.base || matches!(def.origin, DefOrigin::Entry) {
+                continue;
+            }
+            if matches!(def.origin, DefOrigin::Extra(i) if matches!(self.extra_kinds[i], ExtraKind::Shared(_)))
+            {
+                continue;
+            }
+            let field = def.place.fields.get(place.fields.len())?;
+            if field.starts_with('[') {
+                return None;
+            }
+            if !fields.contains(field) {
+                if fields.len() >= MAX_RETURN_FIELDS {
+                    return None;
+                }
+                fields.push(field.clone());
+            }
+        }
+        Some(fields)
+    }
+
+    /// Search what `place` holds at the exits and record it as the write
+    /// `target` callers see.
+    fn add_output_write(
+        &mut self,
+        summary: &mut Summary,
+        target: Access,
+        place: &Place,
+        exits: &[usize],
+        budget: &mut Budget,
+    ) {
+        let start: Vec<(Read, usize)> = exits
+            .iter()
+            .map(|&at| (Read::Place(place.clone()), at))
+            .collect();
+        let found = self.search(&start, budget);
+        let end = self.op_step(exits[0]);
+        let mut output = summary::Output::default();
+        for (root, def) in &found.roots {
+            // What the caller passed in stays what it was.
+            if matches!(root, Root::Input(a) if *a == target) {
+                continue;
+            }
+            let mut steps = self.chain(&found, root, *def);
+            steps.push(end);
+            match root {
+                Root::Input(access) => output.add_input(access.clone(), summary::path(steps)),
+                _ => {
+                    if let Some(source) = self.source_ref(root) {
+                        output.add_source(SourceFact {
+                            source,
+                            path: summary::path(steps),
+                        });
+                    }
+                }
+            }
+        }
+        summary.add_write(target, output);
+    }
+
+    /// What a search from an output reached, as the output's facts (each
+    /// path ending at `end`).
+    fn output_of(&self, found: &Found, end: Step) -> summary::Output {
+        let mut output = summary::Output::default();
+        for (root, def) in &found.roots {
+            let mut steps = self.chain(found, root, *def);
+            steps.push(end);
+            match root {
+                Root::Input(access) => output.add_input(access.clone(), summary::path(steps)),
+                _ => {
+                    if let Some(source) = self.source_ref(root) {
+                        output.add_source(SourceFact {
+                            source,
+                            path: summary::path(steps),
+                        });
+                    }
+                }
+            }
+        }
+        output
+    }
+
+    /// Fields worth a search of their own on the returned values: those
+    /// written on a returned variable, or on one it was copied from (at
+    /// most [`MAX_RETURN_FIELDS`]).
+    fn returned_fields(&self, returns: &[(usize, Operand)]) -> Vec<String> {
+        let mut vars: Vec<&Var> = returns
+            .iter()
+            .filter_map(|(_, value)| match value {
+                Operand::Var(var) => Some(var),
+                _ => None,
+            })
+            .collect();
+        // One level of copies: `let s = Self { … }; s`.
+        for op in &self.func.body {
+            if let IrOp::Assign {
+                dst,
+                src: Operand::Var(src),
+            } = op
+            {
+                if vars.contains(&dst) && !vars.contains(&src) {
+                    vars.push(src);
+                }
+            }
+        }
+        let mut fields: Vec<String> = Vec::new();
+        // A returned call's result: the fields its own summary narrows
+        // (`fn new(..) -> Self { Self::with(..) }`).
+        for var in &vars {
+            let summary = self
+                .temp_defs
+                .get(*var)
+                .and_then(|op| match self.models.get(op) {
+                    Some(CallModel {
+                        result: ResultRule::Summary(summary),
+                        ..
+                    }) => Some(summary),
+                    _ => None,
+                });
+            for (field, _) in summary.map(|s| s.returns_fields.as_slice()).unwrap_or(&[]) {
+                if !fields.contains(field) && fields.len() < MAX_RETURN_FIELDS {
+                    fields.push(field.clone());
+                }
+            }
+        }
+        for op in &self.func.body {
+            if let IrOp::FieldWrite {
+                base: Operand::Var(base),
+                field,
+                ..
+            } = op
+            {
+                if vars.contains(&base) && !field.starts_with('[') && !fields.contains(field) {
+                    fields.push(field.clone());
+                    if fields.len() >= MAX_RETURN_FIELDS {
+                        break;
+                    }
+                }
+            }
+        }
+        fields
     }
 
     /// A sink's search: a flow per source found (the first), and the

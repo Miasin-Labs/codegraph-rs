@@ -58,6 +58,9 @@ impl Lowerer<'_, '_> {
             if kind == expression.try_kind {
                 return self.try_value(node);
             }
+            if kind == expression.structs.kind {
+                return self.struct_value(node, expression.structs);
+            }
         }
         if rules.call(kind).is_some() {
             return self.call(node);

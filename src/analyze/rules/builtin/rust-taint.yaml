@@ -442,6 +442,9 @@
           # string; a statement's `.query(params)` binds.
           - capture: recv
             not-regex: "\\.(get|post|put|patch|delete|head|request|get_json)\\(|(?i)request|builder|stmt|statement"
+          # Parameters, not SQL text: `params![..]`, `[..]`, `(..)`.
+          - capture: arg
+            not-regex: "^&?(\\[|\\(\\)|\\(\\s*&?\\w+\\s*,|(rusqlite::)?(named_)?params(_from_iter)?!?[\\[(])"
       - name: sqlx-query
         query: |
           ((call_expression function: [(scoped_identifier) (identifier) (generic_function)] @f arguments: (arguments . (_) @arg))

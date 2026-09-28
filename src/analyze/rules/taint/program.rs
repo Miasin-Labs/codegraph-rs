@@ -110,10 +110,15 @@ fn namespace_of(node: Node, source: &str) -> Option<String> {
     Some(names.join("::"))
 }
 
-/// The class-like ancestor's simple name.
+/// The class-like ancestor's simple name (a Rust `impl`'s type).
 fn owner_of(node: Node, source: &str) -> Option<String> {
     let mut current = node.parent();
     while let Some(n) = current {
+        if n.kind() == "impl_item" {
+            return n
+                .child_by_field_name("type")
+                .map(|ty| simple_type(source.get(ty.byte_range()).unwrap_or_default()));
+        }
         if matches!(
             n.kind(),
             "class_declaration"
@@ -536,8 +541,11 @@ impl<'a> Table<'a> {
                     &pointers,
                 );
             }
-            // A name the file defines is project code even unresolved.
-            pending.in_project |= !pending.targets.is_empty() || file.defines(rules, &name);
+            // A name the file defines is project code even unresolved (in
+            // a language whose paths name their type, only a bare name).
+            let bare = receiver.is_none() && !callee.contains("::");
+            pending.in_project |= !pending.targets.is_empty()
+                || ((bare || !rules.index_resolves_calls) && file.defines(rules, &name));
             if pending.in_project || !pending.names.is_empty() {
                 out.push((op, pending));
             }
@@ -609,6 +617,22 @@ impl<'a> Table<'a> {
             pending.targets = found;
             pending.guessed = true;
             return;
+        } else if let Some(class) = call
+            .callee
+            .rsplit_once("::")
+            .filter(|_| call.receiver.is_none())
+            .map(|(path, _)| path.rsplit("::").next().unwrap_or(path))
+        {
+            // `Type::m(…)`, `Self::m(…)`: `m` of that type.
+            let class = if class == "Self" {
+                match call.owner {
+                    Some(owner) => owner.to_string(),
+                    None => return,
+                }
+            } else {
+                simple_type(class)
+            };
+            (self.method_in_lineage(&class, call.name, call.file), false)
         } else if call.receiver.is_none() && !call.callee.contains(['.', ':']) {
             let pointed: Vec<usize> = pointers
                 .get(call.callee)

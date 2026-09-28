@@ -30,6 +30,10 @@ pub struct PropagationRules {
     /// Calls whose result carries none of their inputs' data: lengths,
     /// comparisons, predicates.
     pub clean_results: &'static [&'static str],
+    /// Calls whose result is their receiver (or first argument) itself,
+    /// wrapped, borrowed or copied (`Arc::new(s)`, `x.clone()`,
+    /// `m.lock()`): a field read of the result reads that field of it.
+    pub projections: &'static [&'static str],
     /// Position-aware lists: a local list built by `new <type>()` and only
     /// appended to, removed from and read at constant positions in one
     /// straight run of code keeps its elements apart (`add(a); add(b);
@@ -118,6 +122,10 @@ impl PropagationRules {
     pub fn is_clean_result(&self, name: &str) -> bool {
         self.clean_results.contains(&name)
     }
+
+    pub fn is_projection(&self, name: &str) -> bool {
+        self.projections.contains(&name)
+    }
 }
 
 static NONE: PropagationRules = PropagationRules {
@@ -126,6 +134,7 @@ static NONE: PropagationRules = PropagationRules {
     keyed_reads: &[],
     argument_writes: &[],
     clean_results: &[],
+    projections: &[],
     lists: &NO_LISTS,
 };
 
@@ -177,6 +186,7 @@ static JAVA: PropagationRules = PropagationRules {
         "getClass",
         "countTokens",
     ],
+    projections: &[],
     lists: &JAVA_LISTS,
 };
 
@@ -226,6 +236,7 @@ static C: PropagationRules = PropagationRules {
         "length",
         "empty",
     ],
+    projections: &[],
     lists: &NO_LISTS,
 };
 
@@ -247,6 +258,7 @@ static PYTHON: PropagationRules = PropagationRules {
         "isfile",
         "isdir",
     ],
+    projections: &[],
     lists: &NO_LISTS,
 };
 
@@ -267,6 +279,7 @@ static JS: PropagationRules = PropagationRules {
         "isNaN",
         "existsSync",
     ],
+    projections: &[],
     lists: &NO_LISTS,
 };
 
@@ -292,6 +305,7 @@ static PHP: PropagationRules = PropagationRules {
         "strcmp",
         "preg_match",
     ],
+    projections: &[],
     lists: &NO_LISTS,
 };
 
@@ -341,6 +355,24 @@ static RUST: PropagationRules = PropagationRules {
         "count",
         "capacity",
         "is_ascii",
+    ],
+    projections: &[
+        "new",
+        "clone",
+        "to_owned",
+        "as_ref",
+        "as_mut",
+        "borrow",
+        "borrow_mut",
+        "deref",
+        "lock",
+        "unwrap",
+        "expect",
+        "unwrap_or_default",
+        "into_inner",
+        "get_ref",
+        "Some",
+        "Ok",
     ],
     lists: &NO_LISTS,
 };

@@ -107,6 +107,30 @@ fn each_web_source_reaches_a_command() {
 }
 
 #[test]
+fn struct_fields_keep_their_own_data_across_calls() {
+    // `Config { dir, label }` carries the request's `label` in `.label`
+    // only: a sink on `.dir` sees the trusted directory, one on `.label`
+    // the input — through a constructor, a copy, a wrapper and a method.
+    let program = |field: &str| {
+        format!(
+            "struct Config {{ dir: String, label: String }}\n\
+             impl Config {{\n\
+                 fn new(dir: String, label: String) -> Self {{ Self {{ dir, label }} }}\n\
+                 fn run(&self) {{ Command::new(&self.{field}).spawn(); }}\n\
+             }}\n\
+             async fn h(Query(q): Query<Q>) {{\n\
+                 let config = Config::new(\"/srv\".to_string(), q.label);\n\
+                 let shared = Arc::new(config.clone());\n\
+                 shared.run();\n\
+             }}\n"
+        )
+    };
+    let bad = program("label");
+    let good = program("dir");
+    expect("rust-command-injection", &[Code(&bad)], &[Code(&good)]);
+}
+
+#[test]
 fn environment_and_stdin_reach_a_command() {
     expect(
         "rust-command-from-environment",

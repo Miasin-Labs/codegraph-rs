@@ -203,6 +203,25 @@ pub struct ExpressionRules {
     /// branch on `e` itself, so a validator whose result is `?`-checked
     /// guards what follows.
     pub try_kind: &'static str,
+    /// Struct literals, built field by field.
+    pub structs: StructShape,
+}
+
+/// `S { a: x, b, ..base }`: a value whose field `a` holds `x`, `b` holds
+/// `b`, and whose other fields come from `base`.
+#[derive(Debug, Clone, Copy)]
+pub struct StructShape {
+    pub kind: &'static str,
+    /// Field of the literal holding its initializer list.
+    pub body: &'static str,
+    /// `a: x`: the initializer kind, its name and value fields.
+    pub initializer: &'static str,
+    pub name: &'static str,
+    pub value: &'static str,
+    /// `b` (a name standing for `b: b`).
+    pub shorthand: &'static str,
+    /// `..base`.
+    pub base: &'static str,
 }
 
 impl ExpressionRules {
@@ -932,6 +951,15 @@ static RUST_EXPRESSIONS: ExpressionRules = ExpressionRules {
     pattern_skip_fields: &["type", "condition"],
     statements: &["expression_statement", "let_declaration", "empty_statement"],
     try_kind: "try_expression",
+    structs: StructShape {
+        kind: "struct_expression",
+        body: "body",
+        initializer: "field_initializer",
+        name: "field",
+        value: "value",
+        shorthand: "shorthand_field_initializer",
+        base: "base_field_initializer",
+    },
 };
 
 static RUST: IrRules = IrRules {
@@ -985,15 +1013,7 @@ static RUST: IrRules = IrRules {
         "reference_expression",
         "type_cast_expression",
     ],
-    collections: &[
-        "struct_expression",
-        "field_initializer_list",
-        "field_initializer",
-        "shorthand_field_initializer",
-        "base_field_initializer",
-        "array_expression",
-        "tuple_expression",
-    ],
+    collections: &["array_expression", "tuple_expression"],
     foreach: &[ForEachShape {
         kind: "for_expression",
         binding: Slot::Field("pattern"),

@@ -21,7 +21,7 @@ use tree_sitter::Node;
 use super::{Lowerer, Value};
 use crate::cfg_rules::Construct;
 use crate::ir::model::{IrOp, Operand, Span, Var};
-use crate::ir_rules::{BindingShape, MacroShape};
+use crate::ir_rules::{BindingShape, MacroShape, StructShape};
 
 /// Most nodes of one macro's token tree read (a `json!`/`html!` body can
 /// be the size of a file): past it, the rest reads nothing.
@@ -185,6 +185,55 @@ impl Lowerer<'_, '_> {
         self.func.push(IrOp::Return { value: None });
         self.func.push(IrOp::Label(on));
         value
+    }
+
+    /// `S { a: x, b, ..base }`: a fresh named value (`__struct<n>`, a
+    /// place, unlike a temporary) built from `base` then written field by
+    /// field, so a read of `.a` sees only `x`.
+    pub(super) fn struct_value(&mut self, node: Node<'_>, shape: StructShape) -> Value {
+        let var = Var::new(format!("__struct{}", self.next_temp));
+        self.next_temp += 1;
+        let body = node.child_by_field_name(shape.body);
+        let items: Vec<Node<'_>> = body.map(|b| self.named_children(b)).unwrap_or_default();
+        let base = items
+            .iter()
+            .find(|item| item.kind() == shape.base)
+            .and_then(|item| self.named_children(*item).into_iter().next())
+            .map(|base| self.expr(base).operand);
+        let name = node
+            .child_by_field_name("name")
+            .map_or("", |n| self.text(n))
+            .to_string();
+        self.func.push(IrOp::Call {
+            dst: Some(var.clone()),
+            callee: format!("<struct {name}>"),
+            receiver: None,
+            args: base.iter().cloned().collect(),
+        });
+        self.record_call(None, vec![None; usize::from(base.is_some())]);
+        for item in items {
+            let (field, value) = if item.kind() == shape.initializer {
+                let field = item.child_by_field_name(shape.name).map(|n| self.text(n));
+                let value = item.child_by_field_name(shape.value).map(|v| self.expr(v));
+                (field, value)
+            } else if item.kind() == shape.shorthand {
+                let ident = self.named_children(item).into_iter().next();
+                (ident.map(|n| self.text(n)), ident.map(|n| self.expr(n)))
+            } else {
+                continue;
+            };
+            if let (Some(field), Some(value)) = (field, value) {
+                self.func.push(IrOp::FieldWrite {
+                    base: Operand::Var(var.clone()),
+                    field: field.to_string(),
+                    src: value.operand,
+                });
+            }
+        }
+        Value {
+            operand: Operand::Var(var.clone()),
+            place: Some(crate::ir::model::Place::var(var)),
+        }
     }
 
     /// Every name `pattern` binds takes `value`'s data. A variant's path
