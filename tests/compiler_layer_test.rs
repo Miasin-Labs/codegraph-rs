@@ -320,7 +320,7 @@ async fn a_run_past_its_budget_is_killed_and_nothing_is_applied() {
 #[tokio::test(flavor = "multi_thread")]
 async fn rust_analyzer_verifies_the_fixture_crate() {
     let program = rust_analyzer_program();
-    if rust_analyzer_version(&program).is_none() {
+    if rust_analyzer_version(&program, std::path::Path::new(".")).is_none() {
         eprintln!("skipping: rust-analyzer is not on PATH");
         return;
     }

@@ -209,12 +209,14 @@ pub fn refresh_index(
     rust_files: &[String],
     options: &CompilerOptions,
 ) -> RunStatus {
-    let Some(tool_version) = rust_analyzer_version(&options.rust_analyzer) else {
+    let Some((program, tool_version)) =
+        run::usable_rust_analyzer(&options.rust_analyzer, project_root)
+    else {
         return RunStatus::Missing;
     };
     let inputs = run::hash_inputs(project_root, rust_files, &tool_version);
     run::ensure_index(
-        &options.rust_analyzer,
+        &program,
         project_root,
         &inputs,
         &tool_version,

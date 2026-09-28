@@ -141,16 +141,63 @@ pub(crate) fn hash_file(path: &Path) -> Option<String> {
     Some(sha256_hex(String::from_utf8_lossy(&bytes).as_bytes()))
 }
 
+/// The program looked up on PATH when none is configured.
+const DEFAULT_RUST_ANALYZER: &str = "rust-analyzer";
+
 /// The rust-analyzer executable: `CODEGRAPH_RUST_ANALYZER`, else on PATH.
 pub fn rust_analyzer_program() -> PathBuf {
     std::env::var_os("CODEGRAPH_RUST_ANALYZER")
         .filter(|value| !value.is_empty())
-        .map_or_else(|| PathBuf::from("rust-analyzer"), PathBuf::from)
+        .map_or_else(|| PathBuf::from(DEFAULT_RUST_ANALYZER), PathBuf::from)
 }
 
-/// `<program> --version`, or `None` when it cannot run.
-pub fn rust_analyzer_version(program: &Path) -> Option<String> {
+/// A rust-analyzer that runs for `project_root`, and its version: the
+/// configured program (`CODEGRAPH_RUST_ANALYZER`, else `rust-analyzer` on
+/// PATH) asked *in the project* — PATH's is usually rustup's proxy, which
+/// picks the toolchain a `rust-toolchain.toml` pins, and a pinned toolchain
+/// often lacks the component ("not installed for toolchain 1.98.1"). Then,
+/// for the default lookup only, the newest `rust-analyzer` binary of
+/// any installed rustup toolchain: rust-analyzer loads the project through
+/// the project's own cargo and sysroot, so another toolchain's reads it.
+pub fn usable_rust_analyzer(configured: &Path, project_root: &Path) -> Option<(PathBuf, String)> {
+    if let Some(version) = rust_analyzer_version(configured, project_root) {
+        return Some((configured.to_path_buf(), version));
+    }
+    // Only the default lookup falls back: a program someone chose
+    // (`CODEGRAPH_RUST_ANALYZER`, `CompilerOptions`) is the one to run.
+    if configured != Path::new(DEFAULT_RUST_ANALYZER) {
+        return None;
+    }
+    let rustup_home = std::env::var_os("RUSTUP_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".rustup")))?;
+    toolchain_rust_analyzers(&rustup_home)
+        .into_iter()
+        .find_map(|program| rust_analyzer_version(&program, project_root).map(|v| (program, v)))
+}
+
+/// `<rustup_home>/toolchains/*/bin/rust-analyzer`, newest binary first.
+fn toolchain_rust_analyzers(rustup_home: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(rustup_home.join("toolchains")) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path().join("bin").join("rust-analyzer"))
+        .filter_map(|program| {
+            let modified = std::fs::metadata(&program).ok()?.modified().ok()?;
+            Some((modified, program))
+        })
+        .collect();
+    found.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    found.into_iter().map(|(_, program)| program).collect()
+}
+
+/// `<program> --version` run in `dir`, or `None` when it cannot run.
+pub fn rust_analyzer_version(program: &Path, dir: &Path) -> Option<String> {
     let output = Command::new(program)
+        .current_dir(dir)
         .arg("--version")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -360,5 +407,40 @@ mod tests {
         let edited = hash_inputs(root, &files, "ra 1");
         assert_ne!(locked.fingerprint, edited.fingerprint);
         assert_ne!(locked.files["src/lib.rs"], edited.files["src/lib.rs"]);
+    }
+}
+
+#[cfg(test)]
+mod rust_analyzer_lookup_tests {
+    use super::*;
+
+    /// Toolchains that hold a rust-analyzer binary are listed newest first;
+    /// ones without the component are skipped.
+    #[test]
+    fn toolchain_binaries_are_found_newest_first() {
+        let home = tempfile::tempdir().unwrap();
+        let make = |name: &str, age_secs: u64| {
+            let bin = home.path().join("toolchains").join(name).join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            let program = bin.join("rust-analyzer");
+            std::fs::write(&program, "").unwrap();
+            let when = std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs);
+            std::fs::File::options()
+                .write(true)
+                .open(&program)
+                .unwrap()
+                .set_modified(when)
+                .unwrap();
+            program
+        };
+        let old = make("1.85.0-x86_64-unknown-linux-gnu", 3_000);
+        let new = make("rustc-master", 10);
+        std::fs::create_dir_all(
+            home.path()
+                .join("toolchains/1.98.1-x86_64-unknown-linux-gnu/bin"),
+        )
+        .unwrap();
+        assert_eq!(toolchain_rust_analyzers(home.path()), vec![new, old]);
+        assert!(toolchain_rust_analyzers(&home.path().join("missing")).is_empty());
     }
 }
