@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::{CURRENT_SCHEMA_VERSION, MIN_READABLE_SCHEMA_VERSION};
 use crate::deps::model::{DepKey, DepSource, Ecosystem, ShardState};
+use crate::deps::rustdoc::ApiMeta;
 use crate::deps::scope::{PartialReason, ShardLimits};
 use crate::deps::store::META_FILE;
 use crate::extraction::EXTRACTION_VERSION;
@@ -62,6 +63,10 @@ pub struct ShardMeta {
     pub counts: ShardCounts,
     /// Size of `codegraph.db`.
     pub db_bytes: u64,
+    /// The API indexes read from rustdoc JSON with it
+    /// ([`crate::deps::rustdoc`]); absent in shards built before them.
+    #[serde(default)]
+    pub api: ApiMeta,
 }
 
 impl ShardMeta {

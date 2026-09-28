@@ -80,7 +80,37 @@ impl BuildReport {
     }
 }
 
-/// Build what [`Registry::pending`] lists for `scope`, most useful first.
+/// The shards to (re)build for `scope`: what [`Registry::pending`] lists,
+/// then built shards whose rustdoc API indexes can now be had or are of an
+/// older format ([`super::rustdoc::attach::up_to_date`]).
+pub fn pending_shards(
+    home: &DepsHome,
+    registry: &Registry,
+    scope: PendingScope<'_>,
+    force: bool,
+) -> DepsResult<Vec<PendingShard>> {
+    let mut pending = registry.pending(scope, force)?;
+    if force {
+        return Ok(pending);
+    }
+    for shard in registry.pending(scope, true)? {
+        if !shard.state.has_shard() || pending.iter().any(|p| p.key == shard.key) {
+            continue;
+        }
+        let Some(source_dir) = shard.source_dirs.iter().find(|dir| dir.is_dir()) else {
+            continue;
+        };
+        let stale = ShardMeta::read(&home.shard_dir(&shard.key)).is_some_and(|meta| {
+            !super::rustdoc::attach::up_to_date(&meta.api, &shard.key, source_dir)
+        });
+        if stale {
+            pending.push(shard);
+        }
+    }
+    Ok(pending)
+}
+
+/// Build what [`pending_shards`] lists for `scope`, most useful first.
 /// `on_result` sees each shard as it completes.
 pub async fn build_pending(
     home: &DepsHome,
@@ -90,7 +120,7 @@ pub async fn build_pending(
     on_result: &mut dyn FnMut(&ShardResult),
 ) -> DepsResult<BuildReport> {
     let started = Instant::now();
-    let mut pending = registry.pending(scope, options.force)?;
+    let mut pending = pending_shards(home, registry, scope, options.force)?;
     if options.direct_only {
         pending.retain(|p| p.direct);
     }

@@ -84,7 +84,8 @@ pub fn after_project_indexed_in(
     {
         return Ok(TriggerOutcome::NoLockfiles);
     }
-    let pending = registry.pending(PendingScope::Project(&root), false)?.len();
+    let pending =
+        super::builder::pending_shards(home, &registry, PendingScope::Project(&root), false)?.len();
     let build = (pending > 0).then(|| spawn(Path::new(&root)));
     Ok(TriggerOutcome::Recorded {
         unchanged: report.unchanged,

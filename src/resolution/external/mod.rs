@@ -19,7 +19,7 @@
 mod context;
 mod declarations;
 pub mod graphs;
-mod manifest;
+pub(crate) mod manifest;
 mod names;
 pub mod open;
 pub mod pass;

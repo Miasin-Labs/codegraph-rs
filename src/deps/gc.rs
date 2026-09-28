@@ -180,10 +180,32 @@ pub fn gc(
 
     sweep_disk(home, registry, &known, policy, now, &mut report)?;
     sweep_legacy_toolchain(home, policy, &mut report)?;
+    sweep_rustdoc_target(home, policy, &mut report)?;
     if !policy.dry_run {
         report.versions_forgotten = registry.delete_unused_packages()?;
     }
     Ok(report)
+}
+
+/// The cargo target directory `cargo rustdoc` runs share
+/// ([`crate::deps::rustdoc::source`]): only a cache, removed whenever no
+/// builder is running.
+fn sweep_rustdoc_target(
+    home: &DepsHome,
+    policy: &GcPolicy,
+    report: &mut GcReport,
+) -> DepsResult<()> {
+    let target = home
+        .root()
+        .join(crate::deps::rustdoc::source::RUSTDOC_TARGET_DIR);
+    if !target.is_dir() || StoreLock::is_held(&home.builder_lock_path()) {
+        return Ok(());
+    }
+    if !policy.dry_run {
+        fs::remove_dir_all(&target)?;
+    }
+    report.leftovers_removed += 1;
+    Ok(())
 }
 
 fn remove_shard(

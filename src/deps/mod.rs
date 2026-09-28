@@ -19,6 +19,10 @@
 //!   budget, collecting unused shards, and the post-index hook that records
 //!   a project and starts one detached background build.
 //!
+//! * [`rustdoc`] — the compiler's description of a crate's API (rustdoc
+//!   JSON) indexed with its shard: paths, re-exports, impls — what external
+//!   resolution answers from first.
+//!
 //! * [`beliefs`] — per-API usage beliefs mined from the cargo cache's
 //!   crates (Engler's deviance at ecosystem scale), for `analyze bugs`.
 //!
@@ -34,6 +38,7 @@ pub mod lockfile;
 mod model;
 pub mod project;
 pub mod registry;
+pub mod rustdoc;
 pub mod scope;
 pub mod shard;
 pub mod store;

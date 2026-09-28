@@ -28,6 +28,7 @@ use crate::IndexOptions;
 use crate::codegraph::CodeGraph;
 use crate::db::{CURRENT_SCHEMA_VERSION, DATABASE_FILENAME};
 use crate::deps::model::{DepKey, DepSource, ShardState};
+use crate::deps::rustdoc;
 use crate::deps::scope::{self, PartialReason, Selection, ShardLimits};
 use crate::deps::store::{DepsHome, OLD_PREFIX, StoreLock, TMP_PREFIX};
 use crate::extraction::EXTRACTION_VERSION;
@@ -89,7 +90,9 @@ pub async fn build_shard(home: &DepsHome, request: &BuildRequest<'_>) -> BuildOu
     let dest = home.shard_dir(key);
     if !request.force {
         if let Some(existing) = ShardMeta::read(&dest) {
-            if is_up_to_date(&existing, key, &selection, &request.limits) {
+            if is_up_to_date(&existing, key, &selection, &request.limits)
+                && rustdoc::attach::up_to_date(&existing.api, key, request.source_dir)
+            {
                 return BuildOutcome::UpToDate(existing);
             }
         }
@@ -104,7 +107,7 @@ pub async fn build_shard(home: &DepsHome, request: &BuildRequest<'_>) -> BuildOu
         std::process::id(),
         unique_suffix()
     ));
-    let result = build_into(&tmp, request, &selection).await;
+    let result = build_into(home, &tmp, request, &selection).await;
     let meta = match result {
         Ok(meta) => meta,
         Err(error) => {
@@ -138,6 +141,7 @@ fn is_up_to_date(
 }
 
 async fn build_into(
+    home: &DepsHome,
     tmp: &Path,
     request: &BuildRequest<'_>,
     selection: &Selection,
@@ -176,6 +180,18 @@ async fn build_into(
     }
     let stats = stats.map_err(|e| format!("stats: {e}"))?;
 
+    // The compiler's description of the crate, when there is one: API
+    // indexes beside the database, and the nodes the grammar lost.
+    let budget = Duration::from_millis(request.limits.time_ms.max(1));
+    let api = rustdoc::attach::attach(
+        home,
+        request.key,
+        request.source_dir,
+        tmp,
+        &db_path,
+        budget.saturating_sub(started.elapsed()),
+    );
+
     compact(&db_path).map_err(|e| format!("compact: {e}"))?;
     let _ = fs::remove_file(tmp.join("codegraph.lock"));
 
@@ -213,10 +229,11 @@ async fn build_into(
             indexed_files: indexed.files_indexed,
             errored_files: indexed.files_errored,
             oversized_files: selection.oversized,
-            nodes: stats.node_count,
+            nodes: stats.node_count + api.added as u64,
             edges: stats.edge_count,
         },
         db_bytes: fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0),
+        api,
     };
     meta.write(tmp).map_err(|e| format!("write meta: {e}"))?;
     Ok(meta)
