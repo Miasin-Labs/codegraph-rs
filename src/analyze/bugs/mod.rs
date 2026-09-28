@@ -32,6 +32,7 @@ pub mod compiler;
 mod deviance;
 mod lint;
 mod project;
+pub(crate) mod reach;
 mod review;
 
 use std::borrow::Cow;
@@ -40,7 +41,7 @@ use std::path::Path;
 
 pub use compiler::{CompilerState, CompilerStatus};
 pub(crate) use deviance::ecosystem;
-pub use project::{CallSite, FnSpan, Project, RouteHandler};
+pub use project::{CallSite, FnSpan, LibraryCall, Project, RouteHandler};
 pub use review::{ReviewPacket, review_packets};
 use serde::{Deserialize, Serialize};
 

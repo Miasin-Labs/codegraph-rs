@@ -3,11 +3,14 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, OnceLock};
 
+use regex::Regex;
 use serde::Serialize;
 use tree_sitter::Tree;
 
 use super::Finding;
+use super::reach::Reach;
 use crate::codegraph::CodeGraph;
 use crate::extraction::{create_parser, detect_language};
 use crate::search::{is_test_source_file, is_test_symbol};
@@ -73,6 +76,36 @@ pub struct RouteHandler {
     pub line: u32,
 }
 
+/// A call into library code (unresolved in the project) that makes its
+/// caller an entry point: `listener.accept()`, `listener.incoming()`.
+#[derive(Debug, Clone)]
+pub struct LibraryCall {
+    pub caller_id: String,
+    /// The callee as written (`listener.accept`).
+    pub callee: String,
+    pub file: String,
+    pub line: u32,
+}
+
+/// Callees as written that accept connections: `accept`/`incoming` (Rust,
+/// Python, Java…) and Go's `Accept`.
+static LISTENER_CALL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:(?:.*[.:])?(?:accept|incoming)|(?:.*\.)?Accept)$")
+        .expect("valid listener regex")
+});
+
+/// Receivers whose `accept` is not a listener's: a request's (`req.
+/// accept()` is its `Accept` header).
+static REQUEST_RECEIVER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[._])(?:req|request|headers?|ctx|context)\s*(?:\(\))?\s*[.:]+\w+$")
+        .expect("valid receiver regex")
+});
+
+/// Whether an unresolved call written `callee` accepts connections.
+fn is_listener_call(callee: &str) -> bool {
+    LISTENER_CALL_RE.is_match(callee) && !REQUEST_RECEIVER_RE.is_match(callee)
+}
+
 /// A source file parsed for the syntactic checks.
 pub struct ParsedFile {
     pub language: Language,
@@ -97,6 +130,10 @@ pub struct Project {
     routes: Vec<RouteHandler>,
     /// Ids of the functions and methods the index records as public.
     public_fns: HashSet<String>,
+    /// Library calls that accept connections.
+    listener_calls: Vec<LibraryCall>,
+    /// Entry points and what they reach, computed on first use.
+    reach: OnceLock<Reach>,
 }
 
 impl Project {
@@ -232,6 +269,37 @@ impl Project {
             rows.collect::<Result<_, _>>().map_err(err)?
         };
 
+        // The unresolved calls (library code) that accept connections;
+        // `LIKE` is only a prefilter.
+        let listener_calls: Vec<LibraryCall> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT from_node_id, reference_name, file_path, line FROM unresolved_refs \
+                     WHERE reference_kind = 'calls' \
+                       AND (reference_name LIKE '%accept' OR reference_name LIKE '%incoming') \
+                     ORDER BY file_path, line",
+                )
+                .map_err(err)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(LibraryCall {
+                        caller_id: row.get(0)?,
+                        callee: row.get(1)?,
+                        file: row.get(2)?,
+                        line: row.get(3)?,
+                    })
+                })
+                .map_err(err)?;
+            let mut calls = Vec::new();
+            for call in rows {
+                let call = call.map_err(err)?;
+                if is_listener_call(&call.callee) {
+                    calls.push(call);
+                }
+            }
+            calls
+        };
+
         Ok(Self {
             root: root.to_path_buf(),
             files,
@@ -243,7 +311,20 @@ impl Project {
             symbol_names,
             routes,
             public_fns,
+            listener_calls,
+            reach: OnceLock::new(),
         })
+    }
+
+    /// Library calls that make their callers listeners (`accept`).
+    pub fn listener_calls(&self) -> &[LibraryCall] {
+        &self.listener_calls
+    }
+
+    /// The project's entry points and what they reach: one bounded walk
+    /// per project, shared by every detector and rule that asks.
+    pub fn reach(&self) -> &Reach {
+        self.reach.get_or_init(|| Reach::compute(self))
     }
 
     /// Route registrations and the functions they dispatch to.
@@ -261,6 +342,15 @@ impl Project {
     pub(crate) fn with_entries(mut self, routes: Vec<RouteHandler>, public: &[&str]) -> Self {
         self.routes = routes;
         self.public_fns = public.iter().map(|id| id.to_string()).collect();
+        self.reach = OnceLock::new();
+        self
+    }
+
+    /// Set the library calls that accept connections, for unit tests.
+    #[cfg(test)]
+    pub(crate) fn with_listener_calls(mut self, calls: Vec<LibraryCall>) -> Self {
+        self.listener_calls = calls;
+        self.reach = OnceLock::new();
         self
     }
 
@@ -292,6 +382,8 @@ impl Project {
             symbol_names: HashSet::new(),
             routes: Vec::new(),
             public_fns: HashSet::new(),
+            listener_calls: Vec::new(),
+            reach: OnceLock::new(),
         }
     }
 
@@ -446,6 +538,31 @@ fn test_regions(language: Language, source: &str, tree: &Tree) -> Vec<(u32, u32)
 #[cfg(test)]
 mod test_region_tests {
     use super::*;
+
+    #[test]
+    fn listener_calls_are_accepts_on_anything_but_a_request() {
+        for callee in [
+            "listener.accept",
+            "accept",
+            "self.listener.accept",
+            "TcpListener::accept",
+            "listener.incoming",
+            "ln.Accept",
+            "sock.accept",
+        ] {
+            assert!(is_listener_call(callee), "{callee}");
+        }
+        for callee in [
+            "req.accept",
+            "request.headers().accept",
+            "ctx.accept",
+            "reaccept",
+            "x.accepted",
+            "http.Accept2",
+        ] {
+            assert!(!is_listener_call(callee), "{callee}");
+        }
+    }
 
     #[test]
     fn cfg_test_modules_and_test_fns_are_test_regions() {

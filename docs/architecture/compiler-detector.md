@@ -35,12 +35,15 @@ context (who reaches the code), ranking, suppression and review packets.
    literal unwraps and `x += 1`, and discounts additions, string-keyed
    indexing and 32-bit-only truncation (every reviewed finding of those
    shapes was a false positive).
-6. Reach (`reach.rs`): entry points are route handlers (index `route` →
-   `references` → fn; a handler resolved to a `self` method stands for the
-   free fn of that name, since the route scan keeps only the last path
-   segment), then fns taking request extractors (`Json<`, `Query<`,
-   `Multipart`…), else — a library — public fns taking bytes/text/readers
-   (all public fns if none). A BFS over resolved call edges (≤8 calls)
+6. Reach (`src/analyze/bugs/reach.rs`, shared with the rules engine's
+   `reached-from` and computed once per project): entry points are route
+   handlers (index `route` → `references` → fn; a handler resolved to a
+   `self` method stands for the free fn of that name, since the route scan
+   keeps only the last path segment), then fns taking request extractors
+   (`Json<`, `Query<`, `Multipart`…), listeners (an unresolved `accept`/
+   `incoming` call) and message handlers (`Delivery`, rdkafka messages…),
+   else — a library — public fns taking bytes/text/readers (all public fns
+   if none). One BFS per entry kind over resolved call edges (≤8 calls)
    records the nearest entry and the path. An input-exposure lint rises
    toward `2.5 × base` (≤0.9) at a handler, ×0.85 per call, halfway near a
    public API, and halves where nothing reaches; other lints +0.05 near a

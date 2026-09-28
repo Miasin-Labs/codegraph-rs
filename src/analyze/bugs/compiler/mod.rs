@@ -14,7 +14,7 @@
 //! call site when the span is in a macro body), in the enclosing indexed
 //! function, as rule `clippy::<lint>` / `rustc::<lint>`, with the compiler's
 //! notes as evidence. Its confidence is the lint's measured precision class,
-//! moved by reachability ([`reach`]): a lint that is only a bug on untrusted
+//! moved by reachability ([`super::reach`], shared with the rules engine): a lint that is only a bug on untrusted
 //! input (`indexing_slicing`, `unwrap_used`…) rises toward its class's
 //! ceiling (2.5× its base, ≤0.9) in a function a route handler reaches and
 //! halves where no entry point reaches it, and
@@ -25,7 +25,6 @@
 mod cache;
 mod diagnostic;
 pub mod lints;
-mod reach;
 mod shapes;
 
 use std::collections::{HashMap, HashSet};
@@ -36,8 +35,8 @@ use serde::Serialize;
 
 use self::diagnostic::{CompilerDiagnostic, Parsed};
 use self::lints::{Exposure, LintInfo};
-use self::reach::{EntryKind, Reach, Reached};
 use self::shapes::Shape;
+use super::reach::{EntryKind, Reach, Reached};
 use super::{BugsOptions, Detector, Evidence, Finding, Project};
 use crate::diagnostics::{RunStatus, clippy_lints_or_poll, diagnostics_dir};
 
@@ -232,15 +231,17 @@ pub(super) fn detect(project: &Project, options: &BugsOptions) -> (Vec<Finding>,
     status.compile_errors = parsed.errors;
     status.error_samples = parsed.error_samples.clone();
 
-    let reach = Reach::compute(project);
+    let reach = project.reach();
     status.entry_points = reach.entries.len();
-    status.entry_kind = match reach.entries.first().map(|e| e.kind) {
+    status.entry_kind = match reach.strongest_kind() {
         Some(EntryKind::Route) => "routes",
         Some(EntryKind::Extractor) => "request extractors",
+        Some(EntryKind::Listener) => "listeners",
+        Some(EntryKind::Message) => "message handlers",
         Some(EntryKind::PublicApi) => "public API functions",
         None => "none found",
     };
-    (findings(project, &reach, &parsed), status)
+    (findings(project, reach, &parsed), status)
 }
 
 /// A span's file as a project-relative path, when it is one of the files
@@ -376,6 +377,14 @@ fn finding(
                 format!("handler `{}` ({})", entry.name, entry.label),
                 "request",
             ),
+            EntryKind::Listener => (
+                format!("listener `{}` ({})", entry.name, entry.label),
+                "peer",
+            ),
+            EntryKind::Message => (
+                format!("message handler `{}` ({})", entry.name, entry.label),
+                "message",
+            ),
             EntryKind::PublicApi => (format!("public `{}`", entry.name), "caller"),
         };
         if lint.exposure == Exposure::Input || entry.kind != EntryKind::PublicApi {
@@ -430,7 +439,10 @@ fn confidence(lint: &LintInfo, reached: Option<&Reached<'_>>) -> f64 {
         (Exposure::Input, Some(reached)) => {
             let full = lint.precision.reach_ceiling();
             let ceiling = match reached.entry.kind {
-                EntryKind::Route | EntryKind::Extractor => full,
+                EntryKind::Route
+                | EntryKind::Extractor
+                | EntryKind::Listener
+                | EntryKind::Message => full,
                 EntryKind::PublicApi => (base + full) / 2.0,
             };
             let decay = 0.85f64.powi(reached.depth as i32);
@@ -485,9 +497,9 @@ mod tests {
     use std::path::Path;
 
     use super::diagnostic::Note;
-    use super::reach::tests::{call, span};
     use super::*;
     use crate::analyze::bugs::project::RouteHandler;
+    use crate::analyze::bugs::reach::tests::{call, span};
 
     fn project() -> Project {
         // handler → parse → index_at (indexing), and a tool nothing reaches.
@@ -534,12 +546,12 @@ mod tests {
     #[test]
     fn a_diagnostic_maps_to_a_finding_in_its_function_with_the_path() {
         let project = project();
-        let reach = Reach::compute(&project);
+        let reach = project.reach();
         let parsed = Parsed {
             diagnostics: vec![diagnostic("clippy::indexing_slicing", "src/api.rs", 9)],
             ..Parsed::default()
         };
-        let found = findings(&project, &reach, &parsed);
+        let found = findings(&project, reach, &parsed);
         assert_eq!(found.len(), 1);
         let finding = &found[0];
         assert_eq!(finding.detector, Detector::Compiler);
@@ -570,7 +582,7 @@ mod tests {
     #[test]
     fn reachability_ranks_input_lints_and_barely_moves_the_rest() {
         let project = project();
-        let reach = Reach::compute(&project);
+        let reach = project.reach();
         let parsed = Parsed {
             diagnostics: vec![
                 diagnostic("clippy::indexing_slicing", "src/api.rs", 3),
@@ -582,7 +594,7 @@ mod tests {
             ],
             ..Parsed::default()
         };
-        let found = findings(&project, &reach, &parsed);
+        let found = findings(&project, reach, &parsed);
         assert_eq!(found.len(), 5, "the style lint is not a finding");
         let at = |rule: &str, file: &str, line: u32| {
             found
@@ -611,7 +623,7 @@ mod tests {
     #[test]
     fn unwrap_in_result_absorbs_unwrap_used_on_its_line() {
         let project = project();
-        let reach = Reach::compute(&project);
+        let reach = project.reach();
         let parsed = Parsed {
             diagnostics: vec![
                 diagnostic("clippy::unwrap_used", "src/api.rs", 9),
@@ -620,7 +632,7 @@ mod tests {
             ],
             ..Parsed::default()
         };
-        let rules: Vec<(String, u32)> = findings(&project, &reach, &parsed)
+        let rules: Vec<(String, u32)> = findings(&project, reach, &parsed)
             .into_iter()
             .map(|f| (f.rule.to_string(), f.line))
             .collect();
