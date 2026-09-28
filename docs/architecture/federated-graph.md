@@ -197,6 +197,38 @@ would not), and not change in-project results when shards appear. Where a
 shard is ready, the external pass does what the name list could only
 approximate — it resolves the typed call into the shard.
 
+**rustdoc API indexes.** Where a shard carries the compiler's description
+of its crate — rustdoc JSON, indexed at build time into `api/<crate>.json`
+(`deps/rustdoc/`) — the external pass answers from that alone
+(`external/rust/api.rs`) and the heuristics above are the fallback for
+graphs without one. The toolchain's index comes from rustup's
+`rust-docs-json` component of the same toolchain as its `rust-src` (release
+and commit must match); a dependency's from `cargo +nightly rustdoc
+--output-format json`, opt-in (`CODEGRAPH_DEPS_RUSTDOC=1`), offline and
+bounded, in the CLI's shard builds only. Unknown `format_version`s are
+refused: the shard is built as before.
+
+```mermaid
+flowchart LR
+  JSON["rustdoc JSON<br/>(format 61)"] --> IDX["API index<br/>public paths · paths of definition<br/>impls · blanket impls · traits"]
+  IDX --> REC["reconcile shard nodes<br/>lost items added · hoisted methods renamed"]
+  IDX --> P["path: re-exports and globs across indexes<br/>→ item → node by file+line"]
+  IDX --> M["recv.m(): rustc's probe<br/>inherent → traits in scope → deref"]
+```
+
+| Question | Answered by |
+|---|---|
+| `std::task::Poll::Ready` (`pub mod task { pub use core::task::*; }`) | std's `task` globs `alloc::task` and `core::task`; exactly one has `Poll` |
+| `std::io::Error::new` | std re-exports `core::io::Error`; `new` is in alloc's `impl Error` — an incoherent impl rustdoc omits, found in the shard |
+| `x.len()`, `x: Vec<u8>` | `Vec`'s inherent `len` before `[T]::len` behind `Deref` |
+| `s.to_string()`, `s: &str` | no inherent `to_string`; `impl<T: Display + ?Sized> ToString for T` applies (`str: Display`), `ToString` is in the prelude |
+| `file.read_to_string(..)` | `Read::read_to_string` only when `Read` is imported (or glob-imported from a module the index lists) |
+| `AtomicBool::new` | `type AtomicBool = Atomic<bool>` picks `impl Atomic<bool>` among `Atomic<*mut T>`, `Atomic<u8>` … |
+
+Items the grammar lost get nodes at build time (the toolchain: ~800 added,
+~530 hoisted methods renamed `Owner::name`), so an answer always lands on
+a node of the shard.
+
 **Other languages.** npm `.d.ts` and Go module shards are discovered by the
 same registry but not yet resolved: `discover` keeps `crates` only and
 `external::rust` is the one resolver. A TypeScript/Go resolver plugs in as a

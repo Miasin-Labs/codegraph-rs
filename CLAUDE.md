@@ -431,18 +431,51 @@ cargo test --workspace
   as four graphs on one key (`rust/std-…`): `std`, `core`, `alloc` — each
   scoped to its own directory (`GraphLocation::Shard.crate_dir`), so
   `core::x` never answers with std's items — plus `alloc_crate` (= alloc;
-  std's `pub use alloc_crate::…`). `std` is also the *facade* of core/
-  alloc (`facade_of`, `Scope::Facade` in `external/open.rs`): only after
-  its own items and every re-export hop fail, a type or a type's member
-  (`RefCell::borrow`, `str::len`, `Poll::Ready`) is looked up there and
-  answered from the defining crate's graph; never a bare fn/const
-  (`std::str::eq` is not `core::ptr::eq`). That covers re-exports the
-  path rules can't follow (`pub mod task { pub use core::task::*; }`
-  inline) and type nodes the grammar drops (nightly `RefCell`). Edges into
-  it are named `std::<qname>` for `resolves-to`; the target file's first
-  segment names the crate (`toolchain::crate_of_file`). `CODEGRAPH_STD=0`
-  turns it off; `CODEGRAPH_RUST_SRC` + `CODEGRAPH_RUST_VERSION` name one
-  explicitly.
+  std's `pub use alloc_crate::…`). Without API indexes (below) `std` is
+  also the *facade* of core/alloc (`facade_of`, `Scope::Facade` in
+  `external/open.rs`): only after its own items and every re-export hop
+  fail, a type or a type's member is looked up there; never a bare
+  fn/const (`std::str::eq` is not `core::ptr::eq`). Edges into it are
+  named `std::<qname>` for `resolves-to`; the target file's first segment
+  names the crate (`toolchain::crate_of_file`). `CODEGRAPH_STD=0` turns it
+  off; `CODEGRAPH_RUST_SRC` + `CODEGRAPH_RUST_VERSION` name one explicitly.
+- **rustdoc API indexes** (`src/deps/rustdoc/`): rustdoc's JSON — the
+  compiler's own account of paths, re-exports and impls — indexed per
+  crate and stored with the shard (`api/<crate>.json`, `API_FORMAT`,
+  0600, written into the `.tmp-` build dir so it publishes atomically;
+  `meta.json` `api`: origin, crates, nodes renamed/added, or the `error`
+  that stopped it — recorded so a failing crate is not retried). Only
+  `format_version`s in `SUPPORTED_FORMAT_VERSIONS` (61) are read; any
+  other fails closed (no index, today's shard). Sources: the toolchain's
+  `rust-docs-json` component (`<sysroot>/share/doc/rust/json/`, the same
+  toolchain dir as `rust-src`; used only when its `crate_version` names
+  the shard's release+commit; `CODEGRAPH_RUSTDOC_JSON_DIR` overrides),
+  pruned to items in the shard's crate dirs (plus every type/trait); a
+  dependency's JSON from `cargo +nightly rustdoc --output-format json`
+  only with `CODEGRAPH_DEPS_RUSTDOC=1` (CLI shard builds only: a probe
+  package depending on the crate by path — the source is only read —
+  `--offline`, process group killed at `CODEGRAPH_DEPS_RUSTDOC_MS`, 180 s,
+  capped by the shard's time budget, one shared cargo target dir
+  `deps/rustdoc-target/` that `gc` removes when no builder runs;
+  `CODEGRAPH_RUSTDOC_TOOLCHAIN`, default `nightly`) or from
+  `CODEGRAPH_DEPS_RUSTDOC_JSON_DIR/<lib>.json`. An index holds: public
+  paths (module walk over `pub` items and `pub use`: own modules and globs
+  flattened, other crates' items as `External`, other crates' globbed
+  modules as `globs`), every item's path of definition (`defined`, how
+  other indexes name it), types with their impls (inherent, trait, the
+  blanket impls rustdoc found to apply; `for_args` for `impl Atomic<bool>`,
+  `alias_args` for `type AtomicBool = Atomic<bool>`), impls of foreign
+  types, blanket impls as written (with their bounds), traits' items.
+  Macros and primitives' docs items are no paths (`Debug` the trait, not
+  the derive; `std::str` the module). **Reconcile** (`reconcile.rs`, at
+  build, before compaction): an item whose line holds its own declaration
+  but has no node gets one (`Result::unwrap`, nightly `RefCell` — ~800 in
+  the toolchain), a method the grammar hoisted to a bare fn (a mangled
+  `impl` header) becomes `Owner::name` (~430); never at a macro
+  invocation or `#[derive]`. rustdoc JSON drops the inherent impls `alloc`/
+  `std` write for core types (`impl str`, `impl<T> [T]`, `impl io::Error`,
+  `#[rustc_allow_incoherent_impl]`): resolution finds those in the shard
+  (`api::incoherent`).
 - **Dependency taint summaries** (`src/deps/summaries/`): per Rust crate
   shard, once per version, `taint-summaries.json` inside the shard dir
   (versioned `SUMMARY_VERSION` — bump when the lowering, engine or stored
@@ -916,6 +949,60 @@ external pass only reads `unresolved_refs`, and the in-project contexts'
   private inherent items, and unknown/generic types resolve to nothing; only
   `cfg` twins count as one item. Private methods are admitted only inside a
   `trait`/`impl … for` (the index records trait-impl methods without `pub`).
+  All of that is the fallback: **a graph with a rustdoc API index answers
+  from it alone** (`external/rust/api.rs`, `EXTERNAL_RESOLUTION_VERSION` 2).
+  Paths walk its public paths (+ `defined`), `External` re-exports and
+  `globs` hop across crates' indexes (≤8; a glob needs exactly one crate
+  to answer), a trailing member is a variant, the one inherent item, else
+  the one trait item. `recv.m()` is rustc's probe: per auto-deref step
+  (`Deref` impls' `Target`), inherent methods with `self` first (impls in
+  every toolchain crate, `for_args`-filtered, plus `incoherent` ones), then
+  trait methods — the impl's own or the trait's provided one; blanket impls
+  of toolchain crates above the type's own when it has every bound — only
+  of traits in scope (`scope.rs` `TraitScope`: std's `prelude::rust_2021`/
+  `2024` traits, `use`d ones — `use Trait as _`, which the use leaves drop,
+  read from the file's text — fn-local ones in the same fn; an
+  inline-module use or a glob of an indexed module is "maybe", any
+  project/unknown glob makes every non-prelude trait "maybe"); a "maybe",
+  an unchecked blanket bound, or a
+  trait no index describes that may define `m` (the project's, or an
+  imported crate's without an index) answers nothing. A `dyn Trait`
+  receiver gets the trait's own method. Items become nodes by file + name
+  + kind spanning the rustdoc line (`reconcile::matching_node`); an item
+  without a node answers nothing, and a path the index lacks is not
+  guessed. Also only with `std`'s index: a bare prelude name (`Ok`, `Some`,
+  `Vec`, `drop`, `Clone` in `impl Clone for`) when nothing in the file can
+  shadow it (no `use` binds it, no glob could bring it, no item of the file
+  has it; `#[derive(..)]` lines skipped — the derive macro, not the trait),
+  a string/char literal receiver typed `str`/`char` (`"a".to_owned()`,
+  metadata `receiver` or the line's text), and a bare type name recorded
+  from `fmt::Result` re-read as the path written. The receiver inference's
+  stand-ins are not types: `std::collections::hash_map::Entry` (any map's
+  `entry`) resolves nothing, `std::slice::Iter` (any container's `iter`)
+  only a trait's own method (`Iterator::map`). For chain typing
+  (`Declarations::method_return`) a toolchain method's generic return
+  (`Option<&mut T>`, `Enumerate<Self>`, a bare `T`) is left to inference's
+  own wrapper table (`ADAPTED`/`ADAPTED_METHODS`, mirroring `adaptors.rs`;
+  maps'/sets' iterators keep their real types), and a chain head
+  `Type::assoc(..)` answers with the associated fn. `Type::f(..)` paths
+  never take a blanket impl (an impl of a foreign trait for a foreign
+  type — alloc's `From<Arc<W>> for Waker` — is in no crate's JSON).
+  `CODEGRAPH_API_TRACE=1` prints every reference, receiver, lookup and
+  declared return (per thread). Measured (2026-09, nightly
+  `1.100.0-nightly+1303417c416e` with `rust-docs-json`, all shards built,
+  vs the heuristics): std/core/alloc external edges 27,455 → 72,988 over
+  codegraph-rs, rms, serde_json, reqwest, tokio (codegraph-rs 20,907 →
+  55,447); SCIP's unresolved std references 94,044 → 52,979 (codegraph-rs
+  73,180 → 39,767); SCIP agreement on the std edges it judges 99.56% →
+  99.83% (65,483 / 109 — the rest are `#[derive(X)]` modelled as
+  `implements X` where SCIP names the derive macro, UFCS `Trait::m(x)`,
+  and wrong receiver types from inference); ~20 previously right edges
+  lost (map `entry` stand-ins, `Result<&T>`/`Result<&mut T>` `cloned`);
+  dependency JSON (`CODEGRAPH_DEPS_RUSTDOC=1`) fixed serde's `pub use
+  serde_core::*` re-exports (serde_json: 34 SCIP corrections → 1). The
+  50-crate beliefs sample: std sites 1,503 → 3,459, beliefs 3 → 8.
+  Pass time on codegraph-rs ~1.3 s (API indexes ~11 MB, loaded once per
+  process).
 - **When**: CLI `init|index|sync` after registration (full mode), the file
   watcher (incremental: only that sync's leftovers), and the detached `sync`
   that `deps build` queues for projects using a shard it built
