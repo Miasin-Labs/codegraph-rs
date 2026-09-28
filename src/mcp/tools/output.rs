@@ -29,6 +29,7 @@ pub(in crate::mcp::tools) use graph::{
     ImpactOutput,
     Trim,
     calls_output_schema,
+    dispatch_label,
     fitted,
     foreign_ref,
     group_by_file,

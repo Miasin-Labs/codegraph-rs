@@ -13,11 +13,13 @@ pub(super) use jvm::infer_java_field_receiver_type;
 pub(super) use local::infer_local_receiver_type;
 pub(crate) use local::infer_receiver_type_from_declaration;
 pub(super) use rust::{
+    Dispatch,
     RustType,
     declared_type,
     external_path,
     file_is_module,
     fn_local_uses,
+    generic_param,
     infer_rust_chain_type,
     infer_rust_receiver_type,
     is_deref_wrapper,

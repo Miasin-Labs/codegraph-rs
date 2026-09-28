@@ -253,6 +253,10 @@ impl Inference<'_> {
                 return None;
             }
             let ty = self.resolve_written(named, self_ty.as_ref(), file)?;
+            let ty = match super::types::dispatch_of(text) {
+                Some(dispatch) => ty.dispatched(dispatch, self.context),
+                None => ty,
+            };
             // A one-letter struct (`struct S`) is a type all the same.
             return (!generic || ty.is_project_type(self.context)).then_some(ty);
         }

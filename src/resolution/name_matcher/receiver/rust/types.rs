@@ -203,6 +203,35 @@ pub(super) fn named_type(written: &str) -> Option<Named<'_>> {
     Some(Named::Path(path))
 }
 
+/// Whether `written` names a trait object (`&dyn Tr`, `Box<dyn Tr + Send>`,
+/// `Arc<dyn Tr>`) or an `impl Tr`, looking through references and the
+/// smart pointers that deref to what they wrap.
+pub(super) fn dispatch_of(written: &str) -> Option<super::lookup::Dispatch> {
+    let mut text = written.trim_start();
+    loop {
+        if let Some(rest) = text.strip_prefix('&') {
+            text = rest.trim_start();
+        } else if let Some(rest) = text.strip_prefix('\'') {
+            text = rest
+                .trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                .trim_start();
+        } else if let Some(rest) = strip_keyword(text, "mut") {
+            text = rest;
+        } else if strip_keyword(text, "dyn").is_some() {
+            return Some(super::lookup::Dispatch::Dynamic);
+        } else if strip_keyword(text, "impl").is_some() {
+            return Some(super::lookup::Dispatch::Generic);
+        } else {
+            let (path, args) = split_path(text);
+            let last = path.rsplit("::").next()?;
+            if !is_deref_wrapper(last) {
+                return None;
+            }
+            text = type_args(&args).first().copied()?.trim_start();
+        }
+    }
+}
+
 /// The outer type of `written` when it is `Result<T, ..>` or `Option<T>`
 /// (under any path, `io::Result<T>` included), or the `LockResult<T>` a
 /// `lock()` returns: `T` as written.
@@ -304,6 +333,26 @@ mod tests {
         ];
         for (written, expected) in cases {
             assert_eq!(named_type(written), expected, "{written}");
+        }
+    }
+
+    #[test]
+    fn tells_trait_objects_and_impl_trait_apart() {
+        use super::super::lookup::Dispatch;
+        let cases = [
+            ("&dyn Shape", Some(Dispatch::Dynamic)),
+            ("&'a mut dyn Shape", Some(Dispatch::Dynamic)),
+            ("Box<dyn Shape + Send>", Some(Dispatch::Dynamic)),
+            ("Arc<dyn Shape>", Some(Dispatch::Dynamic)),
+            ("Pin<Box<dyn Future<Output = ()>>>", Some(Dispatch::Dynamic)),
+            ("impl Shape", Some(Dispatch::Generic)),
+            ("&mut impl Read", Some(Dispatch::Generic)),
+            ("Box<Square>", None),
+            ("Square", None),
+            ("Vec<Box<dyn Shape>>", None),
+        ];
+        for (written, expected) in cases {
+            assert_eq!(dispatch_of(written), expected, "{written}");
         }
     }
 

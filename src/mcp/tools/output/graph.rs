@@ -91,13 +91,33 @@ pub(in crate::mcp::tools) fn group_by_file<'a>(
 
 /// A caller or callee; `target` is the definition it reaches, given only when
 /// the name matched several (`sync` on two types): without it the rows of
-/// unrelated same-named definitions read as one list.
+/// unrelated same-named definitions read as one list. `dispatch` says the
+/// hop is not a static call: `dynamic` (a call on `dyn Trait`), `generic`
+/// (on a `T: Trait`), `implementation` (a trait method to an
+/// implementation of it, which such calls may run).
 #[derive(Debug, Clone, Serialize)]
 pub(in crate::mcp::tools) struct CallRow {
     #[serde(flatten)]
     pub symbol: SymbolRef,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<&'static str>,
+}
+
+/// How the edge `edge` dispatches, for [`CallRow::dispatch`]: `None` for a
+/// static call.
+pub(in crate::mcp::tools) fn dispatch_label(edge: &crate::types::Edge) -> Option<&'static str> {
+    let metadata = edge.metadata.as_ref()?;
+    match metadata.get("dispatch").and_then(serde_json::Value::as_str) {
+        Some("dynamic") => Some("dynamic"),
+        Some("generic") => Some("generic"),
+        _ => (metadata
+            .get("synthesizedBy")
+            .and_then(serde_json::Value::as_str)
+            == Some("interface-impl"))
+        .then_some("implementation"),
+    }
 }
 
 /// A caller in another project; `target` names which of several items it
@@ -575,6 +595,8 @@ pub(in crate::mcp::tools) fn calls_output_schema(kind: &str) -> Value {
 
     let mut call_row = symbol_ref_schema();
     call_row["properties"]["target"] = json!({ "type": "string" });
+    call_row["properties"]["dispatch"] =
+        json!({ "enum": ["dynamic", "generic", "implementation"] });
     let mut properties = cross_callers_properties();
     for (name, schema) in [
         ("schemaVersion", json!({ "type": "integer" })),
@@ -736,6 +758,7 @@ mod tests {
             .map(|i| CallRow {
                 symbol: SymbolRef::from(&node(&format!("caller_{i}"), "src/lib.rs", i)),
                 target: None,
+                dispatch: None,
             })
             .collect();
         let value = fitted(

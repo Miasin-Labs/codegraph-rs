@@ -54,10 +54,12 @@ use locals::caller_fn;
 pub(in crate::resolution::name_matcher) use locals::is_local_at_call;
 use lookup::resolve_named;
 pub(in crate::resolution::name_matcher) use lookup::{
+    Dispatch,
     RustType,
     external_path,
     file_is_module,
     fn_local_uses,
+    generic_param,
     prelude_type,
     resolve_type,
 };
@@ -276,7 +278,13 @@ impl Inference<'_> {
                 text,
                 self_ty,
                 file,
-            } => self.resolve_written(named_type(&text)?, self_ty.as_ref(), &file),
+            } => {
+                let ty = self.resolve_written(named_type(&text)?, self_ty.as_ref(), &file)?;
+                Some(match types::dispatch_of(&text) {
+                    Some(dispatch) => ty.dispatched(dispatch, self.context),
+                    None => ty,
+                })
+            }
         }
     }
 
@@ -367,6 +375,27 @@ impl Inference<'_> {
         column: Option<usize>,
         depth: u8,
     ) -> Option<Option<Value>> {
+        let scoped = self.bound_value_scoped(name, last_line, column, depth, true);
+        if matches!(scoped, Some(Some(_))) {
+            return scoped;
+        }
+        // The binding in scope does not spell a type (`let x = match y {
+        // A(x) => x, … };`): the one inside the closed block that feeds it
+        // is the best evidence left.
+        match self.bound_value_scoped(name, last_line, column, depth, false) {
+            found @ Some(Some(_)) => found,
+            _ => scoped,
+        }
+    }
+
+    fn bound_value_scoped(
+        &self,
+        name: &str,
+        last_line: Option<usize>,
+        column: Option<usize>,
+        depth: u8,
+        scoped: bool,
+    ) -> Option<Option<Value>> {
         let lines = last_line
             .filter(|last| *last >= self.first_line)
             .map_or(0..0, |last| self.first_line..last + 1);
@@ -382,7 +411,17 @@ impl Inference<'_> {
                 Some(column) if on_call_line => (prefix(full, column), self.lines.slice(0..0)),
                 _ => (full, self.lines.from(index + 1)),
             };
-            let value = match binding_in_line(line, next_lines.iter(), name) {
+            let found = binding_in_line(line, next_lines.iter(), name);
+            // `let x = { let x = inner(); wrap(x) };`: a binding inside a
+            // block that closed before the call is out of scope there.
+            if scoped
+                && found.is_some()
+                && !on_call_line
+                && self.closes_before(index, last_line, column)
+            {
+                continue;
+            }
+            let value = match found {
                 None => continue,
                 Some(Binding::Opaque) => None,
                 Some(Binding::Typed(written)) => Some(self.here(written.into_owned())),
@@ -471,6 +510,95 @@ impl Inference<'_> {
         None
     }
 
+    /// Whether the block holding a binding on line `index` closes before
+    /// the call site (`last_line`, up to byte `column`): more `}` than `{`
+    /// from the binding on. Linear in the lines between, which the upward
+    /// search for the binding has already read.
+    fn closes_before(&self, index: usize, last_line: Option<usize>, column: Option<usize>) -> bool {
+        let Some(last) = last_line else {
+            return false;
+        };
+        let mut depth = 0i64;
+        // Lexer state carried across lines: a string (`"…\` continues it)
+        // or a raw string's `#` count.
+        let mut in_string = false;
+        let mut raw: Option<usize> = None;
+        for at in index..=last {
+            let Some(line) = self.lines.get(at) else {
+                return false;
+            };
+            if line.len() > MAX_LINE_BYTES {
+                return false;
+            }
+            let text = if at == last {
+                column.map_or(line, |column| prefix(line, column))
+            } else {
+                line
+            };
+            // The binding's own line counts from the binding on (`} else {
+            // let x = …` does not close the binding's block).
+            let text = if at == index {
+                text.find("let ")
+                    .or_else(|| text.find("for "))
+                    .map_or(text, |start| &text[start..])
+            } else {
+                text
+            };
+            let bytes = text.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if let Some(hashes) = raw {
+                    // Inside `r#"…"#`: only its own closing quote ends it.
+                    if bytes[i] == b'"'
+                        && bytes[i + 1..].iter().take_while(|&&b| b == b'#').count() >= hashes
+                    {
+                        raw = None;
+                        i += 1 + hashes;
+                    } else {
+                        i += 1;
+                    }
+                    continue;
+                }
+                if in_string {
+                    match bytes[i] {
+                        b'\\' => i += 1,
+                        b'"' => in_string = false,
+                        _ => {}
+                    }
+                    i += 1;
+                    continue;
+                }
+                match bytes[i] {
+                    b'/' if bytes.get(i + 1) == Some(&b'/') => break,
+                    b'r' if !prev_ident(bytes, i) && raw_open(&bytes[i + 1..]).is_some() => {
+                        let hashes = raw_open(&bytes[i + 1..]).unwrap_or_default();
+                        raw = Some(hashes);
+                        i += 2 + hashes;
+                        continue;
+                    }
+                    b'"' => in_string = true,
+                    // A char literal: `'{'`, `'"'`, `'\''`.
+                    b'\'' if bytes.get(i + 2) == Some(&b'\'') => i += 2,
+                    b'\''
+                        if bytes.get(i + 1) == Some(&b'\\') && bytes.get(i + 3) == Some(&b'\'') =>
+                    {
+                        i += 3;
+                    }
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth < 0 {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+        }
+        false
+    }
+
     fn let_value(
         &self,
         annotation: Option<&str>,
@@ -482,6 +610,10 @@ impl Inference<'_> {
             return Some(self.here(annotation));
         }
         let text = self.statement(index, init?)?;
+        // `let x = { …; tail };`: the block's value is its tail.
+        if let Some(tail) = block_tail(&text) {
+            return self.expression_value(tail, Site::before(index), depth + 1);
+        }
         self.expression_value(&text, Site::before(index), depth)
     }
 
@@ -585,6 +717,52 @@ impl Inference<'_> {
     }
 }
 
+/// The tail expression of a block initializer `{ a; b; tail }`, when it
+/// has one: a tail naming only items (a path call such as
+/// `TcpListener::from_std(l).unwrap()`) types the same outside the block.
+fn block_tail(text: &str) -> Option<&str> {
+    let text = text.trim();
+    let inner = text.strip_prefix('{')?.strip_suffix('}')?;
+    if types::matching_paren(text) != Some(text.len() - 1) {
+        return None;
+    }
+    let tail = split_top_level(inner, b';').pop()?.trim();
+    if tail.is_empty() || tail.starts_with("let ") {
+        return None;
+    }
+    // A local the block binds (`{ let a = …; a.b() }`) is not in scope
+    // where the initializer is read from.
+    let head_end = tail
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(tail.len());
+    let head = &tail[..head_end];
+    let binds_head = !head.is_empty()
+        && [format!("let {head}"), format!("let mut {head}")]
+            .iter()
+            .any(|binding| {
+                inner.match_indices(binding.as_str()).any(|(at, _)| {
+                    !inner[at + binding.len()..]
+                        .starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                })
+            });
+    (!binds_head).then_some(tail)
+}
+
+/// The `#` count of a raw string opening right after an `r` (`"…`, `#"…`).
+fn raw_open(rest: &[u8]) -> Option<usize> {
+    let hashes = rest.iter().take_while(|&&b| b == b'#').count();
+    (rest.get(hashes) == Some(&b'"')).then_some(hashes)
+}
+
+/// Byte `i` continues an identifier (`for` in `bar"`, not a raw string).
+fn prev_ident(bytes: &[u8], i: usize) -> bool {
+    // `br"…"` is a raw byte string: the `b` does not make `r` an identifier.
+    i > 0
+        && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_')
+        && !(bytes[i - 1] == b'b'
+            && (i < 2 || !(bytes[i - 2].is_ascii_alphanumeric() || bytes[i - 2] == b'_')))
+}
+
 /// `line` up to byte `column`, clamped to a char boundary.
 fn prefix(line: &str, column: usize) -> &str {
     let mut end = column.min(line.len());
@@ -592,4 +770,33 @@ fn prefix(line: &str, column: usize) -> &str {
         end -= 1;
     }
     &line[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_block_initializer_is_typed_by_its_tail() {
+        assert_eq!(
+            block_tail("{\n let l = bind();\n Listener::from_std(l) }"),
+            Some("Listener::from_std(l)")
+        );
+        // The tail's head is a local the block binds: not in scope outside.
+        assert_eq!(block_tail("{ let a = Foo::new(); a }"), None);
+        assert_eq!(block_tail("{ let mut a = Foo::new(); a.b() }"), None);
+        assert_eq!(block_tail("{ side_effect(); }"), None);
+        assert_eq!(block_tail("{ a } + { b }"), None);
+        assert_eq!(block_tail("Foo::new()"), None);
+    }
+
+    #[test]
+    fn reads_raw_string_openings() {
+        assert_eq!(raw_open(b"\"x\""), Some(0));
+        assert_eq!(raw_open(b"##\"x\"##"), Some(2));
+        assert_eq!(raw_open(b"ow"), None);
+        assert!(prev_ident(b"bar\"", 2));
+        assert!(!prev_ident(b"br\"", 1));
+        assert!(!prev_ident(b" r\"", 1));
+    }
 }

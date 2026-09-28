@@ -21,6 +21,7 @@ use super::super::output::{
     ForeignCallsOutput,
     SymbolRef,
     Trim,
+    dispatch_label,
     fitted,
     foreign_ref,
 };
@@ -121,6 +122,7 @@ impl ToolHandler {
         let mut seen: HashSet<String> = HashSet::new();
         let mut related: Vec<Node> = Vec::new();
         let mut reaches: Vec<usize> = Vec::new();
+        let mut dispatches: Vec<Option<&'static str>> = Vec::new();
         for (index, node) in all_matches.nodes.iter().enumerate() {
             let refs = match direction {
                 Direction::Callers => cg.get_callers(&node.id, None)?,
@@ -128,6 +130,7 @@ impl ToolHandler {
             };
             for r in refs {
                 if seen.insert(r.node.id.clone()) {
+                    dispatches.push(dispatch_label(&r.edge));
                     related.push(r.node);
                     reaches.push(index);
                 }
@@ -140,10 +143,11 @@ impl ToolHandler {
         let targets = target_labels(&all_matches.nodes);
         output.results = related
             .iter()
-            .zip(&reaches)
-            .map(|(node, &index)| CallRow {
+            .zip(reaches.iter().zip(&dispatches))
+            .map(|(node, (&index, &dispatch))| CallRow {
                 symbol: SymbolRef::from(node),
                 target: targets.as_ref().map(|labels| labels[index].clone()),
+                dispatch,
             })
             .collect();
         if all_matches.nodes.len() > 1 {
