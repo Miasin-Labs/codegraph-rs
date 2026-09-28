@@ -16,6 +16,9 @@
            (#match? @p "^(query|body|params|cookies|headers|signedCookies)$"))
         value: src
     sinks:
+      - name: codeql-model
+        model: sql
+        message: "untrusted `{source}` reaches SQL (`{call}`, a CodeQL library model)"
       - name: query
         query: |
           ((call_expression function: (member_expression property: (property_identifier) @m) arguments: (arguments . (_) @arg))
@@ -124,6 +127,9 @@
   taint:
     sources: *js-sources
     sinks:
+      - name: codeql-model
+        model: path
+        message: "untrusted `{source}` reaches a file path (`{call}`, a CodeQL library model)"
       - name: fs
         query: |
           ((call_expression function: (member_expression property: (property_identifier) @m) arguments: (arguments . (_) @arg))

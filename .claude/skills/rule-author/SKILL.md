@@ -120,6 +120,17 @@ pairs).
   some outside a server are real.
 - A `call_expression` is a call in C/Rust/JS/Go; Java `method_invocation`,
   Python `call`, PHP `function_call_expression`/`member_call_expression`.
+- Library APIs are usually already modeled: CodeQL's Models-as-Data are
+  imported (Java, C/C++, Python, JS/TS, Rust). A taint role may be
+  `- model: sql-injection` instead of a query — sources take threat models
+  (`remote`, `local`, `environment`, `stdin`, …), sinks/sanitizers/guards
+  vulnerability kinds (`sql-injection`, `path-injection`,
+  `request-forgery`, … or aliases `sql`, `path`, `ssrf`, `command`,
+  `xss`); the marked value is capture `model`, the call `call`, and
+  `where` predicates apply as usual. `codegraph models list -l java -r
+  sink -k sql` shows what a kind covers; `variant` lists the models a
+  call matches. Prefer a model over a name regex for library calls: it is
+  typed (declared receiver type, imports) where a regex is not.
 - Report where the reader should look: `at: <capture>`.
 
 ## Worked examples

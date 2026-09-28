@@ -31,6 +31,9 @@
            (#eq? @m "sys") (#eq? @a "argv"))
         value: src
     sinks:
+      - name: codeql-model
+        model: sql
+        message: "untrusted `{source}` reaches SQL (`{call}`, a CodeQL library model)"
       - name: execute
         query: |
           ((call function: (attribute attribute: (identifier) @m) arguments: (argument_list . (_) @arg))
@@ -166,6 +169,9 @@
            (#match? @r "^(request|req)$") (#match? @a "^(get_json|get_data)$"))
         value: src
     sinks:
+      - name: codeql-model
+        model: path
+        message: "untrusted `{source}` reaches a file path (`{call}`, a CodeQL library model)"
       - name: open
         query: |
           ((call function: [(identifier) @f (attribute attribute: (identifier) @f)] arguments: (argument_list . (_) @arg))

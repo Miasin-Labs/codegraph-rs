@@ -46,6 +46,9 @@
            (#match? @r "(?i)(stream|sock|conn|tcp|udp|peer|tls|client)"))
         value: v
     sinks: &rust-command-sinks
+      - name: codeql-model
+        model: command
+        message: "untrusted `{source}` reaches a command (`{call}`, a CodeQL library model)"
       - name: command-new
         query: |
           ((call_expression function: (scoped_identifier) @f arguments: (arguments . (_) @arg))
@@ -212,6 +215,9 @@
   taint:
     sources: *rust-web-sources
     sinks:
+      - name: codeql-model
+        model: path
+        message: "untrusted `{source}` reaches a file path (`{call}`, a CodeQL library model)"
       - name: fs-call
         query: |
           ((call_expression function: (scoped_identifier) @f arguments: (arguments . (_) @arg))
@@ -427,6 +433,9 @@
            (#match? @r "stdin"))
         value: v
     sinks:
+      - name: codeql-model
+        model: sql
+        message: "untrusted `{source}` reaches SQL (`{call}`, a CodeQL library model)"
       - name: sql-method
         query: |
           ((call_expression function: (field_expression value: (_) @recv field: (field_identifier) @m) arguments: (arguments . (_) @arg))
@@ -499,6 +508,9 @@
   taint:
     sources: *rust-web-sources
     sinks:
+      - name: codeql-model
+        model: ssrf
+        message: "untrusted `{source}` reaches a request URL (`{call}`, a CodeQL library model)"
       - name: client-method
         query: |
           ((call_expression function: (field_expression field: (field_identifier) @m) arguments: (arguments . (_) @arg))
@@ -624,6 +636,9 @@
   taint:
     sources: *rust-web-sources
     sinks:
+      - name: codeql-model
+        model: xss
+        message: "untrusted `{source}` reaches an HTML response (`{call}`, a CodeQL library model)"
       - name: html
         query: |
           ((call_expression function: [(identifier) (scoped_identifier)] @f arguments: (arguments . (_) @arg))

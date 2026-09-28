@@ -40,6 +40,9 @@
            (#match? @m "^get(String|NString|Object)$") (#match? @o "(?i)result|^rs$"))
         value: src
     sinks:
+      - name: codeql-model
+        model: sql
+        message: "untrusted `{source}` reaches SQL (`{call}`, a CodeQL library model)"
       - name: jdbc
         query: |
           ((method_invocation name: (identifier) @m arguments: (argument_list . (_) @arg))
@@ -117,6 +120,9 @@
   taint:
     sources: *java-sources
     sinks:
+      - name: codeql-model
+        model: command
+        message: "untrusted `{source}` reaches an OS command (`{call}`, a CodeQL library model)"
       - name: runtime-exec
         query: |
           ((method_invocation name: (identifier) @m arguments: (argument_list (_) @arg))
@@ -174,6 +180,9 @@
   taint:
     sources: *java-sources
     sinks:
+      - name: codeql-model
+        model: path
+        message: "untrusted `{source}` reaches a file path (`{call}`, a CodeQL library model)"
       - name: file-constructor
         query: |
           ((object_creation_expression type: (_) @t arguments: (argument_list (_) @arg))
@@ -220,6 +229,9 @@
   taint:
     sources: *java-sources
     sinks:
+      - name: codeql-model
+        model: xss
+        message: "untrusted `{source}` reaches an HTML response (`{call}`, a CodeQL library model)"
       - name: response-writer
         query: |
           ((method_invocation object: (_) @o name: (identifier) @m arguments: (argument_list (_) @arg))
@@ -272,6 +284,9 @@
   taint:
     sources: *java-sources
     sinks:
+      - name: codeql-model
+        model: ldap
+        message: "untrusted `{source}` reaches an LDAP query (`{call}`, a CodeQL library model)"
       - name: dir-context-search
         query: |
           ((method_invocation name: (identifier) @m arguments: (argument_list (_) @arg))
@@ -310,6 +325,9 @@
   taint:
     sources: *java-sources
     sinks:
+      - name: codeql-model
+        model: xpath
+        message: "untrusted `{source}` reaches an XPath query (`{call}`, a CodeQL library model)"
       - name: xpath-evaluate
         query: |
           ((method_invocation name: (identifier) @m arguments: (argument_list . (_) @arg))
@@ -351,6 +369,9 @@
   taint:
     sources: *java-sources
     sinks:
+      - name: codeql-model
+        model: trust-boundary-violation
+        message: "untrusted `{source}` reaches the session (`{call}`, a CodeQL library model)"
       - name: session-attribute
         query: |
           ((method_invocation object: (_) @o name: (identifier) @m arguments: (argument_list (_) @arg))
@@ -415,6 +436,9 @@
   taint:
     sources: *java-sources
     sinks:
+      - name: codeql-model
+        model: redirect
+        message: "untrusted `{source}` reaches a redirect (`{call}`, a CodeQL library model)"
       - name: send-redirect
         query: |
           ((method_invocation name: (identifier) @m arguments: (argument_list . (_) @arg))
@@ -431,6 +455,43 @@
         class A { void f(HttpServletRequest request, HttpServletResponse response) throws Exception {
           String p = request.getParameter("next");
           response.sendRedirect("/home");
+        } }
+
+- id: java-request-forgery
+  description: >-
+    Untrusted input chooses where the server connects (URL, socket or JDBC
+    address): server-side request forgery (CWE-918). The sinks are CodeQL's
+    `request-forgery` library models (java.net, Apache/OkHttp/Spring HTTP
+    clients, JDBC URLs, …).
+  severity: high
+  confidence: 0.7
+  tags: [CWE-918, taint, codeql-models]
+  language: java
+  message: "untrusted `{source}` chooses where `{call}` connects"
+  taint:
+    sources: *java-sources
+    sinks:
+      - name: codeql-model
+        model: ssrf
+  review:
+    - Is the host fixed or checked against an allowlist before the connection?
+  examples:
+    bad:
+      - |
+        import java.net.URL;
+        import javax.servlet.http.HttpServletRequest;
+        class A { void f(HttpServletRequest request) throws Exception {
+          URL url = new URL(request.getParameter("u"));
+          url.openConnection();
+        } }
+    good:
+      - |
+        import java.net.URL;
+        import javax.servlet.http.HttpServletRequest;
+        class A { void f(HttpServletRequest request) throws Exception {
+          String p = request.getParameter("u");
+          URL url = new URL("https://example.com/status");
+          url.openConnection();
         } }
 
 - id: java-format-string
