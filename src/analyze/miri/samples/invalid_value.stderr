@@ -1,0 +1,25 @@
+
+running 1 test
+error: Undefined Behavior: constructing invalid value of type bool: encountered 0x03, but expected a boolean
+  --> src/lib.rs:40:14
+   |
+40 |     unsafe { std::mem::transmute::<u8, bool>(3) }
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Undefined Behavior occurred here
+   |
+   = help: this indicates a bug in the program: it performed an invalid operation, and caused Undefined Behavior
+   = help: see https://doc.rust-lang.org/nightly/reference/behavior-considered-undefined.html for further information
+   = note: this is on thread `tests::t_bool`
+   = note: stack backtrace:
+           0: bad_bool
+               at src/lib.rs:40:14: 40:48
+           1: tests::t_bool
+               at src/lib.rs:65:19: 65:29
+           2: tests::t_bool::{closure#0}
+               at src/lib.rs:65:16: 65:16
+
+note: some details are omitted, run with `MIRIFLAGS=-Zmiri-backtrace=full` for a verbose backtrace
+
+error: aborting due to 1 previous error
+
+error: test failed, to rerun pass `--lib`
+

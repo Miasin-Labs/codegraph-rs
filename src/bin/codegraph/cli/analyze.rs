@@ -467,6 +467,77 @@ and the project function at the first project frame. `--input <file>` replays on
         #[arg(short = 'j', long)]
         json: bool,
     },
+    /// Run Miri on the tests that reach unsafe code (or a finding) and map
+    /// any Undefined Behavior back to the indexed functions (needs
+    /// `cargo +nightly miri`)
+    #[command(
+        after_help = "Aims at --finding FILE:LINE, --function NAME or (the default) --all-unsafe, \
+picks the project's #[test]s that reach those functions through the call graph (nearest \
+first), and generates a harness (fixed inputs: empty, one byte, unaligned, ...) under \
+.codegraph/miri/harness/ for functions no test reaches. Each test binary is built once and each \
+test runs alone under `cargo +nightly miri test --offline`, killed at the deadline. UB and \
+leaks become findings (rule miri::<kind>, confidence 1.0) with Miri's backtrace; code Miri \
+cannot run (FFI, inline asm, isolated syscalls) is reported as unsupported, never clean. Static \
+findings in a function Miri proved UB in are listed as confirmed, and `analyze review` shows \
+the Miri report beside them. `--log FILE` maps a Miri output you ran yourself."
+    )]
+    Miri {
+        /// Aim at the function containing FILE:LINE
+        #[arg(long, value_name = "file:line", conflicts_with_all = ["function", "all_unsafe"])]
+        finding: Option<String>,
+        /// Aim at this function (qualified name or public path)
+        #[arg(long, value_name = "qname", conflicts_with = "all_unsafe")]
+        function: Option<String>,
+        /// Aim at every function with an unsafe block or modifier (default)
+        #[arg(long = "all-unsafe")]
+        all_unsafe: bool,
+        /// Wall-clock limit per test run, in seconds (the process group is killed)
+        #[arg(long, value_name = "number", default_value = "120")]
+        seconds: String,
+        /// Wall-clock limit per test-binary build, in seconds
+        #[arg(long = "build-timeout", value_name = "number", default_value = "900")]
+        build_timeout: String,
+        /// Run at most N tests (existing tests and harness inputs)
+        #[arg(long = "max-tests", value_name = "number", default_value = "16")]
+        max_tests: String,
+        /// Aliasing model: stacked (Miri's default), tree, or none
+        #[arg(long, value_name = "model", default_value = "stacked")]
+        borrows: String,
+        /// Allow integer-to-pointer casts (drop -Zmiri-strict-provenance)
+        #[arg(long = "permissive-provenance")]
+        permissive_provenance: bool,
+        /// Let the program use files, the clock and the environment
+        /// (-Zmiri-disable-isolation)
+        #[arg(long = "disable-isolation")]
+        disable_isolation: bool,
+        /// Do not report memory leaks (-Zmiri-ignore-leaks)
+        #[arg(long = "ignore-leaks")]
+        ignore_leaks: bool,
+        /// Extra MIRIFLAGS (repeatable)
+        #[arg(long = "miri-flag", value_name = "flag", allow_hyphen_values = true)]
+        miri_flag: Vec<String>,
+        /// Let cargo use the network (default: --offline)
+        #[arg(long)]
+        online: bool,
+        /// CARGO_TARGET_DIR for the Miri builds (default: cargo's)
+        #[arg(long = "target-dir", value_name = "dir")]
+        target_dir: Option<String>,
+        /// Do not generate harnesses for functions no test reaches
+        #[arg(long = "no-harness")]
+        no_harness: bool,
+        /// Show the plan (tests, harnesses) without running Miri or writing files
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// Map an existing Miri output (a file, or - for stdin) instead of running
+        #[arg(long, value_name = "file")]
+        log: Option<String>,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
     /// Change risk: the functions changed since a git base, ranked by how
     /// much depends on them and how few tests reach them
     #[command(

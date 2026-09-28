@@ -1,0 +1,24 @@
+
+running 1 test
+error: unsupported operation: can't call foreign function `my_missing_c_fn` on OS `linux`
+  --> src/lib.rs:36:14
+   |
+36 |     unsafe { my_missing_c_fn() }
+   |              ^^^^^^^^^^^^^^^^^ unsupported operation occurred here
+   |
+   = help: this means the program tried to do something Miri does not support; it does not indicate a bug in the program
+   = note: this is on thread `tests::t_ffi`
+   = note: stack backtrace:
+           0: ffi
+               at src/lib.rs:36:14: 36:31
+           1: tests::t_ffi
+               at src/lib.rs:63:18: 63:23
+           2: tests::t_ffi::{closure#0}
+               at src/lib.rs:63:15: 63:15
+
+note: some details are omitted, run with `MIRIFLAGS=-Zmiri-backtrace=full` for a verbose backtrace
+
+error: aborting due to 1 previous error
+
+error: test failed, to rerun pass `--lib`
+

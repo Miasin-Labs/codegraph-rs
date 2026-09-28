@@ -35,24 +35,27 @@ use std::path::Path;
 
 pub use project::{CallSite, FnSpan, Project};
 pub use review::{ReviewPacket, review_packets};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::codegraph::CodeGraph;
 use crate::resolution::line_index::LineStarts;
 
 /// Which detector family found it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Detector {
     Deviance,
     Lint,
     /// A YAML rule (`codegraph analyze rules`).
     Rule,
+    /// Undefined behaviour Miri reported on a real execution
+    /// (`codegraph analyze miri`).
+    Miri,
 }
 
 /// A place that supports (or contradicts) a finding: another call site that
 /// uses the result, the sibling arms of a match, the store that is lost.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Evidence {
     pub file: String,
@@ -61,7 +64,7 @@ pub struct Evidence {
 }
 
 /// One suspected bug.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Finding {
     pub detector: Detector,
@@ -78,7 +81,7 @@ pub struct Finding {
     /// How strongly the code's own behaviour backs the finding, 0..=1
     /// (deviance: the belief's agreement; lint: the rule's precision class).
     pub confidence: f64,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<Evidence>,
 }
 
@@ -195,8 +198,8 @@ pub fn bugs_review(
             rules,
             options,
         )?);
-        rank(&mut findings);
     }
+    rank(&mut findings);
     findings.retain(|finding| {
         selection
             .rule
