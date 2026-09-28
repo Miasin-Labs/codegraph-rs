@@ -1,0 +1,774 @@
+# Rust taint rules: request input (axum and actix extractors, header maps,
+# request bodies), bytes a peer sends, and — for commands and SQL — the
+# environment and stdin, reaching a shell or subprocess, a file path, a SQL
+# statement, an outgoing request's URL, an HTML response, or an allocation
+# size. Sinks are the library functions (`resolves-to`): a call the index
+# resolves to a project function of the same name is never a sink, and a
+# call no graph resolves (`<unresolved>`) counts when written the library's
+# way. With dependency summaries (`codegraph deps build`), flows through a
+# dependency's functions follow the dependency's own code.
+- id: rust-command-injection
+  description: Request or peer input reaches a subprocess's program or arguments (CWE-78, CWE-88).
+  severity: high
+  confidence: 0.8
+  tags: [CWE-78, CWE-88, taint]
+  language: rust
+  message: "untrusted input `{source}` reaches a subprocess command line"
+  taint:
+    sources: &rust-web-sources
+      - name: extractor
+        query: |
+          ((parameter pattern: (tuple_struct_pattern type: (_) . (_) @v)
+                      type: (generic_type type: (_) @t))
+           (#match? @t "(^|::)(Path|Query|Json|Form|RawForm|RawQuery|TypedHeader|Multipart)$"))
+        value: v
+      - name: extractor-param
+        query: |
+          ((parameter pattern: (identifier) @v
+                      type: [(generic_type type: (_) @t) (type_identifier) @t (scoped_type_identifier) @t])
+           (#match? @t "(^|::)(Path|Query|Json|Form|RawForm|RawQuery|TypedHeader|Multipart|HeaderMap|HttpRequest)$"))
+        value: v
+      - name: request-body
+        query: |
+          ((parameters
+             (parameter type: [(generic_type type: (_) @e) (type_identifier) @e (scoped_type_identifier) @e])
+             .
+             (parameter pattern: (identifier) @v type: [(type_identifier) (scoped_type_identifier)] @t) .)
+           (#match? @e "(^|::)(State|Path|Query|HeaderMap|Extension|TypedHeader|ConnectInfo|Method|Uri|OriginalUri|HttpRequest)$")
+           (#match? @t "(^|::)(String|Bytes)$"))
+        value: v
+      - name: peer-read
+        query: |
+          ((call_expression
+             function: (field_expression value: (_) @r field: (field_identifier) @m)
+             arguments: (arguments . (reference_expression value: (_) @v)))
+           (#match? @m "^(read|read_exact|read_to_end|read_to_string|read_buf|recv|recv_from|peek)$")
+           (#match? @r "(?i)(stream|sock|conn|tcp|udp|peer|tls|client)"))
+        value: v
+    sinks: &rust-command-sinks
+      - name: command-new
+        query: |
+          ((call_expression function: (scoped_identifier) @f arguments: (arguments . (_) @arg))
+           (#match? @f "(^|::)Command::new$"))
+        argument: arg
+        where:
+          - capture: f
+            resolves-to: "^(<unresolved>|(std|tokio|async_process|async_std)::.*Command::new)$"
+      - name: command-arg
+        query: |
+          ((call_expression function: (field_expression field: (field_identifier) @m) arguments: (arguments . (_) @arg))
+           (#match? @m "^(arg|args)$"))
+        argument: arg
+        where:
+          - capture: m
+            resolves-to: "^(<unresolved>|(std|tokio|async_process|async_std)::.*Command::args?)$"
+    sanitizers: &rust-generic-sanitizers
+      - name: number
+        query: |
+          ((call_expression function: (generic_function function: (field_expression field: (field_identifier) @m)
+                                                       type_arguments: (type_arguments (primitive_type) @t))) @v
+           (#eq? @m "parse"))
+        value: v
+      - name: escape
+        query: |
+          ((call_expression function: [(identifier) @f (scoped_identifier name: (identifier) @f) (field_expression field: (field_identifier) @f)]) @v
+           (#match? @f "^(escape|quote|shell_escape|sanitize|sanitize_filename|encode_text|encode_safe|encode_minimal|encode_double_quoted_attribute|escape_html|html_escape|clean)$"))
+        value: v
+    guards: &rust-generic-guards
+      - name: all-chars
+        query: |
+          ((call_expression
+             function: (field_expression
+               value: (call_expression function: (field_expression value: (_) @v field: (field_identifier) @c))
+               field: (field_identifier) @m)) @check
+           (#match? @c "^(chars|bytes)$") (#eq? @m "all"))
+        value: v
+        check: check
+      - name: validator
+        query: |
+          ((call_expression
+             function: [(identifier) @f (scoped_identifier name: (identifier) @f) (field_expression field: (field_identifier) @f)]
+             arguments: (arguments . [(reference_expression value: (_) @v) (_) @v])) @check
+           (#match? @f "(?i)^(is_|has_)?(valid|allowed|allowlisted|whitelisted|permitted|trusted|safe)"))
+        value: v
+        check: check
+      - name: checked-with-question-mark
+        query: |
+          ((try_expression [
+             (call_expression
+               function: [(identifier) @f (scoped_identifier name: (identifier) @f) (field_expression field: (field_identifier) @f)]
+               arguments: (arguments . [(reference_expression value: (_) @v) (_) @v]))
+             (call_expression function: (field_expression
+               value: (call_expression
+                 function: [(identifier) @f (scoped_identifier name: (identifier) @f) (field_expression field: (field_identifier) @f)]
+                 arguments: (arguments . [(reference_expression value: (_) @v) (_) @v]))))
+           ] @check)
+           (#match? @f "(?i)^(validate|verify|ensure|require|check_(valid|safe|name|path|id|url|host)|parse_str|try_parse|(is_)?(valid|safe|allowed))"))
+        value: v
+        check: check
+  review:
+    - Is the program fixed (not from the input), and is the input only an argument? Then it is argument injection at worst — can it start with `-`?
+    - Does the command run through a shell (`sh -c`, `cmd /C`)? Then the input is shell code.
+  examples:
+    bad:
+      - |
+        async fn run(Query(q): Query<Params>) -> String {
+            let out = Command::new("sh").arg("-c").arg(format!("ping {}", q.host)).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        }
+      - |
+        async fn convert(Path(name): Path<String>) {
+            let file = format!("/tmp/{name}.pdf");
+            std::process::Command::new(file).spawn().unwrap();
+        }
+      - |
+        fn serve(mut stream: TcpStream) {
+            let mut buf = [0u8; 256];
+            stream.read(&mut buf).unwrap();
+            let cmd = String::from_utf8_lossy(&buf).to_string();
+            run_it(&cmd);
+        }
+        fn run_it(cmd: &str) {
+            Command::new("sh").args(["-c", cmd]).status().unwrap();
+        }
+    good:
+      - |
+        async fn run(Query(q): Query<Params>) -> String {
+            let out = Command::new("ping").arg("-c").arg("1").output().unwrap();
+            q.host
+        }
+      - |
+        async fn run(Path(n): Path<String>) {
+            let n = n.parse::<u32>().unwrap();
+            Command::new("seq").arg(format!("{n}")).spawn().unwrap();
+        }
+      - |
+        async fn run(Path(host): Path<String>) {
+            if host.chars().all(|c| c.is_ascii_alphanumeric()) {
+                Command::new("ping").arg(host).spawn().unwrap();
+            }
+        }
+
+- id: rust-command-from-environment
+  description: An environment variable or stdin reaches a subprocess's program or arguments (CWE-78, CWE-426).
+  severity: medium
+  confidence: 0.4
+  tags: [CWE-78, CWE-426, taint]
+  language: rust
+  message: "`{source}` (environment or stdin) reaches a subprocess command line"
+  taint:
+    sources: &rust-local-sources
+      - name: env
+        query: |
+          ((call_expression function: (scoped_identifier) @f) @v
+           (#match? @f "(^|::)env::(var|var_os|args|args_os)$"))
+        value: v
+      - name: stdin-read
+        query: |
+          ((call_expression
+             function: (field_expression value: (_) @r field: (field_identifier) @m)
+             arguments: (arguments . (reference_expression value: (_) @v)))
+           (#match? @m "^(read_line|read_to_string|read_to_end)$")
+           (#match? @r "stdin"))
+        value: v
+      - name: stdin-lines
+        query: |
+          ((call_expression function: (field_expression value: (_) @r field: (field_identifier) @m)) @v
+           (#match? @m "^(lines|bytes)$")
+           (#match? @r "stdin"))
+        value: v
+    sinks: *rust-command-sinks
+    sanitizers: *rust-generic-sanitizers
+    guards: *rust-generic-guards
+  review:
+    - Who sets the variable? An operator's own configuration is not an attack; a setuid binary, CI job or service fed by others is.
+  examples:
+    bad:
+      - |
+        fn main() {
+            let editor = std::env::var("EDITOR").unwrap();
+            Command::new(editor).arg("notes.txt").status().unwrap();
+        }
+      - |
+        fn main() {
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line).unwrap();
+            Command::new("sh").arg("-c").arg(line.trim()).status().unwrap();
+        }
+    good:
+      - |
+        fn main() {
+            let home = std::env::var("HOME").unwrap();
+            Command::new("ls").arg("-la").status().unwrap();
+        }
+
+- id: rust-path-traversal
+  description: Request or peer input names a file to read, write or delete (CWE-22).
+  severity: high
+  confidence: 0.7
+  tags: [CWE-22, CWE-73, taint]
+  language: rust
+  message: "untrusted input `{source}` names a file"
+  taint:
+    sources: *rust-web-sources
+    sinks:
+      - name: fs-call
+        query: |
+          ((call_expression function: (scoped_identifier) @f arguments: (arguments . (_) @arg))
+           (#match? @f "(^|::)(fs::(read|read_to_string|read_dir|write|remove_file|remove_dir|remove_dir_all|create_dir|create_dir_all|copy|rename|hard_link|set_permissions|metadata|symlink_metadata)|File::(open|create|create_new|options)|ServeFile::new|ServeDir::new|NamedFile::open(_async)?)$"))
+        argument: arg
+        where:
+          - capture: f
+            resolves-to: "^(<unresolved>|(std|tokio|async_std|tower_http|actix_files)::.*)$"
+      - name: open-options
+        query: |
+          ((call_expression function: (field_expression value: (_) @chain field: (field_identifier) @m) arguments: (arguments . (_) @arg))
+           (#eq? @m "open") (#match? @chain "OpenOptions"))
+        argument: arg
+        where:
+          - capture: m
+            resolves-to: "^(<unresolved>|(std|tokio|async_std)::.*OpenOptions::open)$"
+    sanitizers:
+      - name: file-name
+        query: |
+          ((call_expression function: (field_expression field: (field_identifier) @m)) @v
+           (#match? @m "^(file_name|file_stem)$"))
+        value: v
+      - name: escape
+        query: |
+          ((call_expression function: [(identifier) @f (scoped_identifier name: (identifier) @f)]) @v
+           (#match? @f "^(sanitize|sanitize_filename|sanitize_with_options|safe_path|clean_path|secure_filename)$"))
+        value: v
+      - name: number
+        query: |
+          ((call_expression function: (generic_function function: (field_expression field: (field_identifier) @m)
+                                                       type_arguments: (type_arguments (primitive_type) @t))) @v
+           (#eq? @m "parse"))
+        value: v
+    guards:
+      - name: dot-dot
+        query: |
+          ((call_expression
+             function: (field_expression
+               value: [(_) @v
+                       (call_expression function: (field_expression value: (_) @v field: (field_identifier) @conv))
+                       (call_expression function: (field_expression
+                         value: (call_expression function: (field_expression value: (_) @v field: (field_identifier) @conv))))]
+               field: (field_identifier) @m)
+             arguments: (arguments . (string_literal) @lit)) @check
+           (#eq? @m "contains") (#match? @lit "\\.\\."))
+        value: v
+        check: check
+        safe: when-false
+      - name: components-any
+        query: |
+          ((call_expression
+             function: (field_expression
+               value: (call_expression function: (field_expression value: (_) @v field: (field_identifier) @c))
+               field: (field_identifier) @m)) @check
+           (#eq? @c "components") (#eq? @m "any"))
+        value: v
+        check: check
+        safe: when-false
+      - name: components-all
+        query: |
+          ((call_expression
+             function: (field_expression
+               value: (call_expression function: (field_expression value: (_) @v field: (field_identifier) @c))
+               field: (field_identifier) @m)) @check
+           (#eq? @c "components") (#eq? @m "all"))
+        value: v
+        check: check
+      - name: canonical-prefix
+        query: |
+          ((call_expression function: (field_expression value: (_) @v field: (field_identifier) @m)) @check
+           (#eq? @m "starts_with"))
+        value: v
+        check: check
+        where:
+          - enclosing-function:
+              calls: "canonicalize$"
+      - name: all-chars
+        query: |
+          ((call_expression
+             function: (field_expression
+               value: (call_expression function: (field_expression value: (_) @v field: (field_identifier) @c))
+               field: (field_identifier) @m)) @check
+           (#match? @c "^(chars|bytes)$") (#eq? @m "all"))
+        value: v
+        check: check
+      - name: validator
+        query: |
+          ((call_expression
+             function: [(identifier) @f (scoped_identifier name: (identifier) @f) (field_expression field: (field_identifier) @f)]
+             arguments: (arguments . [(reference_expression value: (_) @v) (_) @v])) @check
+           (#match? @f "(?i)^(is_|has_)?(valid|allowed|allowlisted|whitelisted|permitted|trusted|safe)"))
+        value: v
+        check: check
+      - name: checked-with-question-mark
+        query: |
+          ((try_expression [
+             (call_expression
+               function: [(identifier) @f (scoped_identifier name: (identifier) @f) (field_expression field: (field_identifier) @f)]
+               arguments: (arguments . [(reference_expression value: (_) @v) (_) @v]))
+             (call_expression function: (field_expression
+               value: (call_expression
+                 function: [(identifier) @f (scoped_identifier name: (identifier) @f) (field_expression field: (field_identifier) @f)]
+                 arguments: (arguments . [(reference_expression value: (_) @v) (_) @v]))))
+           ] @check)
+           (#match? @f "(?i)^(validate|verify|ensure|require|check_(valid|safe|name|path|id|url|host)|parse_str|try_parse|(is_)?(valid|safe|allowed))"))
+        value: v
+        check: check
+  review:
+    - Can the input hold `..`, an absolute path, or a symlink out of the intended directory?
+    - Is the path checked after canonicalization (`canonicalize` then `starts_with(root)`), or reduced to `file_name()`?
+  examples:
+    bad:
+      - |
+        async fn download(Path(name): Path<String>) -> Vec<u8> {
+            let path = PathBuf::from("/srv/files").join(&name);
+            std::fs::read(path).unwrap()
+        }
+      - |
+        async fn upload(Query(q): Query<Up>, body: Bytes) {
+            tokio::fs::write(format!("/srv/{}", q.name), body).await.unwrap();
+        }
+      - |
+        async fn remove(State(s): State<App>, name: String) {
+            let p = s.root.join(name);
+            fs::remove_file(&p).unwrap();
+        }
+      - |
+        async fn get(Path(name): Path<String>) {
+            let p = Path::new("/srv").join(&name);
+            if p.starts_with("/srv") {
+                std::fs::read(&p).unwrap();
+            }
+        }
+    good:
+      - |
+        async fn download(Path(name): Path<String>) -> Vec<u8> {
+            let file = std::path::Path::new(&name).file_name().unwrap();
+            std::fs::read(Path::new("/srv/files").join(file)).unwrap()
+        }
+      - |
+        async fn download(Path(name): Path<String>) -> Vec<u8> {
+            if name.contains("..") {
+                return Vec::new();
+            }
+            std::fs::read(format!("/srv/{name}")).unwrap()
+        }
+      - |
+        async fn get(Path(name): Path<String>) {
+            let p = std::fs::canonicalize(Path::new("/srv").join(&name)).unwrap();
+            if !p.starts_with("/srv") {
+                return;
+            }
+            std::fs::read(&p).unwrap();
+        }
+      - |
+        async fn get(Path(name): Path<String>) {
+            let p = Path::new(&name);
+            if p.components().any(|c| matches!(c, Component::ParentDir | Component::RootDir)) {
+                return;
+            }
+            std::fs::read(p).unwrap();
+        }
+
+- id: rust-sql-injection
+  description: Untrusted input is spliced into a SQL statement instead of bound as a parameter (CWE-89).
+  severity: high
+  confidence: 0.8
+  tags: [CWE-89, taint]
+  language: rust
+  message: "untrusted input `{source}` is spliced into SQL"
+  taint:
+    sources: &rust-all-sources
+      - name: extractor
+        query: |
+          ((parameter pattern: (tuple_struct_pattern type: (_) . (_) @v)
+                      type: (generic_type type: (_) @t))
+           (#match? @t "(^|::)(Path|Query|Json|Form|RawForm|RawQuery|TypedHeader|Multipart)$"))
+        value: v
+      - name: extractor-param
+        query: |
+          ((parameter pattern: (identifier) @v
+                      type: [(generic_type type: (_) @t) (type_identifier) @t (scoped_type_identifier) @t])
+           (#match? @t "(^|::)(Path|Query|Json|Form|RawForm|RawQuery|TypedHeader|Multipart|HeaderMap|HttpRequest)$"))
+        value: v
+      - name: request-body
+        query: |
+          ((parameters
+             (parameter type: [(generic_type type: (_) @e) (type_identifier) @e (scoped_type_identifier) @e])
+             .
+             (parameter pattern: (identifier) @v type: [(type_identifier) (scoped_type_identifier)] @t) .)
+           (#match? @e "(^|::)(State|Path|Query|HeaderMap|Extension|TypedHeader|ConnectInfo|Method|Uri|OriginalUri|HttpRequest)$")
+           (#match? @t "(^|::)(String|Bytes)$"))
+        value: v
+      - name: peer-read
+        query: |
+          ((call_expression
+             function: (field_expression value: (_) @r field: (field_identifier) @m)
+             arguments: (arguments . (reference_expression value: (_) @v)))
+           (#match? @m "^(read|read_exact|read_to_end|read_to_string|read_buf|recv|recv_from|peek)$")
+           (#match? @r "(?i)(stream|sock|conn|tcp|udp|peer|tls|client)"))
+        value: v
+      - name: env
+        query: |
+          ((call_expression function: (scoped_identifier) @f) @v
+           (#match? @f "(^|::)env::(var|var_os|args|args_os)$"))
+        value: v
+      - name: stdin-read
+        query: |
+          ((call_expression
+             function: (field_expression value: (_) @r field: (field_identifier) @m)
+             arguments: (arguments . (reference_expression value: (_) @v)))
+           (#match? @m "^(read_line|read_to_string|read_to_end)$")
+           (#match? @r "stdin"))
+        value: v
+    sinks:
+      - name: sql-method
+        query: |
+          ((call_expression function: (field_expression value: (_) @recv field: (field_identifier) @m) arguments: (arguments . (_) @arg))
+           (#match? @m "^(execute|execute_batch|query|query_row|query_row_and_then|query_one|query_opt|query_raw|prepare|prepare_cached|batch_execute|simple_query)$"))
+        argument: arg
+        where:
+          - capture: m
+            resolves-to: "^(<unresolved>|(rusqlite|postgres|tokio_postgres|sqlx|mysql|mysql_async|sqlite|duckdb|diesel)::.*)$"
+          # A prepared statement's methods take parameters, not SQL.
+          - capture: m
+            not-resolves-to: "::Statement::"
+          # An HTTP request builder's `.query(&params)` is a URL query
+          # string; a statement's `.query(params)` binds.
+          - capture: recv
+            not-regex: "\\.(get|post|put|patch|delete|head|request|get_json)\\(|(?i)request|builder|stmt|statement"
+      - name: sqlx-query
+        query: |
+          ((call_expression function: [(scoped_identifier) (identifier) (generic_function)] @f arguments: (arguments . (_) @arg))
+           (#match? @f "^(sqlx::)?(query|query_as|query_scalar|query_with|query_as_with|raw_sql)(::<.*>)?$"))
+        argument: arg
+        where:
+          - capture: f
+            resolves-to: "^(<unresolved>|sqlx::.*)$"
+    sanitizers: *rust-generic-sanitizers
+    guards: *rust-generic-guards
+  review:
+    - Is the input a value (bind it — `?1`, `$1`, `.bind(x)`) or an identifier (then allowlist it)?
+  examples:
+    bad:
+      - |
+        async fn find(Query(q): Query<Search>, conn: &Connection) {
+            let sql = format!("SELECT * FROM t WHERE name = '{}'", q.name);
+            conn.execute(&sql, []).unwrap();
+        }
+      - |
+        async fn find(State(db): State<Pool>, Path(id): Path<String>) {
+            sqlx::query(&format!("DELETE FROM t WHERE id = {id}")).execute(&db).await.unwrap();
+        }
+      - |
+        fn main() {
+            let table = std::env::var("TABLE").unwrap();
+            let conn = open();
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap();
+        }
+    good:
+      - |
+        async fn find(Query(q): Query<Search>, conn: &Connection) {
+            conn.execute("SELECT * FROM t WHERE name = ?1", [q.name]).unwrap();
+        }
+      - |
+        async fn find(State(db): State<Pool>, Path(id): Path<String>) {
+            sqlx::query("DELETE FROM t WHERE id = $1").bind(id).execute(&db).await.unwrap();
+        }
+      - |
+        async fn find(Path(id): Path<String>, conn: &Connection) {
+            let id = id.parse::<i64>().unwrap();
+            conn.execute(&format!("DELETE FROM t WHERE id = {id}"), []).unwrap();
+        }
+
+- id: rust-ssrf
+  description: Request input chooses the URL of an outgoing request (server-side request forgery, CWE-918).
+  severity: high
+  confidence: 0.7
+  tags: [CWE-918, taint]
+  language: rust
+  message: "untrusted input `{source}` chooses an outgoing request's URL"
+  taint:
+    sources: *rust-web-sources
+    sinks:
+      - name: client-method
+        query: |
+          ((call_expression function: (field_expression field: (field_identifier) @m) arguments: (arguments . (_) @arg))
+           (#match? @m "^(get|post|put|patch|delete|head)$"))
+        argument: arg
+        where:
+          - capture: m
+            resolves-to: "^(reqwest|ureq|surf|isahc|awc|attohttpc)::.*"
+      - name: client-method-unresolved
+        query: |
+          ((call_expression function: (field_expression value: (_) @recv field: (field_identifier) @m) arguments: (arguments . (_) @arg))
+           (#match? @m "^(get|post|put|patch|delete|head)$")
+           (#match? @recv "(?i)(client|http|agent|reqwest)"))
+        argument: arg
+        where:
+          - capture: m
+            resolves-to: "^<unresolved>$"
+      - name: client-request
+        query: |
+          ((call_expression function: (field_expression value: (_) @recv field: (field_identifier) @m) arguments: (arguments (_) . (_) @arg .))
+           (#eq? @m "request") (#match? @recv "(?i)(client|http|agent|reqwest)"))
+        argument: arg
+        where:
+          - capture: m
+            resolves-to: "^(<unresolved>|(reqwest|ureq|awc)::.*)$"
+      - name: get-function
+        query: |
+          ((call_expression function: (scoped_identifier) @f arguments: (arguments . (_) @arg))
+           (#match? @f "^(reqwest::(blocking::)?|ureq::|surf::|attohttpc::)(get|post|put|delete|head)$"))
+        argument: arg
+      - name: request-uri
+        query: |
+          ((call_expression function: (field_expression value: (_) @chain field: (field_identifier) @m) arguments: (arguments . (_) @arg))
+           (#eq? @m "uri") (#match? @chain "builder"))
+        argument: arg
+        where:
+          - capture: m
+            resolves-to: "^(<unresolved>|(http|hyper)::.*)$"
+    sanitizers:
+      - name: escape
+        query: |
+          ((call_expression function: [(identifier) @f (scoped_identifier name: (identifier) @f)]) @v
+           (#match? @f "(?i)^(validate|check|ensure|verify|safe|allow).*(url|uri|host|target|destination)"))
+        value: v
+    guards:
+      - name: host-allowlist
+        query: |
+          ((call_expression
+             arguments: (arguments [
+               (call_expression function: (field_expression value: (_) @v field: (field_identifier) @h))
+               (reference_expression value: (call_expression function: (field_expression value: (_) @v field: (field_identifier) @h)))
+               (call_expression function: (field_expression value: (call_expression function: (field_expression value: (_) @v field: (field_identifier) @h))))
+               (reference_expression value: (call_expression function: (field_expression value: (call_expression function: (field_expression value: (_) @v field: (field_identifier) @h)))))
+             ])) @check
+           (#match? @h "^(host|host_str|domain)$"))
+        value: v
+        check: check
+      - name: validator
+        query: |
+          ((call_expression
+             function: [(identifier) @f (scoped_identifier name: (identifier) @f) (field_expression field: (field_identifier) @f)]
+             arguments: (arguments . [(reference_expression value: (_) @v) (_) @v])) @check
+           (#match? @f "(?i)^(is_|has_)?(valid|allowed|allowlisted|whitelisted|permitted|trusted|safe|public|global)"))
+        value: v
+        check: check
+      - name: checked-with-question-mark
+        query: |
+          ((try_expression [
+             (call_expression
+               function: [(identifier) @f (scoped_identifier name: (identifier) @f) (field_expression field: (field_identifier) @f)]
+               arguments: (arguments . [(reference_expression value: (_) @v) (_) @v]))
+             (call_expression function: (field_expression
+               value: (call_expression
+                 function: [(identifier) @f (scoped_identifier name: (identifier) @f) (field_expression field: (field_identifier) @f)]
+                 arguments: (arguments . [(reference_expression value: (_) @v) (_) @v]))))
+           ] @check)
+           (#match? @f "(?i)^(validate|verify|ensure|require|check_(url|host|target)|(is_)?(valid|safe|allowed|public))"))
+        value: v
+        check: check
+  review:
+    - Can the input choose the scheme, host or port — reaching the loopback, the cloud metadata address (169.254.169.254), or internal services?
+    - Is the host checked after DNS resolution (a `dns_resolver` that drops private addresses), and do redirects and proxies go through the same check?
+  examples:
+    bad:
+      - |
+        async fn fetch(State(s): State<App>, Query(q): Query<Feed>) -> String {
+            s.client.get(&q.url).send().await.unwrap().text().await.unwrap()
+        }
+      - |
+        async fn fetch(Json(req): Json<Req>) {
+            let target = format!("https://{}/api", req.host);
+            reqwest::get(target).await.unwrap();
+        }
+      - |
+        async fn proxy(Path(u): Path<String>, http: &Client) {
+            http.request(Method::GET, u).send().await.unwrap();
+        }
+    good:
+      - |
+        async fn fetch(State(s): State<App>, Query(q): Query<Feed>) {
+            let url = Url::parse(&q.url).unwrap();
+            if !ALLOWED.contains(&url.host_str().unwrap_or("")) {
+                return;
+            }
+            s.client.get(url).send().await.unwrap();
+        }
+      - |
+        async fn fetch(State(s): State<App>, Query(q): Query<Feed>) {
+            s.client.get("https://example.com/feed").query(&[("q", q.term)]).send().await.unwrap();
+        }
+      - |
+        async fn fetch(Query(q): Query<Feed>, cache: &Cache) {
+            cache.get(&q.url);
+        }
+
+- id: rust-xss
+  description: Request input is written into an HTML response without escaping (CWE-79).
+  severity: medium
+  confidence: 0.7
+  tags: [CWE-79, taint]
+  language: rust
+  message: "untrusted input `{source}` is written into HTML"
+  taint:
+    sources: *rust-web-sources
+    sinks:
+      - name: html
+        query: |
+          ((call_expression function: [(identifier) (scoped_identifier)] @f arguments: (arguments . (_) @arg))
+           (#match? @f "(^|::)Html$"))
+        argument: arg
+        where:
+          - capture: f
+            resolves-to: "^(<unresolved>|axum::.*|axum_core::.*)$"
+      - name: html-body
+        query: |
+          ((call_expression function: (field_expression value: (_) @chain field: (field_identifier) @m) arguments: (arguments . (_) @arg))
+           (#eq? @m "body") (#match? @chain "(?i)text/html|TEXT_HTML"))
+        argument: arg
+    sanitizers:
+      - name: escape
+        query: |
+          ((call_expression function: [(identifier) @f (scoped_identifier name: (identifier) @f) (field_expression field: (field_identifier) @f)]) @v
+           (#match? @f "^(escape|encode_text|encode_safe|encode_minimal|encode_double_quoted_attribute|encode_quoted_attribute|escape_html|html_escape|clean|render|render_once|into_string)$"))
+        value: v
+      - name: number
+        query: |
+          ((call_expression function: (generic_function function: (field_expression field: (field_identifier) @m)
+                                                       type_arguments: (type_arguments (primitive_type) @t))) @v
+           (#eq? @m "parse"))
+        value: v
+    guards: *rust-generic-guards
+  review:
+    - Is the response served as HTML, and can the input carry markup (`<script>`, an attribute break)?
+    - Escape with a template engine's auto-escaping (askama, maud) or `html_escape::encode_text`.
+  examples:
+    bad:
+      - |
+        async fn hello(Query(q): Query<Hello>) -> Html<String> {
+            Html(format!("<h1>Hello {}</h1>", q.name))
+        }
+      - |
+        async fn hello(req: HttpRequest) -> HttpResponse {
+            let name = req.match_info().get("name").unwrap_or("");
+            HttpResponse::Ok().content_type("text/html").body(format!("<p>{name}</p>"))
+        }
+    good:
+      - |
+        async fn hello(Query(q): Query<Hello>) -> Html<String> {
+            let name = html_escape::encode_text(&q.name);
+            Html(format!("<h1>Hello {name}</h1>"))
+        }
+      - |
+        async fn hello(Query(q): Query<Hello>) -> Html<String> {
+            Html(HelloTemplate { name: q.name }.render().unwrap())
+        }
+
+- id: rust-allocation-from-input
+  description: A length decoded from input sizes an allocation with no bound (memory exhaustion, CWE-789, CWE-400).
+  severity: medium
+  confidence: 0.5
+  tags: [CWE-789, CWE-400, taint]
+  language: rust
+  message: "a length decoded from input (`{source}`) sizes an allocation with no bound"
+  taint:
+    sources:
+      - name: decoded-integer
+        query: |
+          ((call_expression function: [(field_expression field: (field_identifier) @m)
+                                       (scoped_identifier name: (identifier) @m)
+                                       (generic_function function: (field_expression field: (field_identifier) @m))]) @v
+           (#match? @m "^(read_u16|read_u32|read_u64|read_i32|read_i64|read_u16_le|read_u32_le|read_u64_le|read_u16_be|read_u32_be|read_u64_be|get_u16|get_u32|get_u64|get_u16_le|get_u32_le|get_u64_le|from_be_bytes|from_le_bytes|read_varint|read_uvarint|decode_varint)$"))
+        value: v
+      - name: header-length
+        query: |
+          ((call_expression function: (field_expression value: (_) @h field: (field_identifier) @m)) @v
+           (#match? @m "^(content_length)$"))
+        value: v
+    sinks:
+      - name: with-capacity
+        query: |
+          ((call_expression function: [(scoped_identifier name: (identifier) @m) (field_expression field: (field_identifier) @m)] arguments: (arguments . (_) @arg))
+           (#match? @m "^(with_capacity|reserve|reserve_exact)$"))
+        argument: arg
+      - name: resize
+        query: |
+          ((call_expression function: (field_expression field: (field_identifier) @m) arguments: (arguments . (_) @arg))
+           (#eq? @m "resize"))
+        argument: arg
+      - name: vec-repeat
+        query: |
+          ((macro_invocation macro: (identifier) @m (token_tree (_) ";" (_) @arg)) @call
+           (#eq? @m "vec"))
+        argument: call
+    sanitizers:
+      - name: min
+        query: |
+          ((call_expression function: (field_expression field: (field_identifier) @m)) @v
+           (#match? @m "^(min|clamp)$"))
+        value: v
+    guards:
+      - name: upper-bound
+        query: |
+          ((binary_expression left: (_) @v operator: [">" ">="] right: (_)) @check)
+        value: v
+        check: check
+        safe: when-false
+      - name: upper-bound-kept
+        query: |
+          ((binary_expression left: (_) @v operator: ["<" "<="] right: (_)) @check)
+        value: v
+        check: check
+      - name: bound-first
+        query: |
+          ((binary_expression left: (_) operator: ["<" "<="] right: (_) @v) @check)
+        value: v
+        check: check
+        safe: when-false
+      - name: bound-first-kept
+        query: |
+          ((binary_expression left: (_) operator: [">" ">="] right: (_) @v) @check)
+        value: v
+        check: check
+  review:
+    - Is the length bounded (against a constant, or the bytes actually left) before the allocation?
+    - Would `try_reserve`, a capped `with_capacity(n.min(MAX))`, or reading incrementally be safer?
+  examples:
+    bad:
+      - |
+        fn decode(r: &mut impl Read) -> io::Result<Vec<u8>> {
+            let n = r.read_u32::<BigEndian>()? as usize;
+            let mut buf = Vec::with_capacity(n);
+            r.take(n as u64).read_to_end(&mut buf)?;
+            Ok(buf)
+        }
+      - |
+        fn decode(data: &[u8]) -> Vec<u8> {
+            let len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+            let mut out = Vec::new();
+            out.resize(len, 0);
+            out
+        }
+    good:
+      - |
+        fn decode(r: &mut impl Read) -> io::Result<Vec<u8>> {
+            let n = r.read_u32::<BigEndian>()? as usize;
+            if n > MAX_LEN {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            let mut buf = Vec::with_capacity(n);
+            Ok(buf)
+        }
+      - |
+        fn decode(data: &[u8]) -> Vec<u8> {
+            let len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+            Vec::with_capacity(len.min(4096))
+        }

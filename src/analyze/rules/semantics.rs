@@ -31,6 +31,8 @@ pub(super) struct CalleeRef {
     pub line: u32,
     pub name: String,
     pub qualified_name: String,
+    /// The index's node kind (`function`, `method`, `struct`, `enum_member`…).
+    pub kind: String,
 }
 
 /// The function a match sits in.
@@ -46,6 +48,9 @@ pub(super) struct FunctionFacts {
 pub(super) trait Semantics {
     /// Names the call node `call` resolves to (empty when unresolved).
     fn call_targets(&self, file: &FileInput, rules: &LangRules, call: Node) -> Vec<String>;
+    /// Whether some graph resolves the call node `call` (an example: its
+    /// `resolves` map names it).
+    fn is_resolved(&self, file: &FileInput, rules: &LangRules, call: Node) -> bool;
     /// What the call starting at `line` (1-based) and `col` whose callee
     /// is written `callee` resolves to: the join of an IR call op (which
     /// carries its call's start and callee text) with the index. Chained
@@ -64,6 +69,10 @@ pub(super) trait Semantics {
     }
     /// Facts about the function node `function`.
     fn function(&self, file: &FileInput, rules: &LangRules, function: Node) -> FunctionFacts;
+    /// Calls resolve through an index (else as written, `--check`).
+    fn has_index(&self) -> bool {
+        true
+    }
 }
 
 /// Calls as written, for rule examples.
@@ -97,6 +106,11 @@ impl Semantics for SyntaxSemantics<'_> {
         self.targets(text, name)
     }
 
+    fn is_resolved(&self, file: &FileInput, rules: &LangRules, call: Node) -> bool {
+        let (text, name) = lang::callee(rules, call, file.source);
+        self.resolves.contains_key(&text) || self.resolves.contains_key(&name)
+    }
+
     /// As written; an example's `resolves` map stands for the index (a
     /// callee it names is project code).
     fn call_at(&self, _: &FileInput, _: u32, _: u32, callee: &str) -> CallResolution {
@@ -116,6 +130,10 @@ impl Semantics for SyntaxSemantics<'_> {
         syntax_facts(file, rules, function, |call| {
             self.call_targets(file, rules, call)
         })
+    }
+
+    fn has_index(&self) -> bool {
+        false
     }
 }
 
@@ -199,6 +217,7 @@ impl<'p> IndexSemantics<'p> {
                         line: site.callee_line,
                         name: site.callee_name.clone(),
                         qualified_name: site.callee_qualified.clone(),
+                        kind: site.callee_kind.clone(),
                     }),
                 });
         }
@@ -311,6 +330,10 @@ impl Semantics for IndexSemantics<'_> {
         let start = call.start_position();
         let (text, _) = lang::callee(rules, call, file.source);
         self.targets_at(file.path, start.row as u32 + 1, start.column as u32, &text)
+    }
+
+    fn is_resolved(&self, file: &FileInput, rules: &LangRules, call: Node) -> bool {
+        !self.call_targets(file, rules, call).is_empty()
     }
 
     fn call_at(&self, file: &FileInput, line: u32, col: u32, callee: &str) -> CallResolution {

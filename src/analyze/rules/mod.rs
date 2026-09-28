@@ -45,6 +45,8 @@ mod spec;
 mod taint;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_rust_taint;
 mod variant;
 pub mod weggli;
 

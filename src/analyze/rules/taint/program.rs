@@ -475,9 +475,23 @@ impl<'a> Table<'a> {
                 guessed: false,
                 targets: Vec::new(),
             };
+            let callees = semantics.callee_functions(file, span.line, span.col, callee);
+            if rules.index_resolves_calls && semantics.has_index() {
+                // A call resolving only to a tuple struct or enum variant
+                // builds a value from its arguments: no function runs.
+                let constructs =
+                    !callees.is_empty() && callees.iter().all(|c| !is_callable_kind(&c.kind));
+                if constructs {
+                    pending.in_project = false;
+                    if !pending.names.is_empty() {
+                        out.push((op, pending));
+                    }
+                    continue;
+                }
+            }
             // The index, with interfaces opened to their implementations.
             let mut bodyless_owner: Option<String> = None;
-            for callee_ref in semantics.callee_functions(file, span.line, span.col, callee) {
+            for callee_ref in callees {
                 match self.find(&callee_ref.file, &callee_ref.name, callee_ref.line) {
                     Some(found) if self.has_body(found) => {
                         if !pending.targets.contains(&found) {
@@ -497,6 +511,13 @@ impl<'a> Table<'a> {
             }
             if receiver.is_none() && !callee.contains("::") {
                 self.scope_c_call(&mut pending, candidate, &name, args.len());
+            }
+            if rules.index_resolves_calls && semantics.has_index() {
+                // What the index left unresolved is library code.
+                if pending.in_project || !pending.names.is_empty() {
+                    out.push((op, pending));
+                }
+                continue;
             }
             if pending.targets.is_empty() {
                 self.fallback(
@@ -642,6 +663,12 @@ impl<'a> Table<'a> {
             pending.guessed = guessed;
         }
     }
+}
+
+/// Whether an index node kind runs code when called (else a tuple struct
+/// or enum variant constructed with call syntax).
+fn is_callable_kind(kind: &str) -> bool {
+    matches!(kind, "function" | "method" | "constructor")
 }
 
 /// A call as the fallback reads it.
