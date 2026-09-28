@@ -942,6 +942,36 @@ class A { void f(boolean isZero, boolean b, boolean c) {
     );
 }
 
+/// Assign-and-test: a computed value assigned to the variable the branch
+/// then reads is deliberate (a bundled library's `unwrap`, 2026-09); a
+/// slip for `==` leaves the variable unread.
+#[test]
+fn assign_and_test_of_a_computed_value_is_not_a_slip() {
+    let js = r#"function unwrap(item) {
+  let result;
+  if (result = item != null && item.raw) return result;
+  if (result = a ? b : c) { use(result); }
+  if (x = a && b) { g(); }
+  if (x = y) { return x; }
+}
+"#;
+    assert_eq!(
+        rule_lines(&lint(Language::Javascript, js), "assignment-in-condition"),
+        vec![5, 6]
+    );
+}
+
+/// `"@INSTALL_TYPE@" == "MODULE"` is filled in by configure/meson: not a
+/// constant condition in the built program (portage, 2026-09).
+#[test]
+fn build_substitution_placeholders_are_not_constant() {
+    let py = "if \"@INSTALL_TYPE@\" == \"MODULE\":\n    t = 1\nif \"a\" == \"b\":\n    t = 2\n";
+    assert_eq!(
+        rule_lines(&lint(Language::Python, py), "constant-condition"),
+        vec![3]
+    );
+}
+
 #[test]
 fn java_equals_on_itself_is_a_self_comparison() {
     let java = r#"
