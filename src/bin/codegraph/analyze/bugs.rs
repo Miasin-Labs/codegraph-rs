@@ -13,6 +13,7 @@ use codegraph::analyze::bugs::{
     bugs_report_with,
     bugs_review_with,
 };
+use codegraph::analyze::codeql::{CodeqlOptions, CodeqlState, CodeqlStatus};
 use codegraph::analyze::rules::{
     CheckReport,
     RuleSet,
@@ -20,10 +21,12 @@ use codegraph::analyze::rules::{
     ScoreReport,
     check_rules,
     collect_rule_texts,
+    rule_docs,
     rules_report,
     saved_rule_texts,
     score_rules,
 };
+use codegraph::analyze::sarif::write::{ToolInfo, to_sarif};
 
 use super::{
     CodeGraph,
@@ -46,14 +49,16 @@ use super::{
     yellow,
 };
 
-/// codegraph analyze bugs [--base REV] [--detector deviance|lint|compiler] [--tests]
+/// codegraph analyze bugs [--base REV] [--detector deviance|lint|compiler|codeql] [--tests]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_analyze_bugs(
     base: Option<&str>,
     detectors: &[String],
-    compiler_wait: Option<&str>,
+    waits: Waits<'_>,
     include_tests: bool,
     ecosystem: bool,
     top_arg: Option<&str>,
+    sarif: Option<&str>,
     path_arg: Option<&str>,
     json: bool,
 ) {
@@ -66,14 +71,7 @@ pub(crate) fn cmd_analyze_bugs(
                 project_path.display()
             ));
         }
-        let options = bugs_options(
-            &project_path,
-            base,
-            detectors,
-            compiler_wait,
-            include_tests,
-            false,
-        )?;
+        let options = bugs_options(&project_path, base, detectors, waits, include_tests, false)?;
         let top = findings_limit(top_arg, json);
 
         let cg =
@@ -90,6 +88,9 @@ pub(crate) fn cmd_analyze_bugs(
         let report = bugs_report_with(&cg, &project_path, &options, beliefs.as_ref());
         cg.close();
         let mut report = report?;
+        if write_sarif(&report, &project_path, sarif)? {
+            return Ok(());
+        }
         if let Some(top) = top {
             report.limit(top);
         }
@@ -98,6 +99,7 @@ pub(crate) fn cmd_analyze_bugs(
             return print_report_json("bugs", &report);
         }
         print_compiler_status(report.compiler.as_ref());
+        print_codeql_status(report.codeql.as_ref());
         print_findings(&report, base, "Suspected bugs");
         Ok(())
     };
@@ -111,7 +113,7 @@ pub(crate) fn cmd_analyze_bugs(
 /// How many findings `analyze bugs|rules` report: `--top` when given; else
 /// every finding for `--json` (a consumer filters them itself) and the 50
 /// most confident for a person reading them.
-fn findings_limit(top_arg: Option<&str>, json: bool) -> Option<usize> {
+pub(crate) fn findings_limit(top_arg: Option<&str>, json: bool) -> Option<usize> {
     match top_arg {
         Some(arg) => Some(parse_int_js(arg).unwrap_or(50).max(1) as usize),
         None if json => None,
@@ -119,11 +121,18 @@ fn findings_limit(top_arg: Option<&str>, json: bool) -> Option<usize> {
     }
 }
 
+/// `--compiler-wait` and `--codeql-wait`, as given.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Waits<'a> {
+    pub compiler: Option<&'a str>,
+    pub codeql: Option<&'a str>,
+}
+
 fn bugs_options(
     project_path: &std::path::Path,
     base: Option<&str>,
     detectors: &[String],
-    compiler_wait: Option<&str>,
+    waits: Waits<'_>,
     include_tests: bool,
     allow_rule: bool,
 ) -> Result<BugsOptions, String> {
@@ -133,6 +142,7 @@ fn bugs_options(
             "deviance" => Ok(Detector::Deviance),
             "lint" => Ok(Detector::Lint),
             "compiler" => Ok(Detector::Compiler),
+            "codeql" => Ok(Detector::CodeQL),
             "rule" if allow_rule => Ok(Detector::Rule),
             "miri" if allow_rule => Ok(Detector::Miri),
             "rule" => Err(
@@ -140,7 +150,7 @@ fn bugs_options(
                     .to_string(),
             ),
             other => Err(format!(
-                "unknown detector \"{other}\" — known: deviance, lint, compiler{}",
+                "unknown detector \"{other}\" — known: deviance, lint, compiler, codeql{}",
                 if allow_rule { ", rule, miri" } else { "" }
             )),
         })
@@ -148,7 +158,11 @@ fn bugs_options(
     let only_files = base
         .map(|base| analysis_reports::changed_files(project_path, base))
         .transpose()?;
-    let compiler_wait = positive(compiler_wait, "--compiler-wait")?.map(Duration::from_secs);
+    let compiler_wait = positive(waits.compiler, "--compiler-wait")?.map(Duration::from_secs);
+    let codeql = positive(waits.codeql, "--codeql-wait")?.map(|secs| CodeqlOptions {
+        wait: Duration::from_secs(secs),
+        ..CodeqlOptions::default()
+    });
     Ok(BugsOptions {
         detectors,
         only_files,
@@ -156,7 +170,61 @@ fn bugs_options(
         taint_budget: None,
         compiler_wait,
         dependency_summaries: cli_dependency_summaries(),
+        codeql,
     })
+}
+
+/// The CodeQL run's state, on stderr, when that detector ran.
+pub(crate) fn print_codeql_status(status: Option<&CodeqlStatus>) {
+    let Some(status) = status else {
+        return;
+    };
+    match status.state {
+        CodeqlState::Complete if status.failure.is_none() && !status.stale => {
+            info(&status.summary());
+        }
+        _ => eprintln!("{}", yellow(&status.summary())),
+    }
+    if let Some(failure) = status.failure.as_deref() {
+        for line in failure.lines().take(16) {
+            eprintln!("  {}", dim(line));
+        }
+    }
+}
+
+/// With `--sarif FILE`, write `report`'s findings (all of them, before
+/// `--top`) as SARIF 2.1.0; `true` when that replaced the report (`-`,
+/// stdout).
+pub(crate) fn write_sarif(
+    report: &BugsReport,
+    root: &std::path::Path,
+    dest: Option<&str>,
+) -> Result<bool, String> {
+    let Some(dest) = dest else {
+        return Ok(false);
+    };
+    let log = to_sarif(
+        &report.findings,
+        root,
+        &report.rule_docs,
+        &ToolInfo::default(),
+    );
+    let text = serde_json::to_string_pretty(&log).map_err(|e| e.to_string())?;
+    if dest == "-" {
+        println!("{text}");
+        return Ok(true);
+    }
+    std::fs::write(dest, text + "\n").map_err(|e| format!("cannot write {dest}: {e}"))?;
+    // stderr: stdout may carry the `--json` report.
+    eprintln!(
+        "{}",
+        dim(&format!(
+            "Wrote {} finding{} as SARIF 2.1.0 to {dest}",
+            report.findings.len(),
+            if report.findings.len() == 1 { "" } else { "s" }
+        ))
+    );
+    Ok(false)
 }
 
 /// The compiler run's state, on stderr, when that detector ran.
@@ -192,7 +260,7 @@ pub(crate) fn cmd_analyze_review(
     rule: Option<String>,
     base: Option<&str>,
     detectors: &[String],
-    compiler_wait: Option<&str>,
+    waits: Waits<'_>,
     sources: &RuleSources,
     include_tests: bool,
     top_arg: &str,
@@ -208,14 +276,7 @@ pub(crate) fn cmd_analyze_review(
                 project_path.display()
             ));
         }
-        let options = bugs_options(
-            &project_path,
-            base,
-            detectors,
-            compiler_wait,
-            include_tests,
-            true,
-        )?;
+        let options = bugs_options(&project_path, base, detectors, waits, include_tests, true)?;
         let rules = if sources.is_empty() {
             None
         } else {
@@ -392,7 +453,7 @@ fn saved_texts(sources: &RuleSources, root: Option<&std::path::Path>) -> Vec<(St
 /// The rules `sources` name, plus the saved rules of the project at
 /// `root` (each shadowed by a named rule of its id). With `strict`, any
 /// rule that does not load is an error listing every problem.
-fn load_rules(
+pub(crate) fn load_rules(
     sources: &RuleSources,
     root: Option<&std::path::Path>,
     strict: bool,
@@ -432,6 +493,7 @@ pub(crate) fn cmd_analyze_rules(
     base: Option<&str>,
     include_tests: bool,
     top_arg: Option<&str>,
+    sarif: Option<&str>,
     path_arg: Option<&str>,
     json: bool,
 ) {
@@ -485,6 +547,7 @@ pub(crate) fn cmd_analyze_rules(
             taint_budget: None,
             compiler_wait: None,
             dependency_summaries: cli_dependency_summaries(),
+            codeql: None,
         };
         let top = findings_limit(top_arg, json);
         let cg =
@@ -492,6 +555,10 @@ pub(crate) fn cmd_analyze_rules(
         let report = rules_report(&cg, &project_path, &rules, &options);
         cg.close();
         let mut report = report?;
+        report.rule_docs = rule_docs(&rules);
+        if write_sarif(&report, &project_path, sarif)? {
+            return Ok(());
+        }
         if let Some(top) = top {
             report.limit(top);
         }
@@ -685,7 +752,7 @@ fn print_check(report: &CheckReport) {
     );
 }
 
-fn print_findings(report: &BugsReport, base: Option<&str>, title: &str) {
+pub(crate) fn print_findings(report: &BugsReport, base: Option<&str>, title: &str) {
     if report.findings.is_empty() {
         info(&format!(
             "No findings across {} files and {} call sites{}",

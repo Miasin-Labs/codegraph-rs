@@ -61,6 +61,10 @@ pub enum Detector {
     /// Undefined behaviour Miri reported on a real execution
     /// (`codegraph analyze miri`).
     Miri,
+    /// A CodeQL query result (`codegraph analyze codeql`, `--detector
+    /// codeql`; opt-in: it runs the CodeQL CLI).
+    #[serde(rename = "codeql")]
+    CodeQL,
 }
 
 /// A place that supports (or contradicts) a finding: another call site that
@@ -117,6 +121,9 @@ pub struct BugsOptions {
     /// (`None`: library models only). The CLI may build a missing
     /// summary; MCP only reads.
     pub dependency_summaries: Option<crate::deps::summaries::compose::Access>,
+    /// The CodeQL detector's languages, suites and wait (defaults when
+    /// `None`); it runs only when [`Detector::CodeQL`] is named.
+    pub codeql: Option<crate::analyze::codeql::CodeqlOptions>,
 }
 
 /// Result of [`bugs_report`].
@@ -139,6 +146,14 @@ pub struct BugsReport {
     /// ran.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compiler: Option<CompilerStatus>,
+    /// The CodeQL run behind the `codeql::` findings, when that detector
+    /// ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codeql: Option<crate::analyze::codeql::CodeqlStatus>,
+    /// Rule descriptors known beyond the rule ids (CodeQL's query
+    /// metadata, YAML rules' tags), for SARIF out.
+    #[serde(skip)]
+    pub rule_docs: BTreeMap<String, crate::analyze::sarif::write::RuleDoc>,
 }
 
 impl BugsReport {
@@ -169,7 +184,7 @@ pub fn bugs_report_with(
     beliefs: Option<&crate::deps::beliefs::LoadedBeliefs>,
 ) -> Result<BugsReport, String> {
     let mut project = Project::load(cg, project_root)?;
-    let (mut findings, compiler) = detect_all(&mut project, options);
+    let (mut findings, extras) = detect_all(&mut project, options);
     let mut note = String::from(
         "Deviance findings are departures from what the rest of the code does, with the \
          agreeing sites as evidence; lint findings are syntactic bug shapes. Both are leads to \
@@ -195,7 +210,18 @@ pub fn bugs_report_with(
         ));
     }
     let mut report = report(&project, project.files_parsed(), findings, &note);
-    if let Some(compiler) = compiler {
+    report.rule_docs = extras.rule_docs;
+    if let Some(codeql) = extras.codeql {
+        report.note.push_str(
+            " CodeQL findings (`codeql::…`) are CodeQL query results mapped onto the graph \
+             (enclosing function, taint path as evidence, reachability from entry points); \
+             ",
+        );
+        report.note.push_str(&codeql.summary());
+        report.note.push('.');
+        report.codeql = Some(codeql);
+    }
+    if let Some(compiler) = extras.compiler {
         report.note.push_str(
             " Compiler findings are rustc/clippy lints; the ones that are bugs only on \
              untrusted input rank by how close a request handler (or a library's public API) \
@@ -229,6 +255,8 @@ pub(crate) fn report(
         skipped: project.skipped().clone(),
         note: note.to_string(),
         compiler: None,
+        codeql: None,
+        rule_docs: BTreeMap::new(),
     }
 }
 
@@ -266,7 +294,8 @@ pub fn bugs_review_with(
     beliefs: Option<&crate::deps::beliefs::LoadedBeliefs>,
 ) -> Result<Vec<ReviewPacket>, String> {
     let mut project = Project::load(cg, project_root)?;
-    let mut findings = detect(&mut project, options);
+    let (mut findings, extras) = detect_all(&mut project, options);
+    let mut docs = extras.rule_docs;
     let deviance = options.detectors.is_empty() || options.detectors.contains(&Detector::Deviance);
     if let Some(beliefs) = beliefs.filter(|_| deviance) {
         let (mut departures, _) = ecosystem::detect(cg, &mut project, beliefs)?;
@@ -281,7 +310,11 @@ pub fn bugs_review_with(
             rules,
             options,
         )?);
+        docs.extend(crate::analyze::rules::rule_docs(rules));
     }
+    // A CodeQL result and a rule finding at one place and class are one
+    // finding, both engines as evidence.
+    crate::analyze::codeql::merge_corroborated(&mut findings, &classes_of(&docs));
     // UB the last `analyze miri` run proved: reviewed first (they are
     // proofs), and shown beside the static findings in their functions.
     let miri = crate::analyze::miri::saved_findings(project_root);
@@ -304,6 +337,7 @@ pub fn bugs_review_with(
     findings.truncate(selection.top.max(1));
     let mut packets = review_packets(&mut project, &findings, &|finding| {
         let mut questions = compiler::review_questions(finding);
+        questions.extend(crate::analyze::codeql::review_questions(finding));
         if let Some(rules) = rules {
             questions.extend(crate::analyze::rules::review_questions(rules, finding));
         }
@@ -321,12 +355,35 @@ pub(crate) fn detect(project: &mut Project, options: &BugsOptions) -> Vec<Findin
     detect_all(project, options).0
 }
 
-/// [`detect`], plus where the compiler run stands when that family was
-/// asked for.
+/// What the opt-in detectors report beside their findings.
+#[derive(Default)]
+pub(crate) struct DetectExtras {
+    pub compiler: Option<CompilerStatus>,
+    pub codeql: Option<crate::analyze::codeql::CodeqlStatus>,
+    pub rule_docs: BTreeMap<String, crate::analyze::sarif::write::RuleDoc>,
+}
+
+/// Rule id → the CWEs its descriptor's tags name.
+pub(crate) fn classes_of(
+    docs: &BTreeMap<String, crate::analyze::sarif::write::RuleDoc>,
+) -> BTreeMap<String, Vec<String>> {
+    docs.iter()
+        .map(|(id, doc)| {
+            (
+                id.clone(),
+                crate::analyze::sarif::cwes_of_tags(doc.tags.iter().map(String::as_str)),
+            )
+        })
+        .filter(|(_, cwes)| !cwes.is_empty())
+        .collect()
+}
+
+/// [`detect`], plus where the compiler and CodeQL runs stand when those
+/// families were asked for.
 pub(crate) fn detect_all(
     project: &mut Project,
     options: &BugsOptions,
-) -> (Vec<Finding>, Option<CompilerStatus>) {
+) -> (Vec<Finding>, DetectExtras) {
     // `Rule` findings come from the rules engine: asking for only those
     // runs neither family here. The compiler family builds the project, so
     // it runs only when named.
@@ -338,15 +395,26 @@ pub(crate) fn detect_all(
     if wants(Detector::Lint) {
         findings.extend(lint::detect(project));
     }
-    let mut status = None;
+    let mut extras = DetectExtras::default();
     if options.detectors.contains(&Detector::Compiler) {
         let (found, compiler) = compiler::detect(project, options);
         findings.extend(found);
-        status = Some(compiler);
+        extras.compiler = Some(compiler);
+    }
+    if options.detectors.contains(&Detector::CodeQL) {
+        let codeql_options = options.codeql.clone().unwrap_or_default();
+        let run = crate::analyze::codeql::detect(project, &codeql_options);
+        findings.extend(run.findings);
+        extras.rule_docs.extend(
+            run.rules
+                .iter()
+                .map(|(id, meta)| (id.clone(), crate::analyze::codeql::rule_doc(id, meta))),
+        );
+        extras.codeql = Some(run.status);
     }
     retain_selected(project, &mut findings, options);
     rank(&mut findings);
-    (findings, status)
+    (findings, extras)
 }
 
 /// Keep the findings `options` selects: in `only_files`, outside test code

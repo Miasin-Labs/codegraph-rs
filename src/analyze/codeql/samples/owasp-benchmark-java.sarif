@@ -1,0 +1,379 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "CodeQL",
+          "organization": "GitHub",
+          "semanticVersion": "2.27.1",
+          "rules": [
+            {
+              "id": "java/path-injection",
+              "name": "java/path-injection",
+              "shortDescription": {
+                "text": "Uncontrolled data used in path expression"
+              },
+              "fullDescription": {
+                "text": "Accessing paths influenced by users can allow an attacker to access unexpected resources."
+              },
+              "defaultConfiguration": {
+                "enabled": true,
+                "level": "error"
+              },
+              "properties": {
+                "tags": [
+                  "security",
+                  "external/cwe/cwe-022",
+                  "external/cwe/cwe-023",
+                  "external/cwe/cwe-036",
+                  "external/cwe/cwe-073"
+                ],
+                "description": "Accessing paths influenced by users can allow an attacker to access unexpected resources.",
+                "id": "java/path-injection",
+                "kind": "path-problem",
+                "name": "Uncontrolled data used in path expression",
+                "precision": "high",
+                "problem.severity": "error",
+                "security-severity": "7.5"
+              }
+            },
+            {
+              "id": "java/deprecated-call",
+              "name": "java/deprecated-call",
+              "shortDescription": {
+                "text": "Deprecated method or constructor invocation"
+              },
+              "fullDescription": {
+                "text": "Using a method or constructor that has been marked as deprecated may be dangerous or fail to take advantage of a better method or constructor."
+              },
+              "defaultConfiguration": {
+                "enabled": true,
+                "level": "note"
+              },
+              "properties": {
+                "tags": [
+                  "maintainability",
+                  "readability",
+                  "non-attributable",
+                  "external/cwe/cwe-477"
+                ],
+                "description": "Using a method or constructor that has been marked as deprecated may be dangerous or\n              fail to take advantage of a better method or constructor.",
+                "id": "java/deprecated-call",
+                "kind": "problem",
+                "name": "Deprecated method or constructor invocation",
+                "precision": "high",
+                "problem.severity": "recommendation"
+              }
+            },
+            {
+              "id": "java/unused-parameter",
+              "name": "java/unused-parameter",
+              "shortDescription": {
+                "text": "Useless parameter"
+              },
+              "fullDescription": {
+                "text": "Parameters that are not used add unnecessary complexity to an interface."
+              },
+              "defaultConfiguration": {
+                "enabled": true,
+                "level": "note"
+              },
+              "properties": {
+                "tags": [
+                  "quality",
+                  "maintainability",
+                  "useless-code",
+                  "external/cwe/cwe-561"
+                ],
+                "description": "Parameters that are not used add unnecessary complexity to an interface.",
+                "id": "java/unused-parameter",
+                "kind": "problem",
+                "name": "Useless parameter",
+                "precision": "high",
+                "problem.severity": "recommendation"
+              }
+            }
+          ]
+        },
+        "extensions": [
+          {
+            "name": "codeql/java-queries",
+            "semanticVersion": "1.11.11+6e9f9e38390175c41b99070a423c875f450759ca"
+          },
+          {
+            "name": "codeql/java-all",
+            "semanticVersion": "9.3.1+6e9f9e38390175c41b99070a423c875f450759ca"
+          },
+          {
+            "name": "codeql/threat-models",
+            "semanticVersion": "1.0.58+6e9f9e38390175c41b99070a423c875f450759ca"
+          }
+        ]
+      },
+      "results": [
+        {
+          "ruleId": "java/path-injection",
+          "ruleIndex": 0,
+          "rule": {
+            "id": "java/path-injection",
+            "index": 0
+          },
+          "message": {
+            "text": "This path depends on a [user-provided value](1)."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00001.java",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "startLine": 72,
+                  "startColumn": 47,
+                  "endColumn": 73
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primaryLocationLineHash": "d5280b1283571707:1",
+            "primaryLocationStartColumnFingerprint": "34"
+          },
+          "codeFlows": [
+            {
+              "threadFlows": [
+                {
+                  "locations": [
+                    {
+                      "location": {
+                        "physicalLocation": {
+                          "artifactLocation": {
+                            "uri": "src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00001.java",
+                            "uriBaseId": "%SRCROOT%"
+                          },
+                          "region": {
+                            "startLine": 61,
+                            "startColumn": 56,
+                            "endColumn": 76
+                          }
+                        },
+                        "message": {
+                          "text": "getValue(...) : String"
+                        }
+                      },
+                      "taxa": [
+                        {
+                          "index": 0,
+                          "toolComponent": {
+                            "index": 1
+                          },
+                          "properties": {
+                            "CodeQL/DataflowRole": "source"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "location": {
+                        "physicalLocation": {
+                          "artifactLocation": {
+                            "uri": "src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00001.java",
+                            "uriBaseId": "%SRCROOT%"
+                          },
+                          "region": {
+                            "startLine": 61,
+                            "startColumn": 29,
+                            "endColumn": 86
+                          }
+                        },
+                        "message": {
+                          "text": "decode(...) : String"
+                        }
+                      },
+                      "taxa": [
+                        {
+                          "index": 1,
+                          "toolComponent": {
+                            "index": 1
+                          },
+                          "properties": {
+                            "CodeQL/DataflowRole": "step"
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "location": {
+                        "physicalLocation": {
+                          "artifactLocation": {
+                            "uri": "src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00001.java",
+                            "uriBaseId": "%SRCROOT%"
+                          },
+                          "region": {
+                            "startLine": 72,
+                            "startColumn": 64,
+                            "endColumn": 72
+                          }
+                        },
+                        "message": {
+                          "text": "fileName : String"
+                        }
+                      }
+                    },
+                    {
+                      "location": {
+                        "physicalLocation": {
+                          "artifactLocation": {
+                            "uri": "src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00001.java",
+                            "uriBaseId": "%SRCROOT%"
+                          },
+                          "region": {
+                            "startLine": 72,
+                            "startColumn": 47,
+                            "endColumn": 73
+                          }
+                        },
+                        "message": {
+                          "text": "new File(...)"
+                        }
+                      },
+                      "taxa": [
+                        {
+                          "index": 3,
+                          "toolComponent": {
+                            "index": 1
+                          },
+                          "properties": {
+                            "CodeQL/DataflowRole": "step"
+                          }
+                        },
+                        {
+                          "index": 4,
+                          "toolComponent": {
+                            "index": 1
+                          },
+                          "properties": {
+                            "CodeQL/DataflowRole": "sink"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "relatedLocations": [
+            {
+              "id": 1,
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00001.java",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "startLine": 61,
+                  "startColumn": 56,
+                  "endColumn": 76
+                }
+              },
+              "message": {
+                "text": "user-provided value"
+              }
+            },
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00001.java",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "startLine": 61,
+                  "startColumn": 56,
+                  "endColumn": 76
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "java/deprecated-call",
+          "ruleIndex": 1,
+          "rule": {
+            "id": "java/deprecated-call",
+            "index": 1
+          },
+          "message": {
+            "text": "Invoking [URL.URL](1) should be avoided because it has been deprecated."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00001.java",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "startLine": 42,
+                  "startColumn": 30,
+                  "endColumn": 82
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primaryLocationLineHash": "a888c5519e3f6331:1",
+            "primaryLocationStartColumnFingerprint": "21"
+          },
+          "relatedLocations": [
+            {
+              "id": 1,
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file:///modules/java.base/java/net/URL.class"
+                }
+              },
+              "message": {
+                "text": "URL.URL"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "java/unused-parameter",
+          "ruleIndex": 2,
+          "rule": {
+            "id": "java/unused-parameter",
+            "index": 2
+          },
+          "message": {
+            "text": "The parameter 'request' is never used."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/main/java/org/owasp/benchmark/helpers/DataBaseServer.java",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": {
+                  "startLine": 58,
+                  "startColumn": 13,
+                  "endColumn": 39
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "primaryLocationLineHash": "3e6d6705f2e68f2e:1",
+            "primaryLocationStartColumnFingerprint": "0"
+          }
+        }
+      ],
+      "columnKind": "utf16CodeUnits"
+    }
+  ]
+}

@@ -204,6 +204,7 @@ impl ToolHandler {
             // Summaries only ever read here: building one is the CLI's.
             dependency_summaries: crate::deps::summaries::summaries_enabled()
                 .then_some(crate::deps::summaries::compose::Access::ReadOnly),
+            codeql: None,
         };
         let report = rules_report(&cg, &root, &rules, &options)
             .map_err(crate::error::CodeGraphError::other)?;

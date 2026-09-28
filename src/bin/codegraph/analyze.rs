@@ -50,6 +50,7 @@ mod capabilities;
 mod centrality;
 mod cfg;
 mod co_change;
+mod codeql;
 mod communities;
 mod complexity;
 mod coverage;
@@ -76,11 +77,19 @@ mod validate;
 
 use boundaries::cmd_analyze_boundaries;
 pub(crate) use bridge::{bridge_project_with_options, print_json, *};
-use bugs::{RuleSources, ScoreArgs, cmd_analyze_bugs, cmd_analyze_review, cmd_analyze_rules};
+use bugs::{
+    RuleSources,
+    ScoreArgs,
+    Waits,
+    cmd_analyze_bugs,
+    cmd_analyze_review,
+    cmd_analyze_rules,
+};
 use capabilities::cmd_analyze_capabilities;
 use centrality::cmd_analyze_centrality;
 use cfg::cmd_analyze_cfg;
 use co_change::cmd_analyze_co_change;
+use codeql::{CodeqlArgs, cmd_analyze_codeql};
 use communities::cmd_analyze_communities;
 use complexity::cmd_analyze_complexity;
 use coverage::cmd_analyze_coverage;
