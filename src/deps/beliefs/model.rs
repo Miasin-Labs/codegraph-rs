@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 pub const BELIEFS_FORMAT: u32 = 1;
 /// Bump when the observation code records something different: cached
 /// observations of an older version are redone.
-pub const OBSERVE_VERSION: u32 = 2;
+pub const OBSERVE_VERSION: u32 = 3;
 
 /// `crate@compat::qualified` for a call into `krate` at `version`.
 pub fn api_key(krate: &str, version: &str, qualified: &str) -> String {
@@ -108,6 +108,16 @@ pub struct SiteObs {
     /// of — a constructor always comes first and says nothing.
     #[serde(default)]
     pub receiver: bool,
+    /// A library constructor made the object in view, at or before this
+    /// call (`let v = Vec::with_capacity(n)`): its whole history in this
+    /// function is seen. An object from a parameter or a project fn is not.
+    #[serde(default)]
+    pub constructed: bool,
+    /// Method calls (any library's) on the same object before / after it.
+    #[serde(default)]
+    pub methods_before: u32,
+    #[serde(default)]
+    pub methods_after: u32,
 }
 
 /// How one crate calls library APIs.

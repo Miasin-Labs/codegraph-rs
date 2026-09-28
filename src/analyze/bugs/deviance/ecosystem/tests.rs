@@ -56,6 +56,9 @@ impl Crate {
             after: Vec::new(),
             await_held: None,
             receiver: true,
+            constructed: true,
+            methods_before: 0,
+            methods_after: 0,
         });
         self
     }
@@ -220,6 +223,47 @@ fn a_follow_up_on_the_same_object_needs_support_and_lift() {
             == BeliefKind::PrecededBy {
                 others: vec!["lib@1::Builder::new".to_string()]
             }));
+}
+
+#[test]
+fn what_usually_happens_to_a_new_object_is_no_protocol() {
+    // `HashSet::new` is followed by `insert` everywhere — but a set filled
+    // with `extend` is no bug: a constructor gets no follow-up belief.
+    let apis = [
+        "std@1::HashSet::new",
+        "std@1::HashSet::insert",
+        "std@1::Other::touch",
+    ];
+    let crates: Vec<CrateObservations> = (0..6)
+        .map(|i| {
+            let mut krate = Crate::new(&format!("c{i}"), &apis, &[None, None, None]);
+            for object in 0..3 {
+                krate = krate
+                    .on_object(0, object, &[], &[1])
+                    .on_object(1, object, &[0], &[]);
+                let ctor = krate.obs.sites.len() - 2;
+                krate.obs.sites[ctor].receiver = false;
+            }
+            for object in 3..12 {
+                krate = krate.on_object(2, object, &[], &[]);
+            }
+            krate.obs
+        })
+        .collect();
+    let beliefs = mine(&crates, &is_status, &MineOptions::default());
+    assert!(
+        !beliefs
+            .iter()
+            .any(|b| b.api == "std@1::HashSet::new"
+                && matches!(b.kind, BeliefKind::FollowedBy { .. })),
+        "{beliefs:?}"
+    );
+    // The method's belief stays: `insert` is preceded by `new`? No — a
+    // constructor is no precursor either.
+    assert!(
+        !beliefs.iter().any(|b| b.api == "std@1::HashSet::insert"
+            && matches!(b.kind, BeliefKind::PrecededBy { .. }))
+    );
 }
 
 #[test]
@@ -398,6 +442,7 @@ fn graph_keys_name_package_and_version() {
 
 const PROJECT: &str = r#"use std::ffi::CString;
 use std::fs::File;
+use std::process::Command;
 use std::sync::Mutex;
 
 fn bad_create(path: &str) {
@@ -448,6 +493,18 @@ fn returned(n: usize) -> Vec<u8> {
     let mut v: Vec<u8> = Vec::with_capacity(n);
     unsafe { v.set_len(n) };
     v
+}
+
+fn finished(dir: &str) -> bool {
+    let mut cmd = Command::new("ls");
+    cmd.args([dir]);
+    cmd.status().is_ok()
+}
+
+fn abandoned(dir: &str) {
+    let mut cmd = Command::new("ls");
+    cmd.args([dir]);
+    println!("never run");
 }
 
 fn hand_out(s: &str) -> *mut i8 {
@@ -548,6 +605,16 @@ fn beliefs() -> BeliefSet {
                 None,
             ),
             belief(
+                "std@1::Command::args",
+                BeliefKind::FollowedBy {
+                    others: vec![
+                        "std@1::Command::output".to_string(),
+                        "std@1::Command::spawn".to_string(),
+                    ],
+                },
+                None,
+            ),
+            belief(
                 "alloc@1::CString::into_raw",
                 BeliefKind::PairedWith {
                     other: "alloc@1::CString::from_raw".to_string(),
@@ -578,6 +645,11 @@ fn fixture_sites() -> Vec<ExternalSite> {
             0,
             "alloc@1::CString::into_raw",
         ),
+        external("Command::new(\"ls\")", 0, "std@1::Command::new"),
+        external("cmd.args", 0, "std@1::Command::args"),
+        external("cmd.status()", 0, "std@1::Command::status"),
+        external("Command::new(\"ls\")", 1, "std@1::Command::new"),
+        external("cmd.args", 1, "std@1::Command::args"),
     ]
 }
 
@@ -620,6 +692,12 @@ fn project_calls_that_depart_from_ecosystem_beliefs_are_findings() {
         (
             "ecosystem-missing-precursor".to_string(),
             line("v.set_len", 0),
+        ),
+        // A command configured and never run — not the one finished with
+        // `status`, a way the belief's companions do not name.
+        (
+            "ecosystem-missing-follow-up".to_string(),
+            line("cmd.args", 1),
         ),
         // `into_raw` with no `from_raw` anywhere in the project.
         ("ecosystem-missing-pair".to_string(), line("into_raw()", 0)),

@@ -54,7 +54,16 @@ pub(crate) fn findings(
                 }
                 BeliefKind::FollowedBy { others } | BeliefKind::PrecededBy { others } => {
                     let after = matches!(belief.kind, BeliefKind::FollowedBy { .. });
-                    if site.obs.object.is_none() || site.obs.escapes {
+                    // A departure is an object left alone: nothing called on
+                    // it after (`Command::args(..)` then `.status()` took
+                    // another way to finish), or nothing before but its
+                    // constructor, which must be in view.
+                    let abandoned = if after {
+                        site.obs.methods_after == 0
+                    } else {
+                        site.obs.constructed && site.obs.methods_before == 0
+                    };
+                    if site.obs.object.is_none() || site.obs.escapes || !abandoned {
                         continue;
                     }
                     let seen = names(if after {

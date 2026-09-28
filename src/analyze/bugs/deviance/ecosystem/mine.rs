@@ -371,9 +371,20 @@ fn ordering(
     direction: Direction,
     options: &MineOptions,
 ) -> Option<Belief> {
+    // A follow-up protocol is a method's (`field` → `finish`): what usually
+    // happens to a new object (`HashSet::new` → `insert`) is a habit, not
+    // a protocol — the object may be filled with `extend` just as well.
+    if direction == Direction::After && !population.on_receiver[api as usize] {
+        return None;
+    }
+    // A precursor is only seen for an object made in view.
     let sites: Vec<&Site<'_>> = population.sites[api as usize]
         .iter()
-        .filter(|site| site.obs.object.is_some() && !site.obs.escapes)
+        .filter(|site| {
+            site.obs.object.is_some()
+                && !site.obs.escapes
+                && (direction == Direction::After || site.obs.constructed)
+        })
         .collect();
     if sites.len() < options.min_sites {
         return None;

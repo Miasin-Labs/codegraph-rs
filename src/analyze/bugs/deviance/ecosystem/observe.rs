@@ -625,11 +625,15 @@ fn finish_file(
     }
     let mut before: Vec<Vec<u32>> = vec![Vec::new(); found.len()];
     let mut after: Vec<Vec<u32>> = vec![Vec::new(); found.len()];
+    let mut methods_before = vec![0u32; found.len()];
+    let mut methods_after = vec![0u32; found.len()];
+    let mut constructed = vec![false; found.len()];
     for members in groups.values_mut() {
         // In evaluation order: a chain's calls share a start, and the inner
         // one (the receiver) ends first.
         members.sort_by_key(|&index| found[index].order);
         let mut seen: BTreeSet<u32> = BTreeSet::new();
+        let (mut methods, mut made) = (0u32, false);
         for &index in members.iter() {
             before[index] = seen
                 .iter()
@@ -637,8 +641,13 @@ fn finish_file(
                 .filter(|&api| api != ids[index])
                 .collect();
             seen.insert(ids[index]);
+            methods_before[index] = methods;
+            made |= !found[index].receiver;
+            constructed[index] = made;
+            methods += u32::from(found[index].receiver);
         }
         seen.clear();
+        methods = 0;
         for &index in members.iter().rev() {
             after[index] = seen
                 .iter()
@@ -646,6 +655,8 @@ fn finish_file(
                 .filter(|&api| api != ids[index])
                 .collect();
             seen.insert(ids[index]);
+            methods_after[index] = methods;
+            methods += u32::from(found[index].receiver);
         }
     }
     for (index, found) in found.into_iter().enumerate() {
@@ -684,6 +695,9 @@ fn finish_file(
                 after: std::mem::take(&mut after[index]),
                 await_held: found.await_held,
                 receiver: found.receiver,
+                constructed: constructed[index],
+                methods_before: methods_before[index],
+                methods_after: methods_after[index],
             },
             col: at.1,
             function: found
