@@ -407,14 +407,20 @@ cargo test --workspace
   `crate@compat::Qname`, compat = major or `0.minor`): result-used
   (status returns only), followed-by (methods only — `new`→`insert` is a
   habit) / preceded-by (constructors never count), named release pairs
-  (`into_raw`/`from_raw`, `alloc`/`dealloc`), not-held-across-await; ≥5
-  agreeing crates, ≥10 sites, 90% sites + 85% crates, ≤20 sites/crate/API,
-  lift ≥3. `analyze bugs|review` load it read-only (`--no-ecosystem`
-  skips) and report `ecosystem-*`; ordering departures need the object
-  abandoned (nothing after / nothing before but its constructor). Whole
-  cache 2026-09: 1,975 crates, 311k sites, 201 beliefs, ~7 min cold /
-  90 s warm; 8 real projects (51k library calls): 23 → 1 finding after
-  the fixes. Thin where the cache is (it holds libraries, few apps; tokio
+  (`into_raw`/`from_raw`, `alloc`/`dealloc`; `into`/`from` only over
+  `raw`, never `push`/`pop`), not-held-across-await; ≥5 agreeing crates,
+  ≥10 sites, 90% sites + 85% crates, ≤20 sites/crate/API, lift ≥3.
+  `analyze bugs|review` load it read-only (`--no-ecosystem` skips) and
+  report `ecosystem-*`; ordering departures need the object abandoned
+  (nothing after and its value dropped / nothing before but its
+  constructor), and a raw-pointer acquire is released by any `from_raw*`
+  (`Box::from_raw(alloc(l))`). Bump `OBSERVE_VERSION` when observation
+  changes. Whole cache 2026-09: 1,975 crates, 311k sites, 199 beliefs,
+  ~7 min cold / ~90 s warm / <1 s re-mine; 8 real projects (51k library
+  calls) 23 → 1 finding, rustsec-adjacent 49 → 0 (none were near a fix);
+  the cache's own departures found tokio-cron-scheduler's check-then-
+  `swap` races. `try!(f());` parses as ERROR + a parenthesized statement:
+  `results::classify` reads it as a check. Thin where the cache is (it holds libraries, few apps; tokio
   `sync` sits in `cfg_*!` macros; `[const]`-bound `impl`s in nightly std
   lose their methods to the grammar, e.g. `Vec::push`).
 - **Rules engine** (`src/analyze/rules/`, `codegraph analyze rules`,
