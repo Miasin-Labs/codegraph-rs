@@ -34,6 +34,10 @@ pub struct PropagationRules {
     /// wrapped, borrowed or copied (`Arc::new(s)`, `x.clone()`,
     /// `m.lock()`): a field read of the result reads that field of it.
     pub projections: &'static [&'static str],
+    /// Methods whose result carries their receiver's data alone: an error
+    /// mapper's argument builds the error, never the value
+    /// (`x.ok_or_else(|| NotFound(id))?` is `x`'s data).
+    pub receiver_results: &'static [&'static str],
     /// Position-aware lists: a local list built by `new <type>()` and only
     /// appended to, removed from and read at constant positions in one
     /// straight run of code keeps its elements apart (`add(a); add(b);
@@ -126,6 +130,10 @@ impl PropagationRules {
     pub fn is_projection(&self, name: &str) -> bool {
         self.projections.contains(&name)
     }
+
+    pub fn is_receiver_result(&self, name: &str) -> bool {
+        self.receiver_results.contains(&name)
+    }
 }
 
 static NONE: PropagationRules = PropagationRules {
@@ -135,6 +143,7 @@ static NONE: PropagationRules = PropagationRules {
     argument_writes: &[],
     clean_results: &[],
     projections: &[],
+    receiver_results: &[],
     lists: &NO_LISTS,
 };
 
@@ -187,6 +196,7 @@ static JAVA: PropagationRules = PropagationRules {
         "countTokens",
     ],
     projections: &[],
+    receiver_results: &[],
     lists: &JAVA_LISTS,
 };
 
@@ -237,6 +247,7 @@ static C: PropagationRules = PropagationRules {
         "empty",
     ],
     projections: &[],
+    receiver_results: &[],
     lists: &NO_LISTS,
 };
 
@@ -259,6 +270,7 @@ static PYTHON: PropagationRules = PropagationRules {
         "isdir",
     ],
     projections: &[],
+    receiver_results: &[],
     lists: &NO_LISTS,
 };
 
@@ -280,6 +292,7 @@ static JS: PropagationRules = PropagationRules {
         "existsSync",
     ],
     projections: &[],
+    receiver_results: &[],
     lists: &NO_LISTS,
 };
 
@@ -306,6 +319,7 @@ static PHP: PropagationRules = PropagationRules {
         "preg_match",
     ],
     projections: &[],
+    receiver_results: &[],
     lists: &NO_LISTS,
 };
 
@@ -373,6 +387,18 @@ static RUST: PropagationRules = PropagationRules {
         "get_ref",
         "Some",
         "Ok",
+    ],
+    receiver_results: &[
+        "ok_or",
+        "ok_or_else",
+        "map_err",
+        "context",
+        "with_context",
+        "wrap_err",
+        "wrap_err_with",
+        "inspect_err",
+        "expect",
+        "expect_err",
     ],
     lists: &NO_LISTS,
 };

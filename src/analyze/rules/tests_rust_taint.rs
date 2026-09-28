@@ -139,6 +139,30 @@ fn struct_fields_keep_their_own_data_across_calls() {
 }
 
 #[test]
+fn a_question_mark_takes_the_ok_side_only() {
+    let program = |ok: &str| {
+        format!(
+            "fn claim(id: &str) -> Result<Account, E> {{\n\
+                 if busy() {{\n\
+                     return Err(E::Busy(id.to_string()));\n\
+                 }}\n\
+                 Ok({ok})\n\
+             }}\n\
+             async fn h(Path(id): Path<String>) -> Result<()> {{\n\
+                 let acct = claim(&id)?;\n\
+                 std::fs::read(&acct)?;\n\
+                 Ok(())\n\
+             }}\n"
+        )
+    };
+    // The error names the id; the value is a stored account.
+    let good = program("load_account()");
+    // The value is built from the id.
+    let bad = program("format!(\"/srv/{id}\")");
+    expect("rust-path-traversal", &[Code(&bad)], &[Code(&good)]);
+}
+
+#[test]
 fn environment_and_stdin_reach_a_command() {
     expect(
         "rust-command-from-environment",
@@ -194,6 +218,9 @@ fn file_sinks_and_path_guards() {
         "async fn h(Path(n): Path<String>) { fs::read(Path::new(&n).file_name().unwrap()).unwrap(); }"
             .to_string(),
         "async fn h(Path(n): Path<String>) { fs::read(sanitize_filename::sanitize(&n)).unwrap(); }"
+            .to_string(),
+        // The id picks a record; the error names the id, the path is the record's.
+        "async fn h(State(s): State<App>, Path(id): Path<String>) -> Result<Vec<u8>> {\n    let cal = s.calendars.get(&id).ok_or_else(|| E::NotFound(id.clone()))?;\n    Ok(fs::read(&cal.path)?)\n}"
             .to_string(),
         // A validator whose error returns early (`?`) guards what follows.
         "async fn h(Path(n): Path<String>) -> Result<Vec<u8>> {\n    Uuid::parse_str(&n).map_err(|_| E::NotFound)?;\n    Ok(fs::read(format!(\"/srv/{n}.png\"))?)\n}"

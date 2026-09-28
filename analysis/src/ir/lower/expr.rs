@@ -64,6 +64,9 @@ impl Lowerer<'_, '_> {
             if kind == expression.structs.kind {
                 return self.struct_value(node, expression.structs);
             }
+            if kind == expression.tuples.0 {
+                return self.tuple_value(node);
+            }
         }
         if rules.call(kind).is_some() {
             return self.call(node);
@@ -374,6 +377,21 @@ impl Lowerer<'_, '_> {
         let Some(shape) = self.rules.call(node.kind()).copied() else {
             return Value::constant("");
         };
+        // `Ok(x)` / `Err(x)`: the variant's field holds `x`.
+        if let Some(expression) = self.rules.expression {
+            let function = shape.function.and_then(|f| node.child_by_field_name(f));
+            let arguments = shape.arguments.and_then(|f| node.child_by_field_name(f));
+            if let (Some(function), Some(arguments)) = (function, arguments) {
+                let name = self.text(function);
+                let args = self.named_children(arguments);
+                if let (Some(variant), [arg]) = (
+                    expression.variant_fields.iter().find(|v| **v == name),
+                    args.as_slice(),
+                ) {
+                    return self.variant_value(variant, *arg);
+                }
+            }
+        }
         let arguments = shape
             .arguments
             .and_then(|field| node.child_by_field_name(field))

@@ -205,6 +205,15 @@ pub struct ExpressionRules {
     pub try_kind: &'static str,
     /// Struct literals, built field by field.
     pub structs: StructShape,
+    /// Variant constructors that wrap their one argument in a field of
+    /// that name (`Ok(x)` is a value whose `Ok` holds `x`), so `e?` —
+    /// which reads [`Self::try_field`] — never takes an `Err`'s payload.
+    pub variant_fields: &'static [&'static str],
+    /// The field `e?` yields.
+    pub try_field: &'static str,
+    /// Tuples, element by element: an expression kind whose `i`-th element
+    /// is field `i`, and a pattern kind whose `i`-th name binds field `i`.
+    pub tuples: (&'static str, &'static str),
     /// Nested scopes lowered in place, as the enclosing function's code
     /// (closures, `async` blocks): their captures are the function's
     /// variables and a sink inside is the function's. A closure's
@@ -968,6 +977,9 @@ static RUST_EXPRESSIONS: ExpressionRules = ExpressionRules {
     pattern_skip_fields: &["type", "condition"],
     statements: &["expression_statement", "let_declaration", "empty_statement"],
     try_kind: "try_expression",
+    variant_fields: &["Ok", "Err"],
+    try_field: "Ok",
+    tuples: ("tuple_expression", "tuple_pattern"),
     inline_scopes: &[
         InlineScope {
             kind: "closure_expression",
@@ -1042,7 +1054,7 @@ static RUST: IrRules = IrRules {
         "reference_expression",
         "type_cast_expression",
     ],
-    collections: &["array_expression", "tuple_expression"],
+    collections: &["array_expression"],
     foreach: &[ForEachShape {
         kind: "for_expression",
         binding: Slot::Field("pattern"),

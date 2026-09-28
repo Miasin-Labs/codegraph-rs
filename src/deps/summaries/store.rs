@@ -18,7 +18,7 @@ use crate::deps::shard::ShardMeta;
 
 /// Bump whenever the Rust lowering, the taint engine or what a summary
 /// records changes: older artifacts are then rebuilt, never read.
-pub const SUMMARY_VERSION: u32 = 3;
+pub const SUMMARY_VERSION: u32 = 4;
 /// The artifact's `format`.
 pub const FORMAT: &str = "codegraph-dep-summaries";
 /// The artifact's file name inside the shard directory.

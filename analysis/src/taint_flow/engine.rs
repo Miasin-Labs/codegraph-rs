@@ -288,6 +288,9 @@ impl<'f> Engine<'f> {
                             ResultRule::Reads(vec![(Read::Operand(arg.clone()), *append)]);
                     } else if find(&|name| rules.is_clean_result(name)) {
                         model.result = ResultRule::Clean;
+                    } else if receiver.is_some() && find(&|name| rules.is_receiver_result(name)) {
+                        // The whole receiver, nothing of the arguments.
+                        model.result = ResultRule::KeyedRead(None);
                     } else if let Some(key) = names.iter().find_map(|name| rules.keyed_read(name)) {
                         if receiver.is_some() {
                             model.result = ResultRule::KeyedRead(key_field(args.get(key)));
@@ -792,7 +795,15 @@ impl<'f> Engine<'f> {
                     Some(place) if place != Place::var(dst.clone()) => {
                         vec![(Read::Place(below(&place, suffix)), op, None)]
                     }
-                    _ => vec![operand(base)],
+                    // A field of a call's result (`f()?` reads `f().Ok`):
+                    // that field of it, which its summary may narrow.
+                    _ => match (base, &self.func.body[op]) {
+                        (Operand::Var(var), IrOp::FieldRead { field, .. }) => {
+                            let place = Place::var(var.clone()).field(field).0;
+                            vec![(Read::Place(below(&place, suffix)), op, None)]
+                        }
+                        _ => vec![operand(base)],
+                    },
                 }
             }
             IrOp::FieldWrite { src, .. } => vec![operand(src)],

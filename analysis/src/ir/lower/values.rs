@@ -187,7 +187,43 @@ impl Lowerer<'_, '_> {
             None => self.func.push(IrOp::Return { value: None }),
         }
         self.func.push(IrOp::Label(on));
-        value
+        // What goes on is the `Ok` side, never an `Err`'s payload.
+        let Some(field) = self.rules.expression.map(|e| e.try_field) else {
+            return value;
+        };
+        let dst = self.fresh_temp();
+        self.func.push(IrOp::FieldRead {
+            dst: dst.clone(),
+            base: value.operand,
+            field: field.to_string(),
+        });
+        Value {
+            operand: Operand::Var(dst),
+            place: value.place.map(|place| place.field(field).0),
+        }
+    }
+
+    /// `Ok(x)`, `Err(x)`: a value whose field of that name holds `x`.
+    pub(super) fn variant_value(&mut self, variant: &str, arg: Node<'_>) -> Value {
+        let value = self.expr(arg);
+        let var = Var::new(format!("__struct{}", self.next_temp));
+        self.next_temp += 1;
+        self.func.push(IrOp::Call {
+            dst: Some(var.clone()),
+            callee: format!("<{variant}>"),
+            receiver: None,
+            args: Vec::new(),
+        });
+        self.record_call(None, Vec::new());
+        self.func.push(IrOp::FieldWrite {
+            base: Operand::Var(var.clone()),
+            field: variant.to_string(),
+            src: value.operand,
+        });
+        Value {
+            operand: Operand::Var(var.clone()),
+            place: Some(crate::ir::model::Place::var(var)),
+        }
     }
 
     /// The inlined scope of node kind `kind`, if the language inlines it.
@@ -288,21 +324,61 @@ impl Lowerer<'_, '_> {
         }
     }
 
-    /// Every name `pattern` binds takes `value`'s data. A variant's path
-    /// and a guard bind nothing. Iterative: depth is bounded by the input.
+    /// `(a, b)`: a value whose field `0` holds `a`, `1` holds `b`.
+    pub(super) fn tuple_value(&mut self, node: Node<'_>) -> Value {
+        let var = Var::new(format!("__struct{}", self.next_temp));
+        self.next_temp += 1;
+        self.func.push(IrOp::Call {
+            dst: Some(var.clone()),
+            callee: "<tuple>".into(),
+            receiver: None,
+            args: Vec::new(),
+        });
+        self.record_call(None, Vec::new());
+        for (index, element) in self.named_children(node).into_iter().enumerate() {
+            let value = self.expr(element);
+            self.func.push(IrOp::FieldWrite {
+                base: Operand::Var(var.clone()),
+                field: index.to_string(),
+                src: value.operand,
+            });
+        }
+        Value {
+            operand: Operand::Var(var.clone()),
+            place: Some(crate::ir::model::Place::var(var)),
+        }
+    }
+
+    /// Every name `pattern` binds takes `value`'s data — a tuple
+    /// pattern's `i`-th element from field `i`. A variant's path and a
+    /// guard bind nothing. Iterative: depth is bounded by the input.
     pub(super) fn bind(&mut self, pattern: Node<'_>, value: &Operand) {
         let skip_fields = self
             .rules
             .expression
             .map_or(&[][..], |expression| expression.pattern_skip_fields);
-        let mut stack = vec![pattern];
-        while let Some(node) = stack.pop() {
+        let tuple_pattern = self.rules.expression.map(|e| e.tuples.1);
+        let mut stack: Vec<(Node<'_>, Operand)> = vec![(pattern, value.clone())];
+        while let Some((node, value)) = stack.pop() {
             if self.is_identifier(node) {
                 self.declare(node);
                 self.func.push(IrOp::Assign {
                     dst: Var::new(self.text(node)),
-                    src: value.clone(),
+                    src: value,
                 });
+                continue;
+            }
+            if Some(node.kind()) == tuple_pattern {
+                // `(a, b)`: `a` from field 0, `b` from field 1.
+                for (index, element) in self.named_children(node).into_iter().enumerate() {
+                    let dst = self.fresh_temp();
+                    self.func.push(IrOp::FieldRead {
+                        dst: dst.clone(),
+                        base: value.clone(),
+                        field: index.to_string(),
+                    });
+                    stack.push((element, Operand::Var(dst)));
+                }
                 continue;
             }
             if self.rules.literals.contains(&node.kind()) {
@@ -318,7 +394,8 @@ impl Lowerer<'_, '_> {
                 children
                     .into_iter()
                     .rev()
-                    .filter(|child| !skipped.contains(child)),
+                    .filter(|child| !skipped.contains(child))
+                    .map(|child| (child, value.clone())),
             );
         }
     }
