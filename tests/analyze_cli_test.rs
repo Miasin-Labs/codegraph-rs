@@ -33,6 +33,7 @@ include!("analyze_cli_test/co_change.rs");
 include!("analyze_cli_test/risk.rs");
 include!("analyze_cli_test/bugs.rs");
 include!("analyze_cli_test/compiler.rs");
+include!("analyze_cli_test/codeql.rs");
 include!("analyze_cli_test/fuzz.rs");
 include!("analyze_cli_test/miri.rs");
 include!("analyze_cli_test/rules.rs");

@@ -227,19 +227,24 @@ from the syntax. `--base <rev>` reports only files changed since then; confirm a
 with `codegraph analyze review`. `--detector compiler` (opt-in: it builds the project) runs \
 `cargo clippy --offline` with a curated set of bug-finding rustc/clippy lints and ranks them \
 by whether a route handler reaches them; the build runs detached, waits at most \
---compiler-wait seconds, and the next call picks up a build still going."
+--compiler-wait seconds, and the next call picks up a build still going. `--detector codeql` \
+(opt-in) runs GitHub's CodeQL CLI as `codegraph analyze codeql` does (see its help, including \
+the license: open-source code, research, testing only). `--sarif FILE` writes SARIF 2.1.0."
     )]
     Bugs {
         /// Report only files changed since this git revision
         #[arg(long, value_name = "rev")]
         base: Option<String>,
-        /// Run only this detector family (deviance, lint, compiler); repeatable.
-        /// `compiler` runs only when named
+        /// Run only this detector family (deviance, lint, compiler, codeql);
+        /// repeatable. `compiler` and `codeql` run only when named
         #[arg(long = "detector", value_name = "name")]
         detectors: Vec<String>,
         /// Seconds to wait for the compiler detector's cargo run (default 300)
         #[arg(long = "compiler-wait", value_name = "secs")]
         compiler_wait: Option<String>,
+        /// Seconds to wait for the CodeQL detector's run (default 300)
+        #[arg(long = "codeql-wait", value_name = "secs")]
+        codeql_wait: Option<String>,
         /// Include findings in test code
         #[arg(long)]
         tests: bool,
@@ -249,6 +254,10 @@ by whether a route handler reaches them; the build runs detached, waits at most 
         /// Show at most N findings (default: 50, or all with --json)
         #[arg(short = 't', long, value_name = "number")]
         top: Option<String>,
+        /// Also write the findings as SARIF 2.1.0 to FILE (`-` = stdout, in
+        /// place of the report), for GitHub code scanning and other SARIF tools
+        #[arg(long, value_name = "file")]
+        sarif: Option<String>,
         /// Project path
         #[arg(short = 'p', long, value_name = "path")]
         path: Option<String>,
@@ -273,13 +282,16 @@ confirm or dismiss each finding: `codegraph analyze review --at src/sync.rs:1922
         /// Report only files changed since this git revision
         #[arg(long, value_name = "rev")]
         base: Option<String>,
-        /// Run only this detector family (deviance, lint, rule, compiler);
-        /// repeatable. `compiler` runs only when named
+        /// Run only this detector family (deviance, lint, rule, compiler, codeql,
+        /// miri); repeatable. `compiler` and `codeql` run only when named
         #[arg(long = "detector", value_name = "name")]
         detectors: Vec<String>,
         /// Seconds to wait for the compiler detector's cargo run (default 300)
         #[arg(long = "compiler-wait", value_name = "secs")]
         compiler_wait: Option<String>,
+        /// Seconds to wait for the CodeQL detector's run (default 300)
+        #[arg(long = "codeql-wait", value_name = "secs")]
+        codeql_wait: Option<String>,
         /// Also review the findings of these YAML rules (file or directory;
         /// repeatable)
         #[arg(long = "rules", value_name = "file|dir")]
@@ -374,6 +386,10 @@ whether to keep it: `codegraph analyze rules --builtin --score bench/juliet-c --
         /// Show at most N findings (default: 50, or all with --json)
         #[arg(short = 't', long, value_name = "number")]
         top: Option<String>,
+        /// Also write the findings as SARIF 2.1.0 to FILE (`-` = stdout, in
+        /// place of the report), for GitHub code scanning and other SARIF tools
+        #[arg(long, value_name = "file")]
+        sarif: Option<String>,
         /// Project path
         #[arg(short = 'p', long, value_name = "path")]
         path: Option<String>,
@@ -475,6 +491,61 @@ and the project function at the first project frame. `--input <file>` replays on
         /// Wall-clock limit for the build, in seconds
         #[arg(long = "build-timeout", value_name = "number", default_value = "900")]
         build_timeout: String,
+        /// Project path
+        #[arg(short = 'p', long, value_name = "path")]
+        path: Option<String>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Run GitHub's CodeQL (opt-in; see the license below) and map its
+    /// results onto the graph as findings
+    #[command(
+        name = "codeql",
+        after_help = "Finds the CodeQL CLI (CODEGRAPH_CODEQL = the `codeql` launcher or a bundle \
+directory, else `codeql` on PATH, else a bundle unpacked in ~/.cache/codegraph-tools/codeql/; \
+nothing is downloaded), builds one database per language of the indexed files (--build-mode=none \
+where the extractor supports it — Java, C#, C/C++ and the interpreted languages — else \
+autobuild: Go, Swift) and analyses it with each language's security-and-quality suite, or \
+--suite <name|pack|query.ql>. The run is detached and bounded (CODEGRAPH_CODEQL_BUDGET_MS, \
+default 60 min), waits at most --wait seconds, and the next call picks up a run still going; \
+databases and SARIF are cached under .codegraph/codeql/ by a source fingerprint. Each result \
+becomes a finding `codeql::<query id>` in its enclosing indexed function, with a taint path's \
+hops as evidence, confidence from the query's precision and security-severity, raised when a \
+route handler reaches it; `codegraph: ignore` comments and test-code filtering apply. With \
+--rules/--builtin, codegraph's own rules run too and a finding both report at one place and CWE \
+is merged. LICENSE: the CodeQL CLI is GitHub's, under the GitHub CodeQL Terms and Conditions \
+(https://securitylab.github.com/tools/codeql/license): run it only on open-source code, for \
+academic research, or to test or demonstrate the software — not on other private code."
+    )]
+    Codeql {
+        /// CodeQL language to analyse (java, javascript, python, ruby, go, cpp,
+        /// csharp, rust, swift; repeatable). Default: every language indexed
+        #[arg(long = "language", value_name = "lang")]
+        languages: Vec<String>,
+        /// Suite name (security-extended, code-scanning, …), query pack, or
+        /// .ql/.qls file (repeatable). Default: security-and-quality
+        #[arg(long = "suite", value_name = "suite|pack|query")]
+        suites: Vec<String>,
+        /// Seconds to wait for the run before reporting it still running
+        #[arg(long, value_name = "secs", default_value = "900")]
+        wait: String,
+        /// Also run these YAML rules and merge agreeing findings (repeatable)
+        #[arg(long = "rules", value_name = "file|dir")]
+        rules: Vec<String>,
+        /// Also run the built-in rules and merge agreeing findings
+        #[arg(long)]
+        builtin: bool,
+        /// Include findings in test code
+        #[arg(long)]
+        tests: bool,
+        /// Show at most N findings (default: 50, or all with --json)
+        #[arg(short = 't', long, value_name = "number")]
+        top: Option<String>,
+        /// Also write the findings as SARIF 2.1.0 to FILE (`-` = stdout, in
+        /// place of the report), for GitHub code scanning and other SARIF tools
+        #[arg(long, value_name = "file")]
+        sarif: Option<String>,
         /// Project path
         #[arg(short = 'p', long, value_name = "path")]
         path: Option<String>,
