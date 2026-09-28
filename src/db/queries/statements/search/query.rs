@@ -7,7 +7,7 @@ use super::super::QueryBuilder;
 use super::super::rows::node_from_row;
 use super::filters::{intersect_filter_axis, push_kind_filter, push_language_filter};
 use crate::error::Result;
-use crate::search::{kind_bonus, name_match_bonus, parse_query, score_path_relevance};
+use crate::search::{name_match_bonus, node_bonus, parse_query, score_path_relevance};
 use crate::types::{Language, NodeKind, SearchOptions, SearchResult};
 
 impl QueryBuilder {
@@ -151,7 +151,7 @@ impl QueryBuilder {
             let scoring_query = if !text.is_empty() { text } else { query };
             for r in results.iter_mut() {
                 r.score = r.score
-                    + f64::from(kind_bonus(r.node.kind))
+                    + f64::from(node_bonus(r.node.kind, r.node.language))
                     + f64::from(score_path_relevance(&r.node.file_path, scoring_query))
                     + f64::from(name_match_bonus(&r.node.name, scoring_query));
             }

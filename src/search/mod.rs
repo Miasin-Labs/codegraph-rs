@@ -23,5 +23,6 @@ pub use query_utils::{
     is_test_symbol,
     kind_bonus,
     name_match_bonus,
+    node_bonus,
     score_path_relevance,
 };
