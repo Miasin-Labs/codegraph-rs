@@ -655,9 +655,14 @@ fn companion_pairs_name_an_acquire_and_its_release() {
 
 /// Callers of `a`, all but one also calling `b` (`support` of them).
 fn companion_project(a: &str, b: &str, callers: usize) -> Vec<Finding> {
+    signed_companion_project((a, "()"), (b, "()"), callers)
+}
+
+/// [`companion_project`] with the signatures of `a` and `b`.
+fn signed_companion_project(a: (&str, &str), b: (&str, &str), callers: usize) -> Vec<Finding> {
     let f = "c.rs";
-    let a_span = span("a", a, f, (1, 3), "()");
-    let b_span = span("b", b, f, (4, 6), "()");
+    let a_span = span("a", a.0, f, (1, 3), a.1);
+    let b_span = span("b", b.0, f, (4, 6), b.1);
     let users: Vec<FnSpan> = (0..callers)
         .map(|i| {
             let i = i as u32;
@@ -715,6 +720,29 @@ fn companion_belief_needs_a_named_pair_and_support() {
     );
     assert!(companion_project("device_id", "user_id", 8).is_empty());
     assert!(companion_project("begin", "commit", 5).is_empty());
+}
+
+/// `range.start()` / `range.end()` are two getters of one value, not an
+/// acquire and its release (jfc's `ContextDropRange`, 2026-09); a real
+/// pair hands out different things.
+#[test]
+fn getter_twins_are_not_companions() {
+    let getters = signed_companion_project(("start", "(self) -> u32"), ("end", "(self) -> u32"), 8);
+    assert!(getters.is_empty(), "{getters:#?}");
+    let borrowed = signed_companion_project(
+        ("start", "(&'a self) -> Index"),
+        ("end", "(&'a self) -> Index"),
+        8,
+    );
+    assert!(borrowed.is_empty(), "{borrowed:#?}");
+    let protocol = signed_companion_project(
+        ("begin_transaction", "(&mut self) -> Tx"),
+        ("commit", "(&mut self) -> Result<()>"),
+        8,
+    );
+    assert_eq!(protocol.len(), 1, "{protocol:#?}");
+    let started = signed_companion_project(("start", "(&mut self)"), ("stop", "(&mut self)"), 8);
+    assert_eq!(started.len(), 1, "{started:#?}");
 }
 
 /// 3 of 4 is too little support for a discard to stand alone.
