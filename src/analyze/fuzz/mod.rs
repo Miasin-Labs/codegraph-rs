@@ -151,18 +151,18 @@ pub fn fuzz_targets(
 }
 
 /// Loaded once, shared by ranking and harness generation.
-struct Analysis {
-    project: Project,
-    graph: CallGraph,
-    syntax: HashMap<String, sites::FnSyntax>,
-    api: RustApi,
+pub(crate) struct Analysis {
+    pub(crate) project: Project,
+    pub(crate) graph: CallGraph,
+    pub(crate) syntax: HashMap<String, sites::FnSyntax>,
+    pub(crate) api: RustApi,
     existing: ExistingTargets,
     /// Findings per function (dense index).
     findings: Vec<usize>,
 }
 
 impl Analysis {
-    fn load(cg: &CodeGraph, root: &Path, with_findings: bool) -> Result<Self, String> {
+    pub(crate) fn load(cg: &CodeGraph, root: &Path, with_findings: bool) -> Result<Self, String> {
         let mut project = Project::load(cg, root)?;
         let mut graph = CallGraph::new(&project);
         let rust_files: Vec<String> = project
@@ -218,11 +218,11 @@ impl Analysis {
         })
     }
 
-    fn context(&self) -> RustContext<'_> {
+    pub(crate) fn context(&self) -> RustContext<'_> {
         RustContext::new(&self.api, &self.graph.functions, &self.syntax)
     }
 
-    fn sites(&self, index: usize) -> SiteCounts {
+    pub(crate) fn sites(&self, index: usize) -> SiteCounts {
         self.syntax
             .get(&self.graph.functions[index].id)
             .map(|syntax| syntax.sites)
@@ -230,7 +230,7 @@ impl Analysis {
     }
 
     /// The functions `focus` names (dense indices).
-    fn resolve_focus(&self, focus: &Focus) -> Result<Vec<usize>, String> {
+    pub(crate) fn resolve_focus(&self, focus: &Focus) -> Result<Vec<usize>, String> {
         match focus {
             Focus::Finding { file, line } => {
                 let span = self
@@ -645,7 +645,12 @@ pub struct CrashSite {
     pub function: Option<String>,
 }
 
-fn project_file(project: &Project, root: &Path, canonical: &Path, path: &str) -> Option<String> {
+pub(crate) fn project_file(
+    project: &Project,
+    root: &Path,
+    canonical: &Path,
+    path: &str,
+) -> Option<String> {
     let as_path = Path::new(path);
     for base in [canonical, root] {
         if let Ok(relative) = as_path.strip_prefix(base) {

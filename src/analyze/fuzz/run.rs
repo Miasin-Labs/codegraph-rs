@@ -220,15 +220,36 @@ pub fn cargo_fuzz_available() -> bool {
 }
 
 /// The finished (or killed) process.
-struct Finished {
-    success: bool,
-    killed: bool,
-    output: String,
+pub(crate) struct Finished {
+    pub(crate) success: bool,
+    /// Killed at the deadline.
+    pub(crate) killed: bool,
+    /// Killed because its output passed the cap.
+    pub(crate) capped: bool,
+    /// The output (for a large log: its start and its end, where the
+    /// verdict is).
+    pub(crate) output: String,
 }
 
 /// Run `command` with its output in `log`, killing its whole process group
 /// at `deadline`.
-fn run_bounded(mut command: Command, log: &Path, deadline: Duration) -> Result<Finished, String> {
+fn run_bounded(command: Command, log: &Path, deadline: Duration) -> Result<Finished, String> {
+    run_bounded_capped(command, log, deadline, u64::MAX)
+}
+
+/// How much of a log is read back: the first bytes, and the last ones.
+const LOG_HEAD: u64 = 64 * 1024;
+const LOG_TAIL: u64 = 1024 * 1024;
+
+/// [`run_bounded`], also killing the process group once `log` holds more
+/// than `max_output` bytes (a test that prints forever must not fill the
+/// disk). Only the head and tail of a large log are read back.
+pub(crate) fn run_bounded_capped(
+    mut command: Command,
+    log: &Path,
+    deadline: Duration,
+    max_output: u64,
+) -> Result<Finished, String> {
     let file =
         std::fs::File::create(log).map_err(|e| format!("cannot create {}: {e}", log.display()))?;
     let err_file = file
@@ -247,28 +268,52 @@ fn run_bounded(mut command: Command, log: &Path, deadline: Duration) -> Result<F
         .spawn()
         .map_err(|e| format!("cannot run cargo: {e}"))?;
     let started = Instant::now();
-    let (success, killed) = loop {
+    let over_cap = || std::fs::metadata(log).is_ok_and(|m| m.len() > max_output);
+    let (success, killed, capped) = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break (status.success(), false),
-            Ok(None) if started.elapsed() >= deadline => {
+            Ok(Some(status)) => break (status.success(), false, false),
+            Ok(None) if started.elapsed() >= deadline || over_cap() => {
+                let capped = started.elapsed() < deadline;
                 kill_group(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
-                break (false, true);
+                break (false, !capped, capped);
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(200)),
             Err(e) => return Err(format!("waiting for cargo: {e}")),
         }
     };
-    let mut output = String::new();
-    std::fs::File::open(log)
-        .and_then(|mut f| f.read_to_string(&mut output))
-        .map_err(|e| format!("cannot read {}: {e}", log.display()))?;
+    let output = read_head_tail(log).map_err(|e| format!("cannot read {}: {e}", log.display()))?;
     Ok(Finished {
         success,
         killed,
+        capped,
         output,
     })
+}
+
+/// `log` whole when small, else its first [`LOG_HEAD`] and last
+/// [`LOG_TAIL`] bytes around an elision line.
+fn read_head_tail(log: &Path) -> std::io::Result<String> {
+    use std::io::{Seek as _, SeekFrom};
+    let mut file = std::fs::File::open(log)?;
+    let len = file.metadata()?.len();
+    if len <= LOG_HEAD + LOG_TAIL {
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    let mut head = vec![0; LOG_HEAD as usize];
+    file.read_exact(&mut head)?;
+    file.seek(SeekFrom::Start(len - LOG_TAIL))?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail)?;
+    Ok(format!(
+        "{}\n… {} bytes left out …\n{}",
+        String::from_utf8_lossy(&head),
+        len - LOG_HEAD - LOG_TAIL,
+        String::from_utf8_lossy(&tail)
+    ))
 }
 
 #[cfg(unix)]
