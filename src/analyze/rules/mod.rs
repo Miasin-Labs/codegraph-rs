@@ -263,7 +263,13 @@ fn run(
             )
         });
         let semantics = IndexSemantics::new(cg, project)?.with_dependencies(deps);
-        scan(project, &semantics, rules, options)
+        let scan = scan(project, &semantics, rules, options);
+        if std::env::var_os("CODEGRAPH_TAINT_TRACE").is_some() {
+            if let Some(stats) = semantics.dependency_stats() {
+                eprintln!("taint: dependency summaries {stats:?}");
+            }
+        }
+        scan
     };
     for reason in scan.skipped {
         project.skip(&reason);

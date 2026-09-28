@@ -265,6 +265,11 @@ impl<'p> IndexSemantics<'p> {
         }
     }
 
+    /// What the run's dependency summaries did (`None`: not followed).
+    pub(crate) fn dependency_stats(&self) -> Option<crate::deps::summaries::compose::ComposeStats> {
+        self.deps.as_ref().map(|deps| deps.borrow().stats)
+    }
+
     /// Follow calls into dependency shards through `deps`' summaries.
     pub(crate) fn with_dependencies(
         mut self,

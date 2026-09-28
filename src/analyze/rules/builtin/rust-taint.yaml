@@ -675,6 +675,47 @@
             Html(HelloTemplate { name: q.name }.render().unwrap())
         }
 
+- id: rust-deserialize-untrusted
+  description: Request or peer bytes are decoded by a format that trusts their length and shape — bincode, MessagePack, pickle, CBOR — with no size limit (CWE-502, CWE-789).
+  severity: medium
+  confidence: 0.5
+  tags: [CWE-502, CWE-789, taint]
+  language: rust
+  message: "untrusted input `{source}` is deserialized with no size limit"
+  taint:
+    sources: *rust-web-sources
+    sinks:
+      - name: decoder
+        query: |
+          ((call_expression function: [(scoped_identifier) (generic_function)] @f arguments: (arguments . (_) @arg))
+           (#match? @f "^(bincode::(deserialize|deserialize_from|decode_from_slice|decode_from_std_read|serde::decode_from_slice)|rmp_serde::(from_slice|from_read|decode::from_read)|serde_pickle::(from_slice|from_reader)|ciborium::(from_reader|de::from_reader)|postcard::from_bytes)(::<.*>)?$"))
+        argument: arg
+        where:
+          - capture: f
+            resolves-to: "^(<unresolved>|(bincode|rmp_serde|serde_pickle|ciborium|postcard)::.*)$"
+    sanitizers: *rust-generic-sanitizers
+    guards: *rust-generic-guards
+  review:
+    - Can the input declare a length (a Vec, a String) the decoder allocates before reading it? bincode 1.x's default options have no limit.
+    - Use a size-limited configuration (`bincode::options().with_limit(..)`, `DefaultOptions::new().with_limit`) or cap the body first.
+  examples:
+    bad:
+      - |
+        async fn put(State(s): State<App>, body: Bytes) {
+            let msg: Msg = bincode::deserialize(&body).unwrap();
+        }
+      - |
+        fn read_frame(mut sock: TcpStream) {
+            let mut buf = Vec::new();
+            sock.read_to_end(&mut buf).unwrap();
+            let frame: Frame = rmp_serde::from_slice(&buf).unwrap();
+        }
+    good:
+      - |
+        async fn put(State(s): State<App>, body: Bytes) {
+            let msg: Msg = serde_json::from_slice(&body).unwrap();
+        }
+
 - id: rust-allocation-from-input
   description: A length decoded from input sizes an allocation with no bound (memory exhaustion, CWE-789, CWE-400).
   severity: medium
