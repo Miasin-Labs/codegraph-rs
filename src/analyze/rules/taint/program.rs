@@ -487,8 +487,23 @@ impl<'a> Table<'a> {
             let callees = semantics.callee_functions(file, span.line, span.col, callee);
             if callees.is_empty() {
                 // A dependency's function: its summary, when its shard
-                // has one, instead of the library models.
+                // has one, instead of the library models; else what the
+                // imported library models (CodeQL MaD) say moves through
+                // the call, where the propagation table has no entry.
                 pending.external = semantics.external_summary(file, span.line, span.col, callee);
+                if pending.external.is_none() {
+                    if let Some(ir_language) = rules.ir {
+                        pending.external = super::super::models::site::summary_at(
+                            file,
+                            semantics,
+                            ir_language,
+                            span.line,
+                            span.col,
+                            callee,
+                            args.len(),
+                        );
+                    }
+                }
             }
             if rules.index_resolves_calls && semantics.has_index() {
                 // A call resolving only to a tuple struct or enum variant

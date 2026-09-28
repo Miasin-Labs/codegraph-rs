@@ -116,6 +116,15 @@ pub struct PatternSpec {
     /// tree-sitter query (any language with a grammar).
     #[serde(default)]
     pub query: Option<String>,
+    /// Library models of these kinds instead of a pattern: calls CodeQL's
+    /// Models-as-Data (imported, [`super::models`]) model as a sink of
+    /// `sql-injection`, a `remote` source… (see `codegraph models list`).
+    #[serde(default)]
+    pub model: Option<OneOrMany<String>>,
+    /// The role a `model` pattern plays (set by the taint role it is in;
+    /// a check pattern's models are sinks).
+    #[serde(skip)]
+    pub model_role: Option<super::models::Role>,
     /// `var=regex` (must match) or `var!=regex` (must not), weggli-ruleset
     /// style; `$` on the variable is optional.
     #[serde(default, alias = "regexes")]
@@ -175,6 +184,13 @@ pub struct TaintPatternSpec {
     pub pattern: Option<String>,
     #[serde(default)]
     pub query: Option<String>,
+    /// Library models of these kinds (sources: threat models like
+    /// `remote`, `local`, `environment`; sinks, sanitizers and guards:
+    /// vulnerability kinds like `sql-injection` or aliases like `sql`).
+    /// The role's capture names default to `model` (the marked value) and,
+    /// for guards, `call` (the check).
+    #[serde(default)]
+    pub model: Option<OneOrMany<String>>,
     #[serde(default, alias = "regexes")]
     pub regex: Option<OneOrMany<String>>,
     #[serde(default, rename = "where")]
@@ -214,6 +230,8 @@ impl TaintPatternSpec {
             language: self.language.clone(),
             pattern: self.pattern.clone(),
             query: self.query.clone(),
+            model: self.model.clone(),
+            model_role: None,
             regex: self.regex.clone(),
             where_: self.where_.clone(),
             message: self.message.clone(),

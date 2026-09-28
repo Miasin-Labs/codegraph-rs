@@ -187,6 +187,8 @@ impl Pattern {
 pub enum Backend {
     Weggli(Box<QueryTree>),
     Query(Query),
+    /// Calls library models of some kinds describe (`model:`).
+    Model(super::models::site::ModelPattern),
 }
 
 pub struct Constraint {
@@ -672,7 +674,17 @@ fn compile_taint(
                     to: captures[1].clone(),
                 }),
                 "guards" => taint.guards.push(GuardPattern {
-                    pattern,
+                    pattern: {
+                        let mut pattern = pattern;
+                        // A guard model applies when its accepting result
+                        // is the branch the rule calls safe.
+                        for (_, backend) in &mut pattern.backends {
+                            if let Backend::Model(model) = backend {
+                                model.accepting = safe_when_true;
+                            }
+                        }
+                        pattern
+                    },
                     value: captures[0].clone(),
                     check: captures[1].clone(),
                     safe_when_true,
@@ -734,6 +746,7 @@ fn compile_taint_pattern(
             format!("`message` is for sinks (the finding's text), not {role}"),
         ));
     }
+    let is_model = spec.model.is_some();
     let names: Vec<Option<String>> = wanted
         .iter()
         .map(|key| {
@@ -741,21 +754,38 @@ fn compile_taint_pattern(
                 .iter()
                 .find(|(k, _)| k == key)
                 .and_then(|(_, value)| (*value).clone())
+                .or_else(|| {
+                    // A model pattern marks `model`; a guard checks at `call`.
+                    is_model.then(|| {
+                        if *key == "check" {
+                            super::models::site::CALL_CAPTURE.to_string()
+                        } else {
+                            super::models::site::MODEL_CAPTURE.to_string()
+                        }
+                    })
+                })
         })
         .collect();
     if names.iter().any(Option::is_none) {
         return Err(err(&[], format!("{role} need {usage}")));
     }
     let names: Vec<String> = names.into_iter().flatten().collect();
-    let mut pattern = compile_pattern(
-        spec.pattern(),
-        &section,
-        index,
-        item,
-        rule_languages,
-        at,
-        id,
-    )?;
+    let mut pattern_spec = spec.pattern();
+    if is_model {
+        pattern_spec.model_role = Some(match role {
+            "sources" => super::models::Role::Source,
+            "sanitizers" => super::models::Role::Barrier,
+            "guards" => super::models::Role::Guard,
+            "propagators" => {
+                return Err(err(
+                    &["model"],
+                    "propagators do not take `model`: library summaries apply to every rule".into(),
+                ));
+            }
+            _ => super::models::Role::Sink,
+        });
+    }
+    let mut pattern = compile_pattern(pattern_spec, &section, index, item, rule_languages, at, id)?;
     for (key, name) in wanted.iter().zip(&names) {
         if !pattern.captures.contains(name) {
             return Err(err(
@@ -894,8 +924,14 @@ fn compile_pattern(
     rule: &str,
 ) -> Result<Pattern, LoadError> {
     let key = format!(
-        "{:?}\u{1}{:?}\u{1}{:?}\u{1}{:?}\u{1}{:?}",
-        spec.language, spec.pattern, spec.query, spec.regex, spec.where_
+        "{:?}\u{1}{:?}\u{1}{:?}\u{1}{:?}\u{1}{:?}\u{1}{:?}\u{1}{:?}",
+        spec.language,
+        spec.pattern,
+        spec.query,
+        spec.regex,
+        spec.where_,
+        spec.model,
+        spec.model_role
     );
     let name = spec
         .name
@@ -913,19 +949,87 @@ fn compile_pattern(
     };
     let key_line = |keys: &[&str]| at.key(from, to, keys).map(|k| k.line);
 
+    let given = [
+        spec.pattern.is_some(),
+        spec.query.is_some(),
+        spec.model.is_some(),
+    ];
+    if spec.pattern.is_some() && spec.query.is_some() {
+        return Err(err(
+            None,
+            "has both `pattern` (weggli, C/C++) and `query` (tree-sitter); give one".into(),
+        ));
+    }
+    if given.iter().filter(|g| **g).count() > 1 {
+        return Err(err(
+            None,
+            "has `model` and a `pattern` or `query`; give one".into(),
+        ));
+    }
+    if let Some(kinds) = &spec.model {
+        let role = spec.model_role.unwrap_or(super::models::Role::Sink);
+        let languages = match &spec.language {
+            Some(names) => parse_languages(names).map_err(|m| err(key_line(&["language"]), m))?,
+            None => match rule_languages {
+                Some(languages) => languages.to_vec(),
+                None => {
+                    return Err(err(
+                        None,
+                        "a `model` pattern needs `language:` (on the rule or the pattern)".into(),
+                    ));
+                }
+            },
+        };
+        let (backends, captures) = super::models::site::compile(&kinds.0, role, &languages)
+            .map_err(|m| err(key_line(&["model"]), m))?;
+        let where_items = at
+            .key(from, to, &["where"])
+            .map(|k| at.locator.items(k.line, to))
+            .unwrap_or_default();
+        let languages: Vec<Language> = backends.iter().map(|(l, _)| *l).collect();
+        let mut predicates = Vec::new();
+        for (j, predicate) in spec.where_.into_iter().enumerate() {
+            let line = where_items.get(j).map(|(line, _)| *line);
+            predicates.push(
+                compile_predicate(predicate, j, section, &captures, &languages)
+                    .map_err(|message| err(line.or(key_line(&["where"])), message))?,
+            );
+        }
+        if spec.regex.is_some() {
+            return Err(err(
+                key_line(&["regex", "regexes"]),
+                "`regex` constrains a query's captures; a `model` pattern takes `where`".into(),
+            ));
+        }
+        let pattern = Pattern {
+            name,
+            label: label.clone(),
+            line: item_line.or(key_line(&["model"])).unwrap_or(0),
+            backends,
+            constraints: Vec::new(),
+            predicates,
+            captures,
+            message: spec.message,
+            at: spec.at,
+            limit: spec.limit,
+            unique: spec.unique,
+            identifiers: Vec::new(),
+            key,
+        };
+        if let Some(message) = &pattern.message {
+            check_placeholders(message, &pattern).map_err(|m| err(key_line(&["message"]), m))?;
+        }
+        return Ok(pattern);
+    }
     let (text, is_weggli) = match (&spec.pattern, &spec.query) {
         (Some(pattern), None) => (pattern.clone(), true),
         (None, Some(query)) => (query.clone(), false),
-        (Some(_), Some(_)) => {
+        _ => {
             return Err(err(
                 None,
-                "has both `pattern` (weggli, C/C++) and `query` (tree-sitter); give one".into(),
-            ));
-        }
-        (None, None) => {
-            return Err(err(
-                None,
-                "needs `pattern` (a weggli pattern, C/C++) or `query` (a tree-sitter query)".into(),
+                "needs `pattern` (a weggli pattern, C/C++), `query` (a tree-sitter query) or \
+                 `model` (library models of some kinds)"
+                    .into(),
             ));
         }
     };

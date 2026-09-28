@@ -40,6 +40,11 @@ pub(super) struct FileInput<'a> {
     /// Object-like macros that stand for a name or literal, built on
     /// first use (C/C++).
     macros: OnceCell<HashMap<String, String>>,
+    /// Imports and declared types, for matching calls to library models.
+    model_facts: OnceCell<super::models::matcher::facts::FileFacts>,
+    /// The file's calls matched to library models (one semantics per
+    /// sweep, so built once).
+    pub(super) model_calls: OnceCell<super::models::site::FileModels>,
 }
 
 impl<'a> FileInput<'a> {
@@ -53,7 +58,20 @@ impl<'a> FileInput<'a> {
             line_starts: OnceCell::new(),
             defined: OnceCell::new(),
             macros: OnceCell::new(),
+            model_facts: OnceCell::new(),
+            model_calls: OnceCell::new(),
         }
+    }
+
+    /// Imports and declared types (built on first use).
+    pub fn model_facts(&self) -> &super::models::matcher::facts::FileFacts {
+        self.model_facts.get_or_init(|| {
+            super::models::matcher::facts::FileFacts::read(
+                self.language,
+                self.tree.root_node(),
+                self.source,
+            )
+        })
     }
 
     /// Whether the file defines a function (or method) named `name`.
@@ -214,7 +232,7 @@ pub(super) fn drop_ignored(
     }
     let mut ignore_spans: Vec<(Range<usize>, &str)> = Vec::new();
     for (index, pattern) in rule.ignores.iter().enumerate() {
-        for hit in raw_hits(pattern, index, file, rules) {
+        for hit in raw_hits(pattern, index, file, rules, semantics) {
             if check_predicates(pattern, &hit, file, rules, semantics).is_ok() {
                 ignore_spans.push((hit.span.clone(), pattern.label.as_str()));
             }
@@ -260,7 +278,7 @@ pub(super) fn pattern_hits(
 ) -> FileResult {
     let rules = lang::for_language(file.language);
     let mut result = FileResult::default();
-    for hit in raw_hits(pattern, index, file, rules) {
+    for hit in raw_hits(pattern, index, file, rules, semantics) {
         match check_predicates(pattern, &hit, file, rules, semantics) {
             Ok(accepted) => result.hits.push(Hit {
                 notes: accepted.notes,
@@ -299,7 +317,13 @@ pub(super) fn position(tree: &Tree, offset: usize) -> (u32, u32) {
 }
 
 /// The pattern's matches in `file`, before predicates.
-fn raw_hits(pattern: &Pattern, index: usize, file: &FileInput, rules: &LangRules) -> Vec<Hit> {
+fn raw_hits(
+    pattern: &Pattern,
+    index: usize,
+    file: &FileInput,
+    rules: &LangRules,
+    semantics: &dyn Semantics,
+) -> Vec<Hit> {
     let Some(backend) = pattern.backend(file.language) else {
         return Vec::new();
     };
@@ -365,6 +389,7 @@ fn raw_hits(pattern: &Pattern, index: usize, file: &FileInput, rules: &LangRules
                 })
                 .collect::<Vec<_>>()
         }
+        Backend::Model(model) => super::models::site::hits(model, index, file, semantics),
         Backend::Query(query) => {
             let names = query.capture_names();
             let mut cursor = QueryCursor::new();

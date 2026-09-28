@@ -114,6 +114,7 @@ mod graph;
 mod history;
 mod index;
 mod install;
+mod models;
 mod output;
 mod path;
 mod projects;
@@ -121,7 +122,15 @@ mod serve;
 mod tool_commands;
 
 use analyze::{bridge_project_with_options, cmd_analyze, print_json};
-use cli::{AnalyzeCommands, Cli, Commands, DepsCommands, HistoryCommands, ProjectsCommands};
+use cli::{
+    AnalyzeCommands,
+    Cli,
+    Commands,
+    DepsCommands,
+    HistoryCommands,
+    ModelsCommands,
+    ProjectsCommands,
+};
 use context::cmd_context;
 use deps::cmd_deps;
 use files::cmd_files;
@@ -215,6 +224,7 @@ fn record_command_telemetry(command: &Commands) {
         Commands::History { .. } => "history",
         Commands::Projects { .. } => "projects",
         Commands::Deps { .. } => "deps",
+        Commands::Models { .. } => "models",
         Commands::Upgrade { .. } => "upgrade",
         Commands::PromptHook => "prompt-hook",
         Commands::Version => "version",
@@ -440,6 +450,7 @@ pub(crate) async fn main() {
         Commands::History { command } => cmd_history(command),
         Commands::Projects { command, json } => projects::cmd_projects(command, json),
         Commands::Deps { command } => cmd_deps(command).await,
+        Commands::Models { command } => models::cmd_models(command),
         Commands::Telemetry { action } => cmd_telemetry(action.as_deref()),
         Commands::Upgrade {
             version,

@@ -134,6 +134,23 @@ impl PropagationRules {
     pub fn is_receiver_result(&self, name: &str) -> bool {
         self.receiver_results.contains(&name)
     }
+
+    /// Whether any of the tables models `name` (a call they name moves
+    /// data their way, whatever other models say).
+    pub fn models(&self, name: &str) -> bool {
+        self.is_receiver_write(name)
+            || self.keyed_write(name).is_some()
+            || self.keyed_read(name).is_some()
+            || self.argument_write(name).is_some()
+            || self.is_clean_result(name)
+            || self.is_projection(name)
+            || self.is_receiver_result(name)
+            || self.lists.appends.contains(&name)
+            || self.lists.removes_at.contains(&name)
+            || self.lists.removes_first.contains(&name)
+            || self.lists.reads_at.contains(&name)
+            || self.lists.reads_first.contains(&name)
+    }
 }
 
 static NONE: PropagationRules = PropagationRules {

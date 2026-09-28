@@ -3,11 +3,13 @@ use super::{Parser, Subcommand};
 mod analyze;
 mod deps;
 mod history;
+mod models;
 mod projects;
 
 pub(crate) use analyze::AnalyzeCommands;
 pub(crate) use deps::{BeliefsCommands, DepsCommands};
 pub(crate) use history::HistoryCommands;
+pub(crate) use models::ModelsCommands;
 pub(crate) use projects::ProjectsCommands;
 
 #[derive(Parser)]
@@ -382,6 +384,12 @@ pub(crate) enum Commands {
     Deps {
         #[command(subcommand)]
         command: DepsCommands,
+    },
+    /// Library models for taint, imported from CodeQL's Models-as-Data
+    /// (import-codeql, list, stats, match)
+    Models {
+        #[command(subcommand)]
+        command: ModelsCommands,
     },
     /// Show or change anonymous usage telemetry (status, on, off)
     Telemetry {
