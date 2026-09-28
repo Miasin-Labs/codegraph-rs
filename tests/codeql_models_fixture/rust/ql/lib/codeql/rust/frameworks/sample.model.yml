@@ -1,0 +1,25 @@
+# A sample of CodeQL's Rust Models-as-Data rows (github/codeql, MIT).
+extensions:
+  - addsTo:
+      pack: codeql/rust-all
+      extensible: sourceModel
+    data:
+      - ["std::env::var", "ReturnValue.Field[core::result::Result::Ok(0)]", "environment", "manual"]
+  - addsTo:
+      pack: codeql/rust-all
+      extensible: sinkModel
+    data:
+      - ["<std::process::Command>::new", "Argument[0]", "command-injection", "manual"]
+      - ["<rusqlite::Connection>::execute", "Argument[0]", "sql-injection", "manual"]
+  - addsTo:
+      pack: codeql/rust-all
+      extensible: summaryModel
+    data:
+      - ["<alloc::string::String as core::convert::From>::from", "Argument[0]", "ReturnValue", "value", "manual"]
+      - ["<_ as core::iter::traits::iterator::Iterator>::map", "Argument[self].Element", "Argument[0].Parameter[0]", "value", "manual"]
+      - ["<[_]>::to_vec", "Argument[self]", "ReturnValue", "taint", "manual"]
+  - addsTo:
+      pack: codeql/rust-all
+      extensible: neutralModel
+    data:
+      - ["<core::option::Option>::map", "sink", "manual"]

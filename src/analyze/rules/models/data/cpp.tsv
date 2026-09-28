@@ -1,0 +1,1180 @@
+# CodeQL Models-as-Data for cpp, imported by `codegraph models import-codeql`.
+# Source: https://github.com/github/codeql @ 0580587ec936ae33ddf096795e6f65d0164463ee
+# Copyright (c) GitHub, Inc. — MIT License, see NOTICE.
+# role	namespace	type	subtypes	name	arity	input	output	kind	flags
+source			0	GetCommandLineA	-	-	ret	local	-
+source			0	GetCommandLineW	-	-	ret	local	-
+source			0	GetEnvironmentStringsA	-	-	ret	local	-
+source			0	GetEnvironmentStringsW	-	-	ret	local	-
+source			0	GetEnvironmentVariableA	-	-	arg1	local	-
+source			0	GetEnvironmentVariableW	-	-	arg1	local	-
+source			0	HttpReceiveClientCertificate	-	-	arg3	remote	-
+source			0	HttpReceiveHttpRequest	-	-	arg3	remote	-
+source			0	HttpReceiveRequestEntityBody	-	-	arg3	remote	-
+source			0	MapViewOfFile	-	-	ret	local	-
+source			0	MapViewOfFile2	-	-	ret	local	-
+source			0	MapViewOfFile3	-	-	ret	local	-
+source			0	MapViewOfFile3FromApp	-	-	ret	local	-
+source			0	MapViewOfFileEx	-	-	ret	local	-
+source			0	MapViewOfFileFromApp	-	-	ret	local	-
+source			0	MapViewOfFileNuma2	-	-	ret	local	-
+source			0	NtReadFile	-	-	arg5	local	-
+source			0	ReadFile	-	-	arg1	local	-
+source			0	ReadFileEx	-	-	arg1	local	-
+source			0	RegEnumValueA	-	-	arg2	windows-registry	-
+source			0	RegEnumValueA	-	-	arg6	windows-registry	-
+source			0	RegEnumValueW	-	-	arg2	windows-registry	-
+source			0	RegEnumValueW	-	-	arg6	windows-registry	-
+source			0	RegGetValueA	-	-	arg5	windows-registry	-
+source			0	RegGetValueW	-	-	arg5	windows-registry	-
+source			0	RegQueryMultipleValuesA	-	-	arg3	windows-registry	-
+source			0	RegQueryMultipleValuesW	-	-	arg3	windows-registry	-
+source			0	RegQueryValueA	-	-	arg2	windows-registry	-
+source			0	RegQueryValueExA	-	-	arg4	windows-registry	-
+source			0	RegQueryValueExW	-	-	arg4	windows-registry	-
+source			0	RegQueryValueW	-	-	arg2	windows-registry	-
+source			0	StringCbGetsA	-	-	arg0	local	-
+source			0	StringCbGetsExA	-	-	arg0	local	-
+source			0	StringCbGetsExW	-	-	arg0	local	-
+source			0	StringCbGetsW	-	-	arg0	local	-
+source			0	StringCchGetsA	-	-	arg0	local	-
+source			0	StringCchGetsExA	-	-	arg0	local	-
+source			0	StringCchGetsExW	-	-	arg0	local	-
+source			0	StringCchGetsW	-	-	arg0	local	-
+source			0	WinHttpQueryHeaders	-	-	arg3	remote	-
+source			0	WinHttpQueryHeadersEx	-	-	arg5	remote	-
+source			0	WinHttpQueryHeadersEx	-	-	arg6	remote	-
+source			0	WinHttpQueryHeadersEx	-	-	arg8	remote	-
+source			0	WinHttpReadData	-	-	arg1	remote	-
+source			0	WinHttpReadDataEx	-	-	arg1	remote	-
+source			0	_getc_nolock	-	-	ret	remote	-
+source			0	_getch	-	-	ret	local	-
+source			0	_getch_nolock	-	-	ret	local	-
+source			0	_getchar_nolock	-	-	ret	local	-
+source			0	_getwc_nolock	-	-	ret	remote	-
+source			0	_getwch	-	-	ret	local	-
+source			0	_getwch_nolock	-	-	ret	local	-
+source			0	_getwchar_nolock	-	-	ret	local	-
+source			0	getc	-	-	ret	remote	-
+source			0	getch	-	-	ret	local	-
+source			0	getchar	-	-	ret	local	-
+source			0	getwc	-	-	ret	remote	-
+source			0	getwchar	-	-	ret	local	-
+source			0	zmq_msg_recv	-	-	arg0	remote	-
+source			0	zmq_recv	-	-	arg1	remote	-
+source			0	zmq_recvmsg	-	-	arg1	remote	-
+source	Azure::Core::Http	RawResponse	1	ExtractBodyStream	-	-	ret	remote	-
+source	Azure::Core::Http	RawResponse	1	GetBody	-	-	ret	remote	-
+source	Azure::Core::Http	RawResponse	1	GetHeaders	-	-	ret	remote	-
+source	Azure::Core::Http	Request	1	GetBodyStream	-	-	ret	remote	-
+source	Azure::Core::Http	Request	1	GetHeader	-	-	ret	remote	-
+source	Azure::Core::Http	Request	1	GetHeaders	-	-	ret	remote	-
+source	boost::asio		0	async_read	-	-	arg1	remote	-
+source	boost::asio		0	async_read_at	-	-	arg2	remote	-
+source	boost::asio		0	async_read_until	-	-	arg1	remote	-
+source	boost::asio		0	read	-	-	arg1	remote	-
+source	boost::asio		0	read_at	-	-	arg2	remote	-
+source	boost::asio		0	read_until	-	-	arg1	remote	-
+sink			0	OCIStmtPrepare	-	arg2	-	sql-injection	-
+sink			0	OCIStmtPrepare2	-	arg3	-	sql-injection	-
+sink			0	PQexec	-	arg1	-	sql-injection	-
+sink			0	PQexecParams	-	arg1	-	sql-injection	-
+sink			0	PQprepare	-	arg2	-	sql-injection	-
+sink			0	PQsendPrepare	-	arg2	-	sql-injection	-
+sink			0	PQsendQuery	-	arg1	-	sql-injection	-
+sink			0	PQsendQueryParams	-	arg1	-	sql-injection	-
+sink			0	cdb2_run_statement	-	arg1	-	sql-injection	-
+sink			0	cdb2_run_statement_typed	-	arg1	-	sql-injection	-
+sink			0	zmq_msg_send	-	arg0	-	remote-sink	-
+sink			0	zmq_send	-	arg1	-	remote-sink	-
+sink			0	zmq_sendmsg	-	arg1	-	remote-sink	-
+sink	boost::asio		0	async_write	-	arg1	-	remote-sink	-
+sink	boost::asio		0	async_write_at	-	arg2	-	remote-sink	-
+sink	boost::asio		0	write	-	arg1	-	remote-sink	-
+sink	boost::asio		0	write_at	-	arg2	-	remote-sink	-
+summary			0	CLSIDFromProgID	-	arg0	arg1	taint	-
+summary			0	CLSIDFromString	-	arg0	arg1	taint	-
+summary			0	CommandLineToArgvA	-	arg0	ret	taint	-
+summary			0	CommandLineToArgvW	-	arg0	ret	taint	-
+summary			0	GUIDFromString	-	arg0	arg1	taint	-
+summary			0	IIDFromString	-	arg0	arg1	taint	-
+summary			0	ProgIDFromCLSID	-	arg0	arg1	taint	-
+summary			0	RtlCopyDeviceMemory	-	arg1	arg0	value	-
+summary			0	RtlCopyMemory	-	arg1	arg0	value	-
+summary			0	RtlCopyMemoryNonTemporal	-	arg1	arg0	value	-
+summary			0	RtlCopyUnicodeString	-	arg1	arg0	value	a
+summary			0	RtlCopyVolatileMemory	-	arg1	arg0	value	-
+summary			0	RtlInitUnicodeString	-	arg1	arg0	value	a
+summary			0	RtlMoveMemory	-	arg1	arg0	value	-
+summary			0	RtlMoveVolatileMemory	-	arg1	arg0	value	-
+summary			0	StringCbCatA	-	arg2	arg0	taint	-
+summary			0	StringCbCatExA	-	arg2	arg0	taint	-
+summary			0	StringCbCatExW	-	arg2	arg0	taint	-
+summary			0	StringCbCatNA	-	arg2	arg0	taint	-
+summary			0	StringCbCatNExA	-	arg2	arg0	taint	-
+summary			0	StringCbCatNExW	-	arg2	arg0	taint	-
+summary			0	StringCbCatNW	-	arg2	arg0	taint	-
+summary			0	StringCbCatW	-	arg2	arg0	taint	-
+summary			0	StringCbCopyA	-	arg2	arg0	taint	-
+summary			0	StringCbCopyExA	-	arg2	arg0	taint	-
+summary			0	StringCbCopyExW	-	arg2	arg0	taint	-
+summary			0	StringCbCopyNA	-	arg2	arg0	taint	-
+summary			0	StringCbCopyNExA	-	arg2	arg0	taint	-
+summary			0	StringCbCopyNExW	-	arg2	arg0	taint	-
+summary			0	StringCbCopyNW	-	arg2	arg0	taint	-
+summary			0	StringCbCopyW	-	arg2	arg0	taint	-
+summary			0	StringCbPrintfA	-	arg2	arg0	taint	-
+summary			0	StringCbPrintfA	-	arg3	arg0	taint	-
+summary			0	StringCbPrintfA	-	arg4	arg0	taint	-
+summary			0	StringCbPrintfA	-	arg5	arg0	taint	-
+summary			0	StringCbPrintfA	-	arg6	arg0	taint	-
+summary			0	StringCbPrintfA	-	arg7	arg0	taint	-
+summary			0	StringCbPrintfA	-	arg8	arg0	taint	-
+summary			0	StringCbPrintfExA	-	arg5	arg0	taint	-
+summary			0	StringCbPrintfExA	-	arg6	arg0	taint	-
+summary			0	StringCbPrintfExA	-	arg7	arg0	taint	-
+summary			0	StringCbPrintfExA	-	arg8	arg0	taint	-
+summary			0	StringCbPrintfExA	-	arg9	arg0	taint	-
+summary			0	StringCbPrintfExA	-	arg10	arg0	taint	-
+summary			0	StringCbPrintfExA	-	arg11	arg0	taint	-
+summary			0	StringCbPrintfExW	-	arg5	arg0	taint	-
+summary			0	StringCbPrintfExW	-	arg6	arg0	taint	-
+summary			0	StringCbPrintfExW	-	arg7	arg0	taint	-
+summary			0	StringCbPrintfExW	-	arg8	arg0	taint	-
+summary			0	StringCbPrintfExW	-	arg9	arg0	taint	-
+summary			0	StringCbPrintfExW	-	arg10	arg0	taint	-
+summary			0	StringCbPrintfExW	-	arg11	arg0	taint	-
+summary			0	StringCbPrintfW	-	arg2	arg0	taint	-
+summary			0	StringCbPrintfW	-	arg3	arg0	taint	-
+summary			0	StringCbPrintfW	-	arg4	arg0	taint	-
+summary			0	StringCbPrintfW	-	arg5	arg0	taint	-
+summary			0	StringCbPrintfW	-	arg6	arg0	taint	-
+summary			0	StringCbPrintfW	-	arg7	arg0	taint	-
+summary			0	StringCbPrintfW	-	arg8	arg0	taint	-
+summary			0	StringCbVPrintfA	-	arg2	arg0	taint	-
+summary			0	StringCbVPrintfExA	-	arg5	arg0	taint	-
+summary			0	StringCbVPrintfExW	-	arg5	arg0	taint	-
+summary			0	StringCbVPrintfW	-	arg2	arg0	taint	-
+summary			0	StringCchCatA	-	arg2	arg0	taint	-
+summary			0	StringCchCatExA	-	arg2	arg0	taint	-
+summary			0	StringCchCatExW	-	arg2	arg0	taint	-
+summary			0	StringCchCatNA	-	arg2	arg0	taint	-
+summary			0	StringCchCatNExA	-	arg2	arg0	taint	-
+summary			0	StringCchCatNExW	-	arg2	arg0	taint	-
+summary			0	StringCchCatNW	-	arg2	arg0	taint	-
+summary			0	StringCchCatW	-	arg2	arg0	taint	-
+summary			0	StringCchCopyA	-	arg2	arg0	taint	-
+summary			0	StringCchCopyExA	-	arg2	arg0	taint	-
+summary			0	StringCchCopyExW	-	arg2	arg0	taint	-
+summary			0	StringCchCopyNA	-	arg2	arg0	taint	-
+summary			0	StringCchCopyNExA	-	arg2	arg0	taint	-
+summary			0	StringCchCopyNExW	-	arg2	arg0	taint	-
+summary			0	StringCchCopyNW	-	arg2	arg0	taint	-
+summary			0	StringCchCopyW	-	arg2	arg0	taint	-
+summary			0	StringCchPrintfA	-	arg2	arg0	taint	-
+summary			0	StringCchPrintfA	-	arg3	arg0	taint	-
+summary			0	StringCchPrintfA	-	arg4	arg0	taint	-
+summary			0	StringCchPrintfA	-	arg5	arg0	taint	-
+summary			0	StringCchPrintfA	-	arg6	arg0	taint	-
+summary			0	StringCchPrintfA	-	arg7	arg0	taint	-
+summary			0	StringCchPrintfA	-	arg8	arg0	taint	-
+summary			0	StringCchPrintfExA	-	arg5	arg0	taint	-
+summary			0	StringCchPrintfExA	-	arg6	arg0	taint	-
+summary			0	StringCchPrintfExA	-	arg7	arg0	taint	-
+summary			0	StringCchPrintfExA	-	arg8	arg0	taint	-
+summary			0	StringCchPrintfExA	-	arg9	arg0	taint	-
+summary			0	StringCchPrintfExA	-	arg10	arg0	taint	-
+summary			0	StringCchPrintfExA	-	arg11	arg0	taint	-
+summary			0	StringCchPrintfExW	-	arg5	arg0	taint	-
+summary			0	StringCchPrintfExW	-	arg6	arg0	taint	-
+summary			0	StringCchPrintfExW	-	arg7	arg0	taint	-
+summary			0	StringCchPrintfExW	-	arg8	arg0	taint	-
+summary			0	StringCchPrintfExW	-	arg9	arg0	taint	-
+summary			0	StringCchPrintfExW	-	arg10	arg0	taint	-
+summary			0	StringCchPrintfExW	-	arg11	arg0	taint	-
+summary			0	StringCchPrintfW	-	arg2	arg0	taint	-
+summary			0	StringCchPrintfW	-	arg3	arg0	taint	-
+summary			0	StringCchPrintfW	-	arg4	arg0	taint	-
+summary			0	StringCchPrintfW	-	arg5	arg0	taint	-
+summary			0	StringCchPrintfW	-	arg6	arg0	taint	-
+summary			0	StringCchPrintfW	-	arg7	arg0	taint	-
+summary			0	StringCchPrintfW	-	arg8	arg0	taint	-
+summary			0	StringCchVPrintfA	-	arg2	arg0	taint	-
+summary			0	StringCchVPrintfExA	-	arg5	arg0	taint	-
+summary			0	StringCchVPrintfExW	-	arg5	arg0	taint	-
+summary			0	StringCchVPrintfW	-	arg2	arg0	taint	-
+summary			0	StringFromCLSID	-	arg0	arg1	taint	-
+summary			0	StringFromGUID2	-	arg0	arg1	taint	-
+summary			0	StringFromIID	-	arg0	arg1	taint	-
+summary			0	SysAllocString	-	arg0	ret	value	-
+summary			0	SysAllocStringByteLen	-	arg0	ret	value	-
+summary			0	SysAllocStringLen	-	arg0	ret	value	-
+summary			0	WinHttpCrackUrl	-	arg0	arg3	taint	-
+summary			0	iconv	-	arg1	arg3	value	-
+summary			0	mysql_real_escape_string	-	arg2	arg1	taint	-
+summary			0	mysql_real_escape_string_quote	-	arg2	arg1	taint	-
+summary			0	tolower	-	arg0	ret	taint	-
+summary			0	toupper	-	arg0	ret	taint	-
+summary			0	zmq_msg_data	-	arg0	ret	taint	-
+summary			0	zmq_msg_init_data	-	arg1	arg0	taint	-
+summary	ATL		1	operator+	2	arg0	ret	taint	-
+summary	ATL		1	operator+	2	arg1	ret	taint	-
+summary	ATL		1	operator+=	1	recv	ret	taint	-
+summary	ATL		1	operator+=	1	arg0	ret	taint	-
+summary	ATL		1	operator+=	1	arg0	recv	taint	-
+summary	ATL	CA2AEX	1	CA2AEX	-	arg0	recv	value	a
+summary	ATL	CA2AEX	1	operator LPSTR	-	recv	ret	value	a
+summary	ATL	CA2CAEX	1	CA2CAEX	-	arg0	recv	value	a
+summary	ATL	CA2CAEX	1	operator LPCSTR	-	recv	ret	value	a
+summary	ATL	CA2WEX	1	CA2WEX	-	arg0	recv	value	a
+summary	ATL	CA2WEX	1	operator LPWSTR	-	recv	ret	value	a
+summary	ATL	CAtlArray	1	Add	-	arg0	recv	value	a
+summary	ATL	CAtlArray	1	Append	-	arg0	recv	value	a
+summary	ATL	CAtlArray	1	Copy	-	arg0	recv	value	a
+summary	ATL	CAtlArray	1	GetAt	-	recv	ret	value	a
+summary	ATL	CAtlArray	1	GetData	-	recv	ret	value	a
+summary	ATL	CAtlArray	1	InsertArrayAt	-	arg1	recv	value	a
+summary	ATL	CAtlArray	1	InsertAt	-	arg1	recv	value	a
+summary	ATL	CAtlArray	1	SetAt	-	arg1	recv	value	a
+summary	ATL	CAtlArray	1	SetAtGrow	-	arg1	recv	value	a
+summary	ATL	CAtlArray	1	operator[]	-	recv	ret	value	a
+summary	ATL	CAtlFile	1	CAtlFile	1	arg0	recv	taint	-
+summary	ATL	CAtlFile	1	CAtlFile	1	arg0	recv	value	-
+summary	ATL	CAtlFile	1	Create	-	arg0	recv	taint	-
+summary	ATL	CAtlFile	1	Read	-	recv	arg0	taint	-
+summary	ATL	CAtlFileMappingBase	1	CAtlFileMappingBase	-	arg0	recv	value	-
+summary	ATL	CAtlFileMappingBase	1	CopyFrom	-	arg0	recv	taint	-
+summary	ATL	CAtlFileMappingBase	1	GetData	-	recv	ret	taint	-
+summary	ATL	CAtlFileMappingBase	1	GetHandle	-	recv	ret	taint	-
+summary	ATL	CAtlFileMappingBase	1	MapFile	-	arg0	recv	taint	-
+summary	ATL	CAtlFileMappingBase	1	MapSharedMem	-	arg1	recv	taint	-
+summary	ATL	CAtlFileMappingBase	1	OpenMapping	-	arg0	recv	taint	-
+summary	ATL	CAtlFileMappingBase	1	operator=	-	arg0	ret	value	-
+summary	ATL	CAtlFileMappingBase	1	operator=	-	arg0	recv	value	-
+summary	ATL	CAtlList	1	AddHead	-	arg0	recv	value	a
+summary	ATL	CAtlList	1	AddHeadList	-	arg0	recv	value	a
+summary	ATL	CAtlList	1	AddTail	-	arg0	recv	value	a
+summary	ATL	CAtlList	1	AddTailList	-	arg0	recv	value	a
+summary	ATL	CAtlList	1	GetAt	-	recv	ret	value	a
+summary	ATL	CAtlList	1	GetHead	-	recv	ret	value	a
+summary	ATL	CAtlList	1	GetTail	-	recv	ret	value	a
+summary	ATL	CAtlList	1	InsertAfter	-	arg1	recv	value	a
+summary	ATL	CAtlList	1	InsertBefore	-	arg1	recv	value	a
+summary	ATL	CAtlList	1	SetAt	-	arg1	recv	value	a
+summary	ATL	CAtlTemporaryFile	1	Create	-	arg0	recv	taint	-
+summary	ATL	CAtlTemporaryFile	1	Read	-	recv	arg0	taint	-
+summary	ATL	CAtlTemporaryFile	1	Write	-	arg0	recv	taint	-
+summary	ATL	CComBSTR	1	Append	1	arg0	recv	taint	-
+summary	ATL	CComBSTR	1	Append	2	arg0	recv	taint	-
+summary	ATL	CComBSTR	1	AppendBSTR	-	arg0	recv	taint	-
+summary	ATL	CComBSTR	1	AppendBytes	-	arg0	recv	taint	-
+summary	ATL	CComBSTR	1	ArrayToBSTR	-	arg0	recv	value	a
+summary	ATL	CComBSTR	1	AssignBSTR	-	arg0	recv	value	-
+summary	ATL	CComBSTR	1	Attach	-	arg0	recv	value	-
+summary	ATL	CComBSTR	1	BSTRToArray	-	recv	arg0	value	a
+summary	ATL	CComBSTR	1	CComBSTR	1	arg0	recv	value	-
+summary	ATL	CComBSTR	1	CComBSTR	2	arg1	recv	value	-
+summary	ATL	CComBSTR	1	Copy	-	recv	ret	value	-
+summary	ATL	CComBSTR	1	CopyTo	-	recv	arg0	value	-
+summary	ATL	CComBSTR	1	LoadString	1	arg0	recv	taint	-
+summary	ATL	CComBSTR	1	LoadString	2	arg1	recv	taint	-
+summary	ATL	CComBSTR	1	ReadFromStream	-	arg0	recv	taint	-
+summary	ATL	CComBSTR	1	WriteToStream	-	recv	arg0	taint	-
+summary	ATL	CComBSTR	1	operator BSTR	-	recv	ret	taint	-
+summary	ATL	CComBSTR	1	operator&	-	recv	ret	value	-
+summary	ATL	CComBSTR	1	operator+=	-	arg0	ret	taint	-
+summary	ATL	CComBSTR	1	operator+=	-	arg0	recv	taint	-
+summary	ATL	CComSafeArray	1	Add	1	arg0	recv	value	a
+summary	ATL	CComSafeArray	1	Add	2	arg0	recv	value	a
+summary	ATL	CComSafeArray	1	Attach	-	arg0	recv	value	a
+summary	ATL	CComSafeArray	1	CComSafeArray	1	arg0	recv	value	-
+summary	ATL	CComSafeArray	1	CComSafeArray	1	arg0	recv	value	a
+summary	ATL	CComSafeArray	1	CopyFrom	-	arg0	recv	value	a
+summary	ATL	CComSafeArray	1	CopyTo	-	recv	arg0	value	a
+summary	ATL	CComSafeArray	1	GetAt	-	recv	ret	value	a
+summary	ATL	CComSafeArray	1	GetLowerBound	-	recv	ret	taint	-
+summary	ATL	CComSafeArray	1	GetSafeArrayPtr	-	recv	ret	value	a
+summary	ATL	CComSafeArray	1	GetUpperBound	-	recv	ret	taint	-
+summary	ATL	CComSafeArray	1	MultiDimGetAt	-	recv	arg1	value	a
+summary	ATL	CComSafeArray	1	MultiDimSetAt	-	arg1	recv	value	a
+summary	ATL	CComSafeArray	1	SetAt	-	arg1	recv	value	a
+summary	ATL	CComSafeArray	1	operator LPSAFEARRAY	-	recv	ret	value	a
+summary	ATL	CComSafeArray	1	operator=	1	arg0	ret	value	-
+summary	ATL	CComSafeArray	1	operator=	1	arg0	ret	value	a
+summary	ATL	CComSafeArray	1	operator=	1	arg0	recv	value	a
+summary	ATL	CComSafeArray	1	operator[]	-	recv	ret	value	a
+summary	ATL	CPathT	1	AddExtension	-	arg0	recv	taint	-
+summary	ATL	CPathT	1	Append	-	arg0	recv	taint	-
+summary	ATL	CPathT	1	CPathT	-	arg0	recv	value	-
+summary	ATL	CPathT	1	Combine	-	arg0	recv	taint	-
+summary	ATL	CPathT	1	Combine	-	arg1	recv	taint	-
+summary	ATL	CPathT	1	CommonPrefix	-	recv	ret	taint	-
+summary	ATL	CPathT	1	CommonPrefix	-	arg0	ret	taint	-
+summary	ATL	CPathT	1	GetExtension	-	recv	ret	taint	-
+summary	ATL	CPathT	1	RelativePathTo	-	arg0	ret	taint	-
+summary	ATL	CPathT	1	RelativePathTo	-	arg2	ret	taint	-
+summary	ATL	CPathT	1	RenameExtension	-	arg0	ret	taint	-
+summary	ATL	CPathT	1	operator PCXSTR	-	recv	ret	value	-
+summary	ATL	CPathT	1	operator+=	-	recv	ret	taint	-
+summary	ATL	CPathT	1	operator+=	-	arg0	ret	taint	-
+summary	ATL	CPathT	1	operator+=	-	arg0	recv	taint	-
+summary	ATL	CRegKey	1	Attach	-	arg0	recv	taint	-
+summary	ATL	CRegKey	1	CRegKey	1	arg0	recv	taint	-
+summary	ATL	CRegKey	1	CRegKey	1	arg0	recv	value	-
+summary	ATL	CRegKey	1	Create	-	arg1	recv	taint	-
+summary	ATL	CRegKey	1	QueryBinaryValue	-	arg0	arg1	taint	-
+summary	ATL	CRegKey	1	QueryDWORDValue	-	arg0	arg1	taint	-
+summary	ATL	CRegKey	1	QueryMultiStringValue	-	arg0	arg1	taint	-
+summary	ATL	CRegKey	1	QueryQWORDValue	-	arg0	arg1	taint	-
+summary	ATL	CRegKey	1	QueryStringValue	-	arg0	arg1	taint	-
+summary	ATL	CRegKey	1	QueryValue	2	arg1	arg0	taint	-
+summary	ATL	CRegKey	1	QueryValue	3	arg1	arg0	taint	-
+summary	ATL	CRegKey	1	QueryValue	4	arg0	arg2	taint	-
+summary	ATL	CRegKey	1	operator HKEY	-	recv	ret	taint	-
+summary	ATL	CRegKey	1	operator=	-	arg0	ret	value	-
+summary	ATL	CRegKey	1	operator=	-	arg0	recv	value	-
+summary	ATL	CSimpleArray	1	Add	-	arg0	recv	value	a
+summary	ATL	CSimpleArray	1	CSimpleArray	-	arg0	recv	value	a
+summary	ATL	CSimpleArray	1	GetData	-	recv	ret	value	a
+summary	ATL	CSimpleArray	1	SetAtIndex	-	arg1	recv	value	a
+summary	ATL	CSimpleArray	1	operator=	-	arg0	ret	value	a
+summary	ATL	CSimpleArray	1	operator=	-	arg0	recv	value	a
+summary	ATL	CSimpleArray	1	operator[]	-	recv	ret	value	a
+summary	ATL	CSimpleMap	1	Add	-	arg1	recv	value	a
+summary	ATL	CSimpleMap	1	GetValueAt	-	recv	ret	value	a
+summary	ATL	CSimpleMap	1	Lookup	-	recv	ret	value	a
+summary	ATL	CSimpleMap	1	SetAt	-	arg1	recv	value	a
+summary	ATL	CSimpleMap	1	SetAtIndex	-	arg2	recv	value	a
+summary	ATL	CSimpleMap	1	operator=	-	arg0	ret	value	a
+summary	ATL	CSimpleMap	1	operator=	-	arg0	recv	value	a
+summary	ATL	CSimpleMap	1	operator[]	-	recv	ret	value	a
+summary	ATL	CSimpleStringT	1	Append	-	arg0	recv	taint	-
+summary	ATL	CSimpleStringT	1	AppendChar	-	arg0	recv	taint	-
+summary	ATL	CSimpleStringT	1	CSimpleStringT	1	arg0	recv	value	-
+summary	ATL	CSimpleStringT	1	CSimpleStringT	2	arg0	recv	value	-
+summary	ATL	CSimpleStringT	1	CSimpleStringT	3	arg0	recv	value	-
+summary	ATL	CSimpleStringT	1	CopyChars	3	arg1	arg0	taint	-
+summary	ATL	CSimpleStringT	1	CopyChars	4	arg2	arg0	taint	-
+summary	ATL	CSimpleStringT	1	CopyCharsOverlapped	3	arg1	arg0	taint	-
+summary	ATL	CSimpleStringT	1	GetAt	-	recv	ret	taint	-
+summary	ATL	CSimpleStringT	1	GetBuffer	-	recv	ret	value	-
+summary	ATL	CSimpleStringT	1	GetBufferSetLength	-	recv	ret	value	-
+summary	ATL	CSimpleStringT	1	GetString	-	recv	ret	value	-
+summary	ATL	CSimpleStringT	1	LockBuffer	-	recv	ret	value	-
+summary	ATL	CSimpleStringT	1	SetAt	-	arg1	recv	taint	-
+summary	ATL	CSimpleStringT	1	SetString	-	arg0	recv	value	-
+summary	ATL	CSimpleStringT	1	operator PCXSTR	-	recv	ret	value	-
+summary	ATL	CSimpleStringT	1	operator+=	1	recv	ret	taint	-
+summary	ATL	CSimpleStringT	1	operator+=	1	arg0	ret	taint	-
+summary	ATL	CSimpleStringT	1	operator+=	1	arg0	recv	taint	-
+summary	ATL	CSimpleStringT	1	operator=	-	arg0	ret	value	-
+summary	ATL	CSimpleStringT	1	operator=	-	arg0	recv	value	-
+summary	ATL	CSimpleStringT	1	operator[]	-	recv	ret	taint	-
+summary	ATL	CStrBufT	1	CStrBufT	-	arg0	recv	value	-
+summary	ATL	CStrBufT	1	operator PCXSTR	-	recv	ret	value	-
+summary	ATL	CStrBufT	1	operator PXSTR	-	recv	ret	value	-
+summary	ATL	CStringData	1	data	-	recv	ret	value	-
+summary	ATL	CStringT	1	AllocSysString	-	recv	ret	value	-
+summary	ATL	CStringT	1	AppendFormat	2	arg0	recv	taint	-
+summary	ATL	CStringT	1	AppendFormat	2	arg1	recv	taint	-
+summary	ATL	CStringT	1	AppendFormat	2	arg2	recv	taint	-
+summary	ATL	CStringT	1	AppendFormat	2	arg3	recv	taint	-
+summary	ATL	CStringT	1	AppendFormat	2	arg4	recv	taint	-
+summary	ATL	CStringT	1	AppendFormat	2	arg5	recv	taint	-
+summary	ATL	CStringT	1	AppendFormat	2	arg6	recv	taint	-
+summary	ATL	CStringT	1	AppendFormat	2	arg7	recv	taint	-
+summary	ATL	CStringT	1	AppendFormat	2	arg8	recv	taint	-
+summary	ATL	CStringT	1	CStringT	1	arg0	recv	value	-
+summary	ATL	CStringT	1	CStringT	2	arg0	recv	taint	-
+summary	ATL	CStringT	1	CStringT	2	arg0	recv	value	-
+summary	ATL	CStringT	1	CStringT	3	arg0	recv	value	-
+summary	ATL	CStringT	1	Format	2	arg0	recv	taint	-
+summary	ATL	CStringT	1	Format	2	arg1	recv	taint	-
+summary	ATL	CStringT	1	Format	2	arg2	recv	taint	-
+summary	ATL	CStringT	1	Format	2	arg3	recv	taint	-
+summary	ATL	CStringT	1	Format	2	arg4	recv	taint	-
+summary	ATL	CStringT	1	Format	2	arg5	recv	taint	-
+summary	ATL	CStringT	1	Format	2	arg6	recv	taint	-
+summary	ATL	CStringT	1	Format	2	arg7	recv	taint	-
+summary	ATL	CStringT	1	Format	2	arg8	recv	taint	-
+summary	ATL	CStringT	1	FormatMessage	2	arg0	recv	taint	-
+summary	ATL	CStringT	1	FormatMessage	2	arg1	recv	taint	-
+summary	ATL	CStringT	1	FormatMessage	2	arg2	recv	taint	-
+summary	ATL	CStringT	1	FormatMessage	2	arg3	recv	taint	-
+summary	ATL	CStringT	1	FormatMessage	2	arg4	recv	taint	-
+summary	ATL	CStringT	1	FormatMessage	2	arg5	recv	taint	-
+summary	ATL	CStringT	1	FormatMessage	2	arg6	recv	taint	-
+summary	ATL	CStringT	1	FormatMessage	2	arg7	recv	taint	-
+summary	ATL	CStringT	1	FormatMessage	2	arg8	recv	taint	-
+summary	ATL	CStringT	1	FormatMessageV	-	arg0	recv	taint	-
+summary	ATL	CStringT	1	FormatMessageV	-	arg1	recv	taint	-
+summary	ATL	CStringT	1	FormatV	-	arg0	recv	taint	-
+summary	ATL	CStringT	1	FormatV	-	arg1	recv	taint	-
+summary	ATL	CStringT	1	Insert	2	arg1	recv	taint	-
+summary	ATL	CStringT	1	Left	-	recv	ret	taint	-
+summary	ATL	CStringT	1	LoadString	-	arg0	recv	taint	-
+summary	ATL	CStringT	1	LoadString	-	arg1	recv	taint	-
+summary	ATL	CStringT	1	MakeLower	-	recv	ret	taint	-
+summary	ATL	CStringT	1	MakeReverse	-	recv	ret	taint	-
+summary	ATL	CStringT	1	MakeUpper	-	recv	ret	taint	-
+summary	ATL	CStringT	1	Mid	-	recv	ret	taint	-
+summary	ATL	CStringT	1	Replace	2	arg1	recv	taint	-
+summary	ATL	CStringT	1	Right	-	recv	ret	taint	-
+summary	ATL	CStringT	1	SetSysString	-	recv	ret	value	-
+summary	ATL	CStringT	1	SetSysString	-	recv	arg0	value	-
+summary	ATL	CStringT	1	SpanExcluding	-	recv	ret	taint	-
+summary	ATL	CStringT	1	SpanIncluding	-	recv	ret	taint	-
+summary	ATL	CStringT	1	Tokenize	-	recv	ret	taint	-
+summary	ATL	CStringT	1	Trim	-	recv	ret	taint	-
+summary	ATL	CStringT	1	TrimLeft	-	recv	ret	taint	-
+summary	ATL	CStringT	1	TrimRight	-	recv	ret	taint	-
+summary	ATL	CStringT	1	operator=	1	arg0	ret	value	-
+summary	ATL	CStringT	1	operator=	1	arg0	recv	value	-
+summary	ATL	CUrl	1	CUrl	-	arg0	recv	value	-
+summary	ATL	CUrl	1	CrackUrl	-	arg0	recv	taint	-
+summary	ATL	CUrl	1	CreateUrl	-	recv	arg0	taint	-
+summary	ATL	CUrl	1	GetExtraInfo	-	recv	ret	taint	-
+summary	ATL	CUrl	1	GetHostName	-	recv	ret	taint	-
+summary	ATL	CUrl	1	GetPassword	-	recv	ret	taint	-
+summary	ATL	CUrl	1	GetSchemeName	-	recv	ret	taint	-
+summary	ATL	CUrl	1	GetUrlPath	-	recv	ret	taint	-
+summary	ATL	CUrl	1	GetUserName	-	recv	ret	taint	-
+summary	ATL	CUrl	1	SetExtraInfo	-	arg0	recv	taint	-
+summary	ATL	CUrl	1	SetHostName	-	arg0	recv	taint	-
+summary	ATL	CUrl	1	SetPassword	-	arg0	recv	taint	-
+summary	ATL	CUrl	1	SetSchemeName	-	arg0	recv	taint	-
+summary	ATL	CUrl	1	SetUrlPath	-	arg0	recv	taint	-
+summary	ATL	CUrl	1	SetUserName	-	arg0	recv	taint	-
+summary	ATL	CUrl	1	operator=	-	arg0	ret	value	-
+summary	ATL	CUrl	1	operator=	-	arg0	recv	value	-
+summary	ATL	_U_STRINGorID	1	_U_STRINGorID	1	arg0	recv	value	a
+summary	Azure	Nullable	1	Nullable	-	arg0	recv	taint	-
+summary	Azure	Nullable	1	Value	-	recv	ret	taint	-
+summary	Azure	Nullable	1	operator*	-	recv	ret	taint	-
+summary	Azure	Nullable	1	operator-	-	recv	ret	taint	-
+summary	Azure	Nullable	1	operator=	-	arg0	recv	value	-
+summary	Azure::Core	Url	1	AppendPath	-	arg0	recv	taint	-
+summary	Azure::Core	Url	1	AppendQueryParameter	-	arg1	recv	taint	-
+summary	Azure::Core	Url	1	Decode	-	arg0	ret	taint	-
+summary	Azure::Core	Url	1	Encode	-	arg0	ret	taint	-
+summary	Azure::Core	Url	1	GetAbsoluteUrl	-	recv	ret	taint	-
+summary	Azure::Core	Url	1	GetHost	-	recv	ret	taint	-
+summary	Azure::Core	Url	1	GetPath	-	recv	ret	taint	-
+summary	Azure::Core	Url	1	GetPort	-	recv	ret	taint	-
+summary	Azure::Core	Url	1	GetQueryParameters	-	recv	ret	taint	-
+summary	Azure::Core	Url	1	GetRelativeUrl	-	recv	ret	taint	-
+summary	Azure::Core	Url	1	GetScheme	-	recv	ret	taint	-
+summary	Azure::Core	Url	1	SetHost	-	arg0	recv	taint	-
+summary	Azure::Core	Url	1	SetPath	-	arg0	recv	taint	-
+summary	Azure::Core	Url	1	SetPort	-	arg0	recv	taint	-
+summary	Azure::Core	Url	1	SetQueryParameters	-	arg0	recv	taint	-
+summary	Azure::Core	Url	1	SetScheme	-	arg0	recv	taint	-
+summary	Azure::Core	Url	1	Url	-	arg0	recv	taint	-
+summary	Azure::Core::IO	BodyStream	1	Read	-	recv	arg0	taint	-
+summary	Azure::Core::IO	BodyStream	1	ReadToCount	-	recv	arg0	taint	-
+summary	Azure::Core::IO	BodyStream	1	ReadToEnd	-	recv	ret	taint	a
+summary	BloombergLP::balber	BerDecoder	1	decode	-	arg0	arg1	taint	-
+summary	BloombergLP::balber	BerDecoder	1	decodeAny	-	arg0	arg1	taint	-
+summary	BloombergLP::balber	BerEncoder	1	encode	-	arg1	arg0	taint	-
+summary	BloombergLP::balber	BerEncoder	1	encodeAny	-	arg1	arg0	taint	-
+summary	BloombergLP::baljsn	Decoder	1	decode	-	arg0	arg1	taint	-
+summary	BloombergLP::baljsn	Decoder	1	decodeAny	-	arg0	arg1	taint	-
+summary	BloombergLP::baljsn	Encoder	1	encode	-	arg1	arg0	taint	-
+summary	BloombergLP::baljsn	Encoder	1	encodeAny	-	arg1	arg0	taint	-
+summary	BloombergLP::balxml	Decoder	1	decode	3	arg0	ret	taint	-
+summary	BloombergLP::balxml	Decoder	1	decode	3	arg0	arg1	taint	-
+summary	BloombergLP::balxml	Decoder	1	decode	4	arg0	arg2	taint	-
+summary	BloombergLP::balxml	Decoder	1	decodeAny	3	arg0	ret	taint	-
+summary	BloombergLP::balxml	Decoder	1	decodeAny	3	arg0	arg1	taint	-
+summary	BloombergLP::balxml	Encoder	1	encode	2	arg0	ret	taint	-
+summary	BloombergLP::balxml	Encoder	1	encode	2	arg1	ret	taint	-
+summary	BloombergLP::balxml	Encoder	1	encode	2	arg1	arg0	taint	-
+summary	BloombergLP::balxml	Encoder	1	encodeAny	2	arg0	ret	taint	-
+summary	BloombergLP::balxml	Encoder	1	encodeAny	2	arg1	ret	taint	-
+summary	BloombergLP::balxml	Encoder	1	encodeAny	2	arg1	arg0	taint	-
+summary	BloombergLP::balxml	Encoder	1	encodeAnyToStream	-	arg1	arg0	taint	-
+summary	BloombergLP::balxml	Encoder	1	encodeToStream	-	arg1	arg0	taint	-
+summary	BloombergLP::bdlbb	Blob	1	buffer	-	recv	ret	taint	-
+summary	BloombergLP::bdlbb	BlobBuffer	1	buffer	-	recv	ret	taint	-
+summary	BloombergLP::bdlbb	BlobBuffer	1	data	-	recv	ret	taint	-
+summary	BloombergLP::bdlbb	BlobUtil	1	copy	4	arg1	arg0	taint	-
+summary	BloombergLP::bdlbb	BlobUtil	1	copy	4	arg2	arg0	taint	-
+summary	BloombergLP::bdlbb	BlobUtil	1	copy	5	arg2	arg0	taint	-
+summary	BloombergLP::bdlbb	BlobUtil	1	getContiguousRangeOrCopy	-	arg1	ret	taint	-
+summary	BloombergLP::bdlbb	BlobUtil	1	getContiguousRangeOrCopy	-	arg1	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	ByteInStream	-	arg0	recv	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayFloat32	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayFloat32	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayFloat64	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayFloat64	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt16	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt16	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt24	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt24	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt32	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt32	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt40	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt40	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt48	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt48	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt56	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt56	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt64	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt64	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt8	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayInt8	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint16	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint16	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint24	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint24	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint32	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint32	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint40	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint40	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint48	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint48	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint56	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint56	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint64	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint64	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint8	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getArrayUint8	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getFloat32	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getFloat64	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getInt16	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getInt24	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getInt32	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getInt40	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getInt48	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getInt56	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getInt64	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getInt8	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getLength	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getString	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getString	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getUint16	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getUint24	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getUint32	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getUint40	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getUint48	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getUint56	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getUint64	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getUint8	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	getVersion	-	recv	ret	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	reset	1	arg0	recv	taint	-
+summary	BloombergLP::bslx	ByteInStream	1	reset	2	arg0	recv	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	GenericInStream	-	arg0	recv	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayFloat32	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayFloat32	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayFloat64	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayFloat64	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt16	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt16	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt24	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt24	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt32	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt32	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt40	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt40	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt48	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt48	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt56	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt56	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt64	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt64	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt8	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayInt8	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint16	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint16	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint24	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint24	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint32	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint32	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint40	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint40	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint48	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint48	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint56	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint56	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint64	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint64	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint8	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getArrayUint8	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getFloat32	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getFloat64	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getInt16	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getInt24	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getInt32	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getInt40	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getInt48	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getInt56	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getInt64	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getInt8	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getLength	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getString	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getString	-	recv	arg0	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getUint16	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getUint24	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getUint32	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getUint40	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getUint48	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getUint56	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getUint64	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getUint8	-	recv	ret	taint	-
+summary	BloombergLP::bslx	GenericInStream	1	getVersion	-	recv	ret	taint	-
+summary	BloombergLP::bslx::InStreamFunctions		0	bdexStreamIn	-	arg0	ret	taint	-
+summary	BloombergLP::bslx::InStreamFunctions		0	bdexStreamIn	-	arg0	arg1	taint	-
+summary	Microsoft::WRL	ComPtr	1	As	-	recv	arg0	value	-
+summary	Microsoft::WRL	ComPtr	1	AsIID	-	recv	arg1	value	-
+summary	Microsoft::WRL	ComPtr	1	AsWeak	-	recv	arg0	value	-
+summary	Microsoft::WRL	ComPtr	1	Attach	-	arg0	recv	value	a
+summary	Microsoft::WRL	ComPtr	1	ComPtr	1	arg0	recv	value	a
+summary	Microsoft::WRL	ComPtr	1	CopyTo	1	recv	arg0	value	a
+summary	Microsoft::WRL	ComPtr	1	CopyTo	2	recv	arg1	value	a
+summary	Microsoft::WRL	ComPtr	1	Detach	-	recv	ret	value	a
+summary	Microsoft::WRL	ComPtr	1	Get	-	recv	ret	value	a
+summary	Microsoft::WRL	ComPtr	1	GetAddressOf	-	recv	ret	value	a
+summary	Microsoft::WRL	ComPtr	1	ReleaseAndGetAddressOf	-	recv	ret	value	a
+summary	Microsoft::WRL	ComPtr	1	Swap	-	recv	arg0	value	-
+summary	Microsoft::WRL	ComPtr	1	Swap	-	arg0	recv	value	-
+summary	Microsoft::WRL	ComPtr	1	operator&	-	recv	ret	value	a
+summary	Microsoft::WRL	ComPtr	1	operator-	-	recv	ret	value	a
+summary	Microsoft::WRL	ComPtr	1	operator=	1	arg0	ret	value	-
+summary	Microsoft::WRL	ComPtr	1	operator=	1	arg0	ret	value	a
+summary	Microsoft::WRL	ComPtr	1	operator=	1	arg0	recv	value	-
+summary	Microsoft::WRL	ComPtr	1	operator=	1	arg0	recv	value	a
+summary	Microsoft::WRL::Details	ComPtrRef	1	ComPtrRef	-	arg0	recv	value	a
+summary	Microsoft::WRL::Details	ComPtrRef	1	GetAddressOf	-	recv	ret	value	a
+summary	Microsoft::WRL::Details	ComPtrRef	1	ReleaseAndGetAddressOf	-	recv	ret	value	a
+summary	Microsoft::WRL::Details	ComPtrRef	1	operator void**	-	recv	ret	value	a
+summary	Microsoft::WRL::Details	ComPtrRef	1	operator*	-	recv	ret	value	a
+summary	__gnu_cxx	__normal_iterator	1	__normal_iterator	-	arg0	recv	value	a
+summary	__gnu_cxx	__normal_iterator	1	operator*	-	recv	ret	value	a
+summary	__gnu_cxx	__normal_iterator	1	operator-	-	recv	ret	value	a
+summary	boost::asio		0	buffer	-	arg0	ret	taint	-
+summary	boost::asio::ip	basic_resolver	0	resolve	2	arg0	ret	taint	-
+summary	boost::asio::ip	basic_resolver	0	resolve	2	arg1	ret	taint	-
+summary	boost::asio::ip	basic_resolver	0	resolve	3	arg0	ret	taint	-
+summary	boost::asio::ip	basic_resolver	0	resolve	3	arg1	ret	taint	-
+summary	boost::asio::ip	basic_resolver	0	resolve	3	arg2	ret	taint	-
+summary	boost::asio::ip	basic_resolver	0	resolve	4	arg0	ret	taint	-
+summary	boost::asio::ip	basic_resolver	0	resolve	4	arg1	ret	taint	-
+summary	boost::asio::ip	basic_resolver	0	resolve	4	arg2	ret	taint	-
+summary	boost::asio::ip	basic_resolver	0	resolve	5	arg1	ret	taint	-
+summary	boost::asio::ip	basic_resolver	0	resolve	5	arg2	ret	taint	-
+summary	bsl	array	1	at	-	recv	ret	value	a
+summary	bsl	array	1	back	-	recv	ret	value	a
+summary	bsl	array	1	begin	-	recv	ret	value	a
+summary	bsl	array	1	cbegin	-	recv	ret	value	a
+summary	bsl	array	1	data	-	recv	ret	value	a
+summary	bsl	array	1	front	-	recv	ret	value	a
+summary	bsl	array	1	operator[]	-	recv	ret	value	a
+summary	bsl	array	1	rbegin	-	recv	ret	value	a
+summary	bsl	array	1	rcbegin	-	recv	ret	value	a
+summary	bsl	deque	1	assign	2	arg0	recv	value	a
+summary	bsl	deque	1	assign	2	arg1	recv	value	a
+summary	bsl	deque	1	at	-	recv	ret	value	a
+summary	bsl	deque	1	back	-	recv	ret	value	a
+summary	bsl	deque	1	begin	-	recv	ret	value	a
+summary	bsl	deque	1	cbegin	-	recv	ret	value	a
+summary	bsl	deque	1	deque	1	arg0	recv	value	a
+summary	bsl	deque	1	deque	2	arg0	recv	value	a
+summary	bsl	deque	1	deque	3	arg0	recv	value	a
+summary	bsl	deque	1	deque	3	arg1	recv	value	a
+summary	bsl	deque	1	emplace	-	recv	ret	value	a
+summary	bsl	deque	1	emplace	-	arg1	ret	value	a
+summary	bsl	deque	1	emplace	-	arg1	recv	value	a
+summary	bsl	deque	1	emplace	-	arg2	ret	value	a
+summary	bsl	deque	1	emplace	-	arg2	recv	value	a
+summary	bsl	deque	1	emplace	-	arg3	ret	value	a
+summary	bsl	deque	1	emplace	-	arg3	recv	value	a
+summary	bsl	deque	1	emplace	-	arg4	ret	value	a
+summary	bsl	deque	1	emplace	-	arg4	recv	value	a
+summary	bsl	deque	1	emplace	-	arg5	ret	value	a
+summary	bsl	deque	1	emplace	-	arg5	recv	value	a
+summary	bsl	deque	1	emplace_back	-	recv	ret	value	a
+summary	bsl	deque	1	emplace_back	-	arg0	ret	value	-
+summary	bsl	deque	1	emplace_back	-	arg0	recv	value	a
+summary	bsl	deque	1	emplace_back	-	arg1	ret	value	-
+summary	bsl	deque	1	emplace_back	-	arg1	recv	value	a
+summary	bsl	deque	1	emplace_back	-	arg2	ret	value	-
+summary	bsl	deque	1	emplace_back	-	arg2	recv	value	a
+summary	bsl	deque	1	emplace_back	-	arg3	ret	value	-
+summary	bsl	deque	1	emplace_back	-	arg3	recv	value	a
+summary	bsl	deque	1	emplace_back	-	arg4	ret	value	-
+summary	bsl	deque	1	emplace_back	-	arg4	recv	value	a
+summary	bsl	deque	1	emplace_back	-	arg5	ret	value	-
+summary	bsl	deque	1	emplace_back	-	arg5	recv	value	a
+summary	bsl	deque	1	emplace_front	-	recv	ret	value	a
+summary	bsl	deque	1	emplace_front	-	arg0	ret	value	-
+summary	bsl	deque	1	emplace_front	-	arg0	recv	value	a
+summary	bsl	deque	1	emplace_front	-	arg1	ret	value	-
+summary	bsl	deque	1	emplace_front	-	arg1	recv	value	a
+summary	bsl	deque	1	emplace_front	-	arg2	ret	value	-
+summary	bsl	deque	1	emplace_front	-	arg2	recv	value	a
+summary	bsl	deque	1	emplace_front	-	arg3	ret	value	-
+summary	bsl	deque	1	emplace_front	-	arg3	recv	value	a
+summary	bsl	deque	1	emplace_front	-	arg4	ret	value	-
+summary	bsl	deque	1	emplace_front	-	arg4	recv	value	a
+summary	bsl	deque	1	emplace_front	-	arg5	ret	value	-
+summary	bsl	deque	1	emplace_front	-	arg5	recv	value	a
+summary	bsl	deque	1	front	-	recv	ret	value	a
+summary	bsl	deque	1	insert	2	recv	ret	value	a
+summary	bsl	deque	1	insert	2	arg1	ret	value	a
+summary	bsl	deque	1	insert	2	arg1	recv	value	a
+summary	bsl	deque	1	insert	3	recv	ret	value	a
+summary	bsl	deque	1	insert	3	arg1	ret	value	a
+summary	bsl	deque	1	insert	3	arg1	recv	value	a
+summary	bsl	deque	1	insert	3	arg2	ret	value	a
+summary	bsl	deque	1	insert	3	arg2	recv	value	a
+summary	bsl	deque	1	operator=	-	arg0	ret	value	a
+summary	bsl	deque	1	operator=	-	arg0	recv	value	a
+summary	bsl	deque	1	operator[]	-	recv	ret	value	a
+summary	bsl	deque	1	push_back	-	arg0	recv	value	a
+summary	bsl	deque	1	push_front	-	arg0	recv	value	a
+summary	bsl	deque	1	rbegin	-	recv	ret	value	a
+summary	bsl	deque	1	rcbegin	-	recv	ret	value	a
+summary	bsl	forward_list	1	assign	2	arg0	recv	value	a
+summary	bsl	forward_list	1	assign	2	arg1	recv	value	a
+summary	bsl	forward_list	1	begin	-	recv	ret	value	a
+summary	bsl	forward_list	1	cbegin	-	recv	ret	value	a
+summary	bsl	forward_list	1	emplace_after	-	recv	ret	value	a
+summary	bsl	forward_list	1	emplace_after	-	arg1	ret	value	a
+summary	bsl	forward_list	1	emplace_after	-	arg1	recv	value	a
+summary	bsl	forward_list	1	emplace_after	-	arg2	ret	value	a
+summary	bsl	forward_list	1	emplace_after	-	arg2	recv	value	a
+summary	bsl	forward_list	1	emplace_after	-	arg3	ret	value	a
+summary	bsl	forward_list	1	emplace_after	-	arg3	recv	value	a
+summary	bsl	forward_list	1	emplace_after	-	arg4	ret	value	a
+summary	bsl	forward_list	1	emplace_after	-	arg4	recv	value	a
+summary	bsl	forward_list	1	emplace_after	-	arg5	ret	value	a
+summary	bsl	forward_list	1	emplace_after	-	arg5	recv	value	a
+summary	bsl	forward_list	1	emplace_front	-	recv	ret	value	a
+summary	bsl	forward_list	1	emplace_front	-	arg0	ret	value	-
+summary	bsl	forward_list	1	emplace_front	-	arg0	recv	value	a
+summary	bsl	forward_list	1	emplace_front	-	arg1	ret	value	-
+summary	bsl	forward_list	1	emplace_front	-	arg1	recv	value	a
+summary	bsl	forward_list	1	emplace_front	-	arg2	ret	value	-
+summary	bsl	forward_list	1	emplace_front	-	arg2	recv	value	a
+summary	bsl	forward_list	1	emplace_front	-	arg3	ret	value	-
+summary	bsl	forward_list	1	emplace_front	-	arg3	recv	value	a
+summary	bsl	forward_list	1	emplace_front	-	arg4	ret	value	-
+summary	bsl	forward_list	1	emplace_front	-	arg4	recv	value	a
+summary	bsl	forward_list	1	emplace_front	-	arg5	ret	value	-
+summary	bsl	forward_list	1	emplace_front	-	arg5	recv	value	a
+summary	bsl	forward_list	1	forward_list	1	arg0	recv	value	a
+summary	bsl	forward_list	1	forward_list	2	arg0	recv	value	a
+summary	bsl	forward_list	1	forward_list	3	arg0	recv	value	a
+summary	bsl	forward_list	1	forward_list	3	arg1	recv	value	a
+summary	bsl	forward_list	1	front	-	recv	ret	value	a
+summary	bsl	forward_list	1	insert_after	2	recv	ret	value	a
+summary	bsl	forward_list	1	insert_after	2	arg1	ret	value	a
+summary	bsl	forward_list	1	insert_after	2	arg1	recv	value	a
+summary	bsl	forward_list	1	insert_after	3	recv	ret	value	a
+summary	bsl	forward_list	1	insert_after	3	arg1	ret	value	a
+summary	bsl	forward_list	1	insert_after	3	arg1	recv	value	a
+summary	bsl	forward_list	1	insert_after	3	arg2	ret	value	a
+summary	bsl	forward_list	1	insert_after	3	arg2	recv	value	a
+summary	bsl	forward_list	1	operator=	-	arg0	ret	value	a
+summary	bsl	forward_list	1	operator=	-	arg0	recv	value	a
+summary	bsl	forward_list	1	push_front	-	arg0	recv	value	a
+summary	bsl	forward_list	1	rbegin	-	recv	ret	value	a
+summary	bsl	forward_list	1	rcbegin	-	recv	ret	value	a
+summary	bsl	list	1	assign	2	arg0	recv	value	a
+summary	bsl	list	1	assign	2	arg1	recv	value	a
+summary	bsl	list	1	back	-	recv	ret	value	a
+summary	bsl	list	1	begin	-	recv	ret	value	a
+summary	bsl	list	1	cbegin	-	recv	ret	value	a
+summary	bsl	list	1	emplace	-	recv	ret	value	a
+summary	bsl	list	1	emplace	-	arg1	ret	value	-
+summary	bsl	list	1	emplace	-	arg1	recv	value	a
+summary	bsl	list	1	emplace	-	arg2	ret	value	-
+summary	bsl	list	1	emplace	-	arg2	recv	value	a
+summary	bsl	list	1	emplace	-	arg3	ret	value	-
+summary	bsl	list	1	emplace	-	arg3	recv	value	a
+summary	bsl	list	1	emplace	-	arg4	ret	value	-
+summary	bsl	list	1	emplace	-	arg4	recv	value	a
+summary	bsl	list	1	emplace	-	arg5	ret	value	-
+summary	bsl	list	1	emplace	-	arg5	recv	value	a
+summary	bsl	list	1	emplace_back	-	recv	ret	value	a
+summary	bsl	list	1	emplace_back	-	arg0	ret	value	-
+summary	bsl	list	1	emplace_back	-	arg0	recv	value	a
+summary	bsl	list	1	emplace_back	-	arg1	ret	value	-
+summary	bsl	list	1	emplace_back	-	arg1	recv	value	a
+summary	bsl	list	1	emplace_back	-	arg2	ret	value	-
+summary	bsl	list	1	emplace_back	-	arg2	recv	value	a
+summary	bsl	list	1	emplace_back	-	arg3	ret	value	-
+summary	bsl	list	1	emplace_back	-	arg3	recv	value	a
+summary	bsl	list	1	emplace_back	-	arg4	ret	value	-
+summary	bsl	list	1	emplace_back	-	arg4	recv	value	a
+summary	bsl	list	1	emplace_back	-	arg5	ret	value	-
+summary	bsl	list	1	emplace_back	-	arg5	recv	value	a
+summary	bsl	list	1	emplace_front	-	recv	ret	value	a
+summary	bsl	list	1	emplace_front	-	arg0	ret	value	-
+summary	bsl	list	1	emplace_front	-	arg0	recv	value	a
+summary	bsl	list	1	emplace_front	-	arg1	ret	value	-
+summary	bsl	list	1	emplace_front	-	arg1	recv	value	a
+summary	bsl	list	1	emplace_front	-	arg2	ret	value	-
+summary	bsl	list	1	emplace_front	-	arg2	recv	value	a
+summary	bsl	list	1	emplace_front	-	arg3	ret	value	-
+summary	bsl	list	1	emplace_front	-	arg3	recv	value	a
+summary	bsl	list	1	emplace_front	-	arg4	ret	value	-
+summary	bsl	list	1	emplace_front	-	arg4	recv	value	a
+summary	bsl	list	1	emplace_front	-	arg5	ret	value	-
+summary	bsl	list	1	emplace_front	-	arg5	recv	value	a
+summary	bsl	list	1	front	-	recv	ret	value	a
+summary	bsl	list	1	insert	2	recv	ret	value	a
+summary	bsl	list	1	insert	2	arg1	ret	value	a
+summary	bsl	list	1	insert	2	arg1	recv	value	a
+summary	bsl	list	1	insert	3	recv	ret	value	a
+summary	bsl	list	1	insert	3	arg1	ret	value	a
+summary	bsl	list	1	insert	3	arg1	recv	value	a
+summary	bsl	list	1	insert	3	arg2	ret	value	a
+summary	bsl	list	1	insert	3	arg2	recv	value	a
+summary	bsl	list	1	list	1	arg0	recv	value	a
+summary	bsl	list	1	list	2	arg0	recv	value	a
+summary	bsl	list	1	list	3	arg0	recv	value	a
+summary	bsl	list	1	list	3	arg1	recv	value	a
+summary	bsl	list	1	operator=	-	arg0	ret	value	a
+summary	bsl	list	1	operator=	-	arg0	recv	value	a
+summary	bsl	list	1	push_back	-	arg0	recv	value	a
+summary	bsl	list	1	push_front	-	arg0	recv	value	a
+summary	bsl	list	1	rbegin	-	recv	ret	value	a
+summary	bsl	list	1	rcbegin	-	recv	ret	value	a
+summary	bsl	vector	1	assign	2	arg0	recv	value	a
+summary	bsl	vector	1	assign	2	arg1	recv	value	a
+summary	bsl	vector	1	at	-	recv	ret	value	a
+summary	bsl	vector	1	back	-	recv	ret	value	a
+summary	bsl	vector	1	begin	-	recv	ret	value	a
+summary	bsl	vector	1	cbegin	-	recv	ret	value	a
+summary	bsl	vector	1	data	-	recv	ret	value	a
+summary	bsl	vector	1	emplace	-	recv	ret	value	a
+summary	bsl	vector	1	emplace	-	arg1	ret	value	a
+summary	bsl	vector	1	emplace	-	arg1	recv	value	a
+summary	bsl	vector	1	emplace	-	arg2	ret	value	a
+summary	bsl	vector	1	emplace	-	arg2	recv	value	a
+summary	bsl	vector	1	emplace	-	arg3	ret	value	a
+summary	bsl	vector	1	emplace	-	arg3	recv	value	a
+summary	bsl	vector	1	emplace	-	arg4	ret	value	a
+summary	bsl	vector	1	emplace	-	arg4	recv	value	a
+summary	bsl	vector	1	emplace	-	arg5	ret	value	a
+summary	bsl	vector	1	emplace	-	arg5	recv	value	a
+summary	bsl	vector	1	emplace_back	-	recv	ret	value	a
+summary	bsl	vector	1	emplace_back	-	arg0	ret	value	-
+summary	bsl	vector	1	emplace_back	-	arg0	recv	value	a
+summary	bsl	vector	1	emplace_back	-	arg1	ret	value	-
+summary	bsl	vector	1	emplace_back	-	arg1	recv	value	a
+summary	bsl	vector	1	emplace_back	-	arg2	ret	value	-
+summary	bsl	vector	1	emplace_back	-	arg2	recv	value	a
+summary	bsl	vector	1	emplace_back	-	arg3	ret	value	-
+summary	bsl	vector	1	emplace_back	-	arg3	recv	value	a
+summary	bsl	vector	1	emplace_back	-	arg4	ret	value	-
+summary	bsl	vector	1	emplace_back	-	arg4	recv	value	a
+summary	bsl	vector	1	emplace_back	-	arg5	ret	value	-
+summary	bsl	vector	1	emplace_back	-	arg5	recv	value	a
+summary	bsl	vector	1	front	-	recv	ret	value	a
+summary	bsl	vector	1	insert	2	recv	ret	value	a
+summary	bsl	vector	1	insert	2	arg1	ret	value	a
+summary	bsl	vector	1	insert	2	arg1	recv	value	a
+summary	bsl	vector	1	insert	3	recv	ret	value	a
+summary	bsl	vector	1	insert	3	arg1	ret	value	a
+summary	bsl	vector	1	insert	3	arg1	recv	value	a
+summary	bsl	vector	1	insert	3	arg2	ret	value	a
+summary	bsl	vector	1	insert	3	arg2	recv	value	a
+summary	bsl	vector	1	operator=	-	arg0	ret	value	a
+summary	bsl	vector	1	operator=	-	arg0	recv	value	a
+summary	bsl	vector	1	operator[]	-	recv	ret	value	a
+summary	bsl	vector	1	push_back	-	arg0	recv	value	a
+summary	bsl	vector	1	rbegin	-	recv	ret	value	a
+summary	bsl	vector	1	rcbegin	-	recv	ret	value	a
+summary	bsl	vector	1	vector	1	arg0	recv	value	a
+summary	bsl	vector	1	vector	2	arg0	recv	value	a
+summary	bsl	vector	1	vector	3	arg0	recv	value	a
+summary	bsl	vector	1	vector	3	arg1	recv	value	a
+summary	google::protobuf	MessageLite	1	AppendPartialToCord	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	AppendPartialToString	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	AppendToCord	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	AppendToString	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	MergeFromBoundedZeroCopyStream	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	MergeFromCodedStream	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	MergeFromCord	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	MergeFromString	1	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	MergePartialFromBoundedZeroCopyStream	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	MergePartialFromCodedStream	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	MergePartialFromCord	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	MergePartialFromString	1	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParseFromArray	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParseFromBoundedZeroCopyStream	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParseFromCodedStream	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParseFromCord	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParseFromIstream	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParseFromString	1	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParseFromZeroCopyStream	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParsePartialFromArray	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParsePartialFromBoundedZeroCopyStream	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParsePartialFromCodedStream	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParsePartialFromCord	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParsePartialFromIstream	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParsePartialFromString	1	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	ParsePartialFromZeroCopyStream	-	arg0	recv	taint	-
+summary	google::protobuf	MessageLite	1	SerializeAsCord	-	recv	ret	taint	-
+summary	google::protobuf	MessageLite	1	SerializeAsString	-	recv	ret	taint	-
+summary	google::protobuf	MessageLite	1	SerializePartialAsCord	-	recv	ret	taint	-
+summary	google::protobuf	MessageLite	1	SerializePartialAsString	-	recv	ret	taint	-
+summary	google::protobuf	MessageLite	1	SerializePartialToArray	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	SerializePartialToCodedStream	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	SerializePartialToCord	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	SerializePartialToOstream	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	SerializePartialToString	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	SerializePartialToZeroCopyStream	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	SerializeToArray	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	SerializeToCodedStream	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	SerializeToCord	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	SerializeToOstream	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	SerializeToString	-	recv	arg0	taint	-
+summary	google::protobuf	MessageLite	1	SerializeToZeroCopyStream	-	recv	arg0	taint	-
+summary	std		0	format	2	arg0	ret	taint	-
+summary	std		0	format	2	arg1	ret	taint	-
+summary	std		0	format	2	arg2	ret	taint	-
+summary	std		0	format	2	arg3	ret	taint	-
+summary	std		0	format	2	arg4	ret	taint	-
+summary	std		0	format	2	arg5	ret	taint	-
+summary	std		0	format	2	arg6	ret	taint	-
+summary	std		0	format	2	arg7	ret	taint	-
+summary	std		0	format	2	arg8	ret	taint	-
+summary	std		0	tolower	-	arg0	ret	taint	-
+summary	std		0	toupper	-	arg0	ret	taint	-
+summary	std	array	1	at	-	recv	ret	value	a
+summary	std	array	1	back	-	recv	ret	value	a
+summary	std	array	1	begin	-	recv	ret	value	a
+summary	std	array	1	cbegin	-	recv	ret	value	a
+summary	std	array	1	data	-	recv	ret	value	a
+summary	std	array	1	front	-	recv	ret	value	a
+summary	std	array	1	operator[]	-	recv	ret	value	a
+summary	std	array	1	rbegin	-	recv	ret	value	a
+summary	std	array	1	rcbegin	-	recv	ret	value	a
+summary	std	deque	1	assign	2	arg0	recv	value	a
+summary	std	deque	1	assign	2	arg1	recv	value	a
+summary	std	deque	1	at	-	recv	ret	value	a
+summary	std	deque	1	back	-	recv	ret	value	a
+summary	std	deque	1	begin	-	recv	ret	value	a
+summary	std	deque	1	cbegin	-	recv	ret	value	a
+summary	std	deque	1	deque	1	arg0	recv	value	a
+summary	std	deque	1	deque	2	arg0	recv	value	a
+summary	std	deque	1	deque	3	arg0	recv	value	a
+summary	std	deque	1	deque	3	arg1	recv	value	a
+summary	std	deque	1	emplace	-	recv	ret	value	a
+summary	std	deque	1	emplace	-	arg1	ret	value	a
+summary	std	deque	1	emplace	-	arg1	recv	value	a
+summary	std	deque	1	emplace	-	arg2	ret	value	a
+summary	std	deque	1	emplace	-	arg2	recv	value	a
+summary	std	deque	1	emplace	-	arg3	ret	value	a
+summary	std	deque	1	emplace	-	arg3	recv	value	a
+summary	std	deque	1	emplace	-	arg4	ret	value	a
+summary	std	deque	1	emplace	-	arg4	recv	value	a
+summary	std	deque	1	emplace	-	arg5	ret	value	a
+summary	std	deque	1	emplace	-	arg5	recv	value	a
+summary	std	deque	1	emplace_back	-	recv	ret	value	a
+summary	std	deque	1	emplace_back	-	arg0	ret	value	-
+summary	std	deque	1	emplace_back	-	arg0	recv	value	a
+summary	std	deque	1	emplace_back	-	arg1	ret	value	-
+summary	std	deque	1	emplace_back	-	arg1	recv	value	a
+summary	std	deque	1	emplace_back	-	arg2	ret	value	-
+summary	std	deque	1	emplace_back	-	arg2	recv	value	a
+summary	std	deque	1	emplace_back	-	arg3	ret	value	-
+summary	std	deque	1	emplace_back	-	arg3	recv	value	a
+summary	std	deque	1	emplace_back	-	arg4	ret	value	-
+summary	std	deque	1	emplace_back	-	arg4	recv	value	a
+summary	std	deque	1	emplace_back	-	arg5	ret	value	-
+summary	std	deque	1	emplace_back	-	arg5	recv	value	a
+summary	std	deque	1	emplace_front	-	recv	ret	value	a
+summary	std	deque	1	emplace_front	-	arg0	ret	value	-
+summary	std	deque	1	emplace_front	-	arg0	recv	value	a
+summary	std	deque	1	emplace_front	-	arg1	ret	value	-
+summary	std	deque	1	emplace_front	-	arg1	recv	value	a
+summary	std	deque	1	emplace_front	-	arg2	ret	value	-
+summary	std	deque	1	emplace_front	-	arg2	recv	value	a
+summary	std	deque	1	emplace_front	-	arg3	ret	value	-
+summary	std	deque	1	emplace_front	-	arg3	recv	value	a
+summary	std	deque	1	emplace_front	-	arg4	ret	value	-
+summary	std	deque	1	emplace_front	-	arg4	recv	value	a
+summary	std	deque	1	emplace_front	-	arg5	ret	value	-
+summary	std	deque	1	emplace_front	-	arg5	recv	value	a
+summary	std	deque	1	front	-	recv	ret	value	a
+summary	std	deque	1	insert	2	recv	ret	value	a
+summary	std	deque	1	insert	2	arg1	ret	value	a
+summary	std	deque	1	insert	2	arg1	recv	value	a
+summary	std	deque	1	insert	3	recv	ret	value	a
+summary	std	deque	1	insert	3	arg1	ret	value	a
+summary	std	deque	1	insert	3	arg1	recv	value	a
+summary	std	deque	1	insert	3	arg2	ret	value	a
+summary	std	deque	1	insert	3	arg2	recv	value	a
+summary	std	deque	1	operator=	-	arg0	ret	value	a
+summary	std	deque	1	operator=	-	arg0	recv	value	a
+summary	std	deque	1	operator[]	-	recv	ret	value	a
+summary	std	deque	1	push_back	-	arg0	recv	value	a
+summary	std	deque	1	push_front	-	arg0	recv	value	a
+summary	std	deque	1	rbegin	-	recv	ret	value	a
+summary	std	deque	1	rcbegin	-	recv	ret	value	a
+summary	std	forward_list	1	assign	2	arg0	recv	value	a
+summary	std	forward_list	1	assign	2	arg1	recv	value	a
+summary	std	forward_list	1	begin	-	recv	ret	value	a
+summary	std	forward_list	1	cbegin	-	recv	ret	value	a
+summary	std	forward_list	1	emplace_after	-	recv	ret	value	a
+summary	std	forward_list	1	emplace_after	-	arg1	ret	value	a
+summary	std	forward_list	1	emplace_after	-	arg1	recv	value	a
+summary	std	forward_list	1	emplace_after	-	arg2	ret	value	a
+summary	std	forward_list	1	emplace_after	-	arg2	recv	value	a
+summary	std	forward_list	1	emplace_after	-	arg3	ret	value	a
+summary	std	forward_list	1	emplace_after	-	arg3	recv	value	a
+summary	std	forward_list	1	emplace_after	-	arg4	ret	value	a
+summary	std	forward_list	1	emplace_after	-	arg4	recv	value	a
+summary	std	forward_list	1	emplace_after	-	arg5	ret	value	a
+summary	std	forward_list	1	emplace_after	-	arg5	recv	value	a
+summary	std	forward_list	1	emplace_front	-	recv	ret	value	a
+summary	std	forward_list	1	emplace_front	-	arg0	ret	value	-
+summary	std	forward_list	1	emplace_front	-	arg0	recv	value	a
+summary	std	forward_list	1	emplace_front	-	arg1	ret	value	-
+summary	std	forward_list	1	emplace_front	-	arg1	recv	value	a
+summary	std	forward_list	1	emplace_front	-	arg2	ret	value	-
+summary	std	forward_list	1	emplace_front	-	arg2	recv	value	a
+summary	std	forward_list	1	emplace_front	-	arg3	ret	value	-
+summary	std	forward_list	1	emplace_front	-	arg3	recv	value	a
+summary	std	forward_list	1	emplace_front	-	arg4	ret	value	-
+summary	std	forward_list	1	emplace_front	-	arg4	recv	value	a
+summary	std	forward_list	1	emplace_front	-	arg5	ret	value	-
+summary	std	forward_list	1	emplace_front	-	arg5	recv	value	a
+summary	std	forward_list	1	forward_list	1	arg0	recv	value	a
+summary	std	forward_list	1	forward_list	2	arg0	recv	value	a
+summary	std	forward_list	1	forward_list	3	arg0	recv	value	a
+summary	std	forward_list	1	forward_list	3	arg1	recv	value	a
+summary	std	forward_list	1	front	-	recv	ret	value	a
+summary	std	forward_list	1	insert_after	2	recv	ret	value	a
+summary	std	forward_list	1	insert_after	2	arg1	ret	value	a
+summary	std	forward_list	1	insert_after	2	arg1	recv	value	a
+summary	std	forward_list	1	insert_after	3	recv	ret	value	a
+summary	std	forward_list	1	insert_after	3	arg1	ret	value	a
+summary	std	forward_list	1	insert_after	3	arg1	recv	value	a
+summary	std	forward_list	1	insert_after	3	arg2	ret	value	a
+summary	std	forward_list	1	insert_after	3	arg2	recv	value	a
+summary	std	forward_list	1	operator=	-	arg0	ret	value	a
+summary	std	forward_list	1	operator=	-	arg0	recv	value	a
+summary	std	forward_list	1	push_front	-	arg0	recv	value	a
+summary	std	forward_list	1	rbegin	-	recv	ret	value	a
+summary	std	forward_list	1	rcbegin	-	recv	ret	value	a
+summary	std	iterator	1	iterator	-	arg0	recv	value	a
+summary	std	iterator	1	operator*	-	recv	ret	value	a
+summary	std	iterator	1	operator-	-	recv	ret	value	a
+summary	std	list	1	assign	2	arg0	recv	value	a
+summary	std	list	1	assign	2	arg1	recv	value	a
+summary	std	list	1	back	-	recv	ret	value	a
+summary	std	list	1	begin	-	recv	ret	value	a
+summary	std	list	1	cbegin	-	recv	ret	value	a
+summary	std	list	1	emplace	-	recv	ret	value	a
+summary	std	list	1	emplace	-	arg1	ret	value	a
+summary	std	list	1	emplace	-	arg1	recv	value	a
+summary	std	list	1	emplace	-	arg2	ret	value	a
+summary	std	list	1	emplace	-	arg2	recv	value	a
+summary	std	list	1	emplace	-	arg3	ret	value	a
+summary	std	list	1	emplace	-	arg3	recv	value	a
+summary	std	list	1	emplace	-	arg4	ret	value	a
+summary	std	list	1	emplace	-	arg4	recv	value	a
+summary	std	list	1	emplace	-	arg5	ret	value	a
+summary	std	list	1	emplace	-	arg5	recv	value	a
+summary	std	list	1	emplace_back	-	recv	ret	value	a
+summary	std	list	1	emplace_back	-	arg0	ret	value	-
+summary	std	list	1	emplace_back	-	arg0	recv	value	a
+summary	std	list	1	emplace_back	-	arg1	ret	value	-
+summary	std	list	1	emplace_back	-	arg1	recv	value	a
+summary	std	list	1	emplace_back	-	arg2	ret	value	-
+summary	std	list	1	emplace_back	-	arg2	recv	value	a
+summary	std	list	1	emplace_back	-	arg3	ret	value	-
+summary	std	list	1	emplace_back	-	arg3	recv	value	a
+summary	std	list	1	emplace_back	-	arg4	ret	value	-
+summary	std	list	1	emplace_back	-	arg4	recv	value	a
+summary	std	list	1	emplace_back	-	arg5	ret	value	-
+summary	std	list	1	emplace_back	-	arg5	recv	value	a
+summary	std	list	1	emplace_front	-	recv	ret	value	a
+summary	std	list	1	emplace_front	-	arg0	ret	value	-
+summary	std	list	1	emplace_front	-	arg0	recv	value	a
+summary	std	list	1	emplace_front	-	arg1	ret	value	-
+summary	std	list	1	emplace_front	-	arg1	recv	value	a
+summary	std	list	1	emplace_front	-	arg2	ret	value	-
+summary	std	list	1	emplace_front	-	arg2	recv	value	a
+summary	std	list	1	emplace_front	-	arg3	ret	value	-
+summary	std	list	1	emplace_front	-	arg3	recv	value	a
+summary	std	list	1	emplace_front	-	arg4	ret	value	-
+summary	std	list	1	emplace_front	-	arg4	recv	value	a
+summary	std	list	1	emplace_front	-	arg5	ret	value	-
+summary	std	list	1	emplace_front	-	arg5	recv	value	a
+summary	std	list	1	front	-	recv	ret	value	a
+summary	std	list	1	insert	2	recv	ret	value	a
+summary	std	list	1	insert	2	arg1	ret	value	a
+summary	std	list	1	insert	2	arg1	recv	value	a
+summary	std	list	1	insert	3	recv	ret	value	a
+summary	std	list	1	insert	3	arg1	ret	value	a
+summary	std	list	1	insert	3	arg1	recv	value	a
+summary	std	list	1	insert	3	arg2	ret	value	a
+summary	std	list	1	insert	3	arg2	recv	value	a
+summary	std	list	1	list	1	arg0	recv	value	a
+summary	std	list	1	list	2	arg0	recv	value	a
+summary	std	list	1	list	3	arg0	recv	value	a
+summary	std	list	1	list	3	arg1	recv	value	a
+summary	std	list	1	operator=	-	arg0	ret	value	a
+summary	std	list	1	operator=	-	arg0	recv	value	a
+summary	std	list	1	push_back	-	arg0	recv	value	a
+summary	std	list	1	push_front	-	arg0	recv	value	a
+summary	std	list	1	rbegin	-	recv	ret	value	a
+summary	std	list	1	rcbegin	-	recv	ret	value	a
+summary	std	vector	1	assign	2	arg0	recv	value	a
+summary	std	vector	1	assign	2	arg1	recv	value	a
+summary	std	vector	1	at	-	recv	ret	value	a
+summary	std	vector	1	back	-	recv	ret	value	a
+summary	std	vector	1	begin	-	recv	ret	value	a
+summary	std	vector	1	cbegin	-	recv	ret	value	a
+summary	std	vector	1	data	-	recv	ret	value	a
+summary	std	vector	1	emplace	-	recv	ret	value	a
+summary	std	vector	1	emplace	-	arg1	ret	value	a
+summary	std	vector	1	emplace	-	arg1	recv	value	a
+summary	std	vector	1	emplace	-	arg2	ret	value	a
+summary	std	vector	1	emplace	-	arg2	recv	value	a
+summary	std	vector	1	emplace	-	arg3	ret	value	a
+summary	std	vector	1	emplace	-	arg3	recv	value	a
+summary	std	vector	1	emplace	-	arg4	ret	value	a
+summary	std	vector	1	emplace	-	arg4	recv	value	a
+summary	std	vector	1	emplace	-	arg5	ret	value	a
+summary	std	vector	1	emplace	-	arg5	recv	value	a
+summary	std	vector	1	emplace_back	-	recv	ret	value	a
+summary	std	vector	1	emplace_back	-	arg0	ret	value	-
+summary	std	vector	1	emplace_back	-	arg0	recv	value	a
+summary	std	vector	1	emplace_back	-	arg1	ret	value	-
+summary	std	vector	1	emplace_back	-	arg1	recv	value	a
+summary	std	vector	1	emplace_back	-	arg2	ret	value	-
+summary	std	vector	1	emplace_back	-	arg2	recv	value	a
+summary	std	vector	1	emplace_back	-	arg3	ret	value	-
+summary	std	vector	1	emplace_back	-	arg3	recv	value	a
+summary	std	vector	1	emplace_back	-	arg4	ret	value	-
+summary	std	vector	1	emplace_back	-	arg4	recv	value	a
+summary	std	vector	1	emplace_back	-	arg5	ret	value	-
+summary	std	vector	1	emplace_back	-	arg5	recv	value	a
+summary	std	vector	1	front	-	recv	ret	value	a
+summary	std	vector	1	insert	2	recv	ret	value	a
+summary	std	vector	1	insert	2	arg1	ret	value	a
+summary	std	vector	1	insert	2	arg1	recv	value	a
+summary	std	vector	1	insert	3	recv	ret	value	a
+summary	std	vector	1	insert	3	arg1	ret	value	a
+summary	std	vector	1	insert	3	arg1	recv	value	a
+summary	std	vector	1	insert	3	arg2	ret	value	a
+summary	std	vector	1	insert	3	arg2	recv	value	a
+summary	std	vector	1	operator=	-	arg0	ret	value	a
+summary	std	vector	1	operator=	-	arg0	recv	value	a
+summary	std	vector	1	operator[]	-	recv	ret	value	a
+summary	std	vector	1	push_back	-	arg0	recv	value	a
+summary	std	vector	1	rbegin	-	recv	ret	value	a
+summary	std	vector	1	rcbegin	-	recv	ret	value	a
+summary	std	vector	1	vector	1	arg0	recv	value	a
+summary	std	vector	1	vector	2	arg0	recv	value	a
+summary	std	vector	1	vector	3	arg0	recv	value	a
+summary	std	vector	1	vector	3	arg1	recv	value	a
+barrier			0	mysql_real_escape_string	-	-	arg1	sql-injection	-
+barrier			0	mysql_real_escape_string_quote	-	-	arg1	sql-injection	-

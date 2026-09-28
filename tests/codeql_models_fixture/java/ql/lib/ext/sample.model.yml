@@ -1,0 +1,49 @@
+# A sample of CodeQL's Java Models-as-Data rows (github/codeql, MIT), one
+# per shape the importer handles or drops.
+extensions:
+  - addsTo:
+      pack: codeql/java-all
+      extensible: sourceModel
+    data:
+      - ["javax.servlet", "ServletRequest", True, "getParameter", "(String)", "", "ReturnValue", "remote", "manual"]
+      - ["java.lang", "System", False, "getenv", "(String)", "", "ReturnValue", "environment", "manual"]
+      # A parameter of an overriding method: not a call position.
+      - ["android.app", "Activity", True, "onCreate", "(Bundle)", "", "Parameter[0]", "remote", "manual"]
+  - addsTo:
+      pack: codeql/java-all
+      extensible: sinkModel
+    data:
+      - ["java.sql", "Statement", True, "executeQuery", "", "", "Argument[0]", "sql-injection", "manual"]
+      - ["java.io", "File", True, "File", "(String,String)", "", "Argument[0..1]", "path-injection", "manual"]
+      - ["java.nio.file", "Files", False, "newInputStream", "", "", "Argument[0]", "path-injection[read]", "manual"]
+      # `ext` qualifiers (annotations) are not modeled.
+      - ["org.x", "Y", True, "z", "", "Annotated", "Argument[0]", "sql-injection", "manual"]
+  - addsTo:
+      pack: codeql/java-all
+      extensible: summaryModel
+    data:
+      - ["java.io", "InputStream", True, "read", "(byte[])", "", "Argument[this]", "Argument[0]", "taint", "manual"]
+      - ["java.util", "Map", True, "get", "", "", "Argument[this].MapValue", "ReturnValue", "value", "manual"]
+      - ["java.util", "Optional", False, "map", "", "", "Argument[0].ReturnValue", "ReturnValue.Element", "value", "manual"]
+      - ["java.lang", "StringBuilder", True, "toString", "", "", "Argument[this]", "ReturnValue", "taint", "df-generated"]
+  - addsTo:
+      pack: codeql/java-all
+      extensible: neutralModel
+    data:
+      - ["java.lang", "String", "length", "()", "summary", "manual"]
+      - ["java.lang", "String", "trim", "()", "sink", "manual"]
+  - addsTo:
+      pack: codeql/java-all
+      extensible: barrierModel
+    data:
+      - ["org.owasp.esapi", "Encoder", true, "encodeForSQL", "", "", "ReturnValue", "sql-injection", "manual"]
+  - addsTo:
+      pack: codeql/java-all
+      extensible: barrierGuardModel
+    data:
+      - ["java.net", "URI", True, "isAbsolute", "()", "", "Argument[this]", "false", "request-forgery", "manual"]
+  - addsTo:
+      pack: codeql/java-all
+      extensible: experimentalSinkModel
+    data:
+      - ["a", "B", True, "c", "", "", "Argument[0]", "sql-injection", "manual", "experiment"]

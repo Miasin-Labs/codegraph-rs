@@ -1,0 +1,7 @@
+# Go models: parsed, counted, not imported (codegraph's taint does not lower Go).
+extensions:
+  - addsTo:
+      pack: codeql/go-all
+      extensible: sinkModel
+    data:
+      - ["database/sql", "DB", True, "Query", "", "", "Argument[0]", "sql-injection", "manual"]

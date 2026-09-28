@@ -1,0 +1,1999 @@
+# CodeQL Models-as-Data for rust, imported by `codegraph models import-codeql`.
+# Source: https://github.com/github/codeql @ 0580587ec936ae33ddf096795e6f65d0164463ee
+# Copyright (c) GitHub, Inc. — MIT License, see NOTICE.
+# role	namespace	type	subtypes	name	arity	input	output	kind	flags
+source	actix_files::directory		0	directory_listing	-	-	ret	file	g
+source	alloc::alloc		0	dealloc	-	-	arg0	pointer-invalidate	-
+source	as_if_std::the_backtrace_crate::symbolize::gimli	Mapping	0	new	-	-	ret	file	g
+source	async_std::fs::dir_entry	DirEntry	0	file_name	-	-	ret	file	-
+source	async_std::fs::dir_entry	DirEntry	0	path	-	-	ret	file	-
+source	async_std::fs::file	File	0	open	-	-	ret	file	a
+source	async_std::fs::open_options	OpenOptions	0	open	-	-	ret	file	a
+source	async_std::fs::read		0	read	-	-	ret	file	a
+source	async_std::fs::read_link		0	read_link	-	-	ret	file	a
+source	async_std::fs::read_to_string		0	read_to_string	-	-	ret	file	a
+source	async_std::net::tcp::stream	TcpStream	0	connect	-	-	ret	remote	a
+source	backtrace::symbolize::gimli	Mapping	0	new	-	-	ret	file	g
+source	biscotti::response_cookie	ResponseCookie	0	from	-	-	ret	cookie-create	-
+source	biscotti::response_cookie	ResponseCookie	0	new	-	-	ret	cookie-create	-
+source	connect-tcp		0	connect	-	-	ret	remote	g
+source	cookie	Cookie	0	build	-	-	ret	cookie-create	-
+source	cookie	Cookie	0	from	-	-	ret	cookie-create	-
+source	cookie	Cookie	0	named	-	-	ret	cookie-create	-
+source	cookie	Cookie	0	new	-	-	ret	cookie-create	-
+source	cookie::builder	CookieBuilder	0	new	-	-	ret	cookie-create	-
+source	core::core_arch::x86	__m128i	0	load_unaligned	-	-	ret	constant-source	g
+source	core::core_arch::x86	__m256i	0	load_unaligned	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx		0	_mm256_loadu_pd	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx		0	_mm256_loadu_ps	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx		0	_mm256_loadu_si256	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx		0	_mm256_setzero_pd	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx		0	_mm256_setzero_ps	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx		0	_mm256_setzero_si256	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx		0	_mm256_undefined_pd	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx		0	_mm256_undefined_ps	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx		0	_mm256_undefined_si256	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx2		0	_mm256_alignr_epi8	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx2		0	_mm256_slli_epi16	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx2		0	_mm256_slli_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx2		0	_mm256_slli_epi64	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx2		0	_mm256_srli_epi16	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx2		0	_mm256_srli_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx2		0	_mm256_srli_epi64	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512bw		0	_mm256_maskz_slli_epi16	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512bw		0	_mm512_alignr_epi8	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512bw		0	_mm512_maskz_slli_epi16	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512bw		0	_mm512_maskz_srli_epi16	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512bw		0	_mm512_slli_epi16	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512bw		0	_mm512_srli_epi16	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512bw		0	_mm_maskz_slli_epi16	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm256_maskz_slli_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm256_maskz_slli_epi64	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm256_maskz_srli_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm256_maskz_srli_epi64	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_maskz_slli_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_maskz_slli_epi64	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_maskz_srli_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_maskz_srli_epi64	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_setzero	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_setzero_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_setzero_pd	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_setzero_ps	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_setzero_si512	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_slli_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_slli_epi64	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_srli_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_srli_epi64	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_undefined	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_undefined_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_undefined_pd	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm512_undefined_ps	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm_maskz_slli_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm_maskz_slli_epi64	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm_maskz_srli_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::avx512f		0	_mm_maskz_srli_epi64	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse		0	_mm_loadu_ps	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse		0	_mm_setzero_ps	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse		0	_mm_undefined_ps	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse2		0	_mm_loadu_pd	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse2		0	_mm_loadu_si128	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse2		0	_mm_setzero_pd	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse2		0	_mm_setzero_si128	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse2		0	_mm_slli_epi16	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse2		0	_mm_slli_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse2		0	_mm_slli_epi64	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse2		0	_mm_srli_epi16	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse2		0	_mm_srli_epi32	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse2		0	_mm_srli_epi64	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse2		0	_mm_undefined_pd	-	-	ret	constant-source	g
+source	core::core_arch::x86::sse2		0	_mm_undefined_si128	-	-	ret	constant-source	g
+source	core::core_arch::x86::ssse3		0	_mm_alignr_epi8	-	-	ret	constant-source	g
+source	core::default	Default	1	default	-	-	ret	pointer-invalidate	g
+source	core::intrinsics		0	const_allocate	-	-	ret	pointer-invalidate	g
+source	core::mem		0	zeroed	-	-	ret	constant-source	a
+source	core::ptr		0	dangling	-	-	ret	pointer-invalidate	-
+source	core::ptr		0	dangling	-	-	ret	pointer-invalidate	g
+source	core::ptr		0	dangling_mut	-	-	ret	pointer-invalidate	-
+source	core::ptr		0	drop_in_place	-	-	arg0	pointer-invalidate	-
+source	core::ptr		0	drop_in_place	-	-	arg0	pointer-invalidate	g
+source	core::ptr		0	null	-	-	ret	pointer-invalidate	-
+source	core::ptr		0	null_mut	-	-	ret	pointer-invalidate	-
+source	core_arch::core_arch::x86::avx		0	_mm256_loadu_pd	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx		0	_mm256_loadu_ps	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx		0	_mm256_loadu_si256	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx		0	_mm256_setzero_pd	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx		0	_mm256_setzero_ps	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx		0	_mm256_setzero_si256	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx		0	_mm256_undefined_pd	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx		0	_mm256_undefined_ps	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx		0	_mm256_undefined_si256	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx2		0	_mm256_alignr_epi8	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx2		0	_mm256_slli_epi16	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx2		0	_mm256_slli_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx2		0	_mm256_slli_epi64	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx2		0	_mm256_srli_epi16	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx2		0	_mm256_srli_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx2		0	_mm256_srli_epi64	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512bw		0	_mm256_maskz_slli_epi16	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512bw		0	_mm512_alignr_epi8	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512bw		0	_mm512_maskz_slli_epi16	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512bw		0	_mm512_maskz_srli_epi16	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512bw		0	_mm512_slli_epi16	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512bw		0	_mm512_srli_epi16	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512bw		0	_mm_maskz_slli_epi16	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm256_maskz_slli_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm256_maskz_slli_epi64	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm256_maskz_srli_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm256_maskz_srli_epi64	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_maskz_slli_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_maskz_slli_epi64	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_maskz_srli_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_maskz_srli_epi64	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_setzero	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_setzero_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_setzero_pd	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_setzero_ps	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_setzero_si512	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_slli_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_slli_epi64	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_srli_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_srli_epi64	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_undefined	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_undefined_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_undefined_pd	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm512_undefined_ps	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm_maskz_slli_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm_maskz_slli_epi64	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm_maskz_srli_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::avx512f		0	_mm_maskz_srli_epi64	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse		0	_mm_loadu_ps	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse		0	_mm_setzero_ps	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse		0	_mm_undefined_ps	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse2		0	_mm_loadu_pd	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse2		0	_mm_loadu_si128	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse2		0	_mm_setzero_pd	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse2		0	_mm_setzero_si128	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse2		0	_mm_slli_epi16	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse2		0	_mm_slli_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse2		0	_mm_slli_epi64	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse2		0	_mm_srli_epi16	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse2		0	_mm_srli_epi32	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse2		0	_mm_srli_epi64	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse2		0	_mm_undefined_pd	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::sse2		0	_mm_undefined_si128	-	-	ret	constant-source	g
+source	core_arch::core_arch::x86::ssse3		0	_mm_alignr_epi8	-	-	ret	constant-source	g
+source	hyper::client	Client	0	get	-	-	ret	remote	a
+source	hyper::client	Client	0	request	-	-	ret	remote	a
+source	hyper::client::conn::http1	SendRequest	0	send_request	-	-	ret	remote	a
+source	hyper::client::conn::http1	SendRequest	0	try_send_request	-	-	ret	remote	a
+source	hyper::client::conn::http2	SendRequest	0	send_request	-	-	ret	remote	a
+source	hyper::client::conn::http2	SendRequest	0	try_send_request	-	-	ret	remote	a
+source	hyper::client::legacy	Client	0	get	-	-	ret	remote	a
+source	hyper::client::legacy	Client	0	request	-	-	ret	remote	a
+source	hyper::ffi		0	hyper_version	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::body		0	hyper_body_data	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::body		0	hyper_body_foreach	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::body		0	hyper_body_new	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::body		0	hyper_buf_bytes	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::body		0	hyper_buf_copy	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::client		0	hyper_clientconn_handshake	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::client		0	hyper_clientconn_options_new	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::client		0	hyper_clientconn_send	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::http_types		0	hyper_request_headers	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::http_types		0	hyper_request_new	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::http_types		0	hyper_response_body	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::http_types		0	hyper_response_headers	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::http_types		0	hyper_response_reason_phrase	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::io		0	hyper_io_new	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::task		0	hyper_context_waker	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::task		0	hyper_executor_new	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::task		0	hyper_executor_poll	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::task		0	hyper_task_userdata	-	-	ret	pointer-invalidate	g
+source	hyper::ffi::task		0	hyper_task_value	-	-	ret	pointer-invalidate	g
+source	intrinsic-test::arm::json_parser		0	get_neon_intrinsics	-	-	ret	file	g
+source	libc::unix		0	free	-	-	arg0	pointer-invalidate	-
+source	libc::windows		0	free	-	-	arg0	pointer-invalidate	-
+source	mysql::conn::pool	PooledConn	0	exec_iter	-	-	ret	database	a
+source	mysql::conn::pool	PooledConn	0	query_iter	-	-	ret	database	a
+source	mysql::conn::queryable	Queryable	0	exec	-	-	ret	database	a
+source	mysql::conn::queryable	Queryable	0	exec_first	-	-	ret	database	a
+source	mysql::conn::queryable	Queryable	0	exec_first_opt	-	-	ret	database	a
+source	mysql::conn::queryable	Queryable	0	exec_opt	-	-	ret	database	a
+source	mysql::conn::queryable	Queryable	0	query	-	-	ret	database	a
+source	mysql::conn::queryable	Queryable	0	query_first	-	-	ret	database	a
+source	mysql::conn::queryable	Queryable	0	query_first_opt	-	-	ret	database	a
+source	mysql::conn::queryable	Queryable	0	query_opt	-	-	ret	database	a
+source	mysql_async::conn	Conn	0	exec_iter	-	-	ret	database	a
+source	mysql_async::conn	Conn	0	query_iter	-	-	ret	database	a
+source	mysql_async::queryable	Queryable	0	exec	-	-	ret	database	a
+source	mysql_async::queryable	Queryable	0	exec_first	-	-	ret	database	a
+source	mysql_async::queryable	Queryable	0	query	-	-	ret	database	a
+source	mysql_async::queryable	Queryable	0	query_first	-	-	ret	database	a
+source	mysql_common::row	Row	0	as_ref	-	-	ret	database	a
+source	mysql_common::row	Row	0	get	-	-	ret	database	a
+source	mysql_common::row	Row	0	get_opt	-	-	ret	database	a
+source	mysql_common::row	Row	0	take	-	-	ret	database	a
+source	mysql_common::row	Row	0	take_opt	-	-	ret	database	a
+source	mysql_common::row	Row	0	unwrap	-	-	ret	database	a
+source	postgres::row	Row	0	get	-	-	ret	database	-
+source	postgres::row	Row	0	try_get	-	-	ret	database	a
+source	postgres::row	SimpleQueryRow	0	get	-	-	ret	database	a
+source	postgres::row	SimpleQueryRow	0	try_get	-	-	ret	database	a
+source	reqwest		0	get	-	-	ret	remote	a
+source	reqwest::blocking		0	get	-	-	ret	remote	a
+source	reqwest::blocking::multipart	Form	0	file	-	-	ret	file	g
+source	reqwest::blocking::multipart	Part	0	file	-	-	ret	file	g
+source	reqwest::proxy	NoProxy	0	from_env	-	-	ret	environment	g
+source	rusqlite::row	Row	0	get	-	-	ret	database	a
+source	rusqlite::row	Row	0	get_ref	-	-	ret	database	a
+source	rusqlite::row	Row	0	get_ref_unwrap	-	-	ret	database	-
+source	rusqlite::row	Row	0	get_unwrap	-	-	ret	database	-
+source	rustls::client::client_conn::connection	ClientConnection	0	new	-	-	ret	remote	a
+source	sqlx_core::row	Row	0	get	-	-	ret	database	-
+source	sqlx_core::row	Row	0	get_unchecked	-	-	ret	database	-
+source	sqlx_core::row	Row	0	try_get	-	-	ret	database	a
+source	sqlx_core::row	Row	0	try_get_unchecked	-	-	ret	database	a
+source	std::alloc	System	0	alloc	-	-	ret	pointer-invalidate	g
+source	std::alloc	System	0	alloc_zeroed	-	-	ret	pointer-invalidate	g
+source	std::alloc	System	0	dealloc	-	-	arg0	pointer-invalidate	g
+source	std::alloc	System	0	realloc	-	-	ret	pointer-invalidate	g
+source	std::alloc	System	0	realloc	-	-	arg0	pointer-invalidate	g
+source	std::alloc::__default_lib_allocator		0	__rdl_alloc	-	-	ret	pointer-invalidate	g
+source	std::alloc::__default_lib_allocator		0	__rdl_alloc_zeroed	-	-	ret	pointer-invalidate	g
+source	std::alloc::__default_lib_allocator		0	__rdl_dealloc	-	-	arg0	pointer-invalidate	g
+source	std::alloc::__default_lib_allocator		0	__rdl_realloc	-	-	ret	pointer-invalidate	g
+source	std::alloc::__default_lib_allocator		0	__rdl_realloc	-	-	arg0	pointer-invalidate	g
+source	std::backtrace_rs::symbolize::gimli	Mapping	0	new	-	-	ret	file	g
+source	std::env		0	args	-	-	ret	commandargs	a
+source	std::env		0	args_os	-	-	ret	commandargs	a
+source	std::env		0	current_dir	-	-	ret	commandargs	a
+source	std::env		0	current_exe	-	-	ret	commandargs	a
+source	std::env		0	home_dir	-	-	ret	commandargs	a
+source	std::env		0	temp_dir	-	-	ret	environment	g
+source	std::env		0	var	-	-	ret	environment	a
+source	std::env		0	var_os	-	-	ret	environment	a
+source	std::env		0	vars	-	-	ret	environment	a
+source	std::env		0	vars_os	-	-	ret	environment	a
+source	std::fs		0	copy	-	-	ret	file	g
+source	std::fs		0	exists	-	-	ret	file	a
+source	std::fs		0	metadata	-	-	ret	file	a
+source	std::fs		0	read	-	-	ret	file	a
+source	std::fs		0	read	-	-	ret	file	g
+source	std::fs		0	read_dir	-	-	ret	file	a
+source	std::fs		0	read_link	-	-	ret	file	a
+source	std::fs		0	read_to_string	-	-	ret	file	a
+source	std::fs		0	read_to_string	-	-	ret	file	g
+source	std::fs		0	remove_dir_all	-	-	ret	file	g
+source	std::fs		0	symlink_metadata	-	-	ret	file	a
+source	std::fs		0	write	-	-	ret	file	g
+source	std::fs	DirEntry	0	file_name	-	-	ret	file	-
+source	std::fs	DirEntry	0	path	-	-	ret	file	-
+source	std::fs	File	0	create_buffered	-	-	ret	file	g
+source	std::fs	File	0	open	-	-	ret	file	a
+source	std::fs	File	0	open_buffered	-	-	ret	file	a
+source	std::fs	File	0	open_buffered	-	-	ret	file	g
+source	std::fs	OpenOptions	0	open	-	-	ret	file	a
+source	std::io::stdio		0	stdin	-	-	ret	stdin	-
+source	std::net::tcp	TcpListener	0	only_v6	-	-	ret	constant-source	g
+source	std::net::tcp	TcpListener	0	take_error	-	-	ret	constant-source	g
+source	std::net::tcp	TcpListener	0	ttl	-	-	ret	constant-source	g
+source	std::net::tcp	TcpStream	0	connect	-	-	ret	remote	a
+source	std::net::tcp	TcpStream	0	connect_timeout	-	-	ret	remote	a
+source	std::net::tcp	TcpStream	0	deferaccept	-	-	ret	constant-source	g
+source	std::net::tcp	TcpStream	0	linger	-	-	ret	constant-source	g
+source	std::net::tcp	TcpStream	0	nodelay	-	-	ret	constant-source	g
+source	std::net::tcp	TcpStream	0	quickack	-	-	ret	constant-source	g
+source	std::net::tcp	TcpStream	0	read_timeout	-	-	ret	constant-source	g
+source	std::net::tcp	TcpStream	0	take_error	-	-	ret	constant-source	g
+source	std::net::tcp	TcpStream	0	ttl	-	-	ret	constant-source	g
+source	std::net::tcp	TcpStream	0	write_timeout	-	-	ret	constant-source	g
+source	std::net::udp	UdpSocket	0	broadcast	-	-	ret	constant-source	g
+source	std::net::udp	UdpSocket	0	multicast_loop_v4	-	-	ret	constant-source	g
+source	std::net::udp	UdpSocket	0	multicast_loop_v6	-	-	ret	constant-source	g
+source	std::net::udp	UdpSocket	0	multicast_ttl_v4	-	-	ret	constant-source	g
+source	std::net::udp	UdpSocket	0	read_timeout	-	-	ret	constant-source	g
+source	std::net::udp	UdpSocket	0	take_error	-	-	ret	constant-source	g
+source	std::net::udp	UdpSocket	0	ttl	-	-	ret	constant-source	g
+source	std::net::udp	UdpSocket	0	write_timeout	-	-	ret	constant-source	g
+source	std::os::unix::net::datagram	UnixDatagram	0	passcred	-	-	ret	constant-source	g
+source	std::os::unix::net::datagram	UnixDatagram	0	read_timeout	-	-	ret	constant-source	g
+source	std::os::unix::net::datagram	UnixDatagram	0	take_error	-	-	ret	constant-source	g
+source	std::os::unix::net::datagram	UnixDatagram	0	write_timeout	-	-	ret	constant-source	g
+source	std::os::unix::net::listener	UnixListener	0	take_error	-	-	ret	constant-source	g
+source	std::os::unix::net::stream	UnixStream	0	passcred	-	-	ret	constant-source	g
+source	std::os::unix::net::stream	UnixStream	0	read_timeout	-	-	ret	constant-source	g
+source	std::os::unix::net::stream	UnixStream	0	take_error	-	-	ret	constant-source	g
+source	std::os::unix::net::stream	UnixStream	0	write_timeout	-	-	ret	constant-source	g
+source	std::path		0	absolute	-	-	ret	commandargs	g
+source	std::path	Path	0	exists	-	-	ret	file	-
+source	std::path	Path	0	is_dir	-	-	ret	file	-
+source	std::path	Path	0	is_file	-	-	ret	file	-
+source	std::path	Path	0	is_symlink	-	-	ret	file	-
+source	std::path	Path	0	metadata	-	-	ret	file	a
+source	std::path	Path	0	read_dir	-	-	ret	file	a
+source	std::path	Path	0	read_link	-	-	ret	file	a
+source	std::path	Path	0	symlink_metadata	-	-	ret	file	a
+source	std::path	Path	0	try_exists	-	-	ret	file	a
+source	std::sys::fs		0	copy	-	-	ret	file	g
+source	std::sys::fs		0	remove_dir_all	-	-	ret	file	g
+source	std::sys::fs::common		0	copy	-	-	ret	file	g
+source	std::sys::fs::common		0	remove_dir_all	-	-	ret	file	g
+source	std::sys::fs::unix		0	copy	-	-	ret	file	g
+source	std::sys::net::connection::socket	TcpListener	0	only_v6	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	TcpListener	0	take_error	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	TcpListener	0	ttl	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	TcpStream	0	connect_timeout	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	TcpStream	0	linger	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	TcpStream	0	nodelay	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	TcpStream	0	read_timeout	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	TcpStream	0	take_error	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	TcpStream	0	ttl	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	TcpStream	0	write_timeout	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	UdpSocket	0	broadcast	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	UdpSocket	0	multicast_loop_v4	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	UdpSocket	0	multicast_loop_v6	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	UdpSocket	0	multicast_ttl_v4	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	UdpSocket	0	read_timeout	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	UdpSocket	0	take_error	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	UdpSocket	0	ttl	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket	UdpSocket	0	write_timeout	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket::unix	Socket	0	connect_timeout	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket::unix	Socket	0	deferaccept	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket::unix	Socket	0	linger	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket::unix	Socket	0	nodelay	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket::unix	Socket	0	passcred	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket::unix	Socket	0	quickack	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket::unix	Socket	0	take_error	-	-	ret	constant-source	g
+source	std::sys::net::connection::socket::unix	Socket	0	timeout	-	-	ret	constant-source	g
+source	std::sys::pal::unix::os		0	temp_dir	-	-	ret	environment	g
+source	std::sys::pal::unix::thread::cgroups		0	quota	-	-	ret	file	g
+source	std::sys::path::unix		0	absolute	-	-	ret	commandargs	g
+source	std::sys::thread_local::native::eager	Storage	0	get	-	-	ret	pointer-invalidate	g
+source	std::sys::thread_local::native::lazy	Storage	0	get_or_init	-	-	ret	pointer-invalidate	g
+source	stdarch-gen-arm::load_store_tests		0	generate_load_store_tests	-	-	ret	file	g
+source	stdarch-gen-loongarch		0	main	-	-	ret	file	g
+source	style::style	StyleChecker	0	check_file	-	-	ret	file	g
+source	style::style	StyleChecker	0	finalize	-	-	ret	file	g
+source	style_tests::style	StyleChecker	0	check_file	-	-	ret	file	g
+source	style_tests::style	StyleChecker	0	finalize	-	-	ret	file	g
+source	tokio::fs::file	File	0	open	-	-	ret	file	a
+source	tokio::fs::open_options	OpenOptions	0	open	-	-	ret	file	a
+source	tokio::fs::read		0	read	-	-	ret	file	a
+source	tokio::fs::read_dir	DirEntry	0	file_name	-	-	ret	file	-
+source	tokio::fs::read_dir	DirEntry	0	file_name	-	-	ret	file	g
+source	tokio::fs::read_dir	DirEntry	0	path	-	-	ret	file	-
+source	tokio::fs::read_dir	DirEntry	0	path	-	-	ret	file	g
+source	tokio::fs::read_link		0	read_link	-	-	ret	file	a
+source	tokio::fs::read_to_string		0	read_to_string	-	-	ret	file	a
+source	tokio::io::stdin		0	stdin	-	-	ret	stdin	-
+source	tokio::net::tcp::stream	TcpStream	0	connect	-	-	ret	remote	a
+source	tokio::net::unix::pipe	OpenOptions	0	open_receiver	-	-	ret	file	g
+source	tokio::net::unix::pipe	OpenOptions	0	open_sender	-	-	ret	file	g
+source	tokio_postgres::row	Row	0	get	-	-	ret	database	-
+source	tokio_postgres::row	Row	0	try_get	-	-	ret	database	a
+source	tokio_postgres::row	SimpleQueryRow	0	get	-	-	ret	database	a
+source	tokio_postgres::row	SimpleQueryRow	0	try_get	-	-	ret	database	a
+source	v8::primitives		0	null	-	-	ret	pointer-invalidate	-
+sink	01_quick_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	01_quick_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	02_app_settings_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	02_app_settings_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	02_apps_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	02_apps_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	02_crate_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	02_crate_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_01_flag_bool_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_01_flag_bool_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_01_flag_count_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_01_flag_count_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_02_option_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_02_option_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_02_option_mult_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_02_option_mult_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_03_positional_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_03_positional_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_03_positional_mult_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_03_positional_mult_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_04_subcommands_alt_derive	AddArgs	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_04_subcommands_alt_derive	AddArgs	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_05_default_values_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_05_default_values_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_06_optional_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	03_06_optional_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	04_01_enum_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	04_01_enum_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	04_02_parse_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	04_02_parse_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	04_02_validate_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	04_02_validate_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	04_03_relations_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	04_03_relations_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	04_03_relations_derive	Vers	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	04_03_relations_derive	Vers	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	04_04_custom_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	04_04_custom_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	05_01_assert_derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	05_01_assert_derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	actix_files::directory		0	directory_listing	-	arg0	-	path-injection	g
+sink	actix_files::files	Files	0	new	-	arg1	-	log-injection	g
+sink	actix_files::named	NamedFile	0	etag	-	recv	-	log-injection	g
+sink	actix_files::named	NamedFile	0	into_response	-	recv	-	alloc-layout	g
+sink	actix_files::named	NamedFile	0	into_response	-	recv	-	log-injection	g
+sink	actix_files::named	NamedFile	0	last_modified	-	recv	-	alloc-layout	g
+sink	actix_files::named	NamedFile	0	last_modified	-	recv	-	log-injection	g
+sink	actix_files::named	NamedFile	0	respond_to	-	recv	-	alloc-layout	g
+sink	actix_files::named	NamedFile	0	respond_to	-	recv	-	log-injection	g
+sink	actix_http	OnConnectData	0	from_io	-	arg1	-	alloc-layout	g
+sink	actix_http	OnConnectData	0	from_io	-	arg1	-	log-injection	g
+sink	actix_http::h1::dispatcher	Dispatcher	0	new	-	arg4	-	alloc-layout	g
+sink	actix_http::h1::dispatcher	Dispatcher	0	new	-	arg4	-	log-injection	g
+sink	actix_http::h2::dispatcher	Dispatcher	0	new	-	arg4	-	alloc-layout	g
+sink	actix_http::h2::dispatcher	Dispatcher	0	new	-	arg4	-	log-injection	g
+sink	actix_http::h2::dispatcher	Dispatcher	0	new	-	arg5	-	alloc-layout	g
+sink	actix_http::h2::dispatcher	Dispatcher	0	new	-	arg5	-	log-injection	g
+sink	actix_http::service	HttpServiceHandler	0	call	-	arg0	-	log-injection	g
+sink	actix_multipart::field	InnerField	0	read_stream	-	arg0	-	pointer-access	g
+sink	actix_multipart::payload	PayloadBuffer	0	read_until	-	recv	-	pointer-access	g
+sink	actix_multipart::payload	PayloadBuffer	0	read_until	-	arg0	-	pointer-access	g
+sink	actix_multipart::payload	PayloadBuffer	0	readline	-	recv	-	pointer-access	g
+sink	actix_multipart::payload	PayloadBuffer	0	readline_or_eof	-	recv	-	pointer-access	g
+sink	actix_web::http::header::accept	Accept	0	ranked	-	recv	-	pointer-access	g
+sink	actix_web::http::header::accept_encoding	AcceptEncoding	0	negotiate	-	recv	-	pointer-access	g
+sink	actix_web::http::header::accept_encoding	AcceptEncoding	0	ranked	-	recv	-	pointer-access	g
+sink	actix_web::http::header::accept_language	AcceptLanguage	0	ranked	-	recv	-	pointer-access	g
+sink	actix_web::http::header::entity	EntityTag	0	new	-	arg1	-	log-injection	g
+sink	actix_web::http::header::entity	EntityTag	0	new_strong	-	arg0	-	log-injection	g
+sink	actix_web::http::header::entity	EntityTag	0	new_weak	-	arg0	-	log-injection	g
+sink	actix_web::http::header::entity	EntityTag	0	set_tag	-	arg0	-	log-injection	g
+sink	actix_web::http::header::entity	EntityTag	0	strong	-	arg0	-	log-injection	g
+sink	actix_web::http::header::entity	EntityTag	0	weak	-	arg0	-	log-injection	g
+sink	actix_web::http::header::range	Range	0	bytes_multi	-	arg0	-	pointer-access	g
+sink	actix_web::info	ConnectionInfo	0	from_request	-	arg0	-	alloc-layout	g
+sink	actix_web::info	ConnectionInfo	0	from_request	-	arg0	-	log-injection	g
+sink	actix_web::info	ConnectionInfo	0	new	-	arg0	-	alloc-layout	g
+sink	actix_web::info	ConnectionInfo	0	new	-	arg0	-	log-injection	g
+sink	actix_web::middleware::logger	Format	0	new	-	arg0	-	log-injection	g
+sink	actix_web::middleware::logger	Logger	0	custom_request_replace	-	arg0	-	log-injection	g
+sink	actix_web::middleware::logger	Logger	0	custom_response_replace	-	arg0	-	log-injection	g
+sink	actix_web::middleware::logger	Logger	0	new	-	arg0	-	log-injection	g
+sink	actix_web::middleware::logger	LoggerMiddleware	0	call	-	arg0	-	alloc-layout	g
+sink	actix_web::middleware::logger	LoggerMiddleware	0	call	-	arg0	-	log-injection	g
+sink	actix_web::redirect	Redirect	0	respond_to	-	recv	-	log-injection	g
+sink	actix_web::request	HttpRequest	0	connection_info	-	recv	-	alloc-layout	g
+sink	actix_web::request	HttpRequest	0	connection_info	-	recv	-	log-injection	g
+sink	actix_web::request	HttpRequest	0	full_url	-	recv	-	alloc-layout	g
+sink	actix_web::request	HttpRequest	0	full_url	-	recv	-	log-injection	g
+sink	actix_web::request	HttpRequest	0	url_for	-	recv	-	alloc-layout	g
+sink	actix_web::request	HttpRequest	0	url_for	-	recv	-	log-injection	g
+sink	actix_web::request	HttpRequest	0	url_for_static	-	recv	-	alloc-layout	g
+sink	actix_web::request	HttpRequest	0	url_for_static	-	recv	-	log-injection	g
+sink	actix_web::request	HttpRequestPool	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	actix_web::resource	Resource	0	register	-	recv	-	alloc-layout	g
+sink	actix_web::resource	Resource	0	register	-	recv	-	log-injection	g
+sink	actix_web::rmap	ResourceMap	0	url_for	-	arg0	-	alloc-layout	g
+sink	actix_web::rmap	ResourceMap	0	url_for	-	arg0	-	log-injection	g
+sink	actix_web::scope	Scope	0	register	-	recv	-	alloc-layout	g
+sink	actix_web::scope	Scope	0	register	-	recv	-	log-injection	g
+sink	actix_web::scope	Scope	0	register	-	recv	-	pointer-access	g
+sink	actix_web::service	ServiceRequest	0	connection_info	-	recv	-	alloc-layout	g
+sink	actix_web::service	ServiceRequest	0	connection_info	-	recv	-	log-injection	g
+sink	actix_web::types::html	Html	0	new	-	arg0	-	html-injection	-
+sink	actix_web_actors::context	HttpContext	0	write	-	recv	-	log-injection	g
+sink	actix_web_actors::context	HttpContext	0	write_eof	-	recv	-	log-injection	g
+sink	actix_web_actors::ws	WebsocketContext	0	binary	-	recv	-	log-injection	g
+sink	actix_web_actors::ws	WebsocketContext	0	close	-	recv	-	log-injection	g
+sink	actix_web_actors::ws	WebsocketContext	0	ping	-	recv	-	log-injection	g
+sink	actix_web_actors::ws	WebsocketContext	0	pong	-	recv	-	log-injection	g
+sink	actix_web_actors::ws	WebsocketContext	0	text	-	recv	-	log-injection	g
+sink	actix_web_actors::ws	WebsocketContext	0	write_raw	-	recv	-	log-injection	g
+sink	actix_web_codegen		0	routes	-	arg1	-	pointer-access	g
+sink	actix_web_codegen::route		0	with_methods	-	arg0	-	pointer-access	g
+sink	aead	Aead	0	encrypt	-	arg0	-	credentials-nonce	-
+sink	alloc::alloc		0	alloc	-	arg0	-	alloc-layout	-
+sink	alloc::alloc		0	alloc_zeroed	-	arg0	-	alloc-layout	-
+sink	alloc::alloc		0	realloc	-	arg2	-	alloc-size	-
+sink	alloc::alloc	Global	0	allocate	-	arg0	-	alloc-layout	g
+sink	alloc::alloc	Global	0	allocate_zeroed	-	arg0	-	alloc-layout	g
+sink	alloc::alloc	Global	0	grow	-	arg2	-	alloc-layout	g
+sink	alloc::alloc	Global	0	grow	-	arg2	-	alloc-size	g
+sink	alloc::alloc	Global	0	grow_zeroed	-	arg2	-	alloc-layout	g
+sink	alloc::alloc	Global	0	grow_zeroed	-	arg2	-	alloc-size	g
+sink	alloc::alloc	Global	0	shrink	-	arg2	-	alloc-layout	g
+sink	alloc::alloc	Global	0	shrink	-	arg2	-	alloc-size	g
+sink	alloc::alloc::__alloc_error_handler		0	__rdl_oom	-	arg0	-	log-injection	g
+sink	alloc::boxed	Box	0	new_uninit_slice	-	arg0	-	alloc-layout	g
+sink	alloc::boxed	Box	0	new_uninit_slice_in	-	arg0	-	alloc-layout	g
+sink	alloc::boxed	Box	0	new_zeroed_slice	-	arg0	-	alloc-layout	g
+sink	alloc::boxed	Box	0	new_zeroed_slice_in	-	arg0	-	alloc-layout	g
+sink	alloc::boxed	Box	0	try_new_uninit_slice	-	arg0	-	alloc-layout	g
+sink	alloc::boxed	Box	0	try_new_uninit_slice_in	-	arg0	-	alloc-layout	g
+sink	alloc::boxed	Box	0	try_new_zeroed_slice	-	arg0	-	alloc-layout	g
+sink	alloc::boxed	Box	0	try_new_zeroed_slice_in	-	arg0	-	alloc-layout	g
+sink	alloc::collections::binary_heap	BinaryHeap	0	into_iter	-	recv	-	pointer-access	g
+sink	alloc::collections::binary_heap	BinaryHeap	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	alloc::collections::binary_heap	BinaryHeap	0	with_capacity_in	-	arg0	-	alloc-layout	g
+sink	alloc::collections::binary_heap	IntoIter	0	next_back	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::map	BTreeMap	0	append	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::map	BTreeMap	0	drop	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::map	BTreeMap	0	get	-	recv	-	alloc-layout	g
+sink	alloc::collections::btree::map	BTreeMap	0	get	-	recv	-	log-injection	g
+sink	alloc::collections::btree::map	Range	0	last	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::map	Range	0	max	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::map	Range	0	min	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::map	Range	0	next	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::map	Range	0	next_back	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::map	RangeMut	0	last	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::map	RangeMut	0	max	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::map	RangeMut	0	min	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::map	RangeMut	0	next	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::map	RangeMut	0	next_back	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::mem		0	replace	-	arg0	-	pointer-access	g
+sink	alloc::collections::btree::mem		0	take_mut	-	arg0	-	pointer-access	g
+sink	alloc::collections::btree::navigate	LeafRange	0	next_back_checked	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::navigate	LeafRange	0	next_checked	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::node	Handle	0	consider_for_balancing	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::node	NodeRef	0	choose_parent_kv	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::node	NodeRef	0	fix_node_and_affected_ancestors	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::node	NodeRef	0	full_range	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::node	NodeRef	0	push_internal_level	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::node	NodeRef	0	range_search	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::set	BTreeSet	0	append	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::set	Range	0	last	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::set	Range	0	max	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::set	Range	0	min	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::set	Range	0	next	-	recv	-	pointer-access	g
+sink	alloc::collections::btree::set	Range	0	next_back	-	recv	-	pointer-access	g
+sink	alloc::collections::vec_deque	VecDeque	0	append	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	clone	-	recv	-	alloc-layout	g
+sink	alloc::collections::vec_deque	VecDeque	0	extend_one	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	extend_reserve	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	from	-	arg0	-	pointer-access	g
+sink	alloc::collections::vec_deque	VecDeque	0	insert	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	insert	-	arg0	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	insert_mut	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	insert_mut	-	arg0	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	make_contiguous	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	push_back	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	push_back_mut	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	push_front	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	push_front_mut	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	remove	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	remove	-	arg0	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	reserve	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	reserve_exact	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	rotate_left	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	rotate_left	-	arg0	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	rotate_right	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	rotate_right	-	arg0	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	shrink_to	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	shrink_to	-	arg0	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	shrink_to_fit	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	spec_extend	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	try_reserve	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	try_reserve_exact	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	try_with_capacity	-	arg0	-	alloc-layout	g
+sink	alloc::collections::vec_deque	VecDeque	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	alloc::collections::vec_deque	VecDeque	0	with_capacity_in	-	arg0	-	alloc-layout	g
+sink	alloc::collections::vec_deque	VecDeque	0	write_all_vectored	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque	VecDeque	0	write_vectored	-	recv	-	log-injection	g
+sink	alloc::collections::vec_deque::into_iter	IntoIter	0	clone	-	recv	-	alloc-layout	g
+sink	alloc::raw_vec	RawVec	0	try_with_capacity_in	-	arg0	-	alloc-layout	g
+sink	alloc::raw_vec	RawVec	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	alloc::raw_vec	RawVec	0	with_capacity_in	-	arg0	-	alloc-layout	g
+sink	alloc::raw_vec	RawVec	0	with_capacity_zeroed	-	arg0	-	alloc-layout	g
+sink	alloc::raw_vec	RawVec	0	with_capacity_zeroed_in	-	arg0	-	alloc-layout	g
+sink	alloc::rc	Rc	0	from	-	arg0	-	alloc-layout	g
+sink	alloc::rc	Rc	0	from	-	arg0	-	pointer-access	g
+sink	alloc::rc	Rc	0	make_mut	-	arg0	-	pointer-access	g
+sink	alloc::rc	Rc	0	new_uninit_slice	-	arg0	-	alloc-layout	g
+sink	alloc::rc	Rc	0	new_uninit_slice_in	-	arg0	-	alloc-layout	g
+sink	alloc::rc	Rc	0	new_zeroed_slice	-	arg0	-	alloc-layout	g
+sink	alloc::rc	Rc	0	new_zeroed_slice_in	-	arg0	-	alloc-layout	g
+sink	alloc::string	FromUtf8Error	0	into_utf8_lossy	-	recv	-	alloc-layout	g
+sink	alloc::string	String	0	into_chars	-	recv	-	pointer-access	g
+sink	alloc::string	String	0	split_off	-	recv	-	log-injection	g
+sink	alloc::string	String	0	split_off	-	arg0	-	log-injection	g
+sink	alloc::string	String	0	try_with_capacity	-	arg0	-	alloc-layout	g
+sink	alloc::string	String	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	alloc::sync	Arc	0	from	-	arg0	-	alloc-layout	g
+sink	alloc::sync	Arc	0	from	-	arg0	-	pointer-access	g
+sink	alloc::sync	Arc	0	make_mut	-	arg0	-	pointer-access	g
+sink	alloc::sync	Arc	0	new_uninit_slice	-	arg0	-	alloc-layout	g
+sink	alloc::sync	Arc	0	new_uninit_slice_in	-	arg0	-	alloc-layout	g
+sink	alloc::sync	Arc	0	new_zeroed_slice	-	arg0	-	alloc-layout	g
+sink	alloc::sync	Arc	0	new_zeroed_slice_in	-	arg0	-	alloc-layout	g
+sink	alloc::vec	Vec	0	for_each	-	arg0	-	log-injection	g
+sink	alloc::vec	Vec	0	from	-	arg0	-	log-injection	g
+sink	alloc::vec	Vec	0	from	-	arg0	-	pointer-access	g
+sink	alloc::vec	Vec	0	initialize	-	arg1	-	alloc-layout	g
+sink	alloc::vec	Vec	0	insert	-	recv	-	log-injection	g
+sink	alloc::vec	Vec	0	insert	-	arg0	-	log-injection	g
+sink	alloc::vec	Vec	0	insert_mut	-	recv	-	log-injection	g
+sink	alloc::vec	Vec	0	insert_mut	-	arg0	-	log-injection	g
+sink	alloc::vec	Vec	0	into_chunks	-	recv	-	pointer-access	g
+sink	alloc::vec	Vec	0	into_deserializer	-	recv	-	pointer-access	g
+sink	alloc::vec	Vec	0	into_flattened	-	recv	-	pointer-access	g
+sink	alloc::vec	Vec	0	into_iter	-	recv	-	pointer-access	g
+sink	alloc::vec	Vec	0	into_parts_with_alloc	-	recv	-	pointer-access	g
+sink	alloc::vec	Vec	0	into_raw_parts_with_alloc	-	recv	-	pointer-access	g
+sink	alloc::vec	Vec	0	mark	-	arg0	-	pointer-access	g
+sink	alloc::vec	Vec	0	register	-	recv	-	pointer-access	g
+sink	alloc::vec	Vec	0	remove	-	recv	-	log-injection	g
+sink	alloc::vec	Vec	0	remove	-	arg0	-	log-injection	g
+sink	alloc::vec	Vec	0	split_off	-	recv	-	log-injection	g
+sink	alloc::vec	Vec	0	split_off	-	arg0	-	log-injection	g
+sink	alloc::vec	Vec	0	swap_remove	-	recv	-	log-injection	g
+sink	alloc::vec	Vec	0	swap_remove	-	arg0	-	log-injection	g
+sink	alloc::vec	Vec	0	try_with_capacity	-	arg0	-	alloc-layout	g
+sink	alloc::vec	Vec	0	try_with_capacity_in	-	arg0	-	alloc-layout	g
+sink	alloc::vec	Vec	0	unmark	-	recv	-	pointer-access	g
+sink	alloc::vec	Vec	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	alloc::vec	Vec	0	with_capacity_in	-	arg0	-	alloc-layout	g
+sink	alloc::vec::into_iter	IntoIter	0	last	-	recv	-	pointer-access	g
+sink	alloc::vec::into_iter	IntoIter	0	next_back	-	recv	-	pointer-access	g
+sink	alloc::vec::spec_from_elem	SpecFromElem	1	from_elem	-	arg1	-	alloc-layout	g
+sink	allocbenches::vec		0	vec_cast	-	arg0	-	pointer-access	g
+sink	as_if_std::the_backtrace_crate::symbolize::gimli	Mapping	0	new	-	arg0	-	path-injection	g
+sink	async_native_tls::connect	TlsConnector	0	danger_accept_invalid_certs	-	arg0	-	disable-certificate	-
+sink	async_native_tls::connect	TlsConnector	0	danger_accept_invalid_hostnames	-	arg0	-	disable-certificate	-
+sink	async_std::fs::copy		0	copy	-	arg0	-	path-injection	-
+sink	async_std::fs::copy		0	copy	-	arg1	-	path-injection	-
+sink	async_std::fs::create_dir		0	create_dir	-	arg0	-	path-injection	-
+sink	async_std::fs::create_dir_all		0	create_dir_all	-	arg0	-	path-injection	-
+sink	async_std::fs::dir_builder	DirBuilder	0	create	-	arg0	-	path-injection	-
+sink	async_std::fs::file	File	0	create	-	arg0	-	path-injection	-
+sink	async_std::fs::file	File	0	open	-	arg0	-	path-injection	-
+sink	async_std::fs::hard_link		0	hard_link	-	arg0	-	path-injection	-
+sink	async_std::fs::hard_link		0	hard_link	-	arg1	-	path-injection	-
+sink	async_std::fs::metadata		0	metadata	-	arg0	-	path-injection	-
+sink	async_std::fs::open_options	OpenOptions	0	open	-	arg0	-	path-injection	-
+sink	async_std::fs::read		0	read	-	arg0	-	path-injection	-
+sink	async_std::fs::read_dir		0	read_dir	-	arg0	-	path-injection	-
+sink	async_std::fs::read_link		0	read_link	-	arg0	-	path-injection	-
+sink	async_std::fs::read_to_string		0	read_to_string	-	arg0	-	path-injection	-
+sink	async_std::fs::remove_dir		0	remove_dir	-	arg0	-	path-injection	-
+sink	async_std::fs::remove_dir_all		0	remove_dir_all	-	arg0	-	path-injection	-
+sink	async_std::fs::remove_file		0	remove_file	-	arg0	-	path-injection	-
+sink	async_std::fs::rename		0	rename	-	arg0	-	path-injection	-
+sink	async_std::fs::rename		0	rename	-	arg1	-	path-injection	-
+sink	async_std::fs::set_permissions		0	set_permissions	-	arg0	-	path-injection	-
+sink	async_std::fs::symlink_metadata		0	symlink_metadata	-	arg0	-	path-injection	-
+sink	async_std::fs::write		0	write	-	arg0	-	path-injection	-
+sink	awc::client::h2proto		0	send_request	-	arg1	-	log-injection	g
+sink	awc::frozen	FrozenClientRequest	0	send	-	recv	-	alloc-layout	g
+sink	awc::frozen	FrozenClientRequest	0	send	-	recv	-	log-injection	g
+sink	awc::frozen	FrozenClientRequest	0	send_body	-	recv	-	alloc-layout	g
+sink	awc::frozen	FrozenClientRequest	0	send_body	-	recv	-	log-injection	g
+sink	awc::frozen	FrozenClientRequest	0	send_form	-	recv	-	alloc-layout	g
+sink	awc::frozen	FrozenClientRequest	0	send_form	-	recv	-	log-injection	g
+sink	awc::frozen	FrozenClientRequest	0	send_json	-	recv	-	alloc-layout	g
+sink	awc::frozen	FrozenClientRequest	0	send_json	-	recv	-	log-injection	g
+sink	awc::frozen	FrozenClientRequest	0	send_stream	-	recv	-	alloc-layout	g
+sink	awc::frozen	FrozenClientRequest	0	send_stream	-	recv	-	log-injection	g
+sink	awc::frozen	FrozenSendBuilder	0	send	-	recv	-	alloc-layout	g
+sink	awc::frozen	FrozenSendBuilder	0	send	-	recv	-	log-injection	g
+sink	awc::frozen	FrozenSendBuilder	0	send_body	-	recv	-	alloc-layout	g
+sink	awc::frozen	FrozenSendBuilder	0	send_body	-	recv	-	log-injection	g
+sink	awc::frozen	FrozenSendBuilder	0	send_form	-	recv	-	alloc-layout	g
+sink	awc::frozen	FrozenSendBuilder	0	send_form	-	recv	-	log-injection	g
+sink	awc::frozen	FrozenSendBuilder	0	send_json	-	recv	-	alloc-layout	g
+sink	awc::frozen	FrozenSendBuilder	0	send_json	-	recv	-	log-injection	g
+sink	awc::frozen	FrozenSendBuilder	0	send_stream	-	recv	-	alloc-layout	g
+sink	awc::frozen	FrozenSendBuilder	0	send_stream	-	recv	-	log-injection	g
+sink	awc::request	ClientRequest	0	send	-	recv	-	alloc-layout	g
+sink	awc::request	ClientRequest	0	send	-	recv	-	log-injection	g
+sink	awc::request	ClientRequest	0	send_body	-	recv	-	alloc-layout	g
+sink	awc::request	ClientRequest	0	send_body	-	recv	-	log-injection	g
+sink	awc::request	ClientRequest	0	send_form	-	recv	-	alloc-layout	g
+sink	awc::request	ClientRequest	0	send_form	-	recv	-	log-injection	g
+sink	awc::request	ClientRequest	0	send_json	-	recv	-	alloc-layout	g
+sink	awc::request	ClientRequest	0	send_json	-	recv	-	log-injection	g
+sink	awc::request	ClientRequest	0	send_stream	-	recv	-	alloc-layout	g
+sink	awc::request	ClientRequest	0	send_stream	-	recv	-	log-injection	g
+sink	awc::sender	RequestSender	0	send	-	arg2	-	alloc-layout	g
+sink	awc::sender	RequestSender	0	send	-	arg2	-	log-injection	g
+sink	awc::sender	RequestSender	0	send	-	arg3	-	alloc-layout	g
+sink	awc::sender	RequestSender	0	send	-	arg3	-	log-injection	g
+sink	awc::sender	RequestSender	0	send_body	-	arg2	-	alloc-layout	g
+sink	awc::sender	RequestSender	0	send_body	-	arg2	-	log-injection	g
+sink	awc::sender	RequestSender	0	send_body	-	arg3	-	alloc-layout	g
+sink	awc::sender	RequestSender	0	send_body	-	arg3	-	log-injection	g
+sink	awc::sender	RequestSender	0	send_form	-	arg2	-	alloc-layout	g
+sink	awc::sender	RequestSender	0	send_form	-	arg2	-	log-injection	g
+sink	awc::sender	RequestSender	0	send_form	-	arg3	-	alloc-layout	g
+sink	awc::sender	RequestSender	0	send_form	-	arg3	-	log-injection	g
+sink	awc::sender	RequestSender	0	send_json	-	arg2	-	alloc-layout	g
+sink	awc::sender	RequestSender	0	send_json	-	arg2	-	log-injection	g
+sink	awc::sender	RequestSender	0	send_json	-	arg3	-	alloc-layout	g
+sink	awc::sender	RequestSender	0	send_json	-	arg3	-	log-injection	g
+sink	awc::sender	RequestSender	0	send_stream	-	arg2	-	alloc-layout	g
+sink	awc::sender	RequestSender	0	send_stream	-	arg2	-	log-injection	g
+sink	awc::sender	RequestSender	0	send_stream	-	arg3	-	alloc-layout	g
+sink	awc::sender	RequestSender	0	send_stream	-	arg3	-	log-injection	g
+sink	awc::sender	SendClientRequest	0	new	-	arg2	-	alloc-layout	g
+sink	awc::sender	SendClientRequest	0	new	-	arg2	-	log-injection	g
+sink	backtrace::symbolize::gimli	Mapping	0	new	-	arg0	-	path-injection	g
+sink	biscotti::crypto::master	Key	0	from	-	arg0	-	credentials-key	-
+sink	biscotti::response_cookies	ResponseCookies	0	insert	-	arg0	-	cookie-use	-
+sink	build-script-build::configure		0	emit_libm_config	-	arg0	-	log-injection	g
+sink	build-script-build::configure		0	emit_test_config	-	arg0	-	log-injection	g
+sink	cargo-example-derive	ExampleDeriveArgs	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	cargo-example-derive	ExampleDeriveArgs	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	cipher::stream_wrapper	StreamCipherCoreWrapper	0	new	-	arg0	-	credentials-key	-
+sink	cipher::stream_wrapper	StreamCipherCoreWrapper	0	new	-	arg1	-	credentials-iv	-
+sink	cipher::stream_wrapper	StreamCipherCoreWrapper	0	new_from_slice	-	arg0	-	credentials-key	-
+sink	cipher::stream_wrapper	StreamCipherCoreWrapper	0	new_from_slice	-	arg1	-	credentials-iv	-
+sink	clap_builder::builder::arg	Arg	0	remove	-	recv	-	log-injection	g
+sink	clap_builder::builder::arg	Arg	0	value_hint	-	recv	-	log-injection	g
+sink	clap_builder::builder::command	Command	0	_panic_on_missing_help	-	recv	-	log-injection	g
+sink	clap_builder::builder::command	Command	0	mut_arg	-	recv	-	log-injection	g
+sink	clap_builder::builder::command	Command	0	mut_group	-	recv	-	log-injection	g
+sink	clap_builder::builder::command	Command	0	mut_subcommand	-	recv	-	log-injection	g
+sink	clap_builder::builder::command	Command	0	remove	-	recv	-	log-injection	g
+sink	clap_builder::builder::ext	Extensions	0	remove	-	recv	-	log-injection	g
+sink	clap_builder::builder::value_parser	BoolValueParser	0	parse_ref	-	arg1	-	alloc-layout	g
+sink	clap_builder::builder::value_parser	BoolValueParser	0	parse_ref	-	arg1	-	log-injection	g
+sink	clap_builder::builder::value_parser	BoolishValueParser	0	parse_ref	-	arg1	-	alloc-layout	g
+sink	clap_builder::builder::value_parser	BoolishValueParser	0	parse_ref	-	arg1	-	log-injection	g
+sink	clap_builder::builder::value_parser	EnumValueParser	0	parse_ref	-	arg1	-	alloc-layout	g
+sink	clap_builder::builder::value_parser	EnumValueParser	0	parse_ref	-	arg1	-	log-injection	g
+sink	clap_builder::builder::value_parser	NonEmptyStringValueParser	0	parse_ref	-	arg1	-	alloc-layout	g
+sink	clap_builder::builder::value_parser	NonEmptyStringValueParser	0	parse_ref	-	arg1	-	log-injection	g
+sink	clap_builder::builder::value_parser	PathBufValueParser	0	parse	-	arg1	-	alloc-layout	g
+sink	clap_builder::builder::value_parser	PathBufValueParser	0	parse	-	arg1	-	log-injection	g
+sink	clap_builder::builder::value_parser	PathBufValueParser	0	parse_ref	-	arg1	-	alloc-layout	g
+sink	clap_builder::builder::value_parser	PathBufValueParser	0	parse_ref	-	arg1	-	log-injection	g
+sink	clap_builder::builder::value_parser	PossibleValuesParser	0	parse	-	arg1	-	alloc-layout	g
+sink	clap_builder::builder::value_parser	PossibleValuesParser	0	parse	-	arg1	-	log-injection	g
+sink	clap_builder::builder::value_parser	PossibleValuesParser	0	parse_ref	-	arg1	-	alloc-layout	g
+sink	clap_builder::builder::value_parser	PossibleValuesParser	0	parse_ref	-	arg1	-	log-injection	g
+sink	clap_builder::builder::value_parser	RangedI64ValueParser	0	parse_ref	-	arg1	-	alloc-layout	g
+sink	clap_builder::builder::value_parser	RangedI64ValueParser	0	parse_ref	-	arg1	-	log-injection	g
+sink	clap_builder::builder::value_parser	RangedI64ValueParser	0	range	-	recv	-	log-injection	g
+sink	clap_builder::builder::value_parser	RangedU64ValueParser	0	parse_ref	-	arg1	-	alloc-layout	g
+sink	clap_builder::builder::value_parser	RangedU64ValueParser	0	parse_ref	-	arg1	-	log-injection	g
+sink	clap_builder::builder::value_parser	RangedU64ValueParser	0	range	-	recv	-	log-injection	g
+sink	clap_builder::error	Error	0	remove	-	recv	-	log-injection	g
+sink	clap_builder::mkeymap	MKeyMap	0	remove_by_name	-	recv	-	log-injection	g
+sink	clap_builder::output::textwrap::wrap_algorithms	LineWrapper	0	wrap	-	arg0	-	log-injection	g
+sink	clap_builder::output::usage	Usage	0	get_required_usage_from	-	arg1	-	alloc-layout	g
+sink	clap_builder::output::usage	Usage	0	get_required_usage_from	-	arg1	-	log-injection	g
+sink	clap_builder::parser::arg_matcher	ArgMatcher	0	remove	-	recv	-	log-injection	g
+sink	clap_builder::parser::error	MatchesError	0	unwrap	-	arg0	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	contains_id	-	arg0	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	get_count	-	arg0	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	get_flag	-	arg0	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	get_many	-	arg0	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	get_occurrences	-	arg0	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	get_one	-	arg0	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	get_raw	-	arg0	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	get_raw_occurrences	-	arg0	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	remove_many	-	recv	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	remove_many	-	arg0	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	remove_occurrences	-	recv	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	remove_occurrences	-	arg0	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	remove_one	-	recv	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	remove_one	-	arg0	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	try_clear_id	-	recv	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	try_remove_many	-	recv	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	try_remove_occurrences	-	recv	-	log-injection	g
+sink	clap_builder::parser::matches::arg_matches	ArgMatches	0	try_remove_one	-	recv	-	log-injection	g
+sink	clap_builder::parser::matches::matched_arg	MatchedArg	0	check_explicit	-	recv	-	alloc-layout	g
+sink	clap_builder::parser::matches::matched_arg	MatchedArg	0	check_explicit	-	recv	-	log-injection	g
+sink	clap_builder::parser::matches::matched_arg	MatchedArg	0	into_vals_flatten	-	recv	-	pointer-access	g
+sink	clap_builder::parser::parser	Parser	0	get_matches_with	-	recv	-	alloc-layout	g
+sink	clap_builder::parser::parser	Parser	0	get_matches_with	-	recv	-	log-injection	g
+sink	clap_builder::parser::parser	Parser	0	get_matches_with	-	arg0	-	log-injection	g
+sink	clap_builder::parser::parser	Parser	0	parse	-	recv	-	alloc-layout	g
+sink	clap_builder::parser::parser	Parser	0	parse	-	recv	-	log-injection	g
+sink	clap_builder::parser::parser	Parser	0	parse	-	arg0	-	log-injection	g
+sink	clap_builder::util::flat_map	FlatMap	0	remove	-	recv	-	log-injection	g
+sink	clap_builder::util::flat_map	FlatMap	0	remove_entry	-	recv	-	log-injection	g
+sink	clap_builder::util::flat_set	FlatSet	0	into_iter	-	recv	-	pointer-access	g
+sink	clap_builder::util::graph	ChildGraph	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	clap_complete::engine::complete		0	complete	-	arg1	-	log-injection	g
+sink	clap_complete::engine::complete		0	complete	-	arg2	-	log-injection	g
+sink	clap_complete::engine::complete		0	complete	-	arg3	-	log-injection	g
+sink	clap_complete::env::shells	Bash	0	write_complete	-	arg1	-	log-injection	g
+sink	clap_complete::env::shells	Bash	0	write_complete	-	arg2	-	log-injection	g
+sink	clap_complete::env::shells	Elvish	0	write_complete	-	arg1	-	log-injection	g
+sink	clap_complete::env::shells	Elvish	0	write_complete	-	arg2	-	log-injection	g
+sink	clap_complete::env::shells	Fish	0	write_complete	-	arg1	-	log-injection	g
+sink	clap_complete::env::shells	Fish	0	write_complete	-	arg2	-	log-injection	g
+sink	clap_complete::env::shells	Powershell	0	write_complete	-	arg1	-	log-injection	g
+sink	clap_complete::env::shells	Powershell	0	write_complete	-	arg2	-	log-injection	g
+sink	clap_complete::env::shells	Zsh	0	write_complete	-	arg1	-	log-injection	g
+sink	clap_complete::env::shells	Zsh	0	write_complete	-	arg2	-	log-injection	g
+sink	clap_derive::item	Item	0	action	-	recv	-	alloc-layout	g
+sink	clap_derive::item	Item	0	action	-	recv	-	log-injection	g
+sink	clap_derive::item	Item	0	value_parser	-	recv	-	alloc-layout	g
+sink	clap_derive::item	Item	0	value_parser	-	recv	-	log-injection	g
+sink	clap_mangen	Man	0	generate_to	-	recv	-	path-injection	g
+sink	compiler_builtins::math::full_availability		0	rint	-	arg0	-	pointer-access	g
+sink	compiler_builtins::math::full_availability		0	rintf	-	arg0	-	pointer-access	g
+sink	compiler_builtins::math::full_availability		0	roundeven	-	arg0	-	pointer-access	g
+sink	compiler_builtins::math::full_availability		0	roundevenf	-	arg0	-	pointer-access	g
+sink	compiler_builtins::math::libm_math::atan		0	atan	-	arg0	-	pointer-access	g
+sink	compiler_builtins::math::libm_math::atan2		0	atan2	-	arg0	-	pointer-access	g
+sink	compiler_builtins::math::libm_math::expm1		0	expm1	-	arg0	-	pointer-access	g
+sink	compiler_builtins::math::libm_math::generic::rint		0	rint_round	-	arg0	-	pointer-access	g
+sink	compiler_builtins::math::libm_math::log1p		0	log1p	-	arg0	-	pointer-access	g
+sink	compiler_builtins::math::libm_math::rint		0	rint	-	arg0	-	pointer-access	g
+sink	compiler_builtins::math::libm_math::rint		0	rintf	-	arg0	-	pointer-access	g
+sink	compiler_builtins::math::libm_math::roundeven		0	roundeven	-	arg0	-	pointer-access	g
+sink	compiler_builtins::math::libm_math::roundeven		0	roundeven_impl	-	arg0	-	pointer-access	g
+sink	compiler_builtins::math::libm_math::roundeven		0	roundevenf	-	arg0	-	pointer-access	g
+sink	completion-derive	Opt	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	completion-derive	Opt	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	completion-derive	ValueHintOpt	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	completion-derive	ValueHintOpt	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	cookie::builder	CookieBuilder	0	build	-	recv	-	cookie-use	-
+sink	cookie::builder	CookieBuilder	0	finish	-	recv	-	cookie-use	-
+sink	cookie::jar	CookieJar	0	add	-	arg0	-	cookie-use	-
+sink	cookie::jar	CookieJar	0	add_original	-	arg0	-	cookie-use	-
+sink	cookie::secure::key	Key	0	from	-	arg0	-	credentials-key	a
+sink	cookie::secure::private	PrivateJar	0	add	-	arg0	-	cookie-use	-
+sink	cookie::secure::private	PrivateJar	0	add_original	-	arg0	-	cookie-use	-
+sink	cookie::secure::signed	SignedJar	0	add	-	arg0	-	cookie-use	-
+sink	cookie::secure::signed	SignedJar	0	add_original	-	arg0	-	cookie-use	-
+sink	copy	ChunkReader	0	poll_read	-	arg1	-	log-injection	g
+sink	core	f32	0	to_tokens	-	recv	-	log-injection	g
+sink	core	f64	0	to_tokens	-	recv	-	log-injection	g
+sink	core	i128	0	cast	-	recv	-	log-injection	g
+sink	core	i16	0	cast	-	recv	-	log-injection	g
+sink	core	i32	0	cast	-	recv	-	log-injection	g
+sink	core	i64	0	cast	-	recv	-	log-injection	g
+sink	core	i8	0	cast	-	recv	-	log-injection	g
+sink	core	i8	0	from_elem	-	arg1	-	alloc-layout	g
+sink	core	isize	0	cast	-	recv	-	log-injection	g
+sink	core	u128	0	cast	-	recv	-	log-injection	g
+sink	core	u16	0	cast	-	recv	-	log-injection	g
+sink	core	u32	0	cast	-	recv	-	log-injection	g
+sink	core	u64	0	cast	-	recv	-	log-injection	g
+sink	core	u8	0	cast	-	recv	-	log-injection	g
+sink	core	u8	0	from_elem	-	arg1	-	alloc-layout	g
+sink	core	usize	0	cast	-	recv	-	log-injection	g
+sink	core::alloc	Allocator	0	allocate	-	arg0	-	alloc-layout	-
+sink	core::alloc	Allocator	0	allocate_zeroed	-	arg0	-	alloc-layout	-
+sink	core::alloc	Allocator	0	grow	-	arg2	-	alloc-layout	-
+sink	core::alloc	Allocator	0	grow_zeroed	-	arg2	-	alloc-layout	-
+sink	core::alloc	Allocator	1	allocate	-	arg0	-	alloc-layout	g
+sink	core::alloc	Allocator	1	allocate_zeroed	-	arg0	-	alloc-layout	g
+sink	core::alloc	Allocator	1	grow	-	arg2	-	alloc-layout	g
+sink	core::alloc	Allocator	1	grow_zeroed	-	arg2	-	alloc-layout	g
+sink	core::alloc	Allocator	1	shrink	-	arg2	-	alloc-layout	g
+sink	core::alloc::global	GlobalAlloc	0	alloc	-	arg0	-	alloc-layout	-
+sink	core::alloc::global	GlobalAlloc	0	alloc_zeroed	-	arg0	-	alloc-layout	-
+sink	core::alloc::global	GlobalAlloc	0	realloc	-	arg2	-	alloc-size	-
+sink	core::cell::lazy	LazyCell	0	deref_mut	-	recv	-	pointer-access	g
+sink	core::cell::lazy	LazyCell	0	force_mut	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx		0	_mm256_storeu2_m128d	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx		0	_mm256_storeu2_m128d	-	arg1	-	pointer-access	g
+sink	core::core_arch::x86::avx		0	_mm256_storeu2_m128i	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx		0	_mm256_storeu2_m128i	-	arg1	-	pointer-access	g
+sink	core::core_arch::x86::avx		0	_mm256_storeu_pd	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx		0	_mm256_storeu_ps	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx		0	_mm256_storeu_si256	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_load_mask32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_load_mask64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_mm256_loadu_epi16	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_mm256_loadu_epi8	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_mm256_storeu_epi16	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_mm256_storeu_epi8	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_mm512_loadu_epi16	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_mm512_loadu_epi8	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_mm512_storeu_epi16	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_mm512_storeu_epi8	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_mm_loadu_epi16	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_mm_loadu_epi8	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_mm_storeu_epi16	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_mm_storeu_epi8	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_store_mask32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512bw		0	_store_mask64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm256_load_epi32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm256_load_epi64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm256_loadu_epi32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm256_loadu_epi64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm256_store_epi32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm256_store_epi64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm256_storeu_epi32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm256_storeu_epi64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_load_epi32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_load_epi64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_load_pd	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_load_ps	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_load_si512	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_loadu_epi32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_loadu_epi64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_loadu_pd	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_loadu_ps	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_loadu_si512	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_store_epi32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_store_epi64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_store_pd	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_store_ps	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_store_si512	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_storeu_epi32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_storeu_epi64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_storeu_pd	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_storeu_ps	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm512_storeu_si512	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm_load_epi32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm_load_epi64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm_loadu_epi32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm_loadu_epi64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm_store_epi32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm_store_epi64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm_storeu_epi32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512f		0	_mm_storeu_epi64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512fp16		0	_mm256_loadu_ph	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512fp16		0	_mm256_storeu_ph	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512fp16		0	_mm512_loadu_ph	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512fp16		0	_mm512_storeu_ph	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512fp16		0	_mm_loadu_ph	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::avx512fp16		0	_mm_storeu_ph	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::kl		0	_mm_encodekey128_u32	-	arg2	-	pointer-access	g
+sink	core::core_arch::x86::kl		0	_mm_encodekey256_u32	-	arg3	-	pointer-access	g
+sink	core::core_arch::x86::sse2		0	_mm_loadl_epi64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::sse2		0	_mm_loadu_si16	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::sse2		0	_mm_loadu_si32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::sse2		0	_mm_loadu_si64	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::sse2		0	_mm_storeu_pd	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::sse2		0	_mm_storeu_si128	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::sse2		0	_mm_storeu_si16	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::sse2		0	_mm_storeu_si32	-	arg0	-	pointer-access	g
+sink	core::core_arch::x86::sse2		0	_mm_storeu_si64	-	arg0	-	pointer-access	g
+sink	core::ffi::c_str	CStr	0	index	-	arg0	-	log-injection	g
+sink	core::fmt::num	Binary	0	digit	-	arg0	-	log-injection	g
+sink	core::fmt::num	LowerHex	0	digit	-	arg0	-	log-injection	g
+sink	core::fmt::num	Octal	0	digit	-	arg0	-	log-injection	g
+sink	core::fmt::num	UpperHex	0	digit	-	arg0	-	log-injection	g
+sink	core::mem		0	transmute_copy	-	arg0	-	pointer-access	g
+sink	core::mem::drop_guard	DropGuard	0	drop	-	recv	-	pointer-access	g
+sink	core::mem::manually_drop	ManuallyDrop	0	take	-	arg0	-	pointer-access	g
+sink	core::mem::maybe_uninit	MaybeUninit	0	assume_init_read	-	recv	-	pointer-access	g
+sink	core::option	Option	0	expect	-	arg0	-	log-injection	-
+sink	core::option	Option	0	expect	-	arg0	-	log-injection	g
+sink	core::option	Option	0	log_expect	-	arg0	-	log-injection	-
+sink	core::option	Option	0	map	-	recv	-	alloc-layout	g
+sink	core::option	Option	0	map	-	recv	-	log-injection	g
+sink	core::option	Option	0	map	-	arg0	-	log-injection	g
+sink	core::panicking		0	assert_failed	-	arg3	-	log-injection	a
+sink	core::panicking		0	assert_failed	-	arg3	-	log-injection	g
+sink	core::panicking		0	assert_matches_failed	-	arg2	-	log-injection	g
+sink	core::panicking		0	const_panic_fmt	-	arg0	-	log-injection	g
+sink	core::panicking		0	panic_display	-	arg0	-	log-injection	g
+sink	core::panicking		0	panic_fmt	-	arg0	-	log-injection	-
+sink	core::panicking		0	panic_str_2015	-	arg0	-	log-injection	g
+sink	core::panicking		0	unreachable_display	-	arg0	-	log-injection	g
+sink	core::ptr		0	read	-	arg0	-	pointer-access	-
+sink	core::ptr		0	read_unaligned	-	arg0	-	pointer-access	-
+sink	core::ptr		0	read_volatile	-	arg0	-	pointer-access	-
+sink	core::ptr		0	write	-	arg0	-	pointer-access	-
+sink	core::ptr		0	write_bytes	-	arg0	-	pointer-access	-
+sink	core::ptr		0	write_unaligned	-	arg0	-	pointer-access	-
+sink	core::ptr		0	write_volatile	-	arg0	-	pointer-access	-
+sink	core::result	Result	0	expect	-	arg0	-	log-injection	g
+sink	core::result	Result	0	expect_err	-	arg0	-	log-injection	g
+sink	core::result	Result	0	log_expect	-	recv	-	log-injection	a
+sink	core::result	Result	0	log_expect	-	arg0	-	log-injection	-
+sink	core::result	Result	0	log_unwrap	-	recv	-	log-injection	a
+sink	core::result	Result	0	unwrap_or_else	-	arg0	-	log-injection	g
+sink	core::slice::iter	Iter	0	for_each	-	arg0	-	log-injection	g
+sink	core::slice::rotate		0	ptr_rotate	-	arg1	-	pointer-access	g
+sink	core::slice::sort::select		0	partition_at_index	-	arg1	-	log-injection	g
+sink	core_arch::core_arch::x86::avx		0	_mm256_storeu2_m128d	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx		0	_mm256_storeu2_m128d	-	arg1	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx		0	_mm256_storeu2_m128i	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx		0	_mm256_storeu2_m128i	-	arg1	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx		0	_mm256_storeu_pd	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx		0	_mm256_storeu_ps	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx		0	_mm256_storeu_si256	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_load_mask32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_load_mask64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_mm256_loadu_epi16	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_mm256_loadu_epi8	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_mm256_storeu_epi16	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_mm256_storeu_epi8	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_mm512_loadu_epi16	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_mm512_loadu_epi8	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_mm512_storeu_epi16	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_mm512_storeu_epi8	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_mm_loadu_epi16	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_mm_loadu_epi8	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_mm_storeu_epi16	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_mm_storeu_epi8	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_store_mask32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512bw		0	_store_mask64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm256_load_epi32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm256_load_epi64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm256_loadu_epi32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm256_loadu_epi64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm256_store_epi32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm256_store_epi64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm256_storeu_epi32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm256_storeu_epi64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_load_epi32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_load_epi64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_load_pd	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_load_ps	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_load_si512	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_loadu_epi32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_loadu_epi64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_loadu_pd	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_loadu_ps	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_loadu_si512	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_store_epi32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_store_epi64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_store_pd	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_store_ps	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_store_si512	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_storeu_epi32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_storeu_epi64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_storeu_pd	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_storeu_ps	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm512_storeu_si512	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm_load_epi32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm_load_epi64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm_loadu_epi32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm_loadu_epi64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm_store_epi32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm_store_epi64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm_storeu_epi32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512f		0	_mm_storeu_epi64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512fp16		0	_mm256_loadu_ph	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512fp16		0	_mm256_storeu_ph	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512fp16		0	_mm512_loadu_ph	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512fp16		0	_mm512_storeu_ph	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512fp16		0	_mm_loadu_ph	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::avx512fp16		0	_mm_storeu_ph	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::kl		0	_mm_encodekey128_u32	-	arg2	-	pointer-access	g
+sink	core_arch::core_arch::x86::kl		0	_mm_encodekey256_u32	-	arg3	-	pointer-access	g
+sink	core_arch::core_arch::x86::sse2		0	_mm_loadl_epi64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::sse2		0	_mm_loadu_si16	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::sse2		0	_mm_loadu_si32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::sse2		0	_mm_loadu_si64	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::sse2		0	_mm_storeu_pd	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::sse2		0	_mm_storeu_si128	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::sse2		0	_mm_storeu_si16	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::sse2		0	_mm_storeu_si32	-	arg0	-	pointer-access	g
+sink	core_arch::core_arch::x86::sse2		0	_mm_storeu_si64	-	arg0	-	pointer-access	g
+sink	crypto_common	KeyInit	0	new	-	arg0	-	credentials-key	-
+sink	crypto_common	KeyInit	0	new	-	arg1	-	credentials-iv	-
+sink	crypto_common	KeyInit	0	new_from_slice	-	arg0	-	credentials-key	-
+sink	crypto_common	KeyInit	0	new_from_slice	-	arg1	-	credentials-iv	-
+sink	crypto_common	KeyIvInit	0	new	-	arg0	-	credentials-key	-
+sink	crypto_common	KeyIvInit	0	new	-	arg1	-	credentials-iv	-
+sink	crypto_common	KeyIvInit	0	new_from_slice	-	arg0	-	credentials-key	-
+sink	crypto_common	KeyIvInit	0	new_from_slice	-	arg1	-	credentials-iv	-
+sink	demo	Args	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	demo	Args	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	digest::core_api::wrapper	CoreWrapper	0	new	-	arg0	-	credentials-key	-
+sink	digest::core_api::wrapper	CoreWrapper	0	new	-	arg1	-	credentials-iv	-
+sink	digest::core_api::wrapper	CoreWrapper	0	new_from_slice	-	arg0	-	credentials-key	-
+sink	digest::core_api::wrapper	CoreWrapper	0	new_from_slice	-	arg1	-	credentials-iv	-
+sink	digest::digest	Digest	0	chain_update	-	arg0	-	hasher-input	-
+sink	digest::digest	Digest	0	digest	-	arg0	-	hasher-input	-
+sink	digest::digest	Digest	0	new_with_prefix	-	arg0	-	hasher-input	-
+sink	digest::digest	Digest	0	update	-	arg0	-	hasher-input	-
+sink	escaped-positional-derive	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	escaped-positional-derive	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	find	Value	0	from_matches	-	arg0	-	log-injection	g
+sink	framed_read	Mock	0	poll_read	-	arg1	-	log-injection	g
+sink	framed_write	Mock	0	poll_write	-	arg1	-	log-injection	g
+sink	framed_write	Mock	0	write	-	arg0	-	log-injection	g
+sink	git-derive	StashPushArgs	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	git-derive	StashPushArgs	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	hyper::client::dispatch	Receiver	0	poll_recv	-	arg0	-	alloc-layout	g
+sink	hyper::client::dispatch	Receiver	0	poll_recv	-	arg0	-	log-injection	g
+sink	hyper::common::buf	BufList	0	push	-	recv	-	log-injection	g
+sink	hyper::common::time	Time	0	check	-	arg1	-	log-injection	g
+sink	hyper::proto::h1::conn	Conn	0	end_body	-	recv	-	log-injection	g
+sink	hyper::proto::h1::conn	Conn	0	poll_drain_or_close_read	-	recv	-	log-injection	g
+sink	hyper::proto::h1::conn	Conn	0	poll_read_body	-	recv	-	log-injection	g
+sink	hyper::proto::h1::conn	Conn	0	write_body	-	recv	-	log-injection	g
+sink	hyper::proto::h1::conn	Conn	0	write_body_and_end	-	recv	-	log-injection	g
+sink	hyper::proto::h1::conn	Conn	0	write_trailers	-	recv	-	log-injection	g
+sink	hyper::proto::h1::encode	Encoder	0	encode_and_end	-	arg1	-	log-injection	g
+sink	hyper::proto::h1::io	Buffered	0	buffer	-	recv	-	log-injection	g
+sink	hyper::proto::h1::io	WriteBuf	0	buffer	-	recv	-	log-injection	g
+sink	hyper::proto::h1::role	Client	0	encode	-	arg0	-	log-injection	g
+sink	hyper::proto::h1::role	Server	0	encode	-	arg0	-	log-injection	g
+sink	hyper::proto::h2::client		0	handshake	-	arg2	-	alloc-layout	g
+sink	hyper::proto::h2::client		0	handshake	-	arg2	-	log-injection	g
+sink	hyper::proto::h2::ping		0	channel	-	arg1	-	alloc-layout	g
+sink	hyper::proto::h2::ping		0	channel	-	arg1	-	log-injection	g
+sink	interop_augment_args	DerivedArgs	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	interop_augment_args	DerivedArgs	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	interop_flatten_hand_args	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	interop_flatten_hand_args	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	interop_flatten_hand_args	CliArgs	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	interop_flatten_hand_args	CliArgs	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	interop_hand_subcommand	AddArgs	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	interop_hand_subcommand	AddArgs	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	interop_hand_subcommand	Cli	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	interop_hand_subcommand	Cli	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	interop_hand_subcommand	RemoveArgs	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	interop_hand_subcommand	RemoveArgs	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	intrinsic-test::arm	ArmArchitectureTest	0	build_c_file	-	recv	-	log-injection	g
+sink	intrinsic-test::arm	ArmArchitectureTest	0	create	-	arg0	-	path-injection	g
+sink	intrinsic-test::arm::compile		0	build_cpp_compilation	-	arg0	-	log-injection	g
+sink	intrinsic-test::arm::intrinsic	ArmIntrinsicType	0	c_type	-	recv	-	log-injection	g
+sink	intrinsic-test::arm::intrinsic	ArmIntrinsicType	0	get_lane_function	-	recv	-	log-injection	g
+sink	intrinsic-test::arm::intrinsic	ArmIntrinsicType	0	get_load_function	-	recv	-	log-injection	g
+sink	intrinsic-test::arm::intrinsic	ArmIntrinsicType	0	rust_type	-	recv	-	log-injection	g
+sink	intrinsic-test::arm::json_parser		0	get_neon_intrinsics	-	arg0	-	path-injection	g
+sink	intrinsic-test::common::argument	Argument	0	from_c	-	arg1	-	log-injection	g
+sink	intrinsic-test::common::cli	ProcessedCli	0	new	-	arg0	-	path-injection	g
+sink	intrinsic-test::common::compile_c	CompilationCommandBuilder	0	add_arch_flags	-	arg0	-	pointer-access	g
+sink	intrinsic-test::common::compile_c	CompilationCommandBuilder	0	add_extra_flags	-	arg0	-	pointer-access	g
+sink	intrinsic-test::common::intrinsic	Intrinsic	0	print_result_c	-	recv	-	log-injection	g
+sink	intrinsic-test::common::intrinsic_helpers	IntrinsicType	0	populate_random	-	recv	-	log-injection	g
+sink	intrinsic-test::common::intrinsic_helpers	TypeKind	0	c_prefix	-	recv	-	log-injection	g
+sink	intrinsic-test::common::intrinsic_helpers	TypeKind	0	rust_prefix	-	recv	-	log-injection	g
+sink	intrinsic-test::common::values		0	value_for_array	-	arg0	-	log-injection	g
+sink	intrinsic-test::common::write_file		0	write_file	-	arg0	-	path-injection	g
+sink	io_async_fd	FileDescriptor	0	write	-	arg0	-	log-injection	g
+sink	io_inspect	SmallReader	0	poll_read	-	arg1	-	log-injection	g
+sink	io_join	R	0	poll_read	-	arg1	-	log-injection	g
+sink	io_panic	RW	0	poll_read	-	arg1	-	log-injection	g
+sink	io_read_to_end	UninitTest	0	poll_read	-	recv	-	log-injection	g
+sink	io_split	RW	0	poll_read	-	arg1	-	log-injection	g
+sink	length_delimited	Mock	0	poll_read	-	arg1	-	log-injection	g
+sink	length_delimited	Mock	0	poll_write	-	arg1	-	log-injection	g
+sink	libc::unix		0	aligned_alloc	-	arg1	-	alloc-size	-
+sink	libc::unix		0	calloc	-	arg0	-	alloc-size	-
+sink	libc::unix		0	calloc	-	arg1	-	alloc-size	-
+sink	libc::unix		0	malloc	-	arg0	-	alloc-size	-
+sink	libc::unix		0	realloc	-	arg1	-	alloc-size	-
+sink	libc::windows		0	aligned_alloc	-	arg1	-	alloc-size	-
+sink	libc::windows		0	calloc	-	arg0	-	alloc-size	-
+sink	libc::windows		0	calloc	-	arg1	-	alloc-size	-
+sink	libc::windows		0	malloc	-	arg0	-	alloc-size	-
+sink	libc::windows		0	realloc	-	arg1	-	alloc-size	-
+sink	libm::libm_helper	Libm	0	atan	-	arg0	-	pointer-access	g
+sink	libm::libm_helper	Libm	0	atan2	-	arg0	-	pointer-access	g
+sink	libm::libm_helper	Libm	0	expm1	-	arg0	-	pointer-access	g
+sink	libm::libm_helper	Libm	0	log1p	-	arg0	-	pointer-access	g
+sink	libm::libm_helper	Libm	0	rint	-	arg0	-	pointer-access	g
+sink	libm::libm_helper	Libm	0	roundevem	-	arg0	-	pointer-access	g
+sink	libm::libm_helper	Libm	0	roundeven	-	arg0	-	pointer-access	g
+sink	libm::math::atan		0	atan	-	arg0	-	pointer-access	g
+sink	libm::math::atan2		0	atan2	-	arg0	-	pointer-access	g
+sink	libm::math::expm1		0	expm1	-	arg0	-	pointer-access	g
+sink	libm::math::generic::rint		0	rint_round	-	arg0	-	pointer-access	g
+sink	libm::math::log1p		0	log1p	-	arg0	-	pointer-access	g
+sink	libm::math::rint		0	rint	-	arg0	-	pointer-access	g
+sink	libm::math::rint		0	rintf	-	arg0	-	pointer-access	g
+sink	libm::math::roundeven		0	roundeven	-	arg0	-	pointer-access	g
+sink	libm::math::roundeven		0	roundeven_impl	-	arg0	-	pointer-access	g
+sink	libm::math::roundeven		0	roundevenf	-	arg0	-	pointer-access	g
+sink	libm_test		0	test_log	-	arg0	-	log-injection	g
+sink	libm_test::domain	EitherPrim	0	unwrap_float	-	recv	-	log-injection	g
+sink	libm_test::domain	EitherPrim	0	unwrap_int	-	recv	-	log-injection	g
+sink	libm_test::generate::random	RandomInput	1	get_cases	-	arg0	-	log-injection	g
+sink	libm_test::generate::spaced	SpacedInput	1	get_cases	-	arg0	-	log-injection	g
+sink	libm_test::run_cfg		0	int_range	-	arg0	-	log-injection	g
+sink	libm_test::run_cfg		0	iteration_count	-	arg0	-	log-injection	g
+sink	log	Record	0	file	-	recv	-	alloc-layout	g
+sink	log	Record	0	file	-	recv	-	log-injection	g
+sink	log	Record	0	module_path	-	recv	-	alloc-layout	g
+sink	log	Record	0	module_path	-	recv	-	log-injection	g
+sink	log	RecordBuilder	0	file	-	arg0	-	alloc-layout	g
+sink	log	RecordBuilder	0	file	-	arg0	-	log-injection	g
+sink	log	RecordBuilder	0	file_static	-	arg0	-	alloc-layout	g
+sink	log	RecordBuilder	0	file_static	-	arg0	-	log-injection	g
+sink	log	RecordBuilder	0	module_path	-	arg0	-	alloc-layout	g
+sink	log	RecordBuilder	0	module_path	-	arg0	-	log-injection	g
+sink	log	RecordBuilder	0	module_path_static	-	arg0	-	alloc-layout	g
+sink	log	RecordBuilder	0	module_path_static	-	arg0	-	log-injection	g
+sink	log::__private_api		0	log	-	arg0	-	log-injection	-
+sink	log::__private_api		0	log	-	arg1	-	log-injection	-
+sink	log::__private_api		0	log	-	arg2	-	log-injection	-
+sink	log::__private_api		0	log	-	arg3	-	log-injection	-
+sink	log::__private_api		0	log	-	arg4	-	log-injection	-
+sink	md5		0	compute	-	arg0	-	hasher-input	-
+sink	memchr::arch::all		0	is_equal	-	arg0	-	pointer-access	g
+sink	memchr::arch::all		0	is_equal	-	arg1	-	pointer-access	g
+sink	memchr::arch::all		0	is_equal_raw	-	arg0	-	pointer-access	g
+sink	memchr::arch::all		0	is_equal_raw	-	arg1	-	pointer-access	g
+sink	memchr::arch::all		0	is_prefix	-	arg1	-	pointer-access	g
+sink	memchr::arch::all		0	is_suffix	-	arg1	-	pointer-access	g
+sink	memchr::arch::all::memchr	One	0	count	-	arg0	-	pointer-access	g
+sink	memchr::arch::all::memchr	One	0	count_raw	-	arg0	-	pointer-access	g
+sink	memchr::arch::all::memchr	One	0	find	-	arg0	-	pointer-access	g
+sink	memchr::arch::all::memchr	One	0	find_raw	-	arg0	-	pointer-access	g
+sink	memchr::arch::all::memchr	One	0	rfind_raw	-	arg1	-	pointer-access	g
+sink	memchr::arch::all::memchr	OneIter	0	count	-	recv	-	pointer-access	g
+sink	memchr::arch::all::memchr	OneIter	0	next	-	recv	-	pointer-access	g
+sink	memchr::arch::all::memchr	OneIter	0	next_back	-	recv	-	pointer-access	g
+sink	memchr::arch::all::memchr	Three	0	find	-	arg0	-	pointer-access	g
+sink	memchr::arch::all::memchr	Three	0	find_raw	-	arg0	-	pointer-access	g
+sink	memchr::arch::all::memchr	Three	0	rfind_raw	-	arg1	-	pointer-access	g
+sink	memchr::arch::all::memchr	ThreeIter	0	next	-	recv	-	pointer-access	g
+sink	memchr::arch::all::memchr	ThreeIter	0	next_back	-	recv	-	pointer-access	g
+sink	memchr::arch::all::memchr	Two	0	find	-	arg0	-	pointer-access	g
+sink	memchr::arch::all::memchr	Two	0	find_raw	-	arg0	-	pointer-access	g
+sink	memchr::arch::all::memchr	Two	0	rfind_raw	-	arg1	-	pointer-access	g
+sink	memchr::arch::all::memchr	TwoIter	0	next	-	recv	-	pointer-access	g
+sink	memchr::arch::all::memchr	TwoIter	0	next_back	-	recv	-	pointer-access	g
+sink	memchr::arch::all::rabinkarp	Finder	0	find	-	arg0	-	pointer-access	g
+sink	memchr::arch::all::rabinkarp	Finder	0	find	-	arg1	-	pointer-access	g
+sink	memchr::arch::all::rabinkarp	Finder	0	find_raw	-	arg0	-	pointer-access	g
+sink	memchr::arch::all::rabinkarp	Finder	0	find_raw	-	arg2	-	pointer-access	g
+sink	memchr::arch::all::rabinkarp	FinderRev	0	rfind	-	arg1	-	pointer-access	g
+sink	memchr::arch::all::rabinkarp	FinderRev	0	rfind_raw	-	arg1	-	pointer-access	g
+sink	memchr::arch::all::rabinkarp	FinderRev	0	rfind_raw	-	arg2	-	pointer-access	g
+sink	memchr::arch::generic::memchr		0	search_slice_with_raw	-	arg0	-	pointer-access	g
+sink	memchr::arch::generic::memchr	Iter	0	count	-	recv	-	pointer-access	g
+sink	memchr::arch::generic::memchr	Iter	0	next	-	recv	-	pointer-access	g
+sink	memchr::arch::generic::memchr	Iter	0	next_back	-	recv	-	pointer-access	g
+sink	memchr::arch::generic::packedpair	Finder	0	find	-	recv	-	log-injection	g
+sink	memchr::arch::generic::packedpair	Finder	0	find	-	arg1	-	pointer-access	g
+sink	memchr::arch::generic::packedpair	Finder	0	find_prefilter	-	recv	-	log-injection	g
+sink	memchr::arch::x86_64::avx2::packedpair	Finder	0	find	-	recv	-	log-injection	g
+sink	memchr::arch::x86_64::avx2::packedpair	Finder	0	find	-	arg1	-	pointer-access	g
+sink	memchr::arch::x86_64::avx2::packedpair	Finder	0	find_prefilter	-	recv	-	log-injection	g
+sink	memchr::arch::x86_64::sse2::packedpair	Finder	0	find	-	recv	-	log-injection	g
+sink	memchr::arch::x86_64::sse2::packedpair	Finder	0	find	-	arg1	-	pointer-access	g
+sink	memchr::arch::x86_64::sse2::packedpair	Finder	0	find_prefilter	-	recv	-	log-injection	g
+sink	memchr::memmem		0	find	-	arg0	-	pointer-access	g
+sink	memchr::memmem		0	find	-	arg1	-	pointer-access	g
+sink	memchr::memmem		0	rfind	-	arg1	-	pointer-access	g
+sink	memchr::memmem::searcher	SearcherRev	0	rfind	-	arg1	-	pointer-access	g
+sink	mysql::conn::pool	PooledConn	0	prep	-	arg0	-	sql-injection	-
+sink	mysql::conn::pool	PooledConn	0	query_iter	-	arg0	-	sql-injection	-
+sink	mysql::conn::queryable	Queryable	0	query	-	arg0	-	sql-injection	-
+sink	mysql::conn::queryable	Queryable	0	query_drop	-	arg0	-	sql-injection	-
+sink	mysql::conn::queryable	Queryable	0	query_first	-	arg0	-	sql-injection	-
+sink	mysql::conn::queryable	Queryable	0	query_first_opt	-	arg0	-	sql-injection	-
+sink	mysql::conn::queryable	Queryable	0	query_fold	-	arg0	-	sql-injection	-
+sink	mysql::conn::queryable	Queryable	0	query_fold_opt	-	arg0	-	sql-injection	-
+sink	mysql::conn::queryable	Queryable	0	query_map	-	arg0	-	sql-injection	-
+sink	mysql::conn::queryable	Queryable	0	query_map_opt	-	arg0	-	sql-injection	-
+sink	mysql::conn::queryable	Queryable	0	query_opt	-	arg0	-	sql-injection	-
+sink	mysql_async::conn	Conn	0	prep	-	arg0	-	sql-injection	-
+sink	mysql_async::conn	Conn	0	query_iter	-	arg0	-	sql-injection	-
+sink	mysql_async::queryable	Queryable	0	query	-	arg0	-	sql-injection	-
+sink	mysql_async::queryable	Queryable	0	query_drop	-	arg0	-	sql-injection	-
+sink	mysql_async::queryable	Queryable	0	query_first	-	arg0	-	sql-injection	-
+sink	mysql_async::queryable	Queryable	0	query_fold	-	arg0	-	sql-injection	-
+sink	mysql_async::queryable	Queryable	0	query_map	-	arg0	-	sql-injection	-
+sink	mysql_async::queryable	Queryable	0	query_stream	-	arg0	-	sql-injection	-
+sink	native_tls	TlsConnectorBuilder	0	danger_accept_invalid_certs	-	arg0	-	disable-certificate	-
+sink	native_tls	TlsConnectorBuilder	0	danger_accept_invalid_hostnames	-	arg0	-	disable-certificate	-
+sink	panic_unwind		0	__rust_panic_cleanup	-	arg0	-	pointer-access	g
+sink	panic_unwind::imp		0	cleanup	-	arg0	-	pointer-access	g
+sink	poem::session::server_session	ServerSession	0	new	-	arg0	-	cookie-use	-
+sink	poem::web::cookie	CookieJar	0	add	-	arg0	-	cookie-use	-
+sink	poem::web::cookie	PrivateCookieJar	0	add	-	arg0	-	cookie-use	-
+sink	poem::web::cookie	SignedCookieJar	0	add	-	arg0	-	cookie-use	-
+sink	postgres::client	Client	0	batch_execute	-	arg0	-	sql-injection	-
+sink	postgres::client	Client	0	execute	-	arg0	-	sql-injection	-
+sink	postgres::client	Client	0	prepare	-	arg0	-	sql-injection	-
+sink	postgres::client	Client	0	prepare_typed	-	arg0	-	sql-injection	-
+sink	postgres::client	Client	0	query	-	arg0	-	sql-injection	-
+sink	postgres::client	Client	0	query_one	-	arg0	-	sql-injection	-
+sink	postgres::client	Client	0	query_opt	-	arg0	-	sql-injection	-
+sink	postgres::client	Client	0	query_raw	-	arg0	-	sql-injection	-
+sink	postgres::client	Client	0	query_typed	-	arg0	-	sql-injection	-
+sink	postgres::client	Client	0	query_typed_raw	-	arg0	-	sql-injection	-
+sink	postgres::client	Client	0	simple_query	-	arg0	-	sql-injection	-
+sink	proc_macro	Ident	0	new	-	arg0	-	log-injection	g
+sink	proc_macro	Ident	0	new_raw	-	arg0	-	log-injection	g
+sink	proc_macro	Literal	0	f32_suffixed	-	arg0	-	log-injection	g
+sink	proc_macro	Literal	0	f32_unsuffixed	-	arg0	-	log-injection	g
+sink	proc_macro	Literal	0	f64_suffixed	-	arg0	-	log-injection	g
+sink	proc_macro	Literal	0	f64_unsuffixed	-	arg0	-	log-injection	g
+sink	proc_macro	Punct	0	new	-	arg0	-	log-injection	g
+sink	proc_macro::bridge	Diagnostic	0	mark	-	arg0	-	pointer-access	g
+sink	proc_macro::bridge	Diagnostic	0	unmark	-	recv	-	pointer-access	g
+sink	proc_macro::bridge::server	MarkedTypes	0	concat_streams	-	arg1	-	pointer-access	g
+sink	proc_macro::bridge::server	MarkedTypes	0	concat_trees	-	arg1	-	pointer-access	g
+sink	proc_macro::bridge::server	MarkedTypes	0	emit_diagnostic	-	arg0	-	pointer-access	g
+sink	proc_macro::bridge::symbol	Symbol	0	new_ident	-	arg0	-	log-injection	g
+sink	proc_macro::diagnostic	Diagnostic	0	emit	-	recv	-	pointer-access	g
+sink	rand		0	random_bool	-	arg0	-	log-injection	g
+sink	rand		0	random_ratio	-	arg0	-	log-injection	g
+sink	rand		0	random_ratio	-	arg1	-	log-injection	g
+sink	rand::seq::index_		0	sample	-	arg1	-	alloc-layout	g
+sink	rand::seq::index_		0	sample	-	arg2	-	alloc-layout	g
+sink	rand::seq::index_	IndexVec	0	into_iter	-	recv	-	pointer-access	g
+sink	rand::seq::index_	IndexVec	0	into_vec	-	recv	-	pointer-access	g
+sink	reqwest		0	get	-	arg0	-	request-url	g
+sink	reqwest::async_impl::client	Client	0	call	-	recv	-	alloc-layout	g
+sink	reqwest::async_impl::client	Client	0	call	-	recv	-	log-injection	g
+sink	reqwest::async_impl::client	Client	0	delete	-	arg0	-	request-url	g
+sink	reqwest::async_impl::client	Client	0	execute	-	recv	-	alloc-layout	g
+sink	reqwest::async_impl::client	Client	0	execute	-	recv	-	log-injection	g
+sink	reqwest::async_impl::client	Client	0	execute_request	-	recv	-	alloc-layout	g
+sink	reqwest::async_impl::client	Client	0	execute_request	-	recv	-	log-injection	g
+sink	reqwest::async_impl::client	Client	0	get	-	arg0	-	request-url	g
+sink	reqwest::async_impl::client	Client	0	head	-	arg0	-	request-url	g
+sink	reqwest::async_impl::client	Client	0	patch	-	arg0	-	request-url	g
+sink	reqwest::async_impl::client	Client	0	post	-	arg0	-	request-url	g
+sink	reqwest::async_impl::client	Client	0	put	-	arg0	-	request-url	g
+sink	reqwest::async_impl::client	Client	0	request	-	arg1	-	request-url	-
+sink	reqwest::async_impl::client	ClientBuilder	0	build	-	recv	-	disable-certificate	g
+sink	reqwest::async_impl::client	ClientBuilder	0	danger_accept_invalid_certs	-	arg0	-	disable-certificate	-
+sink	reqwest::async_impl::client	ClientBuilder	0	danger_accept_invalid_hostnames	-	arg0	-	disable-certificate	-
+sink	reqwest::async_impl::multipart	Form	0	into_stream	-	recv	-	log-injection	g
+sink	reqwest::async_impl::multipart	Form	0	stream	-	recv	-	log-injection	g
+sink	reqwest::async_impl::request	RequestBuilder	0	multipart	-	arg0	-	log-injection	g
+sink	reqwest::async_impl::request	RequestBuilder	0	send	-	recv	-	alloc-layout	g
+sink	reqwest::async_impl::request	RequestBuilder	0	send	-	recv	-	log-injection	g
+sink	reqwest::blocking		0	get	-	arg0	-	request-url	g
+sink	reqwest::blocking::body	Body	0	buffer	-	recv	-	alloc-layout	g
+sink	reqwest::blocking::client	Client	0	delete	-	arg0	-	request-url	g
+sink	reqwest::blocking::client	Client	0	execute	-	recv	-	alloc-layout	g
+sink	reqwest::blocking::client	Client	0	execute	-	recv	-	log-injection	g
+sink	reqwest::blocking::client	Client	0	get	-	arg0	-	request-url	g
+sink	reqwest::blocking::client	Client	0	head	-	arg0	-	request-url	g
+sink	reqwest::blocking::client	Client	0	patch	-	arg0	-	request-url	g
+sink	reqwest::blocking::client	Client	0	post	-	arg0	-	request-url	g
+sink	reqwest::blocking::client	Client	0	put	-	arg0	-	request-url	g
+sink	reqwest::blocking::client	Client	0	request	-	arg1	-	request-url	-
+sink	reqwest::blocking::client	ClientBuilder	0	danger_accept_invalid_certs	-	arg0	-	disable-certificate	-
+sink	reqwest::blocking::client	ClientBuilder	0	danger_accept_invalid_hostnames	-	arg0	-	disable-certificate	-
+sink	reqwest::blocking::multipart	Form	0	into_reader	-	recv	-	log-injection	g
+sink	reqwest::blocking::multipart	Form	0	reader	-	recv	-	log-injection	g
+sink	reqwest::blocking::multipart	Reader	0	read	-	recv	-	log-injection	g
+sink	reqwest::blocking::request	RequestBuilder	0	multipart	-	arg0	-	log-injection	g
+sink	reqwest::blocking::request	RequestBuilder	0	send	-	recv	-	alloc-layout	g
+sink	reqwest::blocking::request	RequestBuilder	0	send	-	recv	-	log-injection	g
+sink	reqwest::blocking::wait		0	timeout	-	arg1	-	alloc-layout	g
+sink	reqwest::blocking::wait		0	timeout	-	arg1	-	log-injection	g
+sink	reqwest::connect	Connector	0	call	-	arg0	-	log-injection	g
+sink	reqwest::connect	ConnectorService	0	call	-	arg0	-	log-injection	g
+sink	reqwest::error	Error	0	new	-	arg1	-	alloc-layout	g
+sink	reqwest::error	Error	0	new	-	arg1	-	log-injection	g
+sink	rusqlite	Connection	0	execute	-	arg0	-	sql-injection	-
+sink	rusqlite	Connection	0	execute_batch	-	arg0	-	sql-injection	-
+sink	rusqlite	Connection	0	prepare	-	arg0	-	sql-injection	-
+sink	rusqlite	Connection	0	prepare_cached	-	arg0	-	sql-injection	-
+sink	rusqlite	Connection	0	prepare_with_flags	-	arg0	-	sql-injection	-
+sink	rusqlite	Connection	0	query_one	-	arg0	-	sql-injection	-
+sink	rusqlite	Connection	0	query_row	-	arg0	-	sql-injection	-
+sink	rusqlite	Connection	0	query_row_and_then	-	arg0	-	sql-injection	-
+sink	serde::__private::de::content	ContentDeserializer	0	deserialize_any	-	recv	-	pointer-access	g
+sink	serde::__private::de::content	ContentDeserializer	0	deserialize_byte_buf	-	recv	-	pointer-access	g
+sink	serde::__private::de::content	ContentDeserializer	0	deserialize_bytes	-	recv	-	pointer-access	g
+sink	serde::__private::de::content	ContentDeserializer	0	deserialize_enum	-	recv	-	pointer-access	g
+sink	serde::__private::de::content	ContentDeserializer	0	deserialize_map	-	recv	-	pointer-access	g
+sink	serde::__private::de::content	ContentDeserializer	0	deserialize_seq	-	recv	-	pointer-access	g
+sink	serde::__private::de::content	ContentDeserializer	0	deserialize_struct	-	recv	-	pointer-access	g
+sink	serde::__private::de::content	ContentDeserializer	0	deserialize_tuple	-	recv	-	pointer-access	g
+sink	serde::__private::de::content	ContentDeserializer	0	deserialize_tuple_struct	-	recv	-	pointer-access	g
+sink	serde::__private::de::content	ContentDeserializer	0	deserialize_unit_struct	-	recv	-	pointer-access	g
+sink	serde::__private::de::content	VariantDeserializer	0	struct_variant	-	recv	-	pointer-access	g
+sink	serde::__private::de::content	VariantDeserializer	0	tuple_variant	-	recv	-	pointer-access	g
+sink	serde::__private::ser	TaggedSerializer	0	serialize_map	-	arg0	-	alloc-layout	g
+sink	serde::__private::ser	TaggedSerializer	0	serialize_map	-	arg0	-	log-injection	g
+sink	serde::__private::ser	TaggedSerializer	0	serialize_struct_variant	-	arg3	-	alloc-layout	g
+sink	serde::__private::ser	TaggedSerializer	0	serialize_tuple_variant	-	arg3	-	alloc-layout	g
+sink	serde::__private::ser::content	ContentSerializer	0	serialize_map	-	arg0	-	alloc-layout	g
+sink	serde::__private::ser::content	ContentSerializer	0	serialize_seq	-	arg0	-	alloc-layout	g
+sink	serde::__private::ser::content	ContentSerializer	0	serialize_struct	-	arg1	-	alloc-layout	g
+sink	serde::__private::ser::content	ContentSerializer	0	serialize_struct_variant	-	arg3	-	alloc-layout	g
+sink	serde::__private::ser::content	ContentSerializer	0	serialize_tuple	-	arg0	-	alloc-layout	g
+sink	serde::__private::ser::content	ContentSerializer	0	serialize_tuple_struct	-	arg1	-	alloc-layout	g
+sink	serde::__private::ser::content	ContentSerializer	0	serialize_tuple_variant	-	arg3	-	alloc-layout	g
+sink	serde::__private::ser::content	SerializeStructVariantAsMapValue	0	new	-	arg2	-	alloc-layout	g
+sink	serde::__private::ser::content	SerializeTupleVariantAsMapValue	0	new	-	arg2	-	alloc-layout	g
+sink	serde::de::impls	PathBufVisitor	0	visit_str	-	arg0	-	alloc-layout	g
+sink	serde::de::impls	PathBufVisitor	0	visit_str	-	arg0	-	log-injection	g
+sink	serde::de::impls	PathBufVisitor	0	visit_str	-	arg0	-	pointer-access	g
+sink	serde::de::impls	PathBufVisitor	0	visit_string	-	arg0	-	alloc-layout	g
+sink	serde::de::impls	PathBufVisitor	0	visit_string	-	arg0	-	log-injection	g
+sink	serde::de::impls	PathBufVisitor	0	visit_string	-	arg0	-	pointer-access	g
+sink	signal_ctrl_c::support::signal		0	send_signal	-	arg0	-	log-injection	g
+sink	signal_drop_recv::support::signal		0	send_signal	-	arg0	-	log-injection	g
+sink	signal_drop_rt::support::signal		0	send_signal	-	arg0	-	log-injection	g
+sink	signal_drop_signal::support::signal		0	send_signal	-	arg0	-	log-injection	g
+sink	signal_multi_rt::support::signal		0	send_signal	-	arg0	-	log-injection	g
+sink	signal_notify_both::support::signal		0	send_signal	-	arg0	-	log-injection	g
+sink	signal_realtime::support::signal		0	send_signal	-	arg0	-	log-injection	g
+sink	signal_twice::support::signal		0	send_signal	-	arg0	-	log-injection	g
+sink	signal_usr1::support::signal		0	send_signal	-	arg0	-	log-injection	g
+sink	smallvec	SmallVec	0	into_inner	-	recv	-	pointer-access	g
+sink	sqlx_core::executor	Executor	0	execute	-	arg0	-	sql-injection	-
+sink	sqlx_core::query		0	query	-	arg0	-	sql-injection	-
+sink	sqlx_core::query_as		0	query_as	-	arg0	-	sql-injection	-
+sink	sqlx_core::query_as_with		0	query_as_with	-	arg0	-	sql-injection	-
+sink	sqlx_core::query_scalar		0	query_scalar	-	arg0	-	sql-injection	-
+sink	sqlx_core::query_scalar_with		0	query_scalar_with	-	arg0	-	sql-injection	-
+sink	sqlx_core::query_with		0	query_with	-	arg0	-	sql-injection	-
+sink	sqlx_core::raw_sql		0	raw_sql	-	arg0	-	sql-injection	-
+sink	std::alloc		0	rust_oom	-	arg0	-	log-injection	g
+sink	std::alloc	System	0	alloc	-	arg0	-	alloc-size	g
+sink	std::alloc	System	0	alloc_zeroed	-	arg0	-	alloc-size	g
+sink	std::alloc	System	0	allocate	-	arg0	-	alloc-size	g
+sink	std::alloc	System	0	allocate_zeroed	-	arg0	-	alloc-size	g
+sink	std::alloc	System	0	grow	-	arg2	-	alloc-size	g
+sink	std::alloc	System	0	grow_zeroed	-	arg2	-	alloc-size	g
+sink	std::alloc	System	0	realloc	-	arg2	-	alloc-size	g
+sink	std::alloc	System	0	shrink	-	arg2	-	alloc-size	g
+sink	std::alloc::__default_lib_allocator		0	__rdl_alloc	-	arg0	-	alloc-size	g
+sink	std::alloc::__default_lib_allocator		0	__rdl_alloc_zeroed	-	arg0	-	alloc-size	g
+sink	std::alloc::__default_lib_allocator		0	__rdl_realloc	-	arg3	-	alloc-size	g
+sink	std::backtrace_rs::symbolize::gimli	Mapping	0	new	-	arg0	-	path-injection	g
+sink	std::env	Args	0	next_back	-	recv	-	pointer-access	g
+sink	std::env	ArgsOs	0	last	-	recv	-	pointer-access	g
+sink	std::env	ArgsOs	0	next_back	-	recv	-	pointer-access	g
+sink	std::ffi::os_str	OsString	0	truncate	-	arg0	-	log-injection	g
+sink	std::ffi::os_str	OsString	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	std::fs		0	copy	-	arg0	-	path-injection	-
+sink	std::fs		0	copy	-	arg1	-	path-injection	-
+sink	std::fs		0	create_dir	-	arg0	-	path-injection	-
+sink	std::fs		0	create_dir_all	-	arg0	-	path-injection	-
+sink	std::fs		0	hard_link	-	arg0	-	path-injection	-
+sink	std::fs		0	hard_link	-	arg1	-	path-injection	-
+sink	std::fs		0	metadata	-	arg0	-	path-injection	-
+sink	std::fs		0	read	-	arg0	-	path-injection	-
+sink	std::fs		0	read_dir	-	arg0	-	path-injection	-
+sink	std::fs		0	read_link	-	arg0	-	path-injection	-
+sink	std::fs		0	read_to_string	-	arg0	-	path-injection	-
+sink	std::fs		0	remove_dir	-	arg0	-	path-injection	-
+sink	std::fs		0	remove_dir_all	-	arg0	-	path-injection	-
+sink	std::fs		0	remove_file	-	arg0	-	path-injection	-
+sink	std::fs		0	rename	-	arg0	-	path-injection	-
+sink	std::fs		0	rename	-	arg1	-	path-injection	-
+sink	std::fs		0	set_permissions	-	arg0	-	path-injection	-
+sink	std::fs		0	soft_link	-	arg0	-	path-injection	-
+sink	std::fs		0	soft_link	-	arg1	-	path-injection	-
+sink	std::fs		0	symlink_metadata	-	arg0	-	path-injection	-
+sink	std::fs		0	write	-	arg0	-	path-injection	-
+sink	std::fs	DirBuilder	0	create	-	arg0	-	path-injection	-
+sink	std::fs	File	0	create	-	arg0	-	path-injection	-
+sink	std::fs	File	0	create_buffered	-	arg0	-	path-injection	-
+sink	std::fs	File	0	create_buffered	-	arg0	-	path-injection	g
+sink	std::fs	File	0	create_new	-	arg0	-	path-injection	-
+sink	std::fs	File	0	open	-	arg0	-	path-injection	-
+sink	std::fs	File	0	open_buffered	-	arg0	-	path-injection	-
+sink	std::fs	File	0	open_buffered	-	arg0	-	path-injection	g
+sink	std::fs	OpenOptions	0	open	-	arg0	-	path-injection	-
+sink	std::io	Write	1	write	-	arg0	-	log-injection	g
+sink	std::io	Write	1	write_all	-	arg0	-	log-injection	g
+sink	std::io::buffered::bufreader	BufReader	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	std::io::buffered::bufreader::buffer	Buffer	0	try_with_capacity	-	arg0	-	alloc-layout	g
+sink	std::io::buffered::bufreader::buffer	Buffer	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	std::io::buffered::bufwriter	BufWriter	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	std::io::buffered::linewriter	LineWriter	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	std::io::cursor	Cursor	0	poll_read	-	arg1	-	log-injection	g
+sink	std::io::error	Error	0	from	-	arg0	-	log-injection	g
+sink	std::io::error	Error	0	from_raw_os_error	-	arg0	-	log-injection	g
+sink	std::io::error::repr_bitpacked	Repr	0	new	-	arg0	-	log-injection	g
+sink	std::io::error::repr_bitpacked	Repr	0	new_os	-	arg0	-	log-injection	g
+sink	std::io::error::repr_bitpacked	Repr	0	new_simple	-	arg0	-	log-injection	g
+sink	std::io::stdio		0	_eprint	-	arg0	-	log-injection	-
+sink	std::io::stdio		0	_print	-	arg0	-	log-injection	-
+sink	std::io::stdio	Stderr	0	write	-	arg0	-	log-injection	g
+sink	std::io::stdio	Stderr	0	write_all	-	arg0	-	log-injection	g
+sink	std::io::stdio	StderrLock	0	write	-	arg0	-	log-injection	-
+sink	std::io::stdio	StderrLock	0	write_all	-	arg0	-	log-injection	-
+sink	std::io::stdio	Stdout	0	write	-	arg0	-	log-injection	g
+sink	std::io::stdio	Stdout	0	write_all	-	arg0	-	log-injection	g
+sink	std::io::stdio	StdoutLock	0	write	-	arg0	-	log-injection	-
+sink	std::io::stdio	StdoutLock	0	write_all	-	arg0	-	log-injection	-
+sink	std::os::unix::net::ancillary	AncillaryDataIter	0	next	-	recv	-	pointer-access	g
+sink	std::os::unix::net::ancillary	ScmCredentials	0	next	-	recv	-	pointer-access	g
+sink	std::os::unix::net::ancillary	ScmRights	0	next	-	recv	-	pointer-access	g
+sink	std::path	Path	0	exists	-	recv	-	path-injection	g
+sink	std::path	Path	0	is_dir	-	recv	-	path-injection	g
+sink	std::path	Path	0	is_file	-	recv	-	path-injection	g
+sink	std::path	Path	0	is_symlink	-	recv	-	path-injection	g
+sink	std::path	Path	0	metadata	-	recv	-	path-injection	g
+sink	std::path	Path	0	read_dir	-	recv	-	path-injection	g
+sink	std::path	Path	0	read_link	-	recv	-	path-injection	g
+sink	std::path	Path	0	symlink_metadata	-	recv	-	path-injection	g
+sink	std::path	PathBuf	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	std::process	Command	0	arg	-	arg0	-	command-injection	-
+sink	std::process	Command	0	args	-	arg0	-	command-injection	-
+sink	std::process	Command	0	new	-	arg0	-	command-injection	-
+sink	std::sync::mpmc::waker	Waker	0	try_select	-	recv	-	log-injection	g
+sink	std::sync::mpmc::waker	Waker	0	unregister	-	recv	-	log-injection	g
+sink	std::sys::args::common	Args	0	last	-	recv	-	pointer-access	g
+sink	std::sys::args::common	Args	0	new	-	arg0	-	pointer-access	g
+sink	std::sys::args::common	Args	0	next_back	-	recv	-	pointer-access	g
+sink	std::sys::env::common	Env	0	new	-	arg0	-	pointer-access	g
+sink	std::sys::fs		0	copy	-	arg0	-	path-injection	g
+sink	std::sys::fs		0	copy	-	arg1	-	path-injection	g
+sink	std::sys::fs		0	exists	-	arg0	-	path-injection	g
+sink	std::sys::fs		0	remove_dir_all	-	arg0	-	path-injection	g
+sink	std::sys::fs::common		0	copy	-	arg0	-	path-injection	g
+sink	std::sys::fs::common		0	copy	-	arg1	-	path-injection	g
+sink	std::sys::fs::common		0	exists	-	arg0	-	path-injection	g
+sink	std::sys::fs::common		0	remove_dir_all	-	arg0	-	path-injection	g
+sink	std::sys::fs::unix		0	copy	-	arg0	-	path-injection	g
+sink	std::sys::fs::unix		0	copy	-	arg1	-	path-injection	g
+sink	std::sys::os_str::bytes	Buf	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	std::sys::os_str::bytes	Slice	0	check_public_boundary	-	arg0	-	log-injection	g
+sink	std::sys::pal::unix		0	cvt_nz	-	arg0	-	log-injection	g
+sink	std::sys::personality::dwarf	DwarfReader	0	read	-	recv	-	pointer-access	g
+sink	std::sys::personality::dwarf	DwarfReader	0	read_sleb128	-	recv	-	pointer-access	g
+sink	std::sys::personality::dwarf	DwarfReader	0	read_uleb128	-	recv	-	pointer-access	g
+sink	std::sys::personality::dwarf::eh		0	find_eh_action	-	arg0	-	pointer-access	g
+sink	std::sys::process::unix::common::cstring_array	CStringArray	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	std::sys::sync::thread_parking::futex	Parker	0	new_in_place	-	arg0	-	pointer-access	g
+sink	std::sys_common::wtf8		0	check_utf8_boundary	-	arg1	-	log-injection	g
+sink	std::sys_common::wtf8		0	slice_error_fail	-	arg0	-	log-injection	g
+sink	std::sys_common::wtf8		0	slice_error_fail	-	arg1	-	log-injection	g
+sink	std::sys_common::wtf8		0	slice_error_fail	-	arg2	-	log-injection	g
+sink	std::sys_common::wtf8	Wtf8	0	index	-	recv	-	log-injection	g
+sink	std::sys_common::wtf8	Wtf8	0	index	-	arg0	-	log-injection	g
+sink	std::sys_common::wtf8	Wtf8Buf	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	stdarch-gen-arm::assert_instr	InstructionAssertionsForBaseType	0	to_tokens	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::big_endian		0	create_assigned_shuffle_call	-	arg0	-	alloc-layout	g
+sink	stdarch-gen-arm::big_endian		0	create_assigned_shuffle_call	-	arg1	-	alloc-layout	g
+sink	stdarch-gen-arm::big_endian		0	create_assigned_shuffle_call	-	arg1	-	log-injection	g
+sink	stdarch-gen-arm::big_endian		0	create_shuffle_call	-	arg0	-	alloc-layout	g
+sink	stdarch-gen-arm::big_endian		0	create_shuffle_call	-	arg1	-	alloc-layout	g
+sink	stdarch-gen-arm::big_endian		0	create_shuffle_call	-	arg1	-	log-injection	g
+sink	stdarch-gen-arm::expression	Expression	0	is_static_assert	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::expression	Expression	0	requires_unsafe_wrapper	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::expression	Expression	0	requires_unsafe_wrapper	-	arg0	-	log-injection	g
+sink	stdarch-gen-arm::expression	Expression	0	to_tokens	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::fn_suffix		0	make_neon_suffix	-	arg0	-	log-injection	g
+sink	stdarch-gen-arm::fn_suffix		0	type_to_size	-	arg0	-	log-injection	g
+sink	stdarch-gen-arm::input	InputSet	0	into_iter	-	recv	-	pointer-access	g
+sink	stdarch-gen-arm::intrinsic	LLVMLink	0	apply_conversions_to_call	-	arg0	-	pointer-access	g
+sink	stdarch-gen-arm::intrinsic	LLVMLink	0	to_tokens	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::intrinsic	Signature	0	drop_argument	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::load_store_tests		0	generate_load_store_tests	-	arg2	-	path-injection	g
+sink	stdarch-gen-arm::matching	KindMatchable	0	as_mut	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::matching	KindMatchable	0	as_ref	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::matching	KindMatchable	0	to_tokens	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::matching	SizeMatchable	0	as_mut	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::matching	SizeMatchable	0	as_ref	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::matching	SizeMatchable	0	to_tokens	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::predicate_forms	PredicateForm	0	post_build	-	arg0	-	log-injection	g
+sink	stdarch-gen-arm::typekinds	BaseType	0	repr	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::typekinds	BaseType	0	repr	-	arg0	-	log-injection	g
+sink	stdarch-gen-arm::typekinds	BaseTypeKind	0	repr	-	arg0	-	log-injection	g
+sink	stdarch-gen-arm::typekinds	TypeKind	0	repr	-	arg0	-	log-injection	g
+sink	stdarch-gen-arm::wildstring	WildString	0	prepend_str	-	recv	-	log-injection	g
+sink	stdarch-gen-arm::wildstring	WildString	0	to_tokens	-	recv	-	log-injection	g
+sink	stdarch_test		0	assert	-	arg1	-	log-injection	g
+sink	stdarch_test		0	assert	-	arg2	-	log-injection	g
+sink	stdarch_test		0	assert_skip_test_ok	-	arg0	-	log-injection	g
+sink	stdarch_test		0	assert_skip_test_ok	-	arg1	-	log-injection	g
+sink	style::style	StyleChecker	0	check_file	-	arg0	-	path-injection	g
+sink	style::style	StyleChecker	0	finalize	-	recv	-	path-injection	g
+sink	style_tests::style	StyleChecker	0	check_file	-	arg0	-	path-injection	g
+sink	style_tests::style	StyleChecker	0	finalize	-	recv	-	path-injection	g
+sink	tokio::fs::copy		0	copy	-	arg0	-	path-injection	-
+sink	tokio::fs::copy		0	copy	-	arg1	-	path-injection	-
+sink	tokio::fs::create_dir		0	create_dir	-	arg0	-	path-injection	-
+sink	tokio::fs::create_dir_all		0	create_dir_all	-	arg0	-	path-injection	-
+sink	tokio::fs::dir_builder	DirBuilder	0	create	-	arg0	-	path-injection	-
+sink	tokio::fs::file	File	0	create	-	arg0	-	path-injection	-
+sink	tokio::fs::file	File	0	create_new	-	arg0	-	path-injection	-
+sink	tokio::fs::file	File	0	create_new	-	arg0	-	path-injection	g
+sink	tokio::fs::file	File	0	open	-	arg0	-	path-injection	-
+sink	tokio::fs::file	File	0	poll_read	-	arg1	-	log-injection	g
+sink	tokio::fs::hard_link		0	hard_link	-	arg0	-	path-injection	-
+sink	tokio::fs::hard_link		0	hard_link	-	arg1	-	path-injection	-
+sink	tokio::fs::metadata		0	metadata	-	arg0	-	path-injection	-
+sink	tokio::fs::open_options	OpenOptions	0	open	-	arg0	-	path-injection	-
+sink	tokio::fs::read		0	read	-	arg0	-	path-injection	-
+sink	tokio::fs::read_dir		0	read_dir	-	arg0	-	path-injection	-
+sink	tokio::fs::read_link		0	read_link	-	arg0	-	path-injection	-
+sink	tokio::fs::read_to_string		0	read_to_string	-	arg0	-	path-injection	-
+sink	tokio::fs::remove_dir		0	remove_dir	-	arg0	-	path-injection	-
+sink	tokio::fs::remove_dir_all		0	remove_dir_all	-	arg0	-	path-injection	-
+sink	tokio::fs::remove_file		0	remove_file	-	arg0	-	path-injection	-
+sink	tokio::fs::rename		0	rename	-	arg0	-	path-injection	-
+sink	tokio::fs::rename		0	rename	-	arg1	-	path-injection	-
+sink	tokio::fs::set_permissions		0	set_permissions	-	arg0	-	path-injection	-
+sink	tokio::fs::symlink		0	symlink	-	arg0	-	path-injection	-
+sink	tokio::fs::symlink		0	symlink	-	arg1	-	path-injection	-
+sink	tokio::fs::symlink_dir		0	symlink_dir	-	arg0	-	path-injection	-
+sink	tokio::fs::symlink_dir		0	symlink_dir	-	arg1	-	path-injection	-
+sink	tokio::fs::symlink_file		0	symlink_file	-	arg0	-	path-injection	-
+sink	tokio::fs::symlink_file		0	symlink_file	-	arg1	-	path-injection	-
+sink	tokio::fs::symlink_metadata		0	symlink_metadata	-	arg0	-	path-injection	-
+sink	tokio::fs::try_exists		0	try_exists	-	arg0	-	path-injection	-
+sink	tokio::fs::write		0	write	-	arg0	-	path-injection	-
+sink	tokio::io::async_read	AsyncRead	1	poll_read	-	arg1	-	log-injection	g
+sink	tokio::io::blocking	Blocking	0	poll_read	-	arg1	-	log-injection	g
+sink	tokio::io::blocking	Buf	0	copy_to	-	arg0	-	log-injection	g
+sink	tokio::io::blocking	Buf	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	tokio::io::read_buf	ReadBuf	0	put_slice	-	recv	-	log-injection	g
+sink	tokio::io::util::buf_reader	BufReader	0	poll_read	-	arg1	-	log-injection	g
+sink	tokio::io::util::buf_stream	BufStream	0	with_capacity	-	arg1	-	alloc-layout	g
+sink	tokio::io::util::buf_writer	BufWriter	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	tokio::net::tcp::split	WriteHalf	0	try_write	-	arg0	-	log-injection	g
+sink	tokio::net::tcp::split_owned	OwnedWriteHalf	0	try_write	-	arg0	-	log-injection	g
+sink	tokio::net::tcp::stream	TcpStream	0	try_write	-	arg0	-	log-injection	g
+sink	tokio::net::unix::pipe	Sender	0	try_write	-	arg0	-	log-injection	g
+sink	tokio::net::unix::split	WriteHalf	0	try_write	-	arg0	-	log-injection	g
+sink	tokio::net::unix::split_owned	OwnedWriteHalf	0	try_write	-	arg0	-	log-injection	g
+sink	tokio::net::unix::stream	UnixStream	0	try_write	-	arg0	-	log-injection	g
+sink	tokio::process	Command	0	arg	-	arg0	-	command-injection	-
+sink	tokio::process	Command	0	args	-	arg0	-	command-injection	-
+sink	tokio::process	Command	0	new	-	arg0	-	command-injection	-
+sink	tokio::process::imp::reap::test	MockStream	0	poll_recv	-	recv	-	log-injection	g
+sink	tokio::runtime::builder	Builder	0	build	-	recv	-	alloc-layout	g
+sink	tokio::runtime::io::registration	Registration	0	try_io	-	arg1	-	log-injection	g
+sink	tokio::runtime::scheduler	Handle	0	can_spawn_local_on_local_runtime	-	recv	-	alloc-layout	g
+sink	tokio::runtime::scheduler	Handle	0	can_spawn_local_on_local_runtime	-	recv	-	log-injection	g
+sink	tokio::runtime::scheduler::multi_thread	MultiThread	0	new	-	arg0	-	alloc-layout	g
+sink	tokio::runtime::scheduler::multi_thread::idle	Idle	0	new	-	arg0	-	alloc-layout	g
+sink	tokio::runtime::scheduler::multi_thread::worker		0	create	-	arg0	-	alloc-layout	g
+sink	tokio::runtime::task::raw	RawTask	0	set_queue_next	-	arg0	-	alloc-layout	g
+sink	tokio::runtime::task::raw	RawTask	0	set_queue_next	-	arg0	-	log-injection	g
+sink	tokio::runtime::task::state	State	0	transition_to_terminal	-	arg0	-	log-injection	g
+sink	tokio::runtime::time::wheel	Wheel	0	poll	-	recv	-	log-injection	g
+sink	tokio::runtime::time::wheel	Wheel	0	poll	-	arg0	-	log-injection	g
+sink	tokio::runtime::time::wheel	Wheel	0	remove	-	recv	-	log-injection	g
+sink	tokio::runtime::time::wheel::level	Level	0	next_expiration	-	recv	-	log-injection	g
+sink	tokio::runtime::time::wheel::level	Level	0	next_expiration	-	arg0	-	log-injection	g
+sink	tokio::signal::registry	Globals	0	register_listener	-	arg0	-	log-injection	g
+sink	tokio::signal::unix		0	signal	-	arg0	-	log-injection	g
+sink	tokio::signal::unix		0	signal_with_handle	-	arg0	-	log-injection	g
+sink	tokio::sync::batch_semaphore	Acquire	0	drop	-	recv	-	log-injection	g
+sink	tokio::sync::batch_semaphore	Semaphore	0	release	-	arg0	-	log-injection	g
+sink	tokio::sync::mpsc::bounded	PermitIterator	0	drop	-	recv	-	log-injection	g
+sink	tokio::sync::mpsc::bounded	Semaphore	0	add_permits	-	arg0	-	log-injection	g
+sink	tokio::sync::rwlock::owned_write_guard	OwnedRwLockWriteGuard	0	drop	-	recv	-	log-injection	g
+sink	tokio::sync::rwlock::owned_write_guard_mapped	OwnedRwLockMappedWriteGuard	0	drop	-	recv	-	log-injection	g
+sink	tokio::sync::rwlock::write_guard	RwLockWriteGuard	0	drop	-	recv	-	log-injection	g
+sink	tokio::sync::rwlock::write_guard_mapped	RwLockMappedWriteGuard	0	drop	-	recv	-	log-injection	g
+sink	tokio::sync::semaphore	OwnedSemaphorePermit	0	drop	-	recv	-	log-injection	g
+sink	tokio::sync::semaphore	Semaphore	0	add_permits	-	arg0	-	log-injection	g
+sink	tokio::sync::semaphore	SemaphorePermit	0	drop	-	recv	-	log-injection	g
+sink	tokio::task::join_set	JoinSet	0	abort_all	-	recv	-	alloc-layout	g
+sink	tokio::task::join_set	JoinSet	0	join_all	-	recv	-	alloc-layout	g
+sink	tokio::task::join_set	JoinSet	0	shutdown	-	recv	-	alloc-layout	g
+sink	tokio::util::idle_notified_set	IdleNotifiedSet	0	for_each	-	recv	-	alloc-layout	g
+sink	tokio::util::sharded_list	ShardedList	0	new	-	arg0	-	alloc-layout	g
+sink	tokio_postgres::client	Client	0	batch_execute	-	arg0	-	sql-injection	-
+sink	tokio_postgres::client	Client	0	execute	-	arg0	-	sql-injection	-
+sink	tokio_postgres::client	Client	0	execute_raw	-	arg0	-	sql-injection	-
+sink	tokio_postgres::client	Client	0	prepare	-	arg0	-	sql-injection	-
+sink	tokio_postgres::client	Client	0	prepare_typed	-	arg0	-	sql-injection	-
+sink	tokio_postgres::client	Client	0	query	-	arg0	-	sql-injection	-
+sink	tokio_postgres::client	Client	0	query_one	-	arg0	-	sql-injection	-
+sink	tokio_postgres::client	Client	0	query_opt	-	arg0	-	sql-injection	-
+sink	tokio_postgres::client	Client	0	query_raw	-	arg0	-	sql-injection	-
+sink	tokio_postgres::client	Client	0	query_typed	-	arg0	-	sql-injection	-
+sink	tokio_postgres::client	Client	0	query_typed_raw	-	arg0	-	sql-injection	-
+sink	tokio_postgres::client	Client	0	simple_query	-	arg0	-	sql-injection	-
+sink	tokio_postgres::client	Client	0	simple_query_raw	-	arg0	-	sql-injection	-
+sink	tokio_stream::stream_ext::chunks_timeout	ChunksTimeout	0	new	-	arg1	-	alloc-layout	g
+sink	tokio_stream::stream_map	StreamMap	0	insert	-	recv	-	log-injection	g
+sink	tokio_stream::stream_map	StreamMap	0	poll_next_many	-	recv	-	log-injection	g
+sink	tokio_stream::stream_map	StreamMap	0	remove	-	recv	-	log-injection	g
+sink	tokio_stream::stream_map	StreamMap	0	with_capacity	-	arg0	-	alloc-layout	g
+sink	tokio_test::io	Builder	0	build	-	recv	-	alloc-layout	g
+sink	tokio_test::io	Builder	0	build_with_handle	-	recv	-	alloc-layout	g
+sink	tokio_test::io	Builder	0	clone	-	recv	-	alloc-layout	g
+sink	tokio_test::io	Builder	0	read	-	recv	-	log-injection	g
+sink	tokio_test::io	Builder	0	read_error	-	recv	-	log-injection	g
+sink	tokio_test::io	Builder	0	wait	-	recv	-	log-injection	g
+sink	tokio_test::io	Builder	0	write	-	recv	-	log-injection	g
+sink	tokio_test::io	Builder	0	write_error	-	recv	-	log-injection	g
+sink	tokio_test::stream_mock	StreamMockBuilder	0	clone	-	recv	-	alloc-layout	g
+sink	tokio_test::stream_mock	StreamMockBuilder	0	next	-	recv	-	log-injection	g
+sink	tokio_test::stream_mock	StreamMockBuilder	0	wait	-	recv	-	log-injection	g
+sink	tokio_util::io::stream_reader	StreamReader	0	poll_read	-	arg1	-	log-injection	g
+sink	tokio_util::sync::poll_semaphore	PollSemaphore	0	add_permits	-	arg0	-	log-injection	g
+sink	tokio_util::sync::reusable_box	CallOnDrop	0	drop	-	recv	-	pointer-access	g
+sink	tokio_util::task::task_tracker	TaskTrackerWaitFuture	0	fmt	-	recv	-	alloc-layout	g
+sink	tokio_util::task::task_tracker	TaskTrackerWaitFuture	0	fmt	-	recv	-	log-injection	g
+sink	tokio_util::time::delay_queue	DelayQueue	0	deadline	-	arg0	-	log-injection	g
+sink	tokio_util::time::delay_queue	DelayQueue	0	poll_expired	-	recv	-	log-injection	g
+sink	tokio_util::time::delay_queue	DelayQueue	0	remove	-	recv	-	log-injection	g
+sink	tokio_util::time::delay_queue	DelayQueue	0	remove	-	arg0	-	log-injection	g
+sink	tokio_util::time::delay_queue	DelayQueue	0	reset	-	recv	-	log-injection	g
+sink	tokio_util::time::delay_queue	DelayQueue	0	reset	-	arg0	-	log-injection	g
+sink	tokio_util::time::delay_queue	DelayQueue	0	reset_at	-	recv	-	log-injection	g
+sink	tokio_util::time::delay_queue	DelayQueue	0	reset_at	-	arg0	-	log-injection	g
+sink	tokio_util::time::delay_queue	DelayQueue	0	try_remove	-	recv	-	log-injection	g
+sink	tokio_util::time::delay_queue	DelayQueue	0	try_remove	-	arg0	-	log-injection	g
+sink	tokio_util::time::delay_queue	SlabStorage	0	index	-	arg0	-	log-injection	g
+sink	tokio_util::time::delay_queue	SlabStorage	0	index_mut	-	arg0	-	log-injection	g
+sink	tokio_util::time::wheel	Wheel	0	poll	-	recv	-	log-injection	g
+sink	tokio_util::time::wheel	Wheel	0	poll	-	arg0	-	log-injection	g
+sink	tokio_util::time::wheel	Wheel	0	remove	-	recv	-	log-injection	g
+sink	tokio_util::time::wheel::level	Level	0	next_expiration	-	recv	-	log-injection	g
+sink	tokio_util::time::wheel::level	Level	0	next_expiration	-	arg0	-	log-injection	g
+sink	tower_service	Service	1	call	-	recv	-	alloc-layout	g
+sink	tower_service	Service	1	call	-	recv	-	log-injection	g
+sink	typed-derive	Args	0	from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	typed-derive	Args	0	update_from_arg_matches_mut	-	arg0	-	log-injection	g
+sink	util	ParseTuple	1	parse	-	arg0	-	log-injection	g
+sink	warp::reply		0	html	-	arg0	-	html-injection	-
+summary		mut	0	deref	-	recv	ret	value	a
+summary	actix_web::types::path	Path	0	into_inner	-	recv	ret	taint	-
+summary	alloc::borrow	ToOwned	0	clone_into	-	recv	arg0	taint	a
+summary	alloc::borrow	ToOwned	0	to_owned	-	recv	ret	taint	a
+summary	alloc::boxed	Box	0	deref	-	recv	ret	value	a
+summary	alloc::boxed	Box	0	into_pin	-	arg0	ret	value	a
+summary	alloc::boxed	Box	0	new	-	arg0	ret	value	a
+summary	alloc::boxed	Box	0	pin	-	arg0	ret	value	a
+summary	alloc::fmt		0	format	-	arg0	ret	taint	-
+summary	alloc::string	String	0	add	-	recv	ret	taint	-
+summary	alloc::string	String	0	add	-	arg0	ret	taint	a
+summary	alloc::string	String	0	as_bytes	-	recv	ret	taint	a
+summary	alloc::string	String	0	as_str	-	recv	ret	taint	a
+summary	alloc::string	ToString	0	to_string	-	recv	ret	taint	a
+summary	alloc::vec		0	from_elem	-	arg0	ret	value	a
+summary	alloc::vec	Vec	0	deref	-	recv	ret	value	a
+summary	async_std::io::read	ReadExt	0	read	-	recv	arg0	taint	a
+summary	biscotti::response_cookie	ResponseCookie	0	make_permanent	-	recv	ret	taint	-
+summary	biscotti::response_cookie	ResponseCookie	0	set_domain	-	recv	ret	taint	-
+summary	biscotti::response_cookie	ResponseCookie	0	set_expires	-	recv	ret	taint	-
+summary	biscotti::response_cookie	ResponseCookie	0	set_http_only	-	recv	ret	taint	-
+summary	biscotti::response_cookie	ResponseCookie	0	set_max_age	-	recv	ret	taint	-
+summary	biscotti::response_cookie	ResponseCookie	0	set_name	-	recv	ret	taint	-
+summary	biscotti::response_cookie	ResponseCookie	0	set_path	-	recv	ret	taint	-
+summary	biscotti::response_cookie	ResponseCookie	0	set_same_site	-	recv	ret	taint	-
+summary	biscotti::response_cookie	ResponseCookie	0	set_value	-	recv	ret	taint	-
+summary	biscotti::response_cookie	ResponseCookie	0	unset_domain	-	recv	ret	taint	-
+summary	biscotti::response_cookie	ResponseCookie	0	unset_expires	-	recv	ret	taint	-
+summary	biscotti::response_cookie	ResponseCookie	0	unset_path	-	recv	ret	taint	-
+summary	cookie::builder	CookieBuilder	0	domain	-	recv	ret	taint	-
+summary	cookie::builder	CookieBuilder	0	expires	-	recv	ret	taint	-
+summary	cookie::builder	CookieBuilder	0	http_only	-	recv	ret	taint	-
+summary	cookie::builder	CookieBuilder	0	max_age	-	recv	ret	taint	-
+summary	cookie::builder	CookieBuilder	0	path	-	recv	ret	taint	-
+summary	cookie::builder	CookieBuilder	0	permanent	-	recv	ret	taint	-
+summary	cookie::builder	CookieBuilder	0	removal	-	recv	ret	taint	-
+summary	cookie::builder	CookieBuilder	0	same_site	-	recv	ret	taint	-
+summary	core	str	0	as_bytes	-	recv	ret	taint	a
+summary	core	str	0	as_str	-	recv	ret	taint	a
+summary	core	str	0	parse	-	recv	ret	taint	a
+summary	core	str	0	to_string	-	recv	ret	taint	a
+summary	core	str	0	trim	-	recv	ret	taint	a
+summary	core::alloc::layout	Layout	0	align_to	-	recv	ret	taint	a
+summary	core::alloc::layout	Layout	0	array	-	arg0	ret	taint	a
+summary	core::alloc::layout	Layout	0	extend	-	recv	ret	taint	a
+summary	core::alloc::layout	Layout	0	extend	-	arg0	ret	taint	a
+summary	core::alloc::layout	Layout	0	extend_packed	-	recv	ret	taint	a
+summary	core::alloc::layout	Layout	0	extend_packed	-	arg0	ret	taint	a
+summary	core::alloc::layout	Layout	0	from_size_align	-	arg0	ret	taint	a
+summary	core::alloc::layout	Layout	0	from_size_align_unchecked	-	arg0	ret	taint	-
+summary	core::alloc::layout	Layout	0	pad_to_align	-	recv	ret	taint	a
+summary	core::alloc::layout	Layout	0	repeat	-	recv	ret	taint	a
+summary	core::alloc::layout	Layout	0	repeat	-	arg0	ret	taint	a
+summary	core::alloc::layout	Layout	0	repeat_packed	-	recv	ret	taint	a
+summary	core::alloc::layout	Layout	0	repeat_packed	-	arg0	ret	taint	a
+summary	core::alloc::layout	Layout	0	size	-	recv	ret	taint	a
+summary	core::clone	Clone	0	clone	-	recv	ret	value	a
+summary	core::cmp	Ord	0	clamp	-	recv	ret	value	-
+summary	core::cmp	Ord	0	clamp	-	arg0	ret	value	-
+summary	core::cmp	Ord	0	clamp	-	arg1	ret	value	-
+summary	core::cmp	Ord	0	max	-	recv	ret	value	-
+summary	core::cmp	Ord	0	max	-	arg0	ret	value	-
+summary	core::cmp	Ord	0	min	-	recv	ret	value	-
+summary	core::cmp	Ord	0	min	-	arg0	ret	value	-
+summary	core::convert	From	0	from	-	arg0	ret	taint	-
+summary	core::convert	Into	0	into	-	recv	ret	taint	a
+summary	core::fmt		0	write	-	arg1	arg0	taint	a
+summary	core::fmt	Write	0	write_char	-	arg0	recv	taint	a
+summary	core::fmt	Write	0	write_fmt	-	arg0	recv	taint	a
+summary	core::fmt	Write	0	write_str	-	arg0	recv	taint	a
+summary	core::iter::traits::iterator	Iterator	0	chain	-	recv	ret	taint	-
+summary	core::iter::traits::iterator	Iterator	0	chain	-	arg0	ret	taint	-
+summary	core::iter::traits::iterator	Iterator	0	collect	-	recv	ret	value	a
+summary	core::iter::traits::iterator	Iterator	0	next	-	recv	ret	value	a
+summary	core::iter::traits::iterator	Iterator	0	nth	-	recv	ret	value	a
+summary	core::iter::traits::iterator	Iterator	0	take	-	recv	ret	taint	-
+summary	core::num::wrapping	Wrapping	0	neg	-	recv	ret	taint	a
+summary	core::num::wrapping	Wrapping	0	not	-	recv	ret	taint	a
+summary	core::ops::arith	Add	0	add	-	recv	ret	taint	-
+summary	core::ops::arith	Add	0	add	-	recv	ret	taint	a
+summary	core::ops::arith	Add	0	add	-	arg0	ret	taint	-
+summary	core::ops::arith	Add	0	add	-	arg0	ret	taint	a
+summary	core::ops::arith	AddAssign	0	add_assign	-	arg0	recv	taint	a
+summary	core::ops::arith	Div	0	div	-	recv	ret	taint	-
+summary	core::ops::arith	Div	0	div	-	recv	ret	taint	a
+summary	core::ops::arith	Div	0	div	-	arg0	ret	taint	-
+summary	core::ops::arith	Div	0	div	-	arg0	ret	taint	a
+summary	core::ops::arith	DivAssign	0	div_assign	-	arg0	recv	taint	a
+summary	core::ops::arith	Mul	0	mul	-	recv	ret	taint	-
+summary	core::ops::arith	Mul	0	mul	-	recv	ret	taint	a
+summary	core::ops::arith	Mul	0	mul	-	arg0	ret	taint	-
+summary	core::ops::arith	Mul	0	mul	-	arg0	ret	taint	a
+summary	core::ops::arith	MulAssign	0	mul_assign	-	arg0	recv	taint	a
+summary	core::ops::arith	Neg	0	neg	-	recv	ret	taint	-
+summary	core::ops::arith	Rem	0	rem	-	recv	ret	taint	-
+summary	core::ops::arith	Rem	0	rem	-	recv	ret	taint	a
+summary	core::ops::arith	Rem	0	rem	-	arg0	ret	taint	-
+summary	core::ops::arith	Rem	0	rem	-	arg0	ret	taint	a
+summary	core::ops::arith	RemAssign	0	rem_assign	-	arg0	recv	taint	a
+summary	core::ops::arith	Sub	0	sub	-	recv	ret	taint	-
+summary	core::ops::arith	Sub	0	sub	-	recv	ret	taint	a
+summary	core::ops::arith	Sub	0	sub	-	arg0	ret	taint	-
+summary	core::ops::arith	Sub	0	sub	-	arg0	ret	taint	a
+summary	core::ops::arith	SubAssign	0	sub_assign	-	arg0	recv	taint	a
+summary	core::ops::bit	BitAnd	0	bitand	-	recv	ret	taint	-
+summary	core::ops::bit	BitAnd	0	bitand	-	recv	ret	taint	a
+summary	core::ops::bit	BitAnd	0	bitand	-	arg0	ret	taint	-
+summary	core::ops::bit	BitAnd	0	bitand	-	arg0	ret	taint	a
+summary	core::ops::bit	BitAndAssign	0	bitand_assign	-	arg0	recv	taint	a
+summary	core::ops::bit	BitOr	0	bitor	-	recv	ret	taint	-
+summary	core::ops::bit	BitOr	0	bitor	-	recv	ret	taint	a
+summary	core::ops::bit	BitOr	0	bitor	-	arg0	ret	taint	-
+summary	core::ops::bit	BitOr	0	bitor	-	arg0	ret	taint	a
+summary	core::ops::bit	BitOrAssign	0	bitor_assign	-	arg0	recv	taint	a
+summary	core::ops::bit	BitXor	0	bitxor	-	recv	ret	taint	-
+summary	core::ops::bit	BitXor	0	bitxor	-	recv	ret	taint	a
+summary	core::ops::bit	BitXor	0	bitxor	-	arg0	ret	taint	-
+summary	core::ops::bit	BitXor	0	bitxor	-	arg0	ret	taint	a
+summary	core::ops::bit	BitXorAssign	0	bitxor_assign	-	arg0	recv	taint	a
+summary	core::ops::bit	Not	0	not	-	recv	ret	taint	-
+summary	core::ops::bit	Shl	0	shl	-	recv	ret	taint	-
+summary	core::ops::bit	Shl	0	shl	-	recv	ret	taint	a
+summary	core::ops::bit	Shl	0	shl	-	arg0	ret	taint	-
+summary	core::ops::bit	Shl	0	shl	-	arg0	ret	taint	a
+summary	core::ops::bit	ShlAssign	0	shl_assign	-	arg0	recv	taint	a
+summary	core::ops::bit	Shr	0	shr	-	recv	ret	taint	-
+summary	core::ops::bit	Shr	0	shr	-	recv	ret	taint	a
+summary	core::ops::bit	Shr	0	shr	-	arg0	ret	taint	-
+summary	core::ops::bit	Shr	0	shr	-	arg0	ret	taint	a
+summary	core::ops::bit	ShrAssign	0	shr_assign	-	arg0	recv	taint	a
+summary	core::ops::deref	Deref	0	deref	-	recv	ret	taint	a
+summary	core::ops::deref	Deref	1	deref	-	recv	ret	value	a
+summary	core::ops::index	Index	0	index	-	recv	ret	value	a
+summary	core::ops::index	IndexMut	0	index_mut	-	recv	ret	value	a
+summary	core::pin	Pin	0	deref	-	recv	ret	value	a
+summary	core::pin	Pin	0	into_inner	-	arg0	ret	value	a
+summary	core::pin	Pin	0	into_inner_unchecked	-	arg0	ret	value	a
+summary	core::pin	Pin	0	new	-	arg0	ret	value	a
+summary	core::pin	Pin	0	new_unchecked	-	arg0	ret	value	a
+summary	core::pin	Pin	0	set	-	arg0	recv	value	a
+summary	core::ptr		0	read	-	arg0	ret	value	a
+summary	core::ptr		0	read_unaligned	-	arg0	ret	value	a
+summary	core::ptr		0	read_volatile	-	arg0	ret	value	a
+summary	core::ptr		0	write	-	arg1	arg0	value	a
+summary	core::ptr		0	write_unaligned	-	arg1	arg0	value	a
+summary	core::ptr		0	write_volatile	-	arg1	arg0	value	a
+summary	core::result	Result	0	into_iter	-	recv	ret	value	a
+summary	core::result	Result	0	iter	-	recv	ret	value	a
+summary	core::result	Result	0	iter_mut	-	recv	ret	value	a
+summary	futures_executor::local_pool		0	block_on	-	arg0	ret	value	-
+summary	futures_io::if_std	AsyncBufRead	0	poll_fill_buf	-	recv	ret	taint	a
+summary	futures_io::if_std	AsyncRead	0	poll_read	-	recv	arg1	taint	a
+summary	futures_rustls	TlsConnector	0	connect	-	arg1	ret	taint	a
+summary	futures_util::io	AsyncBufReadExt	0	fill_buf	-	recv	ret	taint	a
+summary	futures_util::io	AsyncBufReadExt	0	lines	-	recv	ret	taint	-
+summary	futures_util::io	AsyncBufReadExt	0	read_line	-	recv	arg0	taint	a
+summary	futures_util::io	AsyncBufReadExt	0	read_until	-	recv	arg1	taint	a
+summary	futures_util::io	AsyncReadExt	0	read	-	recv	arg0	taint	a
+summary	futures_util::io	AsyncReadExt	0	read_to_end	-	recv	arg0	taint	a
+summary	futures_util::io::buf_reader	BufReader	0	new	-	arg0	ret	taint	-
+summary	generic_array	GenericArray	0	from_mut_slice	-	arg0	ret	value	a
+summary	generic_array	GenericArray	0	from_slice	-	arg0	ret	value	a
+summary	generic_array	GenericArray	0	try_from_mut_slice	-	arg0	ret	value	a
+summary	generic_array	GenericArray	0	try_from_slice	-	arg0	ret	value	a
+summary	http::response	Response	0	body	-	recv	ret	value	a
+summary	http::response	Response	0	body_mut	-	recv	ret	value	a
+summary	http::response	Response	0	into_body	-	recv	ret	value	a
+summary	poem::session::cookie_config	CookieConfig	0	domain	-	recv	ret	taint	-
+summary	poem::session::cookie_config	CookieConfig	0	http_only	-	recv	ret	taint	-
+summary	poem::session::cookie_config	CookieConfig	0	max_age	-	recv	ret	taint	-
+summary	poem::session::cookie_config	CookieConfig	0	name	-	recv	ret	taint	-
+summary	poem::session::cookie_config	CookieConfig	0	path	-	recv	ret	taint	-
+summary	poem::session::cookie_config	CookieConfig	0	same_site	-	recv	ret	taint	-
+summary	regex		0	escape	-	arg0	ret	taint	a
+summary	reqwest::async_impl::response	Response	0	bytes	-	recv	ret	taint	a
+summary	reqwest::async_impl::response	Response	0	chunk	-	recv	ret	taint	a
+summary	reqwest::async_impl::response	Response	0	text	-	recv	ret	taint	a
+summary	reqwest::blocking::response	Response	0	bytes	-	recv	ret	taint	a
+summary	reqwest::blocking::response	Response	0	text	-	recv	ret	taint	a
+summary	reqwest::blocking::response	Response	0	text_with_charset	-	recv	ret	taint	a
+summary	reqwest::response	Response	0	bytes	-	recv	ret	taint	a
+summary	reqwest::response	Response	0	chunk	-	recv	ret	taint	a
+summary	reqwest::response	Response	0	text	-	recv	ret	taint	a
+summary	reqwest::response	Response	0	text_with_charset	-	recv	ret	taint	a
+summary	rustls::conn	ConnectionCommon	0	reader	-	recv	ret	taint	a
+summary	std::ffi::os_str	OsStr	0	as_encoded_bytes	-	recv	ret	taint	a
+summary	std::ffi::os_str	OsStr	0	to_str	-	recv	ret	taint	a
+summary	std::ffi::os_str	OsStr	0	to_string_lossy	-	recv	ret	taint	a
+summary	std::ffi::os_str	OsString	0	deref	-	recv	ret	taint	a
+summary	std::fs	File	0	read_to_end	-	recv	arg0	taint	a
+summary	std::fs	File	0	read_to_string	-	recv	arg0	taint	a
+summary	std::fs	Metadata	0	accessed	-	recv	ret	taint	a
+summary	std::fs	Metadata	0	created	-	recv	ret	taint	a
+summary	std::fs	Metadata	0	file_type	-	recv	ret	taint	a
+summary	std::fs	Metadata	0	is_dir	-	recv	ret	taint	a
+summary	std::fs	Metadata	0	is_file	-	recv	ret	taint	a
+summary	std::fs	Metadata	0	is_symlink	-	recv	ret	taint	a
+summary	std::fs	Metadata	0	len	-	recv	ret	taint	a
+summary	std::fs	Metadata	0	modified	-	recv	ret	taint	a
+summary	std::fs	Metadata	0	permissions	-	recv	ret	taint	a
+summary	std::io	BufRead	0	fill_buf	-	recv	ret	taint	a
+summary	std::io	BufRead	0	lines	-	recv	ret	taint	-
+summary	std::io	BufRead	0	read_line	-	recv	arg0	taint	a
+summary	std::io	BufRead	0	read_until	-	recv	arg1	taint	a
+summary	std::io	BufRead	0	split	-	recv	ret	taint	-
+summary	std::io	Read	0	bytes	-	recv	ret	taint	-
+summary	std::io	Read	0	chain	-	recv	ret	taint	-
+summary	std::io	Read	0	chain	-	arg0	ret	taint	-
+summary	std::io	Read	0	read	-	recv	arg0	taint	a
+summary	std::io	Read	0	read_exact	-	recv	arg0	taint	a
+summary	std::io	Read	0	read_to_end	-	recv	arg0	taint	a
+summary	std::io	Read	0	read_to_string	-	recv	arg0	taint	a
+summary	std::io	Read	0	take	-	recv	ret	taint	-
+summary	std::io	Split	0	next	-	recv	ret	value	a
+summary	std::io::buffered::bufreader	BufReader	0	buffer	-	recv	ret	taint	a
+summary	std::io::buffered::bufreader	BufReader	0	fill_buf	-	recv	ret	taint	a
+summary	std::io::buffered::bufreader	BufReader	0	new	-	arg0	ret	taint	-
+summary	std::io::stdio	Stdin	0	lock	-	recv	ret	taint	a
+summary	std::io::stdio	Stdin	0	read	-	recv	arg0	taint	a
+summary	std::io::stdio	Stdin	0	read_exact	-	recv	arg0	taint	a
+summary	std::io::stdio	Stdin	0	read_line	-	recv	arg0	taint	a
+summary	std::io::stdio	Stdin	0	read_to_end	-	recv	arg0	taint	a
+summary	std::io::stdio	Stdin	0	read_to_string	-	recv	arg0	taint	a
+summary	std::io::stdio	StdinLock	0	fill_buf	-	recv	ret	taint	a
+summary	std::io::stdio	StdinLock	0	read	-	recv	arg0	taint	a
+summary	std::io::stdio	StdinLock	0	read_exact	-	recv	arg0	taint	a
+summary	std::io::stdio	StdinLock	0	read_to_end	-	recv	arg0	taint	a
+summary	std::io::stdio	StdinLock	0	read_to_string	-	recv	arg0	taint	a
+summary	std::io::stdio	StdinRaw	0	read	-	recv	arg0	taint	a
+summary	std::io::stdio	StdinRaw	0	read_exact	-	recv	arg0	taint	a
+summary	std::io::stdio	StdinRaw	0	read_to_end	-	recv	arg0	taint	a
+summary	std::io::stdio	StdinRaw	0	read_to_string	-	recv	arg0	taint	a
+summary	std::net::tcp	TcpStream	0	try_clone	-	recv	ret	taint	a
+summary	std::path	Path	0	extension	-	recv	ret	taint	a
+summary	std::path	Path	0	file_name	-	recv	ret	taint	a
+summary	std::path	Path	0	file_prefix	-	recv	ret	taint	a
+summary	std::path	Path	0	file_stem	-	recv	ret	taint	a
+summary	std::path	Path	0	into_path_buf	-	recv	ret	value	a
+summary	std::path	Path	0	join	-	recv	ret	taint	a
+summary	std::path	Path	0	join	-	arg0	ret	taint	-
+summary	std::path	Path	0	new	-	arg0	ret	value	a
+summary	std::path	Path	0	parent	-	recv	ret	taint	a
+summary	std::path	Path	0	to_path_buf	-	recv	ret	value	a
+summary	std::path	Path	0	to_str	-	recv	ret	value	a
+summary	std::path	Path	0	with_added_extension	-	recv	ret	taint	a
+summary	std::path	Path	0	with_extension	-	recv	ret	taint	a
+summary	std::path	Path	0	with_file_name	-	recv	ret	taint	a
+summary	std::path	Path	0	with_file_name	-	arg0	ret	taint	-
+summary	std::path	PathBuf	0	as_path	-	recv	ret	value	a
+summary	std::path	PathBuf	0	into_boxed_path	-	recv	ret	taint	a
+summary	tokio::io::util::async_buf_read_ext	AsyncBufReadExt	0	fill_buf	-	recv	ret	taint	a
+summary	tokio::io::util::async_buf_read_ext	AsyncBufReadExt	0	lines	-	recv	ret	taint	-
+summary	tokio::io::util::async_buf_read_ext	AsyncBufReadExt	0	read_line	-	recv	arg0	taint	a
+summary	tokio::io::util::async_buf_read_ext	AsyncBufReadExt	0	read_until	-	recv	arg1	taint	a
+summary	tokio::io::util::async_buf_read_ext	AsyncBufReadExt	0	split	-	recv	ret	taint	-
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read	-	recv	arg0	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_buf	-	recv	arg0	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_exact	-	recv	arg0	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_f32	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_f32_le	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_f64	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_f64_le	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_i128	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_i128_le	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_i16	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_i16_le	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_i32	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_i32_le	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_i64	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_i64_le	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_i8	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_i8_le	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_to_end	-	recv	arg0	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_to_string	-	recv	arg0	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_u128	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_u128_le	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_u16	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_u16_le	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_u32	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_u32_le	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_u64	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_u64_le	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_u8	-	recv	ret	taint	a
+summary	tokio::io::util::async_read_ext	AsyncReadExt	0	read_u8_le	-	recv	ret	taint	a
+summary	tokio::io::util::buf_reader	BufReader	0	buffer	-	recv	ret	taint	a
+summary	tokio::io::util::buf_reader	BufReader	0	new	-	arg0	ret	taint	-
+summary	tokio::io::util::lines	Lines	0	next_line	-	recv	ret	taint	a
+summary	tokio::io::util::split	Split	0	next_segment	-	recv	ret	taint	a
+summary	tokio::net::tcp::stream	TcpStream	0	peek	-	recv	arg0	taint	a
+summary	tokio::net::tcp::stream	TcpStream	0	try_read	-	recv	arg0	taint	a
+summary	tokio::net::tcp::stream	TcpStream	0	try_read_buf	-	recv	arg0	taint	a
+summary	url	Url	0	parse	-	arg0	ret	taint	a
+summary	value_trait::array	Array	0	iter	-	recv	ret	value	a

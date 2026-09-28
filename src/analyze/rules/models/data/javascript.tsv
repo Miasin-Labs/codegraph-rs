@@ -1,0 +1,258 @@
+# CodeQL Models-as-Data for javascript, imported by `codegraph models import-codeql`.
+# Source: https://github.com/github/codeql @ 0580587ec936ae33ddf096795e6f65d0164463ee
+# Copyright (c) GitHub, Inc. — MIT License, see NOTICE.
+# role	namespace	type	subtypes	name	arity	input	output	kind	flags
+source	@google-cloud/spanner	SpannerObject	0	executeSql	-	-	ret	database-access-result	a
+source	@google-cloud/spanner	SpannerObject	0	run	-	-	ret	database-access-result	a
+source	global.process.stdin		0	read	-	-	ret	stdin	-
+source	react-relay		0	useClientQuery	-	-	ret	response	-
+source	react-relay		0	useFragment	-	-	ret	response	-
+source	react-relay		0	useLazyLoadQuery	-	-	ret	response	-
+source	react-relay		0	usePaginationFragment	-	-	ret	response	a
+source	react-relay		0	usePreloadedQuery	-	-	ret	response	-
+source	react-relay		0	useRefetchableFragment	-	-	ret	response	a
+source	relay-runtime		0	readFragment	-	-	ret	response	-
+source	sequelize	Sequelize	0	query	-	-	ret	database-access-result	a
+source	shelljs		0	env	-	-	read	environment	-
+source	vue-router		0	useRoute	-	-	ret	browser-url-fragment	a
+source	vue-router		0	useRoute	-	-	ret	browser-url-path	a
+source	vue-router		0	useRoute	-	-	ret	browser-url-query	a
+sink	@apollo/server		0	ApolloServer	-	arg0	-	cors-origin	a
+sink	@apollo/server		0	ApolloServerBase	-	arg0	-	cors-origin	a
+sink	@apollo/server		0	gql	-	arg0	-	sql-injection	-
+sink	@google-cloud/spanner	Transaction	0	batchUpdate	-	arg0	-	sql-injection	-
+sink	@google-cloud/spanner	Transaction	0	batchUpdate	-	arg0	-	sql-injection	a
+sink	@langchain/core/messages		0	HumanMessage	-	arg0	-	user-prompt-injection	-
+sink	@langchain/core/messages		0	HumanMessage	-	arg0	-	user-prompt-injection	a
+sink	@langchain/core/messages		0	SystemMessage	-	arg0	-	system-prompt-injection	-
+sink	@langchain/core/messages		0	SystemMessage	-	arg0	-	system-prompt-injection	a
+sink	@langchain/core/prompts.ChatPromptTemplate		0	fromMessages	-	arg0	-	user-prompt-injection	a
+sink	@langchain/core/prompts.PromptTemplate		0	format	-	arg0	-	user-prompt-injection	-
+sink	@openai/agents		0	Agent	-	arg0	-	system-prompt-injection	a
+sink	@openai/agents		0	run	-	arg1	-	user-prompt-injection	-
+sink	@openai/agents		0	tool	-	arg0	-	system-prompt-injection	a
+sink	@openai/agents.Agent		0	asTool	-	arg0	-	system-prompt-injection	a
+sink	@openai/agents.Runner		0	run	-	arg1	-	user-prompt-injection	-
+sink	@openai/guardrails		0	Agent	-	arg0	-	system-prompt-injection	a
+sink	@openai/guardrails		0	tool	-	arg0	-	system-prompt-injection	a
+sink	@openai/guardrails.Agent		0	asTool	-	arg0	-	system-prompt-injection	a
+sink	@openai/guardrails.GuardrailAgent		0	create	-	arg2	-	system-prompt-injection	-
+sink	@openrouter/agent		0	callModel	-	arg0	-	system-prompt-injection	a
+sink	@openrouter/agent		0	callModel	-	arg0	-	user-prompt-injection	a
+sink	@openrouter/agent		0	tool	-	arg0	-	system-prompt-injection	a
+sink	@sap/hana-client/extension/Stream		0	createProcStatement	-	arg1	-	sql-injection	-
+sink	@sap/hdbext		0	loadProcedure	-	arg2	-	sql-injection	-
+sink	aws-sdk		0	Credentials	-	arg0	-	credentials-key	-
+sink	aws-sdk		0	Credentials	-	arg1	-	credentials-key	-
+sink	cors		0		-	arg0	-	cors-origin	a
+sink	hdb	Client	0	exec	-	arg0	-	sql-injection	-
+sink	hdb	Client	0	execute	-	arg0	-	sql-injection	-
+sink	hdb	Client	0	prepare	-	arg0	-	sql-injection	-
+sink	langchain		0	HumanMessage	-	arg0	-	user-prompt-injection	-
+sink	langchain		0	HumanMessage	-	arg0	-	user-prompt-injection	a
+sink	langchain		0	SystemMessage	-	arg0	-	system-prompt-injection	-
+sink	langchain		0	SystemMessage	-	arg0	-	system-prompt-injection	a
+sink	langchain		0	createAgent	-	arg0	-	system-prompt-injection	a
+sink	langchain	Agent	0	invoke	-	arg0	-	user-prompt-injection	a
+sink	langchain	Agent	0	stream	-	arg0	-	user-prompt-injection	a
+sink	langchain	AgentExecutor	0	invoke	-	arg0	-	user-prompt-injection	a
+sink	langchain	ChatModel	0	batch	-	arg0	-	user-prompt-injection	a
+sink	langchain	ChatModel	0	call	-	arg0	-	user-prompt-injection	-
+sink	langchain	ChatModel	0	generate	-	arg0	-	user-prompt-injection	a
+sink	langchain	ChatModel	0	invoke	-	arg0	-	user-prompt-injection	-
+sink	langchain	ChatModel	0	predict	-	arg0	-	user-prompt-injection	-
+sink	langchain	ChatModel	0	stream	-	arg0	-	user-prompt-injection	-
+sink	langchain	LLMChain	0	call	-	arg0	-	user-prompt-injection	a
+sink	langchain	LLMChain	0	invoke	-	arg0	-	user-prompt-injection	a
+sink	make-dir		0	makeDirectory	-	arg0	-	path-injection	-
+sink	make-dir		0	makeDirectorySync	-	arg0	-	path-injection	-
+sink	mkdirp		0		-	arg0	-	path-injection	-
+sink	mkdirp		0	manual	-	arg0	-	path-injection	-
+sink	mkdirp		0	manualSync	-	arg0	-	path-injection	-
+sink	mkdirp		0	mkdirpManual	-	arg0	-	path-injection	-
+sink	mkdirp		0	mkdirpManualSync	-	arg0	-	path-injection	-
+sink	mkdirp		0	mkdirpNative	-	arg0	-	path-injection	-
+sink	mkdirp		0	mkdirpNativeSync	-	arg0	-	path-injection	-
+sink	mkdirp		0	mkdirpSync	-	arg0	-	path-injection	-
+sink	mkdirp		0	native	-	arg0	-	path-injection	-
+sink	mkdirp		0	nativeSync	-	arg0	-	path-injection	-
+sink	mkdirp		0	sync	-	arg0	-	path-injection	-
+sink	open		0		-	arg0	-	path-injection	-
+sink	open		0	openApp	-	arg0	-	path-injection	-
+sink	openrouter	Agent	0	callModel	-	arg0	-	system-prompt-injection	a
+sink	openrouter	Agent	0	callModel	-	arg0	-	user-prompt-injection	a
+sink	rimraf		0	manual	-	arg0	-	path-injection	-
+sink	rimraf		0	manualSync	-	arg0	-	path-injection	-
+sink	rimraf		0	moveRemove	-	arg0	-	path-injection	-
+sink	rimraf		0	moveRemoveSync	-	arg0	-	path-injection	-
+sink	rimraf		0	native	-	arg0	-	path-injection	-
+sink	rimraf		0	nativeSync	-	arg0	-	path-injection	-
+sink	rimraf		0	posix	-	arg0	-	path-injection	-
+sink	rimraf		0	posixSync	-	arg0	-	path-injection	-
+sink	rimraf		0	rimrafSync	-	arg0	-	path-injection	-
+sink	rimraf		0	sync	-	arg0	-	path-injection	-
+sink	rimraf		0	windows	-	arg0	-	path-injection	-
+sink	rimraf		0	windowsSync	-	arg0	-	path-injection	-
+sink	rimraf.manual		0	sync	-	arg0	-	path-injection	-
+sink	rimraf.moveRemove		0	sync	-	arg0	-	path-injection	-
+sink	rimraf.native		0	sync	-	arg0	-	path-injection	-
+sink	rimraf.posix		0	sync	-	arg0	-	path-injection	-
+sink	rimraf.windows		0	sync	-	arg0	-	path-injection	-
+summary	'underscore.string'		0		-	arg0	ret	taint	-
+summary	'underscore.string'		0	camelcase	-	arg0	ret	taint	-
+summary	'underscore.string'		0	camelize	-	arg0	ret	taint	-
+summary	'underscore.string'		0	capitalize	-	arg0	ret	taint	-
+summary	'underscore.string'		0	chars	-	arg0	ret	taint	a
+summary	'underscore.string'		0	chop	-	arg0	ret	taint	a
+summary	'underscore.string'		0	classify	-	arg0	ret	taint	-
+summary	'underscore.string'		0	clean	-	arg0	ret	taint	-
+summary	'underscore.string'		0	cleanDiacritics	-	arg0	ret	taint	-
+summary	'underscore.string'		0	dasherize	-	arg0	ret	taint	-
+summary	'underscore.string'		0	decapitalize	-	arg0	ret	taint	-
+summary	'underscore.string'		0	dedent	-	arg0	ret	taint	-
+summary	'underscore.string'		0	escapeHTML	-	arg0	ret	taint	-
+summary	'underscore.string'		0	humanize	-	arg0	ret	taint	-
+summary	'underscore.string'		0	insert	-	arg0	ret	taint	-
+summary	'underscore.string'		0	insert	-	arg2	ret	taint	-
+summary	'underscore.string'		0	join	-	arg0+	ret	taint	-
+summary	'underscore.string'		0	lines	-	arg0	ret	taint	a
+summary	'underscore.string'		0	ljust	-	arg0	ret	taint	-
+summary	'underscore.string'		0	ljust	-	arg2	ret	taint	-
+summary	'underscore.string'		0	lpad	-	arg0	ret	taint	-
+summary	'underscore.string'		0	lpad	-	arg2	ret	taint	-
+summary	'underscore.string'		0	lstrip	-	arg0	ret	taint	-
+summary	'underscore.string'		0	ltrim	-	arg0	ret	taint	-
+summary	'underscore.string'		0	pad	-	arg0	ret	taint	-
+summary	'underscore.string'		0	pad	-	arg2	ret	taint	-
+summary	'underscore.string'		0	pred	-	arg0	ret	taint	-
+summary	'underscore.string'		0	prune	-	arg0	ret	taint	-
+summary	'underscore.string'		0	prune	-	arg2	ret	taint	-
+summary	'underscore.string'		0	q	-	arg0	ret	taint	-
+summary	'underscore.string'		0	q	-	arg1	ret	taint	-
+summary	'underscore.string'		0	quote	-	arg0	ret	taint	-
+summary	'underscore.string'		0	quote	-	arg1	ret	taint	-
+summary	'underscore.string'		0	repeat	-	arg0	ret	taint	-
+summary	'underscore.string'		0	repeat	-	arg2	ret	taint	-
+summary	'underscore.string'		0	replaceAll	-	arg0	ret	taint	-
+summary	'underscore.string'		0	replaceAll	-	arg2	ret	taint	-
+summary	'underscore.string'		0	reverse	-	arg0	ret	taint	-
+summary	'underscore.string'		0	rjust	-	arg0	ret	taint	-
+summary	'underscore.string'		0	rjust	-	arg2	ret	taint	-
+summary	'underscore.string'		0	rpad	-	arg0	ret	taint	-
+summary	'underscore.string'		0	rpad	-	arg2	ret	taint	-
+summary	'underscore.string'		0	rstrip	-	arg0	ret	taint	-
+summary	'underscore.string'		0	rtrim	-	arg0	ret	taint	-
+summary	'underscore.string'		0	slugify	-	arg0	ret	taint	-
+summary	'underscore.string'		0	splice	-	arg0	ret	taint	-
+summary	'underscore.string'		0	splice	-	arg2	ret	taint	-
+summary	'underscore.string'		0	splice	-	arg3	ret	taint	-
+summary	'underscore.string'		0	sprintf	-	arg0	ret	taint	-
+summary	'underscore.string'		0	strLeft	-	arg0	ret	taint	-
+summary	'underscore.string'		0	strLeftBack	-	arg0	ret	taint	-
+summary	'underscore.string'		0	strRight	-	arg0	ret	taint	-
+summary	'underscore.string'		0	strRightBack	-	arg0	ret	taint	-
+summary	'underscore.string'		0	strip	-	arg0	ret	taint	-
+summary	'underscore.string'		0	stripTags	-	arg0	ret	taint	-
+summary	'underscore.string'		0	succ	-	arg0	ret	taint	-
+summary	'underscore.string'		0	surround	-	arg0	ret	taint	-
+summary	'underscore.string'		0	surround	-	arg1	ret	taint	-
+summary	'underscore.string'		0	swapCase	-	arg0	ret	taint	-
+summary	'underscore.string'		0	titleize	-	arg0	ret	taint	-
+summary	'underscore.string'		0	toSentence	-	arg0	ret	taint	a
+summary	'underscore.string'		0	toSentenceSerial	-	arg0	ret	taint	a
+summary	'underscore.string'		0	trim	-	arg0	ret	taint	-
+summary	'underscore.string'		0	truncate	-	arg0	ret	taint	-
+summary	'underscore.string'		0	underscored	-	arg0	ret	taint	-
+summary	'underscore.string'		0	unescapeHTML	-	arg0	ret	taint	-
+summary	'underscore.string'		0	unquote	-	arg0	ret	taint	-
+summary	'underscore.string'		0	words	-	arg0	ret	taint	a
+summary	'underscore.string'		0	wrap	-	arg0	ret	taint	-
+summary	'underscore.string'	Wrapper	0	camelcase	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	camelize	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	capitalize	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	classify	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	clean	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	cleanDiacritics	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	concat	-	arg0+	ret	taint	-
+summary	'underscore.string'	Wrapper	0	dasherize	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	decapitalize	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	dedent	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	escapeHTML	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	humanize	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	insert	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	insert	-	arg1	ret	taint	-
+summary	'underscore.string'	Wrapper	0	join	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	join	-	arg0+	ret	taint	-
+summary	'underscore.string'	Wrapper	0	ljust	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	ljust	-	arg1	ret	taint	-
+summary	'underscore.string'	Wrapper	0	lpad	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	lpad	-	arg1	ret	taint	-
+summary	'underscore.string'	Wrapper	0	lstrip	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	ltrim	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	pad	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	pad	-	arg1	ret	taint	-
+summary	'underscore.string'	Wrapper	0	pred	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	prune	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	prune	-	arg1	ret	taint	-
+summary	'underscore.string'	Wrapper	0	q	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	q	-	arg0	ret	taint	-
+summary	'underscore.string'	Wrapper	0	quote	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	quote	-	arg0	ret	taint	-
+summary	'underscore.string'	Wrapper	0	repeat	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	repeat	-	arg1	ret	taint	-
+summary	'underscore.string'	Wrapper	0	replace	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	replaceAll	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	replaceAll	-	arg1	ret	taint	-
+summary	'underscore.string'	Wrapper	0	reverse	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	rjust	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	rjust	-	arg1	ret	taint	-
+summary	'underscore.string'	Wrapper	0	rpad	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	rpad	-	arg1	ret	taint	-
+summary	'underscore.string'	Wrapper	0	rstrip	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	rtrim	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	slice	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	slugify	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	splice	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	splice	-	arg2	ret	taint	-
+summary	'underscore.string'	Wrapper	0	split	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	sprintf	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	strLeft	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	strLeftBack	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	strRight	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	strRightBack	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	strip	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	stripTags	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	substr	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	substring	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	succ	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	surround	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	surround	-	arg0	ret	taint	-
+summary	'underscore.string'	Wrapper	0	swapCase	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	tap	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	titleize	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	toLowerCase	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	toUpperCase	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	trim	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	truncate	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	underscored	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	unescapeHTML	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	unquote	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	value	-	recv	ret	taint	-
+summary	'underscore.string'	Wrapper	0	wrap	-	recv	ret	taint	-
+summary	@aws-sdk/client-athena		0	CreateNamedQueryCommand	-	arg0	ret	taint	a
+summary	@aws-sdk/client-athena		0	CreatePreparedStatementCommand	-	arg0	ret	taint	a
+summary	@aws-sdk/client-athena		0	StartQueryExecutionCommand	-	arg0	ret	taint	a
+summary	@aws-sdk/client-athena		0	UpdateNamedQueryCommand	-	arg0	ret	taint	a
+summary	@aws-sdk/client-dynamodb		0	BatchExecuteStatementCommand	-	arg0	ret	taint	a
+summary	@aws-sdk/client-dynamodb		0	ExecuteStatementCommand	-	arg0	ret	taint	a
+summary	@aws-sdk/client-rds-data		0	BatchExecuteStatementCommand	-	arg0	ret	taint	a
+summary	@aws-sdk/client-rds-data		0	ExecuteSqlCommand	-	arg0	ret	taint	a
+summary	@aws-sdk/client-rds-data		0	ExecuteStatementCommand	-	arg0	ret	taint	a
+summary	@aws-sdk/client-s3		0	SelectObjectContentCommand	-	arg0	ret	taint	a
+summary	call-me-maybe		0		-	arg1	ret	value	-
+summary	markdown-table		0		-	arg0	ret	taint	a
+summary	react		0	use	-	arg0	ret	value	a
+summary	vue		0	reactive	-	arg0	ret	taint	-
+summary	vue		0	ref	-	arg0	ret	value	a
+summary	vue		0	shallowRef	-	arg0	ret	value	a
+summary	vue		0	toRef	-	arg0	ret	value	a

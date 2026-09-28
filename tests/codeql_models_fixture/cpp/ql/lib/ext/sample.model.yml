@@ -1,0 +1,25 @@
+# A sample of CodeQL's C/C++ Models-as-Data rows (github/codeql, MIT).
+extensions:
+  - addsTo:
+      pack: codeql/cpp-all
+      extensible: sourceModel
+    data: # namespace, type, subtypes, name, signature, ext, output, kind, provenance
+      - ["", "", False, "getc", "", "", "ReturnValue", "remote", "manual"]
+      - ["", "", False, "ReadFile", "", "", "Argument[*1]", "local", "manual"]
+  - addsTo:
+      pack: codeql/cpp-all
+      extensible: sinkModel
+    data: # namespace, type, subtypes, name, signature, ext, input, kind, provenance
+      - ["", "", False, "PQexec", "", "", "Argument[*1]", "sql-injection", "manual"]
+  - addsTo:
+      pack: codeql/cpp-all
+      extensible: summaryModel
+    data: # namespace, type, subtypes, name, signature, ext, input, output, kind, provenance
+      - ["Azure::Core", "Url", True, "SetHost", "", "", "Argument[*0]", "Argument[-1]", "taint", "manual"]
+      - ["", "", False, "strdup", "", "", "Argument[@0]", "ReturnValue[*]", "value", "manual"]
+      - ["", "", False, "gen", "", "", "Argument[0]", "ReturnValue", "taint", "df-generated"]
+  - addsTo:
+      pack: codeql/cpp-all
+      extensible: allocationFunctionModel
+    data:
+      - ["", "", False, "malloc", "0", "", "", True]

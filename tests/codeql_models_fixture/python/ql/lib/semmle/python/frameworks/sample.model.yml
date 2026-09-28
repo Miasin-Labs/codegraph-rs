@@ -1,0 +1,32 @@
+# A sample of CodeQL's Python Models-as-Data rows (github/codeql, MIT).
+extensions:
+  - addsTo:
+      pack: codeql/python-all
+      extensible: sourceModel
+    data:
+      - ['os', 'Member[getenv].ReturnValue', 'environment']
+      - ['os', 'Member[environ]', 'environment']
+      - ['builtins', 'Member[input].ReturnValue', 'stdin']
+  - addsTo:
+      pack: codeql/python-all
+      extensible: sinkModel
+    data:
+      - ['asyncpg.~Connection', 'Member[execute,fetch].Argument[0,query:]', 'sql-injection']
+      - ["zipfile.ZipFile","Member[extractall].Argument[0,path:]", "path-injection"]
+      - ['readline', 'Member[createInterface].ReturnValue.Member[question].Argument[0]', 'log-injection']
+  - addsTo:
+      pack: codeql/python-all
+      extensible: summaryModel
+    data:
+      - ["urllib", "Member[parse].Member[unquote]", "Argument[0,string:]", "ReturnValue", "taint"]
+      - ["email.header.Header!", "Subclass.Call", "Argument[0,s:]", "ReturnValue", "taint"]
+  - addsTo:
+      pack: codeql/python-all
+      extensible: barrierGuardModel
+    data:
+      - ['django', 'Member[utils].Member[http].Member[url_has_allowed_host_and_scheme].Argument[0,url:]', "true", 'url-redirection']
+  - addsTo:
+      pack: codeql/python-all
+      extensible: typeModel
+    data:
+      - ['asyncpg.~Connection', 'asyncpg', 'Member[connect].ReturnValue.Awaited']

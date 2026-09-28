@@ -1,0 +1,6 @@
+MIT License
+
+Copyright (c) GitHub, Inc.
+
+(Fixture: the rows under this directory are samples of github/codeql's
+Models-as-Data files, used by codegraph's importer tests.)

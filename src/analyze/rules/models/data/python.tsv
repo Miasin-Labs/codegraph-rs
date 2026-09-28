@@ -1,0 +1,153 @@
+# CodeQL Models-as-Data for python, imported by `codegraph models import-codeql`.
+# Source: https://github.com/github/codeql @ 0580587ec936ae33ddf096795e6f65d0164463ee
+# Copyright (c) GitHub, Inc. — MIT License, see NOTICE.
+# role	namespace	type	subtypes	name	arity	input	output	kind	flags
+source	argparse	ArgumentParser	0	parse_args	0	-	ret	commandargs	-
+source	argparse	ArgumentParser	0	parse_known_args	0	-	ret	commandargs	-
+source	builtins		0	input	-	-	ret	stdin	-
+source	builtins		0	raw_input	-	-	ret	stdin	-
+source	os		0	environ	-	-	read	environment	-
+source	os		0	environb	-	-	read	environment	-
+source	os		0	getenv	-	-	ret	environment	-
+source	os		0	getenvb	-	-	ret	environment	-
+source	os		0	read	-	-	ret	file	-
+source	posix		0	environ	-	-	read	environment	-
+source	sys		0	argv	-	-	read	commandargs	-
+source	sys		0	orig_argv	-	-	read	commandargs	-
+source	sys		0	stdin	-	-	read	stdin	-
+sink	asyncpg	Connection	0	copy_from_query	-	arg0=query	-	sql-injection	-
+sink	asyncpg	Connection	0	execute	-	arg0=query	-	sql-injection	-
+sink	asyncpg	Connection	0	executemany	-	arg0=command	-	sql-injection	-
+sink	asyncpg	Connection	0	fetch	-	arg0=query	-	sql-injection	-
+sink	asyncpg	Connection	0	fetchrow	-	arg0=query	-	sql-injection	-
+sink	asyncpg	Connection	0	fetchval	-	arg0=query	-	sql-injection	-
+sink	asyncpg	Connection	0	prepare	-	arg0=query	-	sql-injection	-
+sink	azure.keyvault.certificates	CertificateClient	0	CertificateClient	-	arg0=vault_url	-	request-forgery	-
+sink	azure.keyvault.keys	KeyClient	0	KeyClient	-	arg0=vault_url	-	request-forgery	-
+sink	azure.keyvault.secrets	SecretClient	0	SecretClient	-	arg0=vault_url	-	request-forgery	-
+sink	azure.storage.blob		0	download_blob_from_url	-	arg0=blob_url	-	request-forgery	-
+sink	azure.storage.blob		0	upload_blob_to_url	-	arg0=blob_url	-	request-forgery	-
+sink	azure.storage.blob	BlobClient	0	BlobClient	-	arg0=account_url	-	request-forgery	-
+sink	azure.storage.blob	BlobClient	0	append_block_from_url	-	arg0=copy_source_url	-	request-forgery	-
+sink	azure.storage.blob	BlobClient	0	from_blob_url	-	arg0=blob_url	-	request-forgery	-
+sink	azure.storage.blob	BlobClient	0	get_page_range_diff_for_managed_disk	-	arg0=previous_snapshot_url	-	request-forgery	-
+sink	azure.storage.blob	BlobClient	0	stage_block_from_url	-	arg1=source_url	-	request-forgery	-
+sink	azure.storage.blob	BlobClient	0	start_copy_from_url	-	arg0=source_url	-	request-forgery	-
+sink	azure.storage.blob	BlobClient	0	upload_blob_from_url	-	arg0=source_url	-	request-forgery	-
+sink	azure.storage.blob	BlobClient	0	upload_pages_from_url	-	arg0=source_url	-	request-forgery	-
+sink	azure.storage.blob	BlobServiceClient	0	BlobServiceClient	-	arg0=account_url	-	request-forgery	-
+sink	azure.storage.blob	ContainerClient	0	ContainerClient	-	arg0=account_url	-	request-forgery	-
+sink	azure.storage.blob	ContainerClient	0	from_container_url	-	arg0=container_url	-	request-forgery	-
+sink	azure.storage.filedatalake	DataLakeDirectoryClient	0	DataLakeDirectoryClient	-	arg0=account_url	-	request-forgery	-
+sink	azure.storage.filedatalake	DataLakeFileClient	0	DataLakeFileClient	-	arg0=account_url	-	request-forgery	-
+sink	azure.storage.filedatalake	DataLakeServiceClient	0	DataLakeServiceClient	-	arg0=account_url	-	request-forgery	-
+sink	azure.storage.filedatalake	FileSystemClient	0	FileSystemClient	-	arg0=account_url	-	request-forgery	-
+sink	azure.storage.fileshare	ShareClient	0	ShareClient	-	arg0=account_url	-	request-forgery	-
+sink	azure.storage.fileshare	ShareClient	0	from_share_url	-	arg0=share_url	-	request-forgery	-
+sink	azure.storage.fileshare	ShareDirectoryClient	0	ShareDirectoryClient	-	arg0=account_url	-	request-forgery	-
+sink	azure.storage.fileshare	ShareDirectoryClient	0	from_directory_url	-	arg0=directory_url	-	request-forgery	-
+sink	azure.storage.fileshare	ShareFileClient	0	ShareFileClient	-	arg0=account_url	-	request-forgery	-
+sink	azure.storage.fileshare	ShareFileClient	0	from_file_url	-	arg0=file_url	-	request-forgery	-
+sink	azure.storage.fileshare	ShareFileClient	0	start_copy_from_url	-	arg0=source_url	-	request-forgery	-
+sink	azure.storage.fileshare	ShareFileClient	0	upload_range_from_url	-	arg0=source_url	-	request-forgery	-
+sink	azure.storage.fileshare	ShareServiceClient	0	ShareServiceClient	-	arg0=account_url	-	request-forgery	-
+sink	azure.storage.queue	QueueClient	0	QueueClient	-	arg0=account_url	-	request-forgery	-
+sink	azure.storage.queue	QueueClient	0	from_queue_url	-	arg0=queue_url	-	request-forgery	-
+sink	azure.storage.queue	QueueServiceClient	0	QueueServiceClient	-	arg0=account_url	-	request-forgery	-
+sink	socket.socket		0	bind	-	arg0=address	-	bind-socket-all-interfaces	-
+sink	zipfile	ZipFile	0	extractall	-	arg0=path	-	path-injection	-
+summary	argparse	ArgumentParser	0	_parse_known_args	-	arg0=arg_strings	ret	taint	-
+summary	argparse	ArgumentParser	0	_read_args_from_files	-	arg0=arg_strings	ret	taint	-
+summary	argparse	ArgumentParser	0	parse_args	-	arg0=args	ret	taint	-
+summary	argparse	ArgumentParser	0	parse_known_args	-	arg0=args	ret	taint	-
+summary	cgi	FieldStorage	0	getfirst	-	recv	ret	taint	-
+summary	cgi	FieldStorage	0	getlist	-	recv	ret	taint	-
+summary	cgi	FieldStorage	0	getvalue	-	recv	ret	taint	-
+summary	collections.abc	Mapping	0	get	-	arg1=default	ret	taint	-
+summary	contextlib	ExitStack	0	enter_context	-	arg0=cm	ret	taint	-
+summary	copy		0	copy	-	arg0=x	ret	value	-
+summary	copy		0	deepcopy	-	arg0=x	ret	value	-
+summary	copy		0	replace	-	arg0=x	ret	value	-
+summary	ctypes		0	create_string_buffer	-	arg0	ret	taint	-
+summary	ctypes		0	create_unicode_buffer	-	arg0	ret	taint	-
+summary	distutils.util		0	change_root	-	arg0=new_root	ret	taint	-
+summary	distutils.util		0	change_root	-	arg1=pathname	ret	taint	-
+summary	email.header	Header	1	Header	-	arg0=s	ret	taint	-
+summary	email.utils		0	parseaddr	-	arg0=addr	ret	taint	-
+summary	email.utils		0	parseaddr	-	arg0=addr	ret	taint	a
+summary	fnmatch		0	filter	-	arg0=names	ret	taint	-
+summary	fnmatch		0	filter	-	arg0=names	ret	value	a
+summary	getopt		0	getopt	-	arg0=args	ret	taint	a
+summary	getopt		0	getopt	-	arg1=shortopts	ret	taint	a
+summary	getopt		0	getopt	-	arg2=longopts	ret	taint	a
+summary	gettext		0	gettext	-	arg0=message	ret	taint	-
+summary	glob		0	glob	-	arg0=pathname	ret	taint	-
+summary	glob		0	iglob	-	arg0=pathname	ret	taint	-
+summary	gzip	GzipFile	1	GzipFile	-	arg0=filename	ret	taint	-
+summary	html		0	escape	-	arg0=s	ret	taint	-
+summary	html		0	unescape	-	arg0=s	ret	taint	-
+summary	html.parser	HTMLParser	0	feed	-	arg0=data	recv	taint	-
+summary	imp		0	find_module	-	arg0=name	ret	taint	-
+summary	imp		0	find_module	-	arg1=path	ret	taint	-
+summary	logging		0	getLevelName	-	arg0=level	ret	taint	-
+summary	logging	LogRecord	0	getMessage	-	recv	ret	taint	-
+summary	lxml.etree		0	fromstringlist	-	arg0=strings	ret	taint	a
+summary	mimetypes		0	guess_type	-	arg0=url	ret	taint	-
+summary	nturl2path		0	pathname2url	-	arg0=p	ret	taint	-
+summary	nturl2path		0	url2pathname	-	arg0=url	ret	taint	-
+summary	optparse	OptionParser	0	parse_args	-	arg0=args	ret	taint	a
+summary	optparse	OptionParser	0	parse_args	-	arg1=values	ret	taint	a
+summary	os		0	walk	-	arg0=top	ret	taint	-
+summary	pathlib	Path	0	__enter__	-	recv	ret	taint	-
+summary	pathlib	PurePath	0	__fspath__	-	recv	ret	taint	-
+summary	queue	Queue	0	get	-	recv	ret	taint	-
+summary	queue	Queue	0	get	-	recv	ret	value	a
+summary	queue	Queue	0	get_nowait	-	recv	ret	taint	-
+summary	queue	Queue	0	get_nowait	-	recv	ret	value	a
+summary	queue	Queue	0	put	-	arg0=item	recv	taint	-
+summary	queue	Queue	0	put	-	arg0=item	recv	value	a
+summary	queue	Queue	0	put_nowait	-	arg0=item	recv	taint	-
+summary	queue	Queue	0	put_nowait	-	arg0=item	recv	value	a
+summary	random		0	choice	-	arg0=seq	ret	taint	-
+summary	random		0	choice	-	arg0=seq	ret	value	a
+summary	random	Random	0	choice	-	arg0=seq	ret	taint	-
+summary	random	Random	0	choice	-	arg0=seq	ret	value	a
+summary	shlex		0	quote	-	arg0=s	ret	taint	-
+summary	shutil		0	which	-	arg0=cmd	ret	taint	-
+summary	shutil		0	which	-	arg2=path	ret	taint	-
+summary	subprocess	Popen	1	Popen	-	arg0=args	ret	taint	-
+summary	tarfile		0	open	-	arg0=name	ret	taint	-
+summary	tarfile		0	open	-	arg2=fileobj	ret	taint	-
+summary	tarfile	TarFile	0	open	-	arg0=name	ret	taint	-
+summary	tarfile	TarFile	0	open	-	arg2=fileobj	ret	taint	-
+summary	tempfile		0	mkdtemp	-	arg0=suffix	ret	taint	-
+summary	tempfile		0	mkdtemp	-	arg1=prefix	ret	taint	-
+summary	tempfile		0	mkdtemp	-	arg2=dir	ret	taint	-
+summary	tempfile		0	mkstemp	-	arg0=suffix	ret	taint	a
+summary	tempfile		0	mkstemp	-	arg1=prefix	ret	taint	a
+summary	tempfile		0	mkstemp	-	arg2=dir	ret	taint	a
+summary	textwrap		0	dedent	-	arg0=text	ret	taint	-
+summary	traceback	StackSummary	0	from_list	-	arg0=a_list	ret	taint	-
+summary	typing		0	cast	-	arg1=val	ret	value	-
+summary	urllib.parse		0	parse_qs	-	arg0=qs	ret	taint	-
+summary	urllib.parse		0	quote	-	arg0=string	ret	taint	-
+summary	urllib.parse		0	quote_plus	-	arg0=string	ret	taint	-
+summary	urllib.parse		0	splitquery	-	arg0=url	ret	taint	a
+summary	urllib.parse		0	unquote	-	arg0=string	ret	taint	-
+summary	urllib.parse		0	unquote_plus	-	arg0=string	ret	taint	-
+summary	urllib.parse		0	urlencode	-	arg0=query	ret	taint	-
+summary	urllib.parse		0	urljoin	-	arg0=base	ret	taint	-
+summary	urllib.parse		0	urljoin	-	arg1=url	ret	taint	-
+summary	urllib.parse		0	urlparse	-	arg0=urlstring	ret	taint	-
+summary	xml.etree		0	fromstringlist	-	arg0=strings	ret	taint	a
+summary	zipfile	CompleteDirs	0	namelist	-	recv	ret	taint	-
+summary	zipfile	ZipFile	0	_extract_member	-	arg1=targetpath	ret	taint	-
+summary	zipfile	ZipFile	0	infolist	-	recv	ret	taint	-
+summary	zipfile	ZipFile	0	infolist	-	recv	ret	value	a
+summary	zipfile	ZipFile	0	namelist	-	recv	ret	taint	-
+summary	zipfile	ZipFile	1	ZipFile	-	arg0=file	ret	taint	-
+summary	zipfile	ZipFile	1	ZipFile	-	arg0=file	ret	value	a
+guard	AntiSSRF.URIValidator		0	in_azure_keyvault_domain	-	arg0	-	request-forgery	T
+guard	AntiSSRF.URIValidator		0	in_azure_storage_domain	-	arg0	-	request-forgery	T
+guard	AntiSSRF.URIValidator		0	in_domain	-	arg0	-	request-forgery	T
+guard	django.utils.http		0	url_has_allowed_host_and_scheme	-	arg0=url	-	url-redirection	T

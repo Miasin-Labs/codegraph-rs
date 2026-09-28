@@ -1,0 +1,20 @@
+# A sample of CodeQL's JavaScript Models-as-Data rows (github/codeql, MIT).
+extensions:
+  - addsTo:
+      pack: codeql/javascript-all
+      extensible: sourceModel
+    data:
+      - ['global', 'Member[process].Member[stdin].Member[read].ReturnValue', 'stdin']
+      - ['fs', 'Member[promises].Member[readFile].ReturnValue.Member[then].Argument[0].Parameter[0]', 'file']
+  - addsTo:
+      pack: codeql/javascript-all
+      extensible: sinkModel
+    data:
+      - ['shelljs', 'Member[exec].Argument[0]', 'command-injection']
+      - ['open', 'Argument[0]', 'request-forgery']
+      - ['rimraf', 'Member[sync].Argument[0..]', 'path-injection']
+  - addsTo:
+      pack: codeql/javascript-all
+      extensible: summaryModel
+    data:
+      - ['underscore.string', 'Member[slugify]', 'Argument[0]', 'ReturnValue', 'taint']
