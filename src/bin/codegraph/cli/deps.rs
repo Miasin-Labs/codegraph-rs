@@ -108,4 +108,69 @@ pub(crate) enum DepsCommands {
         #[arg(short = 'j', long)]
         json: bool,
     },
+    /// Ecosystem beliefs: how the cargo cache's crates call library APIs,
+    /// mined per API for `analyze bugs` (build, show)
+    Beliefs {
+        #[command(subcommand)]
+        command: BeliefsCommands,
+    },
+}
+
+/// `codegraph deps beliefs`.
+#[derive(Subcommand)]
+pub(crate) enum BeliefsCommands {
+    /// Observe the cargo cache's crates (shards from cached sources, never
+    /// the network) and mine per-API beliefs into deps/beliefs/beliefs.json
+    Build {
+        /// Crates newly observed this run (0 = no limit)
+        #[arg(long = "max-crates", value_name = "n", default_value = "400")]
+        max_crates: usize,
+        /// Start no crate after this many ms (0 = no limit)
+        #[arg(long = "budget-ms", value_name = "ms", default_value = "1800000")]
+        budget_ms: u64,
+        /// Resolution budget per crate in ms
+        #[arg(long = "crate-budget-ms", value_name = "ms", default_value = "20000")]
+        crate_budget_ms: u64,
+        /// Crates observed in parallel
+        #[arg(long, value_name = "n")]
+        jobs: Option<usize>,
+        /// Observe only this crate (by name); repeatable
+        #[arg(long = "crate", value_name = "name")]
+        crates: Vec<String>,
+        /// Observe again even crates whose observations are current
+        #[arg(short = 'f', long)]
+        force: bool,
+        /// Start the build detached and return (one builder at a time)
+        #[arg(long)]
+        detach: bool,
+        /// The detached run itself: quiet, exits if another build runs
+        #[arg(long, hide = true)]
+        background: bool,
+        /// Print nothing but the summary
+        #[arg(short = 'q', long)]
+        quiet: bool,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Show the mined beliefs (filtered by API substring or rule), or with
+    /// --profile what the observations say about one API, strong or not
+    Show {
+        /// Only beliefs whose API contains this text
+        #[arg(value_name = "api")]
+        api: Option<String>,
+        /// Only this rule (ecosystem-result-discarded, ...-missing-follow-up,
+        /// ...-missing-precursor, ...-missing-pair, ...-held-across-await)
+        #[arg(long, value_name = "rule")]
+        rule: Option<String>,
+        /// The usage profile of exactly this API (`std@1::File::create`)
+        #[arg(long)]
+        profile: bool,
+        /// Show at most N beliefs
+        #[arg(short = 't', long, value_name = "number", default_value = "40")]
+        top: usize,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
 }

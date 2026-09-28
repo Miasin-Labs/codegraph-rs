@@ -19,6 +19,7 @@
 
 mod arms;
 mod companions;
+pub(crate) mod ecosystem;
 mod results;
 mod returns;
 pub(super) mod rules;

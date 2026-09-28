@@ -236,6 +236,9 @@ with `codegraph analyze review`."
         /// Include findings in test code
         #[arg(long)]
         tests: bool,
+        /// Skip the ecosystem beliefs (`codegraph deps beliefs build`)
+        #[arg(long = "no-ecosystem")]
+        no_ecosystem: bool,
         /// Show at most N findings (default: 50, or all with --json)
         #[arg(short = 't', long, value_name = "number")]
         top: Option<String>,

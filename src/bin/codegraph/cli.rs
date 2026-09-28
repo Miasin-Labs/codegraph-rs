@@ -6,7 +6,7 @@ mod history;
 mod projects;
 
 pub(crate) use analyze::AnalyzeCommands;
-pub(crate) use deps::DepsCommands;
+pub(crate) use deps::{BeliefsCommands, DepsCommands};
 pub(crate) use history::HistoryCommands;
 pub(crate) use projects::ProjectsCommands;
 
