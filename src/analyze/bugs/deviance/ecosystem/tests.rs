@@ -342,6 +342,8 @@ fn named_release_pairs_across_a_crate() {
     assert!(is_release_pair("lock", "unlock"));
     assert!(!is_release_pair("into_raw", "from_utf8"));
     assert!(!is_release_pair("into_bytes", "from_raw"));
+    assert!(!is_release_pair("into_parts", "from_parts"), "a conversion");
+    assert!(!is_release_pair("push", "pop"));
 
     let apis = [
         "std@1::CString::into_raw",
@@ -449,6 +451,11 @@ fn bad_create(path: &str) {
     File::create(path);
 }
 
+fn old_create(path: &str) -> std::io::Result<()> {
+    try!(File::create(path));
+    Ok(())
+}
+
 fn good_create(path: &str) -> std::io::Result<()> {
     let _file = File::create(path)?;
     Ok(())
@@ -505,6 +512,15 @@ fn abandoned(dir: &str) {
     let mut cmd = Command::new("ls");
     cmd.args([dir]);
     println!("never run");
+}
+
+fn debug_arm(f: &mut std::fmt::Formatter<'_>, x: Option<u8>) -> std::fmt::Result {
+    let mut d = f.debug_struct("X");
+    match x {
+        Some(v) => d.field("x", &v),
+        None => d.field("x", &"none"),
+    }
+    .finish()
 }
 
 fn hand_out(s: &str) -> *mut i8 {
@@ -605,6 +621,13 @@ fn beliefs() -> BeliefSet {
                 None,
             ),
             belief(
+                "core@1::DebugStruct::field",
+                BeliefKind::FollowedBy {
+                    others: vec!["core@1::DebugStruct::finish".to_string()],
+                },
+                None,
+            ),
+            belief(
                 "std@1::Command::args",
                 BeliefKind::FollowedBy {
                     others: vec![
@@ -630,6 +653,7 @@ fn fixture_sites() -> Vec<ExternalSite> {
     vec![
         external("File::create(path);", 0, CREATE),
         external("File::create(path)?", 0, CREATE),
+        external("File::create(path));", 0, CREATE),
         external("m.lock()", 0, "std@1::Mutex::lock"),
         external("m.lock()", 1, "std@1::Mutex::lock"),
         external("m.lock()", 2, "std@1::Mutex::lock"),
@@ -645,6 +669,7 @@ fn fixture_sites() -> Vec<ExternalSite> {
             0,
             "alloc@1::CString::into_raw",
         ),
+        external("d.field(\"x\", &v)", 0, "core@1::DebugStruct::field"),
         external("Command::new(\"ls\")", 0, "std@1::Command::new"),
         external("cmd.args", 0, "std@1::Command::args"),
         external("cmd.status()", 0, "std@1::Command::status"),
@@ -709,7 +734,7 @@ fn project_calls_that_depart_from_ecosystem_beliefs_are_findings() {
 #[test]
 fn a_release_called_anywhere_answers_a_pair_belief() {
     let source = format!(
-        "{PROJECT}\nfn take_back(p: *mut i8) {{\n    unsafe {{ drop(CString::from_raw(p)) }};\n}}\n"
+        "{PROJECT}\nfn take_back(p: *mut i8) {{\n    unsafe {{ drop(Vec::from_raw_parts(p, 1, 1)) }};\n}}\n"
     );
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -720,7 +745,7 @@ fn a_release_called_anywhere_answers_a_pair_belief() {
         functions(),
         Vec::new(),
     );
-    // `from_raw` left unresolved: the name alone answers.
+    // Released through `from_raw_parts`, unresolved: the name answers.
     let observed = observe(&mut project, &fixture_sites());
     let rules: Vec<String> = apply::findings(&beliefs(), &observed, &is_status)
         .into_iter()
@@ -730,6 +755,53 @@ fn a_release_called_anywhere_answers_a_pair_belief() {
         !rules.iter().any(|rule| rule == "ecosystem-missing-pair"),
         "{rules:?}"
     );
+}
+
+#[test]
+fn a_raw_pointer_given_to_an_owner_is_released() {
+    // `alloc` whose pointer `Box::from_raw` takes over: no `dealloc`
+    // needed. `Box::from_raw` is left unresolved; its name answers.
+    let source = "use std::alloc::{alloc, Layout};\n\
+                  fn make() -> Box<u64> {\n    \
+                  let layout = Layout::new::<u64>();\n    \
+                  unsafe { Box::from_raw(alloc(layout) as *mut u64) }\n}\n";
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/lib.rs"), source).unwrap();
+    let (line, col) = at(source, "alloc(layout)", 0);
+    let site = ExternalSite {
+        file: "src/lib.rs".to_string(),
+        line,
+        col,
+        api: "alloc@1::alloc".to_string(),
+        name: "alloc".to_string(),
+    };
+    let mut project = Project::from_parts(
+        dir.path(),
+        vec!["src/lib.rs".to_string()],
+        Vec::new(),
+        Vec::new(),
+    );
+    let observed = observe(&mut project, &[site]);
+    let mut pair = belief(
+        "alloc@1::alloc",
+        BeliefKind::PairedWith {
+            other: "alloc@1::dealloc".to_string(),
+        },
+        Some("*mut u8"),
+    );
+    let set = BeliefSet {
+        beliefs: vec![pair.clone()],
+        ..BeliefSet::default()
+    };
+    assert!(apply::findings(&set, &observed, &is_status).is_empty());
+    // Without the raw-pointer return, the named release is required.
+    pair.returns = None;
+    let set = BeliefSet {
+        beliefs: vec![pair],
+        ..BeliefSet::default()
+    };
+    assert_eq!(apply::findings(&set, &observed, &is_status).len(), 1);
 }
 
 #[test]
@@ -775,6 +847,11 @@ fn observation_records_objects_order_and_escapes() {
         UseClass::Discarded
     );
     assert_eq!(site("File::create(path)?", 0).obs.use_class, UseClass::Used);
+    assert_eq!(
+        site("File::create(path));", 0).obs.use_class,
+        UseClass::Checked,
+        "`try!(..);` checks it"
+    );
     assert_eq!(site("m.lock()", 0).obs.await_held, Some(true));
     assert_eq!(
         site("m.lock()", 1).obs.await_held,

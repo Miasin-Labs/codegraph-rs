@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 pub const BELIEFS_FORMAT: u32 = 1;
 /// Bump when the observation code records something different: cached
 /// observations of an older version are redone.
-pub const OBSERVE_VERSION: u32 = 3;
+pub const OBSERVE_VERSION: u32 = 4;
 
 /// `crate@compat::qualified` for a call into `krate` at `version`.
 pub fn api_key(krate: &str, version: &str, qualified: &str) -> String {

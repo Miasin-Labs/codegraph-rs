@@ -58,8 +58,11 @@ pub(crate) fn findings(
                     // it after (`Command::args(..)` then `.status()` took
                     // another way to finish), or nothing before but its
                     // constructor, which must be in view.
+                    // A value handed on (`d.field(..)` as a match arm's
+                    // value, then `.finish()` on the match) continues out of
+                    // sight: only a dropped one is abandoned.
                     let abandoned = if after {
-                        site.obs.methods_after == 0
+                        site.obs.methods_after == 0 && site.obs.use_class != UseClass::Used
                     } else {
                         site.obs.constructed && site.obs.methods_before == 0
                     };
@@ -92,8 +95,18 @@ pub(crate) fn findings(
                     )
                 }
                 BeliefKind::PairedWith { other } => {
+                    // `from_raw_parts` releases what `into_raw` handed out
+                    // as well as `from_raw` does; and a raw pointer (`alloc`,
+                    // `into_raw`, `leak`) given to any owner that takes one
+                    // back (`Box::from_raw(alloc(layout))`) is freed by it.
+                    let release = api_name(other);
+                    let raw = belief.returns.as_deref().is_some_and(|returns| {
+                        returns.contains("*mut") || returns.contains("*const")
+                    });
                     if called_apis.contains(other.as_str())
-                        || observed.called_names.contains(api_name(other))
+                        || observed.called_names.iter().any(|name| {
+                            name.starts_with(release) || (raw && name.starts_with("from_raw"))
+                        })
                         || !paired_reported.insert((api, other.as_str()))
                     {
                         continue;

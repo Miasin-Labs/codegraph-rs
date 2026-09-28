@@ -491,7 +491,6 @@ const RELEASE_PAIRS: &[(&str, &str)] = &[
     ("begin", "commit"),
     ("begin", "end"),
     ("enter", "exit"),
-    ("push", "pop"),
     ("alloc", "dealloc"),
     ("alloc", "free"),
     ("open", "close"),
@@ -509,6 +508,9 @@ const RELEASE_PAIRS: &[(&str, &str)] = &[
 /// Whether `b` releases what `a` acquires, by name: one verb pair, the
 /// other words equal (`into_raw`/`from_raw`, `into_raw_fd`/`from_raw_fd`),
 /// or `leak`/`from_raw` (`Box::leak` is undone by `Box::from_raw`).
+/// `into`/`from` pair only over a raw resource: `into_parts`/`from_parts`
+/// is a conversion, not a release (and `push`/`pop` is no pair at all — a
+/// heap drained by `into_sorted_vec` leaks nothing).
 pub fn is_release_pair(a: &str, b: &str) -> bool {
     let a_words: Vec<&str> = a.split('_').filter(|w| !w.is_empty()).collect();
     let b_words: Vec<&str> = b.split('_').filter(|w| !w.is_empty()).collect();
@@ -523,6 +525,10 @@ pub fn is_release_pair(a: &str, b: &str) -> bool {
         a_rest.remove(i);
         let mut b_rest = b_words.clone();
         b_rest.remove(j);
+        let raw = b_rest.contains(&"raw");
+        if matches!(acquire, "into" | "leak") && !raw {
+            return false;
+        }
         a_rest == b_rest || (acquire == "leak" && a_rest.is_empty() && b_rest == ["raw"])
     })
 }
