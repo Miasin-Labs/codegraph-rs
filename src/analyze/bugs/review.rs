@@ -56,6 +56,26 @@ pub struct ReviewPacket {
     pub callers: Vec<CallerRef>,
     /// What to decide, for this rule.
     pub checklist: Vec<String>,
+    /// Undefined behaviour Miri proved in the same function (the last
+    /// `codegraph analyze miri` run): a static finding it confirms.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub confirmed_by: Vec<Finding>,
+}
+
+/// The Miri findings (`miri`) in the function holding `finding`, other
+/// than `finding` itself.
+pub fn confirmations(project: &Project, finding: &Finding, miri: &[Finding]) -> Vec<Finding> {
+    let Some(span) = project.enclosing_function(&finding.file, finding.line) else {
+        return Vec::new();
+    };
+    miri.iter()
+        .filter(|proof| {
+            proof.file == finding.file
+                && span.contains(proof.line)
+                && !(proof.rule == finding.rule && proof.line == finding.line)
+        })
+        .cloned()
+        .collect()
 }
 
 /// A packet per finding, in the findings' order. `questions` adds a
@@ -120,6 +140,7 @@ fn packet(project: &mut Project, finding: &Finding, questions: Vec<String>) -> R
             .into_iter()
             .chain(checklist(&finding.rule).into_iter().map(str::to_string))
             .collect(),
+        confirmed_by: Vec::new(),
     }
 }
 
@@ -190,6 +211,11 @@ fn checklist(rule: &str) -> Vec<&'static str> {
         }
         "dead-store" => &[
             "The first value is overwritten before it is read. Was it meant to be used, or is the first assignment dead?",
+        ],
+        miri if miri.starts_with("miri::") => &[
+            "Miri proved this UB on a real execution. Which invariant did the unsafe code assume that this input broke (length, initialization, alignment, aliasing, lifetime)?",
+            "Is the function sound for every input a safe caller can pass? If not, check the input or make the function `unsafe` with the contract documented.",
+            "Rerun the same test on the fix (`codegraph analyze miri --finding <file:line>`): it must come back clean.",
         ],
         _ => &[],
     };

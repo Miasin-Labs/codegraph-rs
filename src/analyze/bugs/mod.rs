@@ -199,6 +199,15 @@ pub fn bugs_review(
             options,
         )?);
     }
+    // UB the last `analyze miri` run proved: reviewed first (they are
+    // proofs), and shown beside the static findings in their functions.
+    let miri = crate::analyze::miri::saved_findings(project_root);
+    let wants_miri = options.detectors.is_empty() || options.detectors.contains(&Detector::Miri);
+    if wants_miri && !miri.is_empty() {
+        let mut proven = miri.clone();
+        retain_selected(&mut project, &mut proven, options);
+        findings.extend(proven);
+    }
     rank(&mut findings);
     findings.retain(|finding| {
         selection
@@ -210,11 +219,15 @@ pub fn bugs_review(
             })
     });
     findings.truncate(selection.top.max(1));
-    Ok(review_packets(&mut project, &findings, &|finding| {
+    let mut packets = review_packets(&mut project, &findings, &|finding| {
         rules
             .map(|rules| crate::analyze::rules::review_questions(rules, finding))
             .unwrap_or_default()
-    }))
+    });
+    for packet in &mut packets {
+        packet.confirmed_by = review::confirmations(&project, &packet.finding, &miri);
+    }
+    Ok(packets)
 }
 
 /// The selected detectors' findings, filtered by `options`, most confident
