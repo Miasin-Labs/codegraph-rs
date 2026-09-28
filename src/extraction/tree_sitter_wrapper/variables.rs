@@ -351,6 +351,37 @@ impl<'a> TreeSitterExtractor<'a> {
                     },
                 );
             }
+        } else if self.language == Language::Rust
+            && matches!(node.kind(), "const_item" | "static_item")
+        {
+            // `const LIMIT: u32 = helper() + 1;`, `static HOOK: fn() = || run();`:
+            // the item is its `name` (never an identifier the initializer
+            // reads), and the calls its initializer makes — closures in it
+            // included — are the item's.
+            let Some(name_node) = get_child_by_field(node, "name") else {
+                return;
+            };
+            let name = get_node_text(name_node, self.source).to_string();
+            let Some(variable) = self.create_node(
+                kind,
+                &name,
+                name_node,
+                NodeExtra {
+                    docstring,
+                    is_exported: Some(is_exported),
+                    ..Default::default()
+                },
+            ) else {
+                return;
+            };
+            if let Some(ty) = get_child_by_field(node, "type") {
+                self.extract_type_refs_from_subtree(ty, &variable.id);
+            }
+            if let Some(value) = get_child_by_field(node, "value") {
+                self.node_stack.push(variable.id.clone());
+                self.visit_function_body(value, &variable.id);
+                self.node_stack.pop();
+            }
         } else {
             // Generic fallback for other languages
             // Try to find identifier children

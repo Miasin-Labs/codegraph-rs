@@ -57,6 +57,13 @@ pub struct TreeSitterExtractor<'a> {
     /// Declarations' parents' named children, read once per parent
     /// (preceding decorators and doc comments; see `siblings.rs`).
     pub(super) siblings: SiblingIndex,
+    /// Rust: the Self type of the `impl` block being walked when that type
+    /// is not defined in this file (`impl Visitor for Map<K, V>`,
+    /// `impl de::Deserializer for &mut Deserializer<R>`), with the node
+    /// stack depth of its body. Its associated `type`/`const` items are
+    /// qualified `Type::item`, as a same-file impl's are through the type
+    /// node on the stack.
+    pub(super) rust_impl_owner: Option<(String, usize)>,
 }
 
 impl<'a> TreeSitterExtractor<'a> {
@@ -91,6 +98,7 @@ impl<'a> TreeSitterExtractor<'a> {
             ),
             go_imported_pkgs: None,
             siblings: SiblingIndex::default(),
+            rust_impl_owner: None,
         }
     }
 

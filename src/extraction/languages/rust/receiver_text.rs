@@ -119,6 +119,9 @@ fn write_expression_inner(
             out.push_str("!(..)");
         }
         "array_expression" => out.push_str("[..]"),
+        // `(StatusCode::OK, body).into_response()`: a tuple, whose methods
+        // are no project type's.
+        "tuple_expression" => out.push_str("(..,..)"),
         _ => return None,
     }
     Some(())

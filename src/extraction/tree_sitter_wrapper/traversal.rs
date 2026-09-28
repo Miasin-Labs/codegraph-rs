@@ -319,6 +319,15 @@ impl<'a> TreeSitterExtractor<'a> {
                 }
                 self.node_stack.pop();
                 skip_children = true;
+            } else if let Some(owner) = self.rust_impl_self_type_name(node) {
+                // The Self type is defined in another file: qualify the
+                // associated items by its name all the same.
+                let outer = self.rust_impl_owner.replace((owner, self.node_stack.len()));
+                for child in named_children(node) {
+                    self.visit_node(child);
+                }
+                self.rust_impl_owner = outer;
+                skip_children = true;
             }
         }
         // TypeScript interface members: property_signature (`foo: T`) and
