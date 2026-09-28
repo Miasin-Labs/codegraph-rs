@@ -173,6 +173,10 @@ pub struct IndexOptions<'a> {
     pub external: Option<ExternalMode>,
 }
 
+/// How many half-second waits [`CodeGraph::compiler_sync`] gives another
+/// writer holding the index before it leaves the index for the next run.
+const COMPILER_LOCK_RETRIES: usize = 30;
+
 /// Which references [`CodeGraph::resolve_external`] examines (a pass
 /// examines every unresolved Rust reference anyway whenever the reachable
 /// graphs changed since the last complete pass).
@@ -1123,6 +1127,81 @@ impl CodeGraph {
         };
         self.resolver.clear_caches();
         self.resolver.resolve_external(refs, options)
+    }
+
+    /// The compiler layer ([`crate::compiler`]): bring the cached SCIP
+    /// index up to date (when `run`: rust-analyzer, bounded, outside the
+    /// write lock), then apply it to the graph under the write lock. With
+    /// `run` false only the cached index is applied (what the CLI's
+    /// `index`/`sync` do once the layer is on). CLI only — never the MCP
+    /// server, the watcher or the prompt hook.
+    pub async fn compiler_sync(
+        &self,
+        options: &crate::compiler::CompilerOptions,
+        run: bool,
+    ) -> Result<crate::compiler::CompilerOutcome> {
+        use crate::compiler::{self, CompilerOutcome, RunStatus};
+        let rust_files = compiler::rust_files(&self.queries)?;
+        let status = if run {
+            compiler::refresh_index(&self.project_root, &rust_files, options)
+        } else {
+            RunStatus::Cached
+        };
+        let stale = compiler::index_is_stale(&self.project_root, &rust_files);
+        let _guard = self.lock_index_mutex().await;
+        // Another writer (a watcher's sync, a git hook) holds the index
+        // for seconds at most: wait a little, never unboundedly.
+        let mut acquired = self.file_lock.borrow_mut().acquire().is_ok();
+        for _ in 0..COMPILER_LOCK_RETRIES {
+            if acquired {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            acquired = self.file_lock.borrow_mut().acquire().is_ok();
+        }
+        if !acquired {
+            return Ok(CompilerOutcome {
+                run: status,
+                report: None,
+                stale,
+                locked: true,
+            });
+        }
+        let applied = compiler::apply_cached(&self.queries, &self.project_root, options);
+        if run && applied.as_ref().is_ok_and(Option::is_some) {
+            let _ = self.queries.set_metadata(compiler::ENABLED_KEY, "1");
+        }
+        self.file_lock.borrow_mut().release();
+        let mut report = applied?;
+        if let Some(report) = report.as_mut() {
+            report.run = run.then(|| status.clone());
+        }
+        Ok(CompilerOutcome {
+            run: status,
+            report,
+            stale,
+            locked: false,
+        })
+    }
+
+    /// Whether the compiler layer is on for this project.
+    pub fn compiler_layer_enabled(&self) -> bool {
+        crate::compiler::layer_enabled(&self.queries)
+    }
+
+    /// Whether the cached compiler index was made for other sources than
+    /// the project's current ones (hashes the Rust files: CLI only).
+    pub fn compiler_index_stale(&self) -> bool {
+        crate::compiler::rust_files(&self.queries)
+            .map(|files| crate::compiler::index_is_stale(&self.project_root, &files))
+            .unwrap_or(false)
+    }
+
+    /// The compiler layer's last pass, when the layer is on.
+    pub fn compiler_layer_summary(&self) -> Option<crate::compiler::LayerSummary> {
+        self.compiler_layer_enabled()
+            .then(|| crate::compiler::LayerSummary::read(&self.queries))
+            .flatten()
     }
 
     /// Check if an indexing operation is currently in progress.
