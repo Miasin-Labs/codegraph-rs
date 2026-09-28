@@ -669,18 +669,15 @@ fn cli_index_records_dependencies_and_deps_commands_build_show_and_gc() {
     assert_eq!(alpha_row["state"], "ready");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_rust_project_depends_on_its_toolchains_std_shard() {
-    use codegraph::deps::toolchain::{Toolchain, ToolchainSource};
-
-    let machine = Machine::new();
-    let project = machine.rust_project("app");
-    // A toolchain's `library`: std/core/alloc sources, plus what a shard
-    // leaves out (their tests, other library crates).
+/// A toolchain's `library`: std/core/alloc sources (8 files), plus what a
+/// shard leaves out (their tests, other library crates). `std` re-exports
+/// `alloc`'s `string` as real std does (`pub use alloc_crate::string`);
+/// `core::marker::Marker` is `core`'s alone.
+fn toolchain_library(machine: &Machine) -> std::path::PathBuf {
     let library = machine.root.join("sysroot/lib/rustlib/src/rust/library");
     write(
         &library.join("std/src/lib.rs"),
-        "pub mod process;\npub mod env;\n",
+        "pub mod process;\npub mod env;\npub use alloc_crate::string;\n",
     );
     write(
         &library.join("std/src/process.rs"),
@@ -692,17 +689,37 @@ async fn a_rust_project_depends_on_its_toolchains_std_shard() {
     );
     write(&library.join("std/src/process/tests.rs"), "fn t() {}\n");
     write(&library.join("std/tests/it.rs"), "fn t() {}\n");
-    write(&library.join("core/src/lib.rs"), "pub mod option;\n");
+    write(
+        &library.join("core/src/lib.rs"),
+        "pub mod option;\npub mod marker;\n",
+    );
     write(
         &library.join("core/src/option.rs"),
         "pub enum Option<T> { None, Some(T) }\n",
     );
+    write(
+        &library.join("core/src/marker.rs"),
+        "pub struct Marker;\nimpl Marker {\n    pub fn make() -> Marker { Marker }\n}\npub fn helper() {}\n",
+    );
     write(&library.join("alloc/src/lib.rs"), "pub mod string;\n");
-    write(&library.join("alloc/src/string.rs"), "pub struct String;\n");
+    write(
+        &library.join("alloc/src/string.rs"),
+        "pub struct String;\nimpl String {\n    pub fn new() -> String { String }\n}\n",
+    );
     write(
         &library.join("stdarch/crates/core_arch/src/lib.rs"),
         "fn x() {}\n",
     );
+    library
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rust_project_depends_on_its_toolchains_std_shard() {
+    use codegraph::deps::toolchain::{Toolchain, ToolchainSource};
+
+    let machine = Machine::new();
+    let project = machine.rust_project("app");
+    let library = toolchain_library(&machine);
     let toolchain = Toolchain {
         version: "1.99.0-nightly+abc".into(),
         library: library.clone(),
@@ -724,7 +741,7 @@ async fn a_rust_project_depends_on_its_toolchains_std_shard() {
         })
         .expect("the std shard is built");
     assert_eq!(
-        std_meta.counts.selected_files, 7,
+        std_meta.counts.selected_files, 8,
         "std/core/alloc src only, no tests"
     );
     let home = machine.home();
@@ -751,4 +768,122 @@ async fn a_rust_project_depends_on_its_toolchains_std_shard() {
     let report =
         record_project(&mut registry, &project, &machine.roots(), false, now_ms()).unwrap();
     assert!(!report.by_ecosystem.contains_key(&Ecosystem::Rust));
+}
+
+/// The one toolchain shard, built the way the beliefs build makes it, is
+/// the graphs `std`/`core`/`alloc` (+ `alloc_crate`): each resolves in its
+/// own directory, re-exports hop between them, and `std` is the facade of
+/// `core`/`alloc` for types' members — never for bare items.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_toolchain_shard_resolves_each_crate_in_its_own_directory() {
+    use codegraph::deps::toolchain::{self, Toolchain};
+    use codegraph::resolution::external::{GraphLocation, Reach};
+    use codegraph::{CodeGraph, IndexOptions};
+
+    let machine = Machine::new();
+    let toolchain = Toolchain {
+        version: "1.99.0-nightly+abc".into(),
+        library: toolchain_library(&machine),
+    };
+    let home = machine.home();
+    let meta = toolchain::ensure(&home, &toolchain, 60_000)
+        .await
+        .expect("built");
+    assert_eq!(meta.key(), toolchain.key());
+    let graphs = toolchain::graphs(&home, &toolchain.key());
+    let crates: Vec<(&str, &str)> = graphs
+        .iter()
+        .map(|g| (g.krate.as_str(), g.location.crate_dir()))
+        .collect();
+    assert_eq!(
+        crates,
+        [
+            ("std", "std"),
+            ("core", "core"),
+            ("alloc", "alloc"),
+            ("alloc_crate", "alloc")
+        ]
+    );
+    assert!(graphs.iter().all(|g| g.key == "rust/std-1.99.0-nightly+abc"
+        && matches!(&g.location, GraphLocation::Shard { dir, .. } if *dir == home.shard_dir(&toolchain.key()))));
+
+    let project = machine.root.join("stdapp");
+    write(
+        &project.join("Cargo.toml"),
+        "[package]\nname = \"stdapp\"\nversion = \"0.1.0\"\n",
+    );
+    write(
+        &project.join("src/main.rs"),
+        "fn main() {\n    std::process::Command::new(\"ls\");\n    std::string::String::new();\n    std::marker::Marker::make();\n    core::process::Command::new(\"ls\");\n    core::marker::Marker::make();\n    alloc::marker::Marker::make();\n    std::marker::helper();\n    core::marker::helper();\n}\n",
+    );
+    let cg = CodeGraph::init_sync(&project).unwrap();
+    cg.index_all(&IndexOptions::default()).await.unwrap();
+    let (edges, complete) = cg
+        .external_edges_read_only(&Reach::from_graphs(graphs), Duration::from_secs(20))
+        .unwrap();
+    cg.close();
+    assert!(complete);
+    let target = |line: u32| {
+        edges
+            .iter()
+            .filter(|e| e.line == Some(line) && e.kind.as_str() == "calls")
+            .map(|e| (e.target_file_path.as_str(), e.target_name.as_str()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(target(2), [("std/src/process.rs", "new")]);
+    // `pub use alloc_crate::string` in std's root: alloc's `String`.
+    assert_eq!(target(3), [("alloc/src/string.rs", "new")]);
+    // The facade: a type core defines, std re-exports — its members too.
+    assert_eq!(target(4), [("core/src/marker.rs", "make")]);
+    // core and alloc never answer with another crate's items.
+    assert_eq!(target(5), []);
+    assert_eq!(target(6), [("core/src/marker.rs", "make")]);
+    assert_eq!(target(7), []);
+    // A bare item is only ever the named crate's own.
+    assert_eq!(target(8), []);
+    assert_eq!(target(9), [("core/src/marker.rs", "helper")]);
+}
+
+/// The beliefs build's old toolchain store goes with `gc`: its shard
+/// directories, locks and leftovers — nothing else in it.
+#[tokio::test(flavor = "multi_thread")]
+async fn gc_removes_the_old_beliefs_toolchain_store() {
+    let machine = Machine::new();
+    let home = machine.home();
+    let old = home.root().join("beliefs/toolchain");
+    for name in ["std-1.90.0", "core-1.90.0", "alloc-1.90.0"] {
+        write(&old.join("crates").join(name).join("meta.json"), "{}");
+        write(&old.join("crates").join(name).join("codegraph.db"), "");
+        write(&old.join(".locks/crates").join(format!("{name}.lock")), "");
+    }
+    // Not the old store's: stays.
+    write(&old.join("crates/serde-1.0.0/notes.txt"), "mine\n");
+    let obs = home.root().join("beliefs/obs/x-1.0.0.json");
+    write(&obs, "{}");
+    let registry = open_registry(&machine);
+
+    let dry = gc(
+        &home,
+        &registry,
+        &GcPolicy {
+            dry_run: true,
+            ..GcPolicy::default()
+        },
+        SystemTime::now(),
+    )
+    .unwrap();
+    assert_eq!(dry.legacy_removed.len(), 3);
+    assert!(
+        old.join("crates/std-1.90.0").is_dir(),
+        "dry run removes nothing"
+    );
+
+    let report = gc(&home, &registry, &GcPolicy::default(), SystemTime::now()).unwrap();
+    assert_eq!(report.legacy_removed.len(), 3, "{report:?}");
+    for name in ["std-1.90.0", "core-1.90.0", "alloc-1.90.0"] {
+        assert!(!old.join("crates").join(name).exists());
+    }
+    assert!(!old.join(".locks").exists(), "emptied lock dirs go");
+    assert!(old.join("crates/serde-1.0.0/notes.txt").is_file());
+    assert!(obs.is_file());
 }

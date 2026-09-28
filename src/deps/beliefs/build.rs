@@ -1,7 +1,10 @@
 //! `codegraph deps beliefs build`: observe the cargo cache's crates and
 //! mine their beliefs.
 //!
-//! 1. The toolchain shards (`std`/`core`/`alloc` from local `rust-src`).
+//! 1. The toolchain shard (`std`/`core`/`alloc` from local `rust-src`: the
+//!    dependency store's `deps/rust/std-<release>+<commit>/`, shared with
+//!    the projects that record it) of the toolchain `rustc` resolves in the
+//!    working directory.
 //! 2. The population: one version per cached crate, in a fixed
 //!    pseudo-random order (a sample when the crate budget cuts it short).
 //! 3. Per crate not yet observed with the same inputs: its shard and its
@@ -29,7 +32,6 @@ use serde::Serialize;
 
 use super::model::{BELIEFS_FORMAT, BeliefSet, CrateObservations, OBSERVE_VERSION};
 use super::population::{self, CacheCrate};
-use super::toolchain::{self, Toolchain};
 use super::{BELIEFS_FILE, beliefs_dir, create_private_dir, read_observations, write_json};
 use crate::analyze::bugs::Project;
 use crate::analyze::bugs::ecosystem::mine::{MineOptions, mine};
@@ -39,6 +41,7 @@ use crate::deps::locate::SourceRoots;
 use crate::deps::scope::ShardLimits;
 use crate::deps::shard::{BuildOutcome, BuildRequest, ShardHandle, ShardMeta, build_shard};
 use crate::deps::store::StoreLock;
+use crate::deps::toolchain::{self, Toolchain};
 use crate::deps::{DepKey, DepSource, DepsHome, Ecosystem};
 use crate::extraction::EXTRACTION_VERSION;
 use crate::resolution::external::{Reach, ReachableGraph};
@@ -138,16 +141,22 @@ pub fn build(
     let mut report = BuildReport::default();
 
     // 1. The toolchain.
-    let found = Toolchain::locate();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let found = roots.toolchain.resolve(&cwd);
     let toolchain_graphs = match &found {
-        Some(toolchain) => block_on(toolchain::ensure(
-            &toolchain::toolchain_home(&dir),
-            toolchain,
-            options.limits.time_ms.max(300_000),
-        ))?,
+        Some(toolchain) => {
+            let key = toolchain.key();
+            block_on(toolchain::ensure(
+                home,
+                toolchain,
+                options.limits.time_ms.max(300_000),
+            ))?
+            .map(|meta| toolchain::graphs_of(&key, &meta, home.shard_dir(&key)))
+            .unwrap_or_default()
+        }
         None => Vec::new(),
     };
-    report.toolchain = found.as_ref().map(|t| t.rustc.clone());
+    report.toolchain = found.as_ref().map(|t| t.version.clone());
     on_progress(&Progress::Toolchain(report.toolchain.clone()));
 
     // 2. The population.
@@ -415,7 +424,11 @@ fn observe_copy(
         let mut target: std::collections::HashMap<String, (&str, &str)> =
             std::collections::HashMap::new();
         for edge in &edges {
-            if let Some(api) = eco::graph_api(&edge.target_graph_key, &edge.target_qualified_name) {
+            if let Some(api) = eco::graph_api(
+                &edge.target_graph_key,
+                &edge.target_file_path,
+                &edge.target_qualified_name,
+            ) {
                 target
                     .entry(api)
                     .or_insert((edge.target_graph_key.as_str(), edge.target_node_id.as_str()));

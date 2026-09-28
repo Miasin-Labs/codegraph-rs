@@ -40,6 +40,9 @@ pub(crate) struct ForeignGraph {
     /// Where the crate's files are in the graph (`""`: the whole graph is
     /// the crate, as in a shard).
     pub(crate) crate_dir: String,
+    /// Directories whose types the crate re-exports wholesale
+    /// ([`GraphLocation::Shard`]'s `facade_of`).
+    pub(crate) facade_of: Vec<String>,
     /// The graph's read-only connection, for whole-graph queries.
     pub(crate) db: Db,
     /// Resolution over the graph: its nodes, and its sources read from the
@@ -49,20 +52,27 @@ pub(crate) struct ForeignGraph {
 
 impl ForeignGraph {
     fn open(index: usize, graph: &ReachableGraph) -> Option<ForeignGraph> {
-        let (queries, root, crate_dir) = match &graph.location {
-            GraphLocation::Shard { dir, .. } => {
+        let (queries, root, crate_dir, facade_of) = match &graph.location {
+            GraphLocation::Shard {
+                dir,
+                crate_dir,
+                facade_of,
+                ..
+            } => {
                 let handle = ShardHandle::open_dir(dir)?;
                 let root = handle.source_dir().to_string_lossy().into_owned();
                 (
                     QueryBuilder::new(handle.queries().db().clone()),
                     root,
-                    String::new(),
+                    crate_dir.clone(),
+                    facade_of.clone(),
                 )
             }
             GraphLocation::Project { root, crate_dir } => (
                 open_project_index(root)?,
                 root.to_string_lossy().into_owned(),
                 crate_dir.clone(),
+                Vec::new(),
             ),
         };
         Some(ForeignGraph {
@@ -72,6 +82,7 @@ impl ForeignGraph {
             krate: graph.krate.clone(),
             lib_root: graph.lib_root.clone(),
             crate_dir,
+            facade_of,
             db: queries.db().clone(),
             context: ResolverContext::new(root, queries),
         })
@@ -79,11 +90,44 @@ impl ForeignGraph {
 
     /// `file_path` (relative to the graph root) is one of the crate's.
     pub(crate) fn in_crate(&self, file_path: &str) -> bool {
-        self.crate_dir.is_empty()
-            || file_path
-                .strip_prefix(self.crate_dir.as_str())
-                .is_some_and(|rest| rest.starts_with('/'))
+        in_dir(&self.crate_dir, file_path)
     }
+
+    /// `file_path` is in `scope` of the crate.
+    pub(crate) fn in_scope(&self, scope: Scope, file_path: &str) -> bool {
+        match scope {
+            Scope::Own => self.in_crate(file_path),
+            Scope::Facade => self.facade_dir(file_path).is_some(),
+        }
+    }
+
+    /// The directory (named like its crate) of the crates this one is the
+    /// facade of that holds `file_path`.
+    pub(crate) fn facade_dir(&self, file_path: &str) -> Option<&str> {
+        self.facade_of
+            .iter()
+            .map(String::as_str)
+            .find(|dir| in_dir(dir, file_path))
+    }
+}
+
+/// Where a lookup in a crate's graph looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    /// The crate's own files.
+    Own,
+    /// The files of the crates it is the facade of (the toolchain's `std`
+    /// over `core` and `alloc`) — for a type's members, and only once the
+    /// crate's own items and its re-exports have no answer.
+    Facade,
+}
+
+/// `file_path` is inside `dir` (`""`: the whole graph).
+fn in_dir(dir: &str, file_path: &str) -> bool {
+    dir.is_empty()
+        || file_path
+            .strip_prefix(dir)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// A linked project's index, read-only, if its schema is one this build

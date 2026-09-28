@@ -11,7 +11,8 @@
 //!
 //! A project's library calls come from its index's `external_edges`, plus
 //! a read-only resolution of its unresolved references into the
-//! toolchain's `std`/`core`/`alloc` shards (which no lockfile names).
+//! toolchain's `std`/`core`/`alloc` (the toolchain shard the project
+//! records, else the one the beliefs were mined against).
 
 mod apply;
 pub(crate) mod mine;
@@ -32,6 +33,7 @@ use crate::codegraph::CodeGraph;
 use crate::db::{ExternalEdge, ExternalGraphKind};
 use crate::deps::beliefs::LoadedBeliefs;
 use crate::deps::beliefs::model::api_key;
+use crate::deps::toolchain;
 use crate::resolution::external::Reach;
 use crate::types::Language;
 
@@ -114,7 +116,12 @@ fn index_sites(cg: &CodeGraph) -> Result<Vec<ExternalSite>, String> {
     let mut sites = Vec::new();
     for row in rows {
         let (file, line, col, key, qualified, name) = row.map_err(err)?;
-        if let Some(api) = graph_api(&key, &qualified) {
+        // Calls into the toolchain come from the read-only toolchain pass
+        // (which sees the same references), never twice.
+        if toolchain::graph_key_version(&key).is_some() {
+            continue;
+        }
+        if let Some(api) = graph_api(&key, "", &qualified) {
             sites.push(ExternalSite {
                 file,
                 line,
@@ -147,7 +154,11 @@ pub(crate) fn edge_sites(
         }
         let (Some(line), Some(api)) = (
             edge.line,
-            graph_api(&edge.target_graph_key, &edge.target_qualified_name),
+            graph_api(
+                &edge.target_graph_key,
+                &edge.target_file_path,
+                &edge.target_qualified_name,
+            ),
         ) else {
             continue;
         };
@@ -172,7 +183,13 @@ pub(crate) fn edge_sites(
 }
 
 /// `crates/serde_json-1.0.150` + `from_str` → `serde_json@1::from_str`.
-pub(crate) fn graph_api(key: &str, qualified: &str) -> Option<String> {
+/// The toolchain shard holds three crates: its target's `file` names the
+/// one (`rust/std-1.101.0-nightly+d080e7dff1b0` + `alloc/src/vec/mod.rs`
+/// + `Vec::new` → `alloc@1::Vec::new`).
+pub(crate) fn graph_api(key: &str, file: &str, qualified: &str) -> Option<String> {
+    if let Some(version) = toolchain::graph_key_version(key) {
+        return Some(api_key(toolchain::crate_of_file(file)?, version, qualified));
+    }
     let (name, version) = parse_graph_key(key)?;
     Some(api_key(name, version, qualified))
 }

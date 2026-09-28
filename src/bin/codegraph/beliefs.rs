@@ -212,7 +212,7 @@ fn cmd_show(
         }
         return Ok(());
     }
-    let loaded = load(&home).ok_or("no beliefs yet — run `codegraph deps beliefs build`")?;
+    let loaded = load(&home, None).ok_or("no beliefs yet — run `codegraph deps beliefs build`")?;
     let selected: Vec<&Belief> = loaded
         .set
         .beliefs

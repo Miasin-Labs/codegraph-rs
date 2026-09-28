@@ -4,7 +4,7 @@
 //! method before trait-impl methods of its name.
 
 use super::lookup::MAX_HEADER_LINES;
-use crate::resolution::external::open::{ForeignGraph, GraphCache};
+use crate::resolution::external::open::{ForeignGraph, GraphCache, Scope};
 use crate::resolution::line_index::Lines;
 use crate::resolution::types::ResolutionContext;
 use crate::types::{EdgeKind, Language, Node, NodeKind, Visibility};
@@ -96,12 +96,14 @@ pub(super) fn overloaded(cache: &GraphCache<'_>, graph: &ForeignGraph, node: &No
     overloaded
 }
 
-/// `node` can be the target of a reference of `kind` from another crate.
+/// `node`, in `scope` of the crate, can be the target of a reference of
+/// `kind` from another crate.
 pub(super) fn admitted(
     cache: &GraphCache<'_>,
     graph: &ForeignGraph,
     node: &Node,
     kind: EdgeKind,
+    scope: Scope,
 ) -> bool {
     let shaped = match kind {
         EdgeKind::Implements | EdgeKind::Extends => node.kind == NodeKind::Trait,
@@ -130,7 +132,7 @@ pub(super) fn admitted(
     };
     shaped
         && node.language == Language::Rust
-        && graph.in_crate(&node.file_path)
+        && graph.in_scope(scope, &node.file_path)
         && visible_outside(cache, graph, node)
 }
 

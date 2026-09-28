@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use super::error::DepsResult;
-use super::model::DepKey;
+use super::model::{DepKey, Ecosystem};
 use super::registry::{PendingScope, PendingShard, Registry};
 use super::scope::ShardLimits;
 use super::shard::{BuildOutcome, BuildRequest, ShardMeta, build_shard};
@@ -129,6 +129,13 @@ async fn build_one(
     };
     let previous = shard.state;
     registry.mark_building(key)?;
+    // The toolchain's shard gets its own size budgets, as when the beliefs
+    // build makes it.
+    let limits = if key.ecosystem == Ecosystem::Rust {
+        super::toolchain::shard_limits(limits)
+    } else {
+        limits
+    };
     let outcome = build_shard(
         home,
         &BuildRequest {

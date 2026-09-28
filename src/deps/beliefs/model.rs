@@ -222,7 +222,9 @@ pub struct Belief {
 pub struct BeliefSet {
     pub format: u32,
     pub built_at_ms: i64,
-    /// The `rustc -V` whose `std`/`core`/`alloc` sources were resolved into.
+    /// The toolchain (`<release>+<commit>`, its shard's version) whose
+    /// `std`/`core`/`alloc` were resolved into; older builds wrote its
+    /// `rustc -V` here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toolchain: Option<String>,
     /// Crates whose observations were mined.

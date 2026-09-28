@@ -80,7 +80,12 @@ pub(crate) fn cmd_analyze_bugs(
             CodeGraph::open(&project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
         // Ecosystem beliefs, when `deps beliefs build` made them (read-only).
         let beliefs = ecosystem
-            .then(|| codegraph::deps::beliefs::load(&codegraph::deps::DepsHome::from_env()))
+            .then(|| {
+                codegraph::deps::beliefs::load(
+                    &codegraph::deps::DepsHome::from_env(),
+                    Some(&project_path),
+                )
+            })
             .flatten();
         let report = bugs_report_with(&cg, &project_path, &options, beliefs.as_ref());
         cg.close();
@@ -224,7 +229,10 @@ pub(crate) fn cmd_analyze_review(
 
         let cg =
             CodeGraph::open(&project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
-        let beliefs = codegraph::deps::beliefs::load(&codegraph::deps::DepsHome::from_env());
+        let beliefs = codegraph::deps::beliefs::load(
+            &codegraph::deps::DepsHome::from_env(),
+            Some(&project_path),
+        );
         let packets = bugs_review_with(
             &cg,
             &project_path,

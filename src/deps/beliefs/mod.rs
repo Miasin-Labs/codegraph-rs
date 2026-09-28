@@ -11,8 +11,12 @@
 //! * `obs/<name>-<version>.json` — one crate's observations
 //!   ([`model::CrateObservations`]), kept so a later build only observes
 //!   crates it has not seen (or whose inputs changed) before mining again.
-//! * `toolchain/crates/{std,core,alloc}-<rustc version>/` — shards of the
-//!   local `rust-src` ([`toolchain`]).
+//!
+//! The toolchain's `std`/`core`/`alloc` are the dependency store's own
+//! toolchain shard (`deps/rust/std-<release>+<commit>/`,
+//! [`super::toolchain`]), built or reused by the build like any shard it
+//! needs. (Builds before that kept separate shards under
+//! `deps/beliefs/toolchain/`; `deps gc` removes them.)
 //!
 //! Built only by `codegraph deps beliefs build` (CLI; `--background` for a
 //! detached, single-builder run) within a crate and a time budget, from
@@ -22,14 +26,13 @@
 pub mod build;
 pub mod model;
 pub mod population;
-pub mod toolchain;
 
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use self::model::{BELIEFS_FORMAT, BeliefSet, CrateObservations, OBSERVE_VERSION};
-use super::DepsHome;
+use super::{DepKey, DepsHome, Ecosystem, dependencies_of_in, toolchain};
 use crate::resolution::external::ReachableGraph;
 
 /// The artifact's file name.
@@ -40,8 +43,8 @@ pub fn beliefs_dir(home: &DepsHome) -> PathBuf {
     home.root().join("beliefs")
 }
 
-/// The beliefs, with the toolchain shards they were mined against (to
-/// resolve a project's `std` calls the same way).
+/// The beliefs, with the toolchain graphs to resolve a project's `std`
+/// calls into the way the population's were.
 #[derive(Debug, Clone)]
 pub struct LoadedBeliefs {
     pub set: BeliefSet,
@@ -50,19 +53,34 @@ pub struct LoadedBeliefs {
 }
 
 /// The beliefs of `home`, read-only: `None` when none were built (or they
-/// were built in another format).
-pub fn load(home: &DepsHome) -> Option<LoadedBeliefs> {
-    let dir = beliefs_dir(home);
-    let path = dir.join(BELIEFS_FILE);
+/// were built in another format). The toolchain graphs are those of the
+/// toolchain shard recorded for `project` (its own `rust-toolchain.toml`),
+/// else of the one the beliefs were mined against; empty when neither has
+/// a shard (API keys name the release line, `std@1`, so either answers).
+pub fn load(home: &DepsHome, project: Option<&Path>) -> Option<LoadedBeliefs> {
+    let path = beliefs_dir(home).join(BELIEFS_FILE);
     let set: BeliefSet = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
     if set.format != BELIEFS_FORMAT {
         return None;
     }
-    let toolchain = set
+    let recorded = project
+        .and_then(|root| dependencies_of_in(home, root).ok())
+        .and_then(|deps| {
+            deps.into_iter()
+                .find(|dep| dep.key.ecosystem == Ecosystem::Rust)
+                .map(|dep| dep.key)
+        });
+    // Before the toolchain became a dependency shard this held `rustc -V`.
+    let mined = set
         .toolchain
         .as_deref()
-        .and_then(|rustc| rustc.split_whitespace().nth(1))
-        .map(|version| toolchain::existing(&toolchain::toolchain_home(&dir), version))
+        .filter(|version| !version.starts_with("rustc "))
+        .map(|version| DepKey::new(Ecosystem::Rust, toolchain::STD_NAME, version));
+    let toolchain = [recorded, mined]
+        .into_iter()
+        .flatten()
+        .map(|key| toolchain::graphs(home, &key))
+        .find(|graphs| !graphs.is_empty())
         .unwrap_or_default();
     Some(LoadedBeliefs {
         set,

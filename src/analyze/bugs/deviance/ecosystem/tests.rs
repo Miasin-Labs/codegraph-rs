@@ -6,7 +6,7 @@ use std::path::Path;
 
 use super::mine::{MineOptions, is_release_pair, lift, mine, z_score};
 use super::observe::{ExternalSite, observe};
-use super::{apply, is_status, parse_graph_key};
+use super::{apply, graph_api, is_status, parse_graph_key};
 use crate::analyze::bugs::{FnSpan, Project};
 use crate::deps::beliefs::model::{
     Belief,
@@ -437,6 +437,24 @@ fn graph_keys_name_package_and_version() {
         Some(("x25519-dalek", "2.0.1"))
     );
     assert_eq!(parse_graph_key("/home/me/linked"), None);
+}
+
+#[test]
+fn toolchain_graph_apis_name_the_crate_their_file_is_in() {
+    let key = "rust/std-1.101.0-nightly+d080e7dff1b0";
+    assert_eq!(
+        graph_api(key, "alloc/src/vec/mod.rs", "Vec::new").as_deref(),
+        Some("alloc@1::Vec::new")
+    );
+    assert_eq!(
+        graph_api(key, "std/src/fs.rs", "File::create").as_deref(),
+        Some("std@1::File::create")
+    );
+    assert_eq!(graph_api(key, "stdarch/x.rs", "f"), None);
+    assert_eq!(
+        graph_api("crates/serde_json-1.0.150", "src/de.rs", "from_str").as_deref(),
+        Some("serde_json@1::from_str")
+    );
 }
 
 // ---------------------------------------------------------------------------

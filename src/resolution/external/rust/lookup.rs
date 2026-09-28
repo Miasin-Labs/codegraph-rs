@@ -19,7 +19,7 @@ use std::rc::Rc;
 pub(crate) use super::types::type_path;
 use super::types::{aliased_type, deref_target};
 use super::visibility::{admitted, overloaded, unique, visible_outside};
-use crate::resolution::external::open::{ForeignGraph, GraphCache, Located};
+use crate::resolution::external::open::{ForeignGraph, GraphCache, Located, Scope};
 use crate::resolution::name_matcher::{UseBinding, UseVisibility, match_rust_path};
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::{EdgeKind, Language, Node, NodeKind, Visibility};
@@ -205,12 +205,14 @@ fn by_layout(
     };
     let resolved = match_rust_path(&reference, &graph.context)?;
     let node = graph.context.get_node_by_id(&resolved.target_node_id)?;
-    (admitted(cache, graph, &node, kind) && !overloaded(cache, graph, &node)).then(|| Found {
-        graph: Rc::clone(graph),
-        node,
-        confidence: resolved.confidence,
-        reexported: false,
-    })
+    (admitted(cache, graph, &node, kind, Scope::Own) && !overloaded(cache, graph, &node)).then(
+        || Found {
+            graph: Rc::clone(graph),
+            node,
+            confidence: resolved.confidence,
+            reexported: false,
+        },
+    )
 }
 
 /// The crate's library root re-exports another crate the project reaches:
@@ -253,7 +255,12 @@ fn through_reexport(
 }
 
 /// The one item of the crate with the path's shape: `item`, or
-/// `Owner::item` when the segment before it names a type.
+/// `Owner::item` when the segment before it names a type. A type, or a
+/// type's member, the crate itself lacks may be one of a crate it is the
+/// facade of (see [`facade_member`]); any other bare item — a function or
+/// constant found by its name alone, its module path unchecked — only ever
+/// the crate's own (`std::str::eq(..)` is `PartialEq::eq`, not
+/// `core::ptr::eq`).
 fn by_shape(
     cache: &GraphCache<'_>,
     graph: &Rc<ForeignGraph>,
@@ -268,27 +275,61 @@ fn by_shape(
         Some(owner) if owned => format!("{owner}::{item}"),
         _ => item.clone(),
     };
-    let candidates: Vec<Node> = graph
-        .context
-        .get_nodes_by_name(item)
-        .into_iter()
-        .filter(|node| {
-            node.qualified_name == shape
-                && graph.in_crate(&node.file_path)
-                && admitted(cache, graph, node, kind)
-        })
-        .collect();
-    let node = if owned {
-        in_owner_file(cache, graph, before, candidates)?
+    let shaped = |scope: Scope| -> Vec<Node> {
+        graph
+            .context
+            .get_nodes_by_name(item)
+            .into_iter()
+            .filter(|node| {
+                node.qualified_name == shape && admitted(cache, graph, node, kind, scope)
+            })
+            .collect()
+    };
+    let own = shaped(Scope::Own);
+    let (graph, node) = if !own.is_empty() || graph.facade_of.is_empty() {
+        let node = if owned {
+            in_owner_file(cache, graph, before, own)?
+        } else {
+            unique(graph, own)?
+        };
+        (Rc::clone(graph), node)
+    } else if owned {
+        facade_member(cache, graph, before, shaped(Scope::Facade))?
     } else {
-        unique(graph, candidates)?
+        let types: Vec<Node> = shaped(Scope::Facade)
+            .into_iter()
+            .filter(|node| is_type_node(node) || node.kind == NodeKind::Trait)
+            .collect();
+        facade_member(cache, graph, &[], types)?
     };
     Some(Found {
-        graph: Rc::clone(graph),
+        graph,
         node,
         confidence: 0.75,
         reexported: false,
     })
+}
+
+/// The one of `candidates` — types, or members named `Owner::member` (then
+/// `owner_path` is the owner's), found in the crates `graph` is the facade
+/// of — with the graph of the crate that defines it (so what it returns is
+/// typed there). Reached only when the
+/// crate's own items and its re-exports have no answer: the toolchain's
+/// `std` re-exports types of `core`/`alloc` the path rules cannot follow
+/// (an inline `pub mod task { pub use core::task::*; }`, or a type node
+/// the grammar drops, like nightly's `RefCell`, whose methods are indexed).
+fn facade_member(
+    cache: &GraphCache<'_>,
+    graph: &Rc<ForeignGraph>,
+    owner_path: &[String],
+    candidates: Vec<Node>,
+) -> Option<(Rc<ForeignGraph>, Node)> {
+    let node = in_owner_file(cache, graph, owner_path, candidates)?;
+    let defining = graph
+        .facade_dir(&node.file_path)
+        .and_then(|krate| cache.get(krate))
+        .unwrap_or_else(|| Rc::clone(graph));
+    Some((defining, node))
 }
 
 /// The method `method` of the type at `owner` (its path in the crate, the
@@ -318,7 +359,8 @@ pub(crate) fn lookup_method(
 /// `owner::method`, else — when the type itself has no such method — on
 /// what it stands for: the type another crate defines and this one
 /// re-exports, an alias's aliased type, a `Deref` impl's `Target` (method
-/// calls auto-deref). Returns the graph the method is in.
+/// calls auto-deref); failing those, the method of a crate this one is the
+/// facade of ([`facade_member`]). Returns the graph the method is in.
 fn find_method(
     cache: &GraphCache<'_>,
     graph: &Rc<ForeignGraph>,
@@ -326,19 +368,27 @@ fn find_method(
     method: &str,
     hops: u8,
 ) -> Option<(Rc<ForeignGraph>, Node)> {
-    let candidates = methods_named(cache, graph, owner_path, method)?;
+    let candidates = methods_named(cache, graph, owner_path, method, Scope::Own)?;
     if !candidates.is_empty() {
         return in_owner_file(cache, graph, owner_path, candidates)
             .map(|node| (Rc::clone(graph), node));
     }
-    if hops >= MAX_TYPE_HOPS {
+    let stands_for = (hops < MAX_TYPE_HOPS)
+        .then(|| {
+            reexported_type(cache, graph, owner_path)
+                .or_else(|| aliased_type(cache, graph, owner_path))
+                .or_else(|| deref_target(cache, graph, owner_path))
+        })
+        .flatten();
+    if let Some((krate, path)) = stands_for {
+        let target = cache.get(&krate)?;
+        return find_method(cache, &target, &path, method, hops + 1);
+    }
+    if graph.facade_of.is_empty() {
         return None;
     }
-    let (krate, path) = reexported_type(cache, graph, owner_path)
-        .or_else(|| aliased_type(cache, graph, owner_path))
-        .or_else(|| deref_target(cache, graph, owner_path))?;
-    let target = cache.get(&krate)?;
-    find_method(cache, &target, &path, method, hops + 1)
+    let candidates = methods_named(cache, graph, owner_path, method, Scope::Facade)?;
+    facade_member(cache, graph, owner_path, candidates)
 }
 
 /// The type another reachable crate defines and this one re-exports
@@ -360,13 +410,14 @@ fn is_type_node(node: &Node) -> bool {
     )
 }
 
-/// The methods `Owner::method` (the owner's name, any module) of the crate
-/// callable from outside it.
+/// The methods `Owner::method` (the owner's name, any module) in `scope`
+/// of the crate, callable from outside it.
 fn methods_named(
     cache: &GraphCache<'_>,
     graph: &Rc<ForeignGraph>,
     owner_path: &[String],
     method: &str,
+    scope: Scope,
 ) -> Option<Vec<Node>> {
     let owner = owner_path.last()?;
     let exact = format!("{owner}::{method}");
@@ -379,7 +430,7 @@ fn methods_named(
             node.language == Language::Rust
                 && node.kind == NodeKind::Method
                 && (node.qualified_name == exact || node.qualified_name.ends_with(&suffix))
-                && graph.in_crate(&node.file_path)
+                && graph.in_scope(scope, &node.file_path)
                 && visible_outside(cache, graph, node)
         })
         .collect();
@@ -448,7 +499,9 @@ pub(crate) fn lookup_field(
 }
 
 /// A type (struct, enum, union, trait, alias) named `name` the crate
-/// defines and exports.
+/// defines and exports — or, for a facade (`std`), one of the crates it
+/// fronts defines (`std::collections::BTreeMap` is alloc's; the path is
+/// then followed to it by the member lookups).
 pub(crate) fn defines_type(cache: &GraphCache<'_>, graph: &Rc<ForeignGraph>, name: &str) -> bool {
     let key = (graph.index, name.to_string());
     if let Some(known) = cache.memo.types.borrow().get(&key) {
@@ -464,7 +517,8 @@ pub(crate) fn defines_type(cache: &GraphCache<'_>, graph: &Rc<ForeignGraph>, nam
                     | NodeKind::Trait
                     | NodeKind::TypeAlias
             )
-            && graph.in_crate(&node.file_path)
+            && (graph.in_scope(Scope::Own, &node.file_path)
+                || graph.in_scope(Scope::Facade, &node.file_path))
             && visible_outside(cache, graph, node)
     });
     cache.memo.types.borrow_mut().insert(key, defined);

@@ -50,11 +50,40 @@ impl FederationHome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphLocation {
     /// A dependency shard directory (`codegraph.db` + `meta.json`); node
-    /// paths are relative to `source_dir`.
-    Shard { dir: PathBuf, source_dir: PathBuf },
+    /// paths are relative to `source_dir`. The crate is `crate_dir` inside
+    /// it: `""` for a crate's own shard, `alloc` for the toolchain shard's
+    /// `alloc` (one shard holds `std`, `core` and `alloc`). `facade_of`
+    /// names other directories of the shard whose types the crate
+    /// re-exports wholesale (the toolchain's `std` over `core` and `alloc`):
+    /// a type's members are looked up there too, bare items never.
+    Shard {
+        dir: PathBuf,
+        source_dir: PathBuf,
+        crate_dir: String,
+        facade_of: Vec<String>,
+    },
     /// A linked project's root; the crate is `crate_dir` inside it (`""`
     /// when the crate is the project root).
     Project { root: PathBuf, crate_dir: String },
+}
+
+impl GraphLocation {
+    /// Where the crate's own files are in the graph (`""`: the whole graph).
+    pub fn crate_dir(&self) -> &str {
+        match self {
+            GraphLocation::Shard { crate_dir, .. } | GraphLocation::Project { crate_dir, .. } => {
+                crate_dir
+            }
+        }
+    }
+
+    /// Other directories whose types the crate re-exports wholesale.
+    pub fn facade_of(&self) -> &[String] {
+        match self {
+            GraphLocation::Shard { facade_of, .. } => facade_of,
+            GraphLocation::Project { .. } => &[],
+        }
+    }
 }
 
 /// One graph a project's references may resolve into.
@@ -87,7 +116,12 @@ impl ReachableGraph {
                 "{}:{}:{}",
                 meta.built_at_ms, meta.extractor_version, meta.source_fingerprint
             ),
-            location: GraphLocation::Shard { dir, source_dir },
+            location: GraphLocation::Shard {
+                dir,
+                source_dir,
+                crate_dir: String::new(),
+                facade_of: Vec::new(),
+            },
         }
     }
 }
@@ -193,7 +227,10 @@ fn dependency_shards(
         if dependency.key.ecosystem == Ecosystem::Rust {
             // The toolchain's library: one shard, a graph per crate in it.
             if toolchain.is_empty() {
-                toolchain = toolchain_graphs(home, &dependency.key, skipped);
+                toolchain = crate::deps::toolchain::graphs(&home.deps, &dependency.key);
+                if toolchain.is_empty() {
+                    skipped.no_shard += 1;
+                }
             }
             continue;
         }
@@ -238,41 +275,6 @@ fn dependency_shards(
         }
     }
     graphs
-}
-
-/// The toolchain shard `key` as the graphs of `std`, `core` and `alloc`
-/// (one database, each crate from its own library root).
-fn toolchain_graphs(
-    home: &FederationHome,
-    key: &crate::deps::DepKey,
-    skipped: &mut Skipped,
-) -> Vec<ReachableGraph> {
-    let dir = home.deps.shard_dir(key);
-    let meta = ShardMeta::read(&dir)
-        .filter(|meta| meta.is_readable() && meta.state.has_shard())
-        .filter(|meta| meta.key() == *key);
-    let Some(meta) = meta else {
-        skipped.no_shard += 1;
-        return Vec::new();
-    };
-    let source_dir = PathBuf::from(&meta.source_dir);
-    crate::deps::toolchain::STD_CRATES
-        .iter()
-        .map(|krate| ReachableGraph {
-            kind: ExternalGraphKind::Dependency,
-            key: format!("{}/{}", key.ecosystem.as_str(), key.dir_name()),
-            krate: (*krate).to_string(),
-            lib_root: format!("{krate}/src/lib.rs"),
-            fingerprint: format!(
-                "{}:{}:{}",
-                meta.built_at_ms, meta.extractor_version, meta.source_fingerprint
-            ),
-            location: GraphLocation::Shard {
-                dir: dir.clone(),
-                source_dir: source_dir.clone(),
-            },
-        })
-        .collect()
 }
 
 /// Crates of other registered projects this project depends on by path.

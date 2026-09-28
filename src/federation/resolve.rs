@@ -17,7 +17,7 @@ use super::graph::{GraphId, OpenGraph, dependency_label};
 use super::set::GraphSet;
 use crate::resolution::external::open::GraphCache;
 use crate::resolution::external::rust::lookup::lookup_path;
-use crate::resolution::external::{GraphLocation, Reach, ReachableGraph};
+use crate::resolution::external::{Reach, ReachableGraph};
 use crate::types::{EdgeKind, Node, NodeKind};
 
 /// Path segments that never name another crate.
@@ -137,10 +137,11 @@ impl GraphSet {
         let Ok(graph) = self.open(&GraphId::new(reachable.kind, reachable.key.clone())) else {
             return Vec::new();
         };
-        let crate_dir = match &reachable.location {
-            GraphLocation::Project { crate_dir, .. } => crate_dir.as_str(),
-            GraphLocation::Shard { .. } => "",
-        };
+        // The crate's own files, and those of the crates it is the facade
+        // of (`std`: `core`, `alloc`).
+        let dirs: Vec<&str> = std::iter::once(reachable.location.crate_dir())
+            .chain(reachable.location.facade_of().iter().map(String::as_str))
+            .collect();
         let suffix = rest.join("::");
         let Ok(nodes) = graph.queries().get_nodes_by_name(name) else {
             return Vec::new();
@@ -154,11 +155,13 @@ impl GraphSet {
                 )
             })
             .filter(|node| {
-                crate_dir.is_empty()
-                    || node
-                        .file_path
-                        .strip_prefix(crate_dir)
-                        .is_some_and(|tail| tail.starts_with('/'))
+                dirs.iter().any(|dir| {
+                    dir.is_empty()
+                        || node
+                            .file_path
+                            .strip_prefix(dir)
+                            .is_some_and(|tail| tail.starts_with('/'))
+                })
             })
             .filter(|node| {
                 rest.len() < 2
