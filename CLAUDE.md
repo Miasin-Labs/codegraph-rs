@@ -931,6 +931,67 @@ cargo test --workspace
   2 confirmed by differential (UB on vuln, same test clean on fixed —
   elf_rs by a generated harness, stackvector by its tests); Rudra PoCs: 145,
   59 built, 10 UB (rules fire at Rudra's location in 7 of those).
+- **CodeQL adapter** (`src/analyze/codeql/`, `codegraph analyze codeql
+  [--language L] [--suite S] [--wait S] [--rules P|--builtin]`, `analyze
+  bugs|review --detector codeql [--codeql-wait S]`): codegraph *uses*
+  CodeQL, never reimplements it. **License: the CodeQL CLI is GitHub's
+  (GitHub CodeQL Terms and Conditions) — only on open-source code, for
+  academic research, or to test/demonstrate it; never run it on the user's
+  private repos (`~/RustProjects/tools/*` etc.).** Opt-in, CLI only (never
+  MCP/hook); the help and every status carry the license note.
+  `locate.rs`: `CODEGRAPH_CODEQL` (launcher or bundle dir) → PATH →
+  `~/.cache/codegraph-tools/codeql/codeql/codeql` (`CODEGRAPH_TOOLS_DIR`);
+  never downloads (missing = `unavailable` + install hint, exit 0).
+  `languages.rs`: CodeQL languages of the indexed files; build mode read
+  from the bundle's `<lang>/codeql-extractor.yml` — `none` wherever listed
+  (Java, C#, C/C++, JS/TS, Python, Ruby, Rust), else `autobuild` (Go,
+  Swift); Java `none` may fetch dependency jars itself (CodeQL's
+  behaviour). Default suite `<lang>-security-and-quality`; `--suite` takes
+  a bare suite name, pack, `pack:path` or .ql/.qls. `run.rs`: one generated
+  `sh` script (`.codegraph/codeql/run/run.sh`, own process group, a
+  watchdog kills the group at `CODEGRAPH_CODEQL_BUDGET_MS`, 60 min;
+  `CODEGRAPH_CODEQL_THREADS`/`_RAM`) creates only stale databases and
+  analyses only stale SARIF — keys: CodeQL version + language + build mode
+  + that language's indexed files (size/mtime) + build manifests; SARIF
+  key adds the suites; outputs go to `.tmp` and are renamed with their key;
+  `paths-ignore: .codegraph` (the DBs live there). A later call picks up a
+  running run; a failed run for the same plan is reported, not retried,
+  within 60 s; sources changed mid-run → `stale`. `findings.rs`: rule
+  `codeql::<query id>`, confidence = precision (very-high .9/high .8/
+  medium .6/low .4) × severity (`security-severity` ≥9 1.0, ≥7 .95, ≥4 .9;
+  else `problem.severity`); the enclosing indexed function; results
+  outside indexed files are counted, not findings; code-flow hops
+  (`source/step/sink i/n`) and related places *inside the project* as
+  evidence; a security result a server entry reaches rises halfway to .97
+  (×.85/hop) with the path — unreached ones are NOT discounted (CodeQL
+  models its own sources). Suppressions and test filtering apply.
+  `merge_corroborated`: a CodeQL result and another detector's finding in
+  the same file+function (±3 lines without one) sharing a CWE (rule tags)
+  become one finding, `1−(1−a)(1−b)` ≤.99, the other as evidence (`analyze
+  review` and `analyze codeql --builtin`). Reach counts Java servlet
+  `HttpServletRequest` params as request entries. Samples:
+  `codeql/samples/` (real CodeQL 2.27.1 SARIF on OWASP). Measured on OWASP
+  Benchmark v1.2 (2026-09, bundle 2.27.1, `tools/bugbench/combine.py`):
+  CodeQL alone 57.9% P / 100% R (finding scoring; 9,850 findings, quality
+  queries included), CWE-matched per test case TPR 100% / FPR 40.1%
+  (score 59.9); codegraph rules 89.1/94.8, CWE-matched 94.8/0.0 (94.8);
+  union 62.7/100 (CWE: 100/40.1); intersection (the high-confidence tier)
+  100% P / 94.8% R, 0 FPs. CodeQL is strongest on crypto/hash
+  (76.7/69.2 vs 74.6/69.0) and loses on sqli (10.8: OWASP's dead-branch
+  and collection tricks). Cold run 95 s (Java db 59 s + analyze 19 s,
+  JS 5+11 s; 24 cores), cached rerun ~1 s; disk: Java db 307 MiB, JS 81 MiB,
+  SARIF 26 MiB. Juliet Java (default 22-CWE sample): CodeQL 41.6/86.9,
+  rules 99.1/27.9, union 45.6/88.4, intersection 100/14.4; CWE-matched
+  per function, union lifts rules' TPR 27.7% → 35.5% at 2.9% FPR.
+- **SARIF out** (`src/analyze/sarif/write.rs`, `analyze bugs|rules|codeql
+  --sarif FILE|-`): SARIF 2.1.0 for GitHub code scanning — a descriptor per
+  rule (YAML rules: description + tags; CodeQL: its metadata; else a
+  fallback), CWE tags as `external/cwe/cwe-NNN`, level/rank from
+  confidence, the function as a logical location, evidence as a code flow,
+  `codegraphFingerprint/v1` = rule+file+function+line text (survives moved
+  lines). `sarif/read.rs` is the tolerant reader both sides use. Tests:
+  `tests/sarif_export_test.rs` (golden, validated against the checked-in
+  OASIS schema by a draft-04 subset validator; `CODEGRAPH_UPDATE_GOLDEN=1`).
 - **Concurrency lint** (`analysis/src/concurrency.rs`, per-language rules in
   `concurrency_rules.rs`): flags lossy best-effort sends. Library-only since
   the vuln engine (its sole CLI surface) was deleted.

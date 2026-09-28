@@ -148,7 +148,11 @@ def main() -> int:
     summary = json.loads((paths.corpus_results(args.corpus) / "run_summary.json").read_text())
     units = enumerate_units(paths.bench, args.corpus, summary.get("sample"), summary.get("seed", 1),
                             summary.get("cwes"))
-    rows = load_rows(paths.bench / args.corpus / "ground_truth.jsonl")
+    # Only the rows of what was staged (a Juliet sample, not the corpus).
+    whole = any(u.sources == ["."] for u in units)
+    staged = {s for u in units for s in u.sources}
+    rows = load_rows(paths.bench / args.corpus / "ground_truth.jsonl",
+                     None if whole else lambda f: f in staged or f.split("/", 1)[0] in staged)
     index = FileIndex(rows)
     by_tool: dict[str, list[Finding]] = defaultdict(list)
     for unit in units:
