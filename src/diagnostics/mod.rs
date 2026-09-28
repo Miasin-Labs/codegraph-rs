@@ -17,7 +17,8 @@ mod tsc;
 
 use std::path::Path;
 
-pub use run::{DiagnosticsRun, RunStatus, check_or_poll};
+pub(crate) use run::diagnostics_dir;
+pub use run::{DiagnosticsRun, LintsRun, RunStatus, check_or_poll, clippy_lints_or_poll};
 use serde::Serialize;
 
 /// Which checker to run.

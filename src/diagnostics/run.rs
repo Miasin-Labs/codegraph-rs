@@ -72,9 +72,34 @@ struct Paths {
     stderr: PathBuf,
 }
 
-fn paths(root: &Path, checker: Checker) -> Paths {
-    let dir = get_codegraph_dir(root).join("diagnostics");
-    let name = checker.as_str();
+/// What a run executes: one of the [`Checker`]s, or `cargo clippy` with a
+/// caller's driver arguments under a name of its own (so its state files and
+/// its reuse never mix with the plain `clippy` checker's).
+#[derive(Clone, Copy)]
+enum Job<'a> {
+    Checker(Checker),
+    Lints {
+        name: &'a str,
+        driver_args: &'a [String],
+    },
+}
+
+impl Job<'_> {
+    fn name(&self) -> &str {
+        match self {
+            Self::Checker(checker) => checker.as_str(),
+            Self::Lints { name, .. } => name,
+        }
+    }
+}
+
+/// The directory runs keep their state and output in.
+pub(crate) fn diagnostics_dir(root: &Path) -> PathBuf {
+    get_codegraph_dir(root).join("diagnostics")
+}
+
+fn paths(root: &Path, name: &str) -> Paths {
+    let dir = diagnostics_dir(root);
     Paths {
         state: dir.join(format!("{name}.state.json")),
         stdout: dir.join(format!("{name}.out")),
@@ -90,10 +115,11 @@ fn store(paths: &Paths, state: &RunState) -> std::io::Result<()> {
     fs::write(&paths.state, serde_json::to_vec(state).unwrap_or_default())
 }
 
-fn command(root: &Path, checker: Checker) -> Option<Command> {
-    let mut command = match checker {
-        Checker::Check | Checker::Clippy => cargo::command(checker),
-        Checker::Tsc => tsc::command(root)?,
+fn command(root: &Path, job: Job<'_>) -> Option<Command> {
+    let mut command = match job {
+        Job::Checker(checker @ (Checker::Check | Checker::Clippy)) => cargo::command(checker),
+        Job::Checker(Checker::Tsc) => tsc::command(root)?,
+        Job::Lints { driver_args, .. } => cargo::lints_command(driver_args),
     };
     command.current_dir(root).stdin(Stdio::null());
     // Its own process group: the run must outlive a request that times out.
@@ -116,10 +142,7 @@ fn finished(root: &Path, checker: Checker, paths: &Paths, state: &RunState) -> D
         || stderr.lines().any(|line| line.starts_with("error")),
         |code| code != 0,
     );
-    let failure = (failed && diagnostics.is_empty()).then(|| {
-        let tail: Vec<&str> = stderr.lines().rev().take(15).collect();
-        tail.into_iter().rev().collect::<Vec<_>>().join("\n")
-    });
+    let failure = (failed && diagnostics.is_empty()).then(|| stderr_tail(&stderr));
     DiagnosticsRun {
         checker,
         status: RunStatus::Complete,
@@ -175,9 +198,103 @@ pub fn check_or_poll(
     wait: Duration,
     stop: &dyn Fn() -> bool,
 ) -> Result<DiagnosticsRun, String> {
-    let paths = paths(root, checker);
+    let outcome = run_job(root, Job::Checker(checker), wait, stop)?;
+    Ok(if outcome.done {
+        finished(root, checker, &outcome.paths, &outcome.state)
+    } else {
+        running(checker, &outcome.state)
+    })
+}
+
+/// A `cargo clippy` run with caller-chosen driver arguments, as
+/// [`clippy_lints_or_poll`] returns it: the raw `--message-format=json`
+/// output, for a caller that reads more of each message than [`Diagnostic`]
+/// keeps (child notes, secondary spans, macro expansions).
+#[derive(Debug, Clone)]
+pub struct LintsRun {
+    pub status: RunStatus,
+    pub started_ms: u64,
+    pub finished_ms: Option<u64>,
+    pub exit_code: Option<i32>,
+    /// Cargo's JSON lines (empty while running).
+    pub stdout: String,
+    /// Tail of stderr when cargo failed: a compile error, a dependency not
+    /// in the offline cache, a broken manifest.
+    pub failure: Option<String>,
+}
+
+/// `cargo clippy --offline --message-format=json --workspace` with
+/// `driver_args` after `--`, run detached under
+/// `.codegraph/diagnostics/<name>.*` exactly like [`check_or_poll`]: a run
+/// still going is picked up, never restarted, and the call waits at most
+/// `wait` (less if `stop()` turns true).
+pub fn clippy_lints_or_poll(
+    root: &Path,
+    name: &str,
+    driver_args: &[String],
+    wait: Duration,
+    stop: &dyn Fn() -> bool,
+) -> Result<LintsRun, String> {
+    let outcome = run_job(root, Job::Lints { name, driver_args }, wait, stop)?;
+    let state = &outcome.state;
+    if !outcome.done {
+        return Ok(LintsRun {
+            status: RunStatus::Running,
+            started_ms: state.started_ms,
+            finished_ms: None,
+            exit_code: None,
+            stdout: String::new(),
+            failure: None,
+        });
+    }
+    let stdout = fs::read_to_string(&outcome.paths.stdout).unwrap_or_default();
+    let stderr = fs::read_to_string(&outcome.paths.stderr).unwrap_or_default();
+    let failed = state.exit_code.map_or_else(
+        || stderr.lines().any(|line| line.starts_with("error")),
+        |code| code != 0,
+    );
+    Ok(LintsRun {
+        status: RunStatus::Complete,
+        started_ms: state.started_ms,
+        finished_ms: state.finished_ms,
+        exit_code: state.exit_code,
+        stdout,
+        failure: failed.then(|| stderr_tail(&stderr)),
+    })
+}
+
+fn stderr_tail(stderr: &str) -> String {
+    let tail: Vec<&str> = stderr.lines().rev().take(15).collect();
+    tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+}
+
+/// Where [`run_job`] left a run.
+struct Outcome {
+    paths: Paths,
+    state: RunState,
+    /// Finished (else still running detached).
+    done: bool,
+}
+
+fn run_job(
+    root: &Path,
+    job: Job<'_>,
+    wait: Duration,
+    stop: &dyn Fn() -> bool,
+) -> Result<Outcome, String> {
+    let paths = paths(root, job.name());
     let deadline = Instant::now() + wait;
     let key = paths.state.clone();
+    let finish = |paths: Paths, mut state: RunState, code: Option<i32>| {
+        state.finished_ms = Some(now_ms());
+        state.exit_code = code;
+        let _ = store(&paths, &state);
+        Outcome {
+            paths,
+            state,
+            done: true,
+        }
+    };
 
     // 1. A run this process started: reap it if done.
     let owned = CHILDREN
@@ -185,37 +302,42 @@ pub fn check_or_poll(
         .unwrap_or_else(|e| e.into_inner())
         .contains_key(&key);
     if owned {
-        let mut state = load(&paths).unwrap_or_default();
+        let state = load(&paths).unwrap_or_default();
         return Ok(match wait_own(&key, deadline, stop) {
-            Some(code) => {
-                state.finished_ms = Some(now_ms());
-                state.exit_code = code;
-                let _ = store(&paths, &state);
-                finished(root, checker, &paths, &state)
-            }
-            None => running(checker, &state),
+            Some(code) => finish(paths, state, code),
+            None => Outcome {
+                paths,
+                state,
+                done: false,
+            },
         });
     }
 
     // 2. A run another process started (e.g. a previous server).
-    if let Some(mut state) = load(&paths) {
+    if let Some(state) = load(&paths) {
         if state.finished_ms.is_none() {
             while is_process_alive(state.pid) {
                 if Instant::now() >= deadline || stop() {
-                    return Ok(running(checker, &state));
+                    return Ok(Outcome {
+                        paths,
+                        state,
+                        done: false,
+                    });
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
-            state.finished_ms = Some(now_ms());
-            let _ = store(&paths, &state);
-            return Ok(finished(root, checker, &paths, &state));
+            return Ok(finish(paths, state, None));
         }
         // 3. A result fresh enough to reuse.
         if state
             .finished_ms
             .is_some_and(|done| now_ms().saturating_sub(done) < REUSE_WITHIN.as_millis() as u64)
         {
-            return Ok(finished(root, checker, &paths, &state));
+            return Ok(Outcome {
+                paths,
+                state,
+                done: true,
+            });
         }
     }
 
@@ -223,18 +345,13 @@ pub fn check_or_poll(
     fs::create_dir_all(paths.state.parent().unwrap_or(root)).map_err(|e| e.to_string())?;
     let stdout = fs::File::create(&paths.stdout).map_err(|e| e.to_string())?;
     let stderr = fs::File::create(&paths.stderr).map_err(|e| e.to_string())?;
-    let mut command = command(root, checker).ok_or_else(|| {
-        format!(
-            "{} is not available for {}",
-            checker.as_str(),
-            root.display()
-        )
-    })?;
+    let mut command = command(root, job)
+        .ok_or_else(|| format!("{} is not available for {}", job.name(), root.display()))?;
     let child = command
         .stdout(stdout)
         .stderr(stderr)
         .spawn()
-        .map_err(|e| format!("could not start {}: {e}", checker.as_str()))?;
+        .map_err(|e| format!("could not start {}: {e}", job.name()))?;
     let state = RunState {
         pid: child.id(),
         started_ms: now_ms(),
@@ -246,14 +363,12 @@ pub fn check_or_poll(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(key.clone(), child);
-    let mut state = state;
     Ok(match wait_own(&key, deadline, stop) {
-        Some(code) => {
-            state.finished_ms = Some(now_ms());
-            state.exit_code = code;
-            let _ = store(&paths, &state);
-            finished(root, checker, &paths, &state)
-        }
-        None => running(checker, &state),
+        Some(code) => finish(paths, state, code),
+        None => Outcome {
+            paths,
+            state,
+            done: false,
+        },
     })
 }

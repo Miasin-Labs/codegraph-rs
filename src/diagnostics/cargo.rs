@@ -26,6 +26,26 @@ pub(super) fn command(checker: Checker) -> Command {
     command
 }
 
+/// `cargo clippy` over the workspace's default targets (libraries and
+/// binaries — test targets would build dev-dependencies, which an offline
+/// cache often lacks) with `driver_args` passed to clippy-driver, which
+/// applies them to workspace members only (dependencies are capped at
+/// `allow`). Source attributes (`#[allow(…)]`) still win over them.
+pub(super) fn lints_command(driver_args: &[String]) -> Command {
+    let mut command = Command::new("cargo");
+    command
+        .args([
+            "clippy",
+            "--message-format=json",
+            "--workspace",
+            "--offline",
+        ])
+        .arg("--")
+        .args(driver_args)
+        .env("CARGO_TERM_COLOR", "never");
+    command
+}
+
 /// Compiler messages at their primary span, for files inside `root`.
 /// Diagnostics located only in dependencies or the standard library are
 /// dropped: they are not something the project can fix in place.
