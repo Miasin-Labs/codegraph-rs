@@ -70,7 +70,7 @@ pub(super) fn resolve_refs(
     deadline: Instant,
 ) -> Outcome {
     let cache = GraphCache::new(reach, max_open);
-    let declarations = Declarations::new(&cache);
+    let declarations = Declarations::new(&cache, project);
     let context = ExternalContext {
         project,
         declarations: &declarations,
@@ -88,6 +88,7 @@ pub(super) fn resolve_refs(
             break;
         }
         outcome.examined += 1;
+        declarations.enter(&reference.file_path, reference.line);
         match rust::resolve(reference, &context, names) {
             Attempt::Resolved(resolved) => {
                 outcome.resolved.push(Resolution::of(reference, *resolved));

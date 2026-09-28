@@ -15,7 +15,10 @@
 //! A local closure called bare, `self.m()`, a receiver of unknown type, and
 //! a crate no graph is reachable for resolve to nothing.
 
+pub(crate) mod api;
 pub(crate) mod lookup;
+mod prelude;
+pub(crate) mod scope;
 mod types;
 mod visibility;
 
@@ -32,7 +35,7 @@ use crate::resolution::name_matcher::external::{
     receiver_crate_type,
     rust_call_shape,
 };
-use crate::resolution::types::UnresolvedRef;
+use crate::resolution::types::{ResolutionContext as _, UnresolvedRef};
 use crate::types::{EdgeKind, Language, receiver_was_dropped};
 
 /// How a reference was resolved into another graph (the edge's
@@ -53,6 +56,8 @@ pub enum ExternalResolvedBy {
     /// A receiver whose type came through a dependency's declared return
     /// (or field) type.
     DependencyChain,
+    /// A bare name of the standard prelude (`Ok`, `Vec`, `Clone`).
+    Prelude,
 }
 
 impl ExternalResolvedBy {
@@ -64,6 +69,7 @@ impl ExternalResolvedBy {
             Self::InstanceMethod => "instance-method",
             Self::ReceiverChain => "receiver-chain",
             Self::DependencyChain => "dependency-chain",
+            Self::Prelude => "prelude",
         }
     }
 }
@@ -99,12 +105,38 @@ pub(crate) fn resolve(
             if reference.reference_name.contains('.') {
                 return Attempt::NotOurs;
             }
-            match placed(reference, context) {
-                Some((krate, rest)) => path_item(reference, context, &krate, &rest),
-                None => Attempt::NotOurs,
+            if let Some((krate, rest)) = placed(reference, context) {
+                return path_item(reference, context, &krate, &rest);
             }
+            // `fmt::Result` recorded as `Result`: the path as written.
+            if let Some(qualifier) = prelude::written_qualifier(reference, context) {
+                if qualifier.is_empty() {
+                    return Attempt::NotOurs;
+                }
+                let written = format!("{qualifier}::{}", reference.reference_name);
+                return match placed_as(&written, reference, context) {
+                    Some((krate, rest)) => path_item(reference, context, &krate, &rest),
+                    None => Attempt::NotOurs,
+                };
+            }
+            prelude_name(reference, context)
         }
         _ => Attempt::NotOurs,
+    }
+}
+
+/// A bare name no `use` places: the std prelude's item of that name, when
+/// the file cannot mean anything else.
+fn prelude_name(reference: &UnresolvedRef, context: &ExternalContext<'_>) -> Attempt {
+    if !api::is_prelude_name(context.declarations.cache(), &reference.reference_name) {
+        return Attempt::NotOurs;
+    }
+    match prelude::prelude_item(reference, context) {
+        Some(found) => Attempt::Resolved(Box::new(Resolved {
+            found,
+            by: ExternalResolvedBy::Prelude,
+        })),
+        None => Attempt::NotOurs,
     }
 }
 
@@ -115,7 +147,16 @@ fn placed(
     reference: &UnresolvedRef,
     context: &ExternalContext<'_>,
 ) -> Option<(String, Vec<String>)> {
-    let (krate, rest) = external_path(&reference.reference_name, &reference.file_path, context)?;
+    placed_as(&reference.reference_name, reference, context)
+}
+
+/// [`placed`] for the path `name`, as written at the reference.
+fn placed_as(
+    name: &str,
+    reference: &UnresolvedRef,
+    context: &ExternalContext<'_>,
+) -> Option<(String, Vec<String>)> {
+    let (krate, rest) = external_path(name, &reference.file_path, context)?;
     context
         .declarations
         .cache()
@@ -149,15 +190,20 @@ fn resolve_call(
         }
         return typed_method(context, name, ExternalResolvedBy::ReceiverChain, || {
             dropped_receiver_crate_type(reference, context)
+                .or_else(|| prelude::literal_receiver(reference, context))
         });
     }
-    // `f(..)`: only a name a `use` brings in from a reachable crate, called
-    // bare (not `self.f()`, not a local closure).
-    let Some((krate, rest)) = placed(reference, context) else {
+    // `f(..)`: only a name a `use` brings in from a reachable crate (or the
+    // prelude's), called bare (not `self.f()`, not a local closure).
+    let placed = placed(reference, context);
+    if placed.is_none() && !api::is_prelude_name(context.declarations.cache(), name) {
         return Attempt::NotOurs;
-    };
+    }
     match rust_call_shape(reference, context) {
-        Some(RustCallShape::Bare) => path_item(reference, context, &krate, &rest),
+        Some(RustCallShape::Bare) => match placed {
+            Some((krate, rest)) => path_item(reference, context, &krate, &rest),
+            None => prelude_name(reference, context),
+        },
         _ => Attempt::NotOurs,
     }
 }
@@ -194,19 +240,33 @@ fn typed_method(
 ) -> Attempt {
     let declarations: &Declarations<'_> = context.declarations;
     let before = declarations.answers();
-    let Some(ty) = infer().filter(|ty| declarations.cache().knows(&ty.krate)) else {
+    let inferred = infer();
+    if api::tracing() {
+        eprintln!("typed .{method}: receiver {inferred:?}");
+    }
+    let Some(ty) = inferred.filter(|ty| declarations.cache().knows(&ty.krate)) else {
         return Attempt::NotOurs;
     };
     let through_dependency = declarations.answers() > before;
+    let stand_in = stand_in(&ty);
+    if stand_in == Some(StandIn::Entry) {
+        return Attempt::NotOurs;
+    }
     // The graph the method is found in (another crate's, when the type is
     // a re-export, an alias or derefs there).
-    let found = declarations
-        .cache()
-        .get(&ty.krate)
-        .and_then(|graph| lookup_method(declarations.cache(), &graph, &ty.path, method));
+    let found = declarations.cache().get(&ty.krate).and_then(|graph| {
+        declarations.with_caller(|caller| {
+            lookup_method(declarations.cache(), &graph, &ty.path, method, caller)
+        })
+    });
     let Some((graph, node)) = found else {
         return Attempt::Missed(format!("{}::{}::{method}", ty.krate, ty.path.join("::")));
     };
+    // Any container's iterator: only a trait's own method is the one every
+    // iterator runs.
+    if stand_in == Some(StandIn::Iter) && !declared_by_trait(&graph, &node) {
+        return Attempt::NotOurs;
+    }
     Attempt::Resolved(Box::new(Resolved {
         found: Found {
             graph,
@@ -220,6 +280,44 @@ fn typed_method(
             by
         },
     }))
+}
+
+/// Types receiver inference writes as stand-ins, not as the value's own
+/// type: every container's `iter()` is `std::slice::Iter`, every map's
+/// `entry(..)` a `std::collections::hash_map::Entry`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StandIn {
+    Iter,
+    Entry,
+}
+
+fn stand_in(ty: &CrateType) -> Option<StandIn> {
+    if ty.krate != "std" {
+        return None;
+    }
+    let path: Vec<&str> = ty.path.iter().map(String::as_str).collect();
+    match path.as_slice() {
+        ["slice", "Iter"] => Some(StandIn::Iter),
+        ["collections", "hash_map", "Entry"] => Some(StandIn::Entry),
+        _ => None,
+    }
+}
+
+/// `node` is a method a trait declares (`Iterator::map`), not an impl's.
+fn declared_by_trait(graph: &super::open::ForeignGraph, node: &crate::types::Node) -> bool {
+    let Some((owner, _)) = node.qualified_name.rsplit_once("::") else {
+        return false;
+    };
+    let owner = owner.rsplit("::").next().unwrap_or(owner);
+    graph
+        .context
+        .get_nodes_in_file_named(&node.file_path, owner)
+        .iter()
+        .any(|candidate| {
+            candidate.kind == crate::types::NodeKind::Trait
+                && candidate.start_line <= node.start_line
+                && candidate.end_line >= node.end_line
+        })
 }
 
 /// `recv.method` (a plain or dotted receiver) as recorded for a method call.

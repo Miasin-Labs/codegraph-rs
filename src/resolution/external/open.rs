@@ -10,9 +10,11 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::graphs::{GraphLocation, Reach, ReachableGraph};
+use super::rust::scope::TraitScope;
 use crate::db::{
     CURRENT_SCHEMA_VERSION,
     Db,
@@ -21,6 +23,7 @@ use crate::db::{
     QueryBuilder,
 };
 use crate::deps::ShardHandle;
+use crate::deps::rustdoc::{self, ApiIndex};
 use crate::resolution::ResolverContext;
 use crate::resolution::lru_cache::LRUCache;
 use crate::types::{EdgeKind, Node};
@@ -45,6 +48,9 @@ pub(crate) struct ForeignGraph {
     pub(crate) facade_of: Vec<String>,
     /// The graph's read-only connection, for whole-graph queries.
     pub(crate) db: Db,
+    /// The crate's API index from rustdoc JSON, when the shard has one
+    /// ([`crate::deps::rustdoc`]).
+    pub(crate) api: Option<Arc<ApiIndex>>,
     /// Resolution over the graph: its nodes, and its sources read from the
     /// graph root (a shard's source directory, the linked project's root).
     pub(crate) context: ResolverContext,
@@ -52,7 +58,7 @@ pub(crate) struct ForeignGraph {
 
 impl ForeignGraph {
     fn open(index: usize, graph: &ReachableGraph) -> Option<ForeignGraph> {
-        let (queries, root, crate_dir, facade_of) = match &graph.location {
+        let (queries, root, crate_dir, facade_of, api) = match &graph.location {
             GraphLocation::Shard {
                 dir,
                 crate_dir,
@@ -61,11 +67,17 @@ impl ForeignGraph {
             } => {
                 let handle = ShardHandle::open_dir(dir)?;
                 let root = handle.source_dir().to_string_lossy().into_owned();
+                let indexed = if crate_dir.is_empty() {
+                    &graph.krate
+                } else {
+                    crate_dir
+                };
                 (
                     QueryBuilder::new(handle.queries().db().clone()),
                     root,
                     crate_dir.clone(),
                     facade_of.clone(),
+                    rustdoc::load(dir, indexed),
                 )
             }
             GraphLocation::Project { root, crate_dir } => (
@@ -73,6 +85,7 @@ impl ForeignGraph {
                 root.to_string_lossy().into_owned(),
                 crate_dir.clone(),
                 Vec::new(),
+                None,
             ),
         };
         Some(ForeignGraph {
@@ -84,6 +97,7 @@ impl ForeignGraph {
             crate_dir,
             facade_of,
             db: queries.db().clone(),
+            api,
             context: ResolverContext::new(root, queries),
         })
     }
@@ -185,6 +199,13 @@ pub(crate) struct Located {
     pub(crate) reexported: bool,
 }
 
+/// An API index item: `(graph index, index identity, item)`.
+pub(crate) type ApiItemKey = (usize, usize, u32);
+
+/// `(type key, method, with self)` of an inherent-method lookup outside the
+/// API indexes.
+pub(crate) type IncoherentKey = (String, String, bool);
+
 /// `(graph index, owner path, method)`.
 pub(crate) type MethodKey = (usize, String, String);
 
@@ -199,6 +220,20 @@ pub(crate) struct Memo {
     pub(crate) fields: RefCell<HashMap<(usize, String, String), Option<Node>>>,
     pub(crate) types: RefCell<HashMap<(usize, String), bool>>,
     pub(crate) visible: RefCell<HashMap<(usize, String), bool>>,
+    /// API index items → the graph and node they are (`(graph, index,
+    /// item)`).
+    pub(crate) api_nodes: RefCell<HashMap<ApiItemKey, Option<(usize, Node)>>>,
+    /// The traits of `std`'s preludes.
+    pub(crate) api_prelude: RefCell<Option<Rc<HashSet<String>>>>,
+    /// Every name `std`'s preludes export.
+    pub(crate) api_prelude_names: RefCell<Option<Rc<HashSet<String>>>>,
+    /// `(file, method)` → a trait no index describes may define it there.
+    pub(crate) api_unseen: RefCell<HashMap<(String, String), bool>>,
+    /// `(type key, method, needs self)` → the inherent methods rustdoc
+    /// leaves out (`alloc`'s `impl str`), as `(graph, node)`.
+    pub(crate) api_incoherent: RefCell<HashMap<IncoherentKey, Vec<(usize, Node)>>>,
+    /// Each project file's traits in scope.
+    pub(crate) api_scopes: RefCell<HashMap<String, Rc<TraitScope>>>,
 }
 
 /// The reachable graphs of one pass, opened on first need.

@@ -36,7 +36,7 @@ use crate::types::Language;
 /// fingerprints.
 pub const STATE_KEY: &str = "external_resolution";
 /// Bump when what a pass resolves changes: the next pass is a full one.
-pub const EXTERNAL_RESOLUTION_VERSION: u32 = 1;
+pub const EXTERNAL_RESOLUTION_VERSION: u32 = 2;
 /// Default budget of a full pass (`CODEGRAPH_EXTERNAL_BUDGET_MS`).
 const DEFAULT_FULL_BUDGET: Duration = Duration::from_secs(60);
 /// Default budget of an incremental pass.

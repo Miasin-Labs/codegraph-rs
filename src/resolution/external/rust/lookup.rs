@@ -16,6 +16,7 @@
 
 use std::rc::Rc;
 
+use super::api::Caller;
 pub(crate) use super::types::type_path;
 use super::types::{aliased_type, deref_target};
 use super::visibility::{admitted, overloaded, unique, visible_outside};
@@ -83,6 +84,10 @@ fn lookup_path_hops(
 ) -> Option<Found> {
     if rest.is_empty() {
         return None;
+    }
+    // The crate's API index, when it has one, is the answer.
+    if let Some(answer) = super::api::lookup_path(cache, krate, rest, kind) {
+        return answer;
     }
     let graph = cache.get(krate)?;
     if let Some(found) = by_layout(cache, &graph, rest, kind) {
@@ -333,10 +338,27 @@ fn facade_member(
 }
 
 /// The method `method` of the type at `owner` (its path in the crate, the
-/// type's name last) — exactly one, callable from outside the crate.
-/// Several types of one name (`regex::Regex`, `regex::bytes::Regex`) are
-/// told apart by the file the owner's path resolves to.
+/// type's name last), called from `caller` — exactly one, callable from
+/// outside the crate. A crate with an API index answers by rustc's method
+/// probe ([`super::api::lookup_method`]); others by [`legacy_method`].
 pub(crate) fn lookup_method(
+    cache: &GraphCache<'_>,
+    graph: &Rc<ForeignGraph>,
+    owner: &[String],
+    method: &str,
+    caller: Option<&Caller<'_>>,
+) -> Option<(Rc<ForeignGraph>, Node)> {
+    if let Some(answer) = super::api::lookup_method(cache, graph, owner, method, caller) {
+        return answer;
+    }
+    legacy_method(cache, graph, owner, method)
+}
+
+/// The method `method` of the type at `owner`, found by name in a graph
+/// without an API index. Several types of one name (`regex::Regex`,
+/// `regex::bytes::Regex`) are told apart by the file the owner's path
+/// resolves to.
+pub(crate) fn legacy_method(
     cache: &GraphCache<'_>,
     graph: &Rc<ForeignGraph>,
     owner: &[String],

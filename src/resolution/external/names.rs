@@ -22,6 +22,10 @@ impl MethodNames {
             let Some(graph) = cache.get_index(index) else {
                 continue;
             };
+            // Methods rustdoc knows the grammar may have missed.
+            if let Some(api) = &graph.api {
+                names.extend(api.method_names().map(str::to_string));
+            }
             let prefix = if graph.crate_dir.is_empty() {
                 String::new()
             } else {
