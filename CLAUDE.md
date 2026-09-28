@@ -303,12 +303,12 @@ cargo test --workspace
   with a source reaches sinks of functions nothing calls (dtors, handlers)
   — also `guessed`.
 - **SQLite schema is versioned** (`src/db/schema.sql` + `src/db/migrations.rs`,
-  currently through v10: `external_edges`). A schema change must bump
+  currently through v11: `compiler_symbols`). A schema change must bump
   `schema_versions`, add an idempotent migration, treat new columns as
   nullable (backfill on re-index), and update count/size pin tests
   (`tests/db_test.rs`, `cli_tools_test`, `mcp_server_test`, atlas fixtures).
   Readers of *another* graph (shards, linked indexes) accept
-  `MIN_READABLE_SCHEMA_VERSION..=CURRENT` (9..=10): a bump that only adds
+  `MIN_READABLE_SCHEMA_VERSION..=CURRENT` (9..=11): a bump that only adds
   project-side tables must not make every shard unreadable or rebuilt.
  - Language-support additions pin sizes with **count tests** (a regression guard
    on how many nodes/edges a fixture yields).
@@ -580,6 +580,65 @@ cargo test --workspace
   line) naming linked projects with open failures or shared-code edits in
   the last 7 days — no history read at all without code links, ~1 ms with
   them on the real stores.
+
+## Compiler layer (rust-analyzer SCIP)
+
+`src/compiler/`: rust-analyzer's answers laid over the Rust graph. Opt-in
+and CLI-only — `codegraph compiler-sync [--force|--cached|--background]`
+or `codegraph index --compiler` turn it on (`project_metadata.
+compiler_layer`); never MCP, the watcher or the prompt hook.
+
+- **Run** (`run.rs`): `rust-analyzer scip` (`CODEGRAPH_RUST_ANALYZER`, else
+  PATH) outside the index lock, process group killed at
+  `CODEGRAPH_COMPILER_BUDGET_MS` (10 min). Output in `.codegraph/compiler/`
+  (`index.scip`, `state.json`, log), replaced only by a successful run;
+  cached per fingerprint (Rust sources + manifests + tool version + the
+  optional `.codegraph/compiler/rust-analyzer.json` passed as
+  `--config-path`, e.g. `{"cargo": {"features": "all"}}`).
+  `state.json` keeps each file's hash at run time: a document applies only
+  while its file is unchanged, so edits degrade per file. Missing tool,
+  failure or timeout = today's graph plus a CLI notice. Hand-rolled
+  protobuf reader (`scip.rs`), no new dependency.
+- **Apply** (`apply.rs`, `map.rs`; budget `CODEGRAPH_COMPILER_APPLY_BUDGET_MS`,
+  one transaction): definitions map to nodes by file + name + innermost
+  range; each tree-sitter edge / unresolved ref / external edge is matched
+  to its occurrence: the first one named as its last segment at/after the
+  claim's position on its line — a `recv.m()` claim instead the first
+  *called* `.m` within 24 lines, past the receiver's own `.m(` calls.
+  Same node → `provenance = 'scip'`, `metadata.compiler = confirmed`;
+  other node → **corrected** (compiler wins, `treeSitterTarget` kept);
+  std / dependency / derive-generated / local → **refuted**: the edge goes
+  back to `unresolved_refs` (or becomes an external edge when the shard
+  holds the item). `imports` edges and heuristic edges are not judged; a
+  fn-local item (RA: `local N`) inside the source's span counts as
+  confirmed. Unclaimed occurrences become `compilerOnly` edges (calls,
+  instantiates, type/variant references, `impl … for` → `implements`;
+  never fields, modules, `use` items, comments, path qualifiers) — dropped,
+  never restored, on re-extraction (`reconcile.rs`, `restore_external_edges`).
+  Dependency symbols (`<pkg> <ver> mod/path/impl#[T]m().`) map to the
+  shard of exactly that version by name + owner + module-path file
+  (`deps.rs`). `impl` members give trait-method → impl dispatch edges
+  (`interface-impl`, `compilerVerified`; wrong heuristic ones removed only
+  when RA says what the impl implements). Items a macro invocation
+  generates get nodes (`compiler_symbols.generated = 1`, `contains` from
+  the invoking scope). Symbols are per crate: several definitions pick
+  the same file, then the same directory; a file mounted in two crates is
+  matched by the path below its modules; workspace packages are keyed by
+  name + version (a `[patch]` stand-in may share a dependency's name).
+- **Keeping it fresh**: `index` that re-extracted files re-applies the
+  cached index; `index`/`sync` start a detached `compiler-sync` when the
+  sources moved on (a `sync` never applies inline — its changed files are
+  exactly the stale ones). `CODEGRAPH_COMPILER=0` turns the layer off.
+- **Measured** (2026-09, `--dump` JSONL + old/new DB diff; every lost edge
+  is a corrected/refuted verdict, ~130 hand-checked, non-Rust edges
+  byte-identical): tree-sitter edges the compiler agrees with — codegraph-rs
+  93.9%, rms 90.9%, serde_json 89.6%, reqwest 84.8%, tokio (all features,
+  `.codegraph/compiler/rust-analyzer.json`) 79.4%. By strategy on
+  codegraph-rs: qualified-name 99.9%, instance-method 99.8%, exact-match
+  95.6%, `framework` (frameworks/rust.rs PascalCase rule) 28%. Top misses:
+  `use`d std/dependency types taken for same-named project types, the
+  PascalCase rule ignoring `use`, same-named items of other modules,
+  calls inside `fn m` resolved to `m` itself.
 
 ## Cross-graph resolution (federation phase 2)
 
