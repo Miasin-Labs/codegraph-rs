@@ -493,8 +493,46 @@ impl<'a, 'f> FileContext<'a, 'f> {
             Key::Name => self
                 .models
                 .named(&shape.name)
-                .filter(|m| arity_fits(m))
+                .filter(|m| arity_fits(m) && self.in_scope(m))
                 .collect(),
+        }
+    }
+
+    /// Whether the file can reach the model's library at all: its package
+    /// (Java: imported, wildcard-imported, the file's own or `java.lang`),
+    /// crate (Rust: a `use` of it, or std) or module (Python/JS: imported).
+    /// A name alone is only evidence within that reach — rusqlite's
+    /// `Statement::query_map` is not mysql's `Queryable::query_map`.
+    fn in_scope(&self, model: &Model) -> bool {
+        let facts = self.facts;
+        match self.model_language {
+            ModelLanguage::Cpp => true,
+            ModelLanguage::Java => {
+                let package = model.namespace.as_str();
+                package == "java.lang"
+                    || facts.package.as_deref() == Some(package)
+                    || facts.wildcards.iter().any(|w| w == package)
+                    || facts
+                        .imports
+                        .values()
+                        .any(|path| path.rsplit_once('.').is_some_and(|(p, _)| p == package))
+            }
+            ModelLanguage::Rust => {
+                let krate = model.namespace.split("::").next().unwrap_or_default();
+                RUST_STD.contains(&krate)
+                    || facts
+                        .imports
+                        .values()
+                        .chain(facts.wildcards.iter())
+                        .any(|path| path.split("::").next() == Some(krate))
+            }
+            ModelLanguage::Python | ModelLanguage::JavaScript => {
+                let root = model.namespace.split('.').next().unwrap_or_default();
+                facts
+                    .imports
+                    .values()
+                    .any(|path| path.split('.').next() == Some(root))
+            }
         }
     }
 

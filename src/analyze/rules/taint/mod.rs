@@ -37,7 +37,7 @@ use codegraph_analysis::taint_flow::{
     TaintSpec,
 };
 
-use super::compile::{Pattern, Rule, TaintRule};
+use super::compile::{Backend, Pattern, Rule, TaintRule};
 use super::engine::{self, FileInput, FileResult, Hit, Rejection, node_at, one_line, position};
 use super::lang;
 use super::semantics::Semantics;
@@ -260,6 +260,9 @@ pub(super) fn run_files(
             let hit = flow_hit(sink, source, flow, guessed, &table, files, semantics);
             results[index][sink.file].hits.push(hit);
         }
+        for per_file in &mut results[index] {
+            drop_duplicate_sinks(rule, &mut per_file.hits);
+        }
         if trace {
             reject_unreached(
                 rule,
@@ -275,6 +278,53 @@ pub(super) fn run_files(
         results,
         partial: partial || budget.is_exhausted(),
     }
+}
+
+/// One finding per sink call and flow: when a library-model sink and a
+/// written pattern mark the same call (the same argument or another of
+/// it), or the model's sink is another stop of a flow a written sink
+/// already reports (same source), the written pattern's hit stays (its
+/// message names the API the rule was written for).
+fn drop_duplicate_sinks(rule: &Rule, hits: &mut Vec<Hit>) {
+    let is_model = |hit: &Hit| {
+        rule.checks.get(hit.pattern).is_some_and(|p| {
+            p.backends
+                .iter()
+                .any(|(_, b)| matches!(b, Backend::Model(_)))
+        })
+    };
+    let written: Vec<Range<usize>> = hits
+        .iter()
+        .filter(|hit| !is_model(hit))
+        .map(|hit| hit.at.clone())
+        .collect();
+    let source_of = |hit: &Hit| {
+        hit.flow
+            .as_ref()
+            .map(|flow| (flow.source_file.clone(), flow.source_line))
+    };
+    let written_sources: HashSet<(String, u32)> = hits
+        .iter()
+        .filter(|hit| !is_model(hit))
+        .filter_map(source_of)
+        .collect();
+    hits.retain(|hit| {
+        if !is_model(hit) {
+            return true;
+        }
+        // The same call, or a later sink of a flow already reported.
+        let same_call = hit
+            .capture(crate::analyze::rules::models::site::CALL_CAPTURE)
+            .is_some_and(|call| {
+                written
+                    .iter()
+                    .any(|at| call.start <= at.start && at.end <= call.end)
+            });
+        let same_flow = source_of(hit).is_some_and(|source| written_sources.contains(&source));
+        !same_call && !same_flow
+    });
+    hits.sort_by_key(|hit| (hit.at.start, hit.at.end, is_model(hit), hit.pattern));
+    hits.dedup_by(|later, earlier| later.at == earlier.at);
 }
 
 /// The candidate of the function a range sits in (the file's top-level
@@ -652,10 +702,15 @@ fn trace_program(table: &program::Table, files: &[&FileInput]) {
         for (op, call) in calls {
             if let codegraph_analysis::ir::IrOp::Call { callee, .. } = &function.ir.body[*op] {
                 eprintln!(
-                    "    {callee} -> {:?}{}{}",
+                    "    {callee} -> {:?}{}{}{}",
                     call.targets,
                     if call.in_project { " project" } else { "" },
-                    if call.guessed { " guessed" } else { "" }
+                    if call.guessed { " guessed" } else { "" },
+                    if call.external.is_some() {
+                        " summary"
+                    } else {
+                        ""
+                    }
                 );
             }
         }

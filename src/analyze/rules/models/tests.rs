@@ -545,6 +545,26 @@ fn rust_calls_match_by_resolution_use_and_declared_type() {
 }
 
 #[test]
+fn a_name_alone_matches_only_libraries_the_file_reaches() {
+    let models = LanguageModels::new(vec![model(
+        Role::Sink,
+        "mysql::conn::queryable",
+        "Queryable",
+        "query_map",
+        Pos::arg(0),
+    )]);
+    let call = "fn f(db: &Db) {\n    let mut s = db.prepare(\"x\").unwrap();\n    s.query_map(p, |r| r);\n}\n";
+    // rusqlite's `Statement::query_map` binds parameters: not mysql's.
+    let s = Snippet::new(Language::Rust, &format!("use rusqlite::Db;\n{call}"));
+    assert_eq!(s.matched(&models, "query_map", library()), None);
+    let s = Snippet::new(Language::Rust, &format!("use mysql::prelude::*;\n{call}"));
+    assert_eq!(
+        s.matched(&models, "query_map", library()).map(|m| m.0),
+        Some(Tier::Name)
+    );
+}
+
+#[test]
 fn c_free_functions_match_unless_the_project_defines_them() {
     let mut pq = model(Role::Sink, "", "", "PQexec", Pos::arg(1));
     pq.subtypes = false;

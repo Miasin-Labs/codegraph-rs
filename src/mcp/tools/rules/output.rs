@@ -347,7 +347,8 @@ pub(in crate::mcp::tools) fn rules_output_schema() -> Value {
                     "properties": {
                         "line": { "type": "integer" },
                         "callee": { "type": "string" },
-                        "resolvesTo": strings.clone()
+                        "resolvesTo": strings.clone(),
+                        "models": strings.clone()
                     },
                     "required": ["line", "callee"]
                 }

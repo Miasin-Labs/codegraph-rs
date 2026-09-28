@@ -72,6 +72,11 @@ pub struct VariantCall {
     /// also as `<package>::<name>`) — what `resolves-to` matches.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub resolves_to: Vec<String>,
+    /// What CodeQL's library models say the call is (`sink sql-injection
+    /// arg0 (java.sql.Statement.executeQuery, by typed)`): a taint rule
+    /// can select it with `model: <kind>`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
 }
 
 /// Whether the skeleton passes `check` as generated.
@@ -249,11 +254,13 @@ fn calls_in<'t>(
         if rules.calls.contains(&current.kind()) && calls.len() < MAX_CALLS {
             let (callee, _) = lang::callee(rules, current, input.source);
             let resolves_to = semantics.call_targets(input, rules, current);
+            let models = super::models::site::describe(input, semantics, current);
             calls.push((
                 VariantCall {
                     line: current.start_position().row as u32 + 1,
                     callee,
                     resolves_to,
+                    models,
                 },
                 current,
             ));
@@ -423,6 +430,21 @@ fn skeleton(
                 block(&format!("({}) @stmt", node.kind()), "      ")
             ));
         }
+    }
+    let modeled: Vec<String> = calls
+        .iter()
+        .flat_map(|(call, _)| {
+            call.models
+                .iter()
+                .map(move |model| format!("`{}`: {model}", call.callee))
+        })
+        .collect();
+    if !modeled.is_empty() {
+        yaml.push_str(&format!(
+            "# CodeQL library models here (a taint rule selects them with `model: <kind>`): \
+             {}\n",
+            one_line(&modeled.join("; "), 400)
+        ));
     }
     yaml.push_str("examples:\n  bad:\n");
     match snippet {

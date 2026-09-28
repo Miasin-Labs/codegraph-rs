@@ -507,3 +507,55 @@ pub(in crate::analyze::rules) fn summary_at(
     }
     Some(Arc::new(summary))
 }
+
+/// The models `call` (a call node of `file`) matched, described for a
+/// person or model writing a rule: `sink sql-injection arg0
+/// (java.sql.Statement.executeQuery, by typed)`.
+pub(in crate::analyze::rules) fn describe(
+    file: &FileInput,
+    semantics: &dyn Semantics,
+    call: Node,
+) -> Vec<String> {
+    let Some(found) = file_models(file, semantics) else {
+        return Vec::new();
+    };
+    let Some(language) = ModelLanguage::of(file.language) else {
+        return Vec::new();
+    };
+    let Some(matched) = found
+        .by_start
+        .get(&call.start_byte())
+        .into_iter()
+        .flatten()
+        .map(|&i| &found.calls[i])
+        .find(|c| c.call == call.byte_range())
+    else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = matched
+        .models
+        .iter()
+        .filter(|m| m.role != Role::Neutral)
+        .map(|m| {
+            let position = match m.role {
+                Role::Summary => format!(
+                    "{} -> {}",
+                    m.input.as_ref().map_or("-".into(), Pos::render),
+                    m.output.as_ref().map_or("-".into(), Pos::render)
+                ),
+                Role::Sink | Role::Guard => m.input.as_ref().map_or("-".into(), Pos::render),
+                _ => m.output.as_ref().map_or("-".into(), Pos::render),
+            };
+            format!(
+                "{} {} {position} ({}, by {})",
+                m.role.as_str(),
+                m.kind,
+                m.callable(language),
+                matched.tier.as_str()
+            )
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}

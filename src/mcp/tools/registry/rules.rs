@@ -47,7 +47,10 @@ pub(in crate::mcp::tools::registry) fn push_rules_tool(out: &mut Vec<ToolDefinit
              qualified-name}` and state `reached: true|false|<kinds>`. Or `taint` instead of \
              check-patterns: sources/sanitizers (`value` capture), sinks (`argument`), \
              propagators (`from`, `to`), guards (`value`, `check`, `safe`) — flows are followed \
-             across calls and files, every step as evidence.",
+             across calls and files, every step as evidence. A taint role may be `model: <kind>` \
+             instead of a query: CodeQL's library models (sources `remote`/`local`/`environment`…, \
+             sinks/sanitizers/guards `sql-injection`/`path-injection`/`request-forgery`… or \
+             `sql`/`path`/`ssrf`/`command`/`xss`); `variant` lists the models a call matches.",
         ),
     );
     props.insert(
