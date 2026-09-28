@@ -10,8 +10,8 @@ use codegraph::analyze::bugs::{
     Detector,
     ReviewPacket,
     ReviewSelection,
-    bugs_report,
-    bugs_review,
+    bugs_report_with,
+    bugs_review_with,
 };
 use codegraph::analyze::rules::{
     CheckReport,
@@ -52,6 +52,7 @@ pub(crate) fn cmd_analyze_bugs(
     detectors: &[String],
     compiler_wait: Option<&str>,
     include_tests: bool,
+    ecosystem: bool,
     top_arg: Option<&str>,
     path_arg: Option<&str>,
     json: bool,
@@ -77,7 +78,11 @@ pub(crate) fn cmd_analyze_bugs(
 
         let cg =
             CodeGraph::open(&project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
-        let report = bugs_report(&cg, &project_path, &options);
+        // Ecosystem beliefs, when `deps beliefs build` made them (read-only).
+        let beliefs = ecosystem
+            .then(|| codegraph::deps::beliefs::load(&codegraph::deps::DepsHome::from_env()))
+            .flatten();
+        let report = bugs_report_with(&cg, &project_path, &options, beliefs.as_ref());
         cg.close();
         let mut report = report?;
         if let Some(top) = top {
@@ -218,7 +223,15 @@ pub(crate) fn cmd_analyze_review(
 
         let cg =
             CodeGraph::open(&project_path, &OpenOptions::default()).map_err(|e| e.to_string())?;
-        let packets = bugs_review(&cg, &project_path, &options, &selection, rules.as_ref());
+        let beliefs = codegraph::deps::beliefs::load(&codegraph::deps::DepsHome::from_env());
+        let packets = bugs_review_with(
+            &cg,
+            &project_path,
+            &options,
+            &selection,
+            rules.as_ref(),
+            beliefs.as_ref(),
+        );
         cg.close();
         let packets = packets?;
 

@@ -124,6 +124,9 @@ pub(super) fn classify<'t>(
             continue;
         }
         if rules.statements.contains(&kind) {
+            if checked_by_try_macro(parent, source) {
+                return Use::Checked;
+            }
             return if rules.statement_needs_semicolon && !syntax::ends_with_semicolon(parent) {
                 Use::Used
             } else if let Some(method) = silenced {
@@ -204,6 +207,20 @@ pub(super) fn classify<'t>(
         return Use::Used;
     }
     Use::Used
+}
+
+/// `try!(f());` — Rust 2015's `?`. `try` is a keyword to the grammar, so
+/// the statement parses as an `ERROR` for `try!` and a parenthesized
+/// expression: read the text just before the statement (O(1), no sibling
+/// walk).
+fn checked_by_try_macro(statement: Node<'_>, source: &str) -> bool {
+    let start = statement.start_byte();
+    source
+        .get(start..)
+        .is_some_and(|text| text.starts_with('('))
+        && source
+            .get(..start)
+            .is_some_and(|before| before.trim_end().ends_with("try!"))
 }
 
 fn wildcard(pattern: Option<Node<'_>>, value: Node<'_>, source: &str, checked: bool) -> Use {

@@ -39,6 +39,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 pub use compiler::{CompilerState, CompilerStatus};
+pub(crate) use deviance::ecosystem;
 pub use project::{CallSite, FnSpan, Project, RouteHandler};
 pub use review::{ReviewPacket, review_packets};
 use serde::{Deserialize, Serialize};
@@ -150,16 +151,45 @@ pub fn bugs_report(
     project_root: &Path,
     options: &BugsOptions,
 ) -> Result<BugsReport, String> {
+    bugs_report_with(cg, project_root, options, None)
+}
+
+/// [`bugs_report`], checking the project's library calls against
+/// `beliefs` too (ecosystem beliefs mined from the cargo cache by
+/// `codegraph deps beliefs build`) when given and deviance is selected.
+pub fn bugs_report_with(
+    cg: &CodeGraph,
+    project_root: &Path,
+    options: &BugsOptions,
+    beliefs: Option<&crate::deps::beliefs::LoadedBeliefs>,
+) -> Result<BugsReport, String> {
     let mut project = Project::load(cg, project_root)?;
-    let (findings, compiler) = detect_all(&mut project, options);
-    let mut report = report(
-        &project,
-        project.files_parsed(),
-        findings,
+    let (mut findings, compiler) = detect_all(&mut project, options);
+    let mut note = String::from(
         "Deviance findings are departures from what the rest of the code does, with the \
          agreeing sites as evidence; lint findings are syntactic bug shapes. Both are leads to \
          confirm by reading the code (`codegraph analyze review`), not proofs.",
     );
+    let deviance = options.detectors.is_empty() || options.detectors.contains(&Detector::Deviance);
+    if let Some(beliefs) = beliefs.filter(|_| deviance) {
+        let (mut departures, applied) = ecosystem::detect(cg, &mut project, beliefs)?;
+        retain_selected(&mut project, &mut departures, options);
+        findings.extend(departures);
+        rank(&mut findings);
+        note.push_str(&format!(
+            " Ecosystem findings (`ecosystem-*`) depart from {} beliefs mined from {} crates of \
+             the cargo cache ({} library call sites here{}).",
+            beliefs.set.beliefs.len(),
+            beliefs.set.crates,
+            applied.sites,
+            if applied.partial {
+                "; the toolchain pass ran out of time"
+            } else {
+                ""
+            },
+        ));
+    }
+    let mut report = report(&project, project.files_parsed(), findings, &note);
     if let Some(compiler) = compiler {
         report.note.push_str(
             " Compiler findings are rustc/clippy lints; the ones that are bugs only on \
@@ -217,8 +247,28 @@ pub fn bugs_review(
     selection: &ReviewSelection,
     rules: Option<&crate::analyze::rules::RuleSet>,
 ) -> Result<Vec<ReviewPacket>, String> {
+    bugs_review_with(cg, project_root, options, selection, rules, None)
+}
+
+/// [`bugs_review`], with the ecosystem beliefs' findings among those
+/// reviewed (see [`bugs_report_with`]).
+pub fn bugs_review_with(
+    cg: &CodeGraph,
+    project_root: &Path,
+    options: &BugsOptions,
+    selection: &ReviewSelection,
+    rules: Option<&crate::analyze::rules::RuleSet>,
+    beliefs: Option<&crate::deps::beliefs::LoadedBeliefs>,
+) -> Result<Vec<ReviewPacket>, String> {
     let mut project = Project::load(cg, project_root)?;
     let mut findings = detect(&mut project, options);
+    let deviance = options.detectors.is_empty() || options.detectors.contains(&Detector::Deviance);
+    if let Some(beliefs) = beliefs.filter(|_| deviance) {
+        let (mut departures, _) = ecosystem::detect(cg, &mut project, beliefs)?;
+        retain_selected(&mut project, &mut departures, options);
+        findings.extend(departures);
+        rank(&mut findings);
+    }
     if let Some(rules) = rules {
         findings.extend(crate::analyze::rules::detect(
             cg,

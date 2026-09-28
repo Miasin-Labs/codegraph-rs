@@ -64,6 +64,26 @@ impl CrateScope {
     }
 }
 
+/// The std prelude's types, the toolchain crate defining each, and its
+/// module there.
+const PRELUDE_TYPES: &[(&str, &str, &str)] = &[
+    ("Vec", "alloc", "vec"),
+    ("String", "alloc", "string"),
+    ("Box", "alloc", "boxed"),
+    ("Option", "core", "option"),
+    ("Result", "core", "result"),
+];
+
+/// The toolchain crate, module and name of the std prelude type `name`
+/// (`Vec` → `alloc`, `vec`), unless the project defines a type of that name.
+pub(in crate::resolution::name_matcher) fn prelude_type(
+    name: &str,
+    context: &dyn ResolutionContext,
+) -> Option<(&'static str, &'static str, &'static str)> {
+    let &(name, krate, module) = PRELUDE_TYPES.iter().find(|(known, ..)| *known == name)?;
+    (!is_rust_project_type(name, context)).then_some((krate, module, name))
+}
+
 /// How near a definition is to what a reference names; smaller is nearer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Rank {
@@ -128,6 +148,28 @@ impl RustType {
 
     fn is_external(&self) -> bool {
         matches!(self.home, Home::External { .. })
+    }
+
+    /// A std prelude type written bare (`Vec`, `String`, `Box`, `Option`,
+    /// `Result`) where the project defines no type of that name: the
+    /// toolchain crate defining it and its path there (`("alloc", ["vec",
+    /// "Vec"])`). Only the external pass asks — in-project resolution keeps
+    /// such a type as it is, and a pass that reaches no toolchain graph
+    /// finds no crate of that name.
+    pub(in crate::resolution::name_matcher) fn prelude_home(
+        &self,
+        context: &dyn ResolutionContext,
+    ) -> Option<(&'static str, [&'static str; 2])> {
+        let unplaced = match &self.home {
+            Home::Anywhere { .. } => true,
+            Home::External { krate, .. } => krate.is_none(),
+            Home::Project { .. } => false,
+        };
+        if !unplaced {
+            return None;
+        }
+        let (krate, module, name) = prelude_type(&self.name, context)?;
+        Some((krate, [module, name]))
     }
 
     /// The project defines this type (not merely a same-named one).

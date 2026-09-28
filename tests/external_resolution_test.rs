@@ -38,6 +38,8 @@ async fn resolves_paths_receivers_and_chains_into_shards_and_linked_projects() {
         // A re-exported crate (`pub use facade_builder::*`).
         "run facade::Command::new -> dependency:facade_builder-4.0.0::Command::new (re-export, calls)",
         "Parser -> dependency:facade_builder-4.0.0::Parser (re-export, implements)",
+        // A submodule's re-export of it, through an in-crate `pub use`.
+        "nested facade::cli::Cmd::new -> dependency:facade_builder-4.0.0::Command::new (re-export, calls)",
         // A receiver typed by its annotation.
         "run root.walk -> dependency:treelike-0.2.0::Node::walk (instance-method, calls)",
         // Chains typed through dependency return types.

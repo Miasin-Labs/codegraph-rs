@@ -43,11 +43,13 @@ impl<'a> Declarations<'a> {
 impl ForeignTypes for Declarations<'_> {
     fn method_return(&self, krate: &str, owner: &[String], method: &str) -> Option<ForeignText> {
         let graph = self.cache.get(krate)?;
-        let node = lookup_method(self.cache, &graph, owner, method)?;
+        // The method may live in another crate (a re-exported type, an
+        // alias, a `Deref` target): its return type is written there.
+        let (found_in, node) = lookup_method(self.cache, &graph, owner, method)?;
         let text = signature_return(node.signature.as_deref()?)?.to_string();
         self.answered(ForeignText {
             text,
-            krate: krate.to_string(),
+            krate: found_in.krate.clone(),
             file: node.file_path,
         })
     }

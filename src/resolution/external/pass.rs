@@ -27,7 +27,7 @@ use super::graphs::{FederationHome, Reach, Skipped, discover};
 use super::names::MethodNames;
 use super::open::{DEFAULT_MAX_OPEN_GRAPHS, GraphCache, OpenStats};
 use super::worker::{Outcome, Resolver, Store, resolve_refs, working_ref};
-use crate::db::{ExternalGraphKind, QueryBuilder};
+use crate::db::{ExternalEdge, ExternalGraphKind, QueryBuilder};
 use crate::error::Result;
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::Language;
@@ -77,6 +77,10 @@ pub struct ExternalOptions {
     pub budget: Duration,
     pub max_open: usize,
     pub home: FederationHome,
+    /// Resolve into exactly these graphs instead of the ones the registry
+    /// and the atlas record for the project (the ecosystem-beliefs builder
+    /// resolves cargo-cache crates no registry row describes).
+    pub reach: Option<Reach>,
 }
 
 impl ExternalOptions {
@@ -96,6 +100,7 @@ impl ExternalOptions {
             max_open: env_number("CODEGRAPH_EXTERNAL_MAX_OPEN")
                 .map_or(DEFAULT_MAX_OPEN_GRAPHS, |n| n as usize),
             home: FederationHome::from_env(),
+            reach: None,
         }
     }
 }
@@ -202,7 +207,10 @@ pub fn plan<'a>(
 ) -> Result<Plan<'a>> {
     let started = Instant::now();
     let deadline = started + options.budget;
-    let reach = discover(&options.home, project_root);
+    let reach = match &options.reach {
+        Some(reach) => reach.clone(),
+        None => discover(&options.home, project_root),
+    };
     trace("discover", started);
     let mut report = ExternalReport {
         dependency_graphs: count(&reach, ExternalGraphKind::Dependency),
@@ -401,6 +409,50 @@ impl Plan<'_> {
         }
         report.elapsed_ms = started.elapsed().as_millis() as u64;
         Ok(report)
+    }
+}
+
+/// Resolve every unresolved Rust reference of the index `queries` into
+/// `reach` and return the edges found, writing nothing: the index keeps its
+/// unresolved references and its own external edges. Stops at `budget`
+/// (the second value then says the pass was cut short). For readers that
+/// want sites in graphs the project's own pass does not reach — the
+/// toolchain's `std`/`core`/`alloc` for the ecosystem beliefs.
+pub fn resolve_read_only(
+    queries: &QueryBuilder,
+    project: &dyn ResolutionContext,
+    reach: &Reach,
+    budget: Duration,
+    max_open: usize,
+) -> Result<(Vec<ExternalEdge>, bool)> {
+    let deadline = Instant::now() + budget;
+    let mut edges = Vec::new();
+    if reach.is_empty() {
+        return Ok((edges, true));
+    }
+    let names = {
+        let cache = GraphCache::new(reach, max_open);
+        MethodNames::read(&cache)
+    };
+    let mut after = 0;
+    loop {
+        let page =
+            queries.get_unresolved_references_for_language_after_id(Language::Rust, after, PAGE)?;
+        if page.refs.is_empty() {
+            return Ok((edges, true));
+        }
+        after = page.last_id;
+        let refs: Vec<UnresolvedRef> = page
+            .refs
+            .into_iter()
+            .filter_map(|row| working_ref(row, project))
+            .collect();
+        let (found, complete) =
+            resolve_refs(project, reach, &names, &refs, max_open, deadline).into_edges();
+        edges.extend(found);
+        if !complete {
+            return Ok((edges, false));
+        }
     }
 }
 

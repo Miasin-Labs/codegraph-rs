@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use super::manifest::LibTarget;
 use crate::atlas::{Atlas, LinkKind, canonical_root};
 use crate::db::ExternalGraphKind;
-use crate::deps::{DepSource, DepsHome, Ecosystem, ShardMeta, dependencies_of_in};
+use crate::deps::{DepKey, DepSource, DepsHome, Ecosystem, ShardMeta, dependencies_of_in};
 
 /// Where the machine-wide stores are: the dependency store and the atlas.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +70,26 @@ pub struct ReachableGraph {
     pub location: GraphLocation,
     /// Changes whenever what the graph holds may have changed.
     pub fingerprint: String,
+}
+
+impl ReachableGraph {
+    /// The shard of `key` in `dir`, described by its `meta`. Only the
+    /// crate's manifest is read (its library name and root).
+    pub fn shard(key: &DepKey, meta: &ShardMeta, dir: PathBuf) -> ReachableGraph {
+        let source_dir = PathBuf::from(&meta.source_dir);
+        let lib = LibTarget::read(&source_dir, &key.name);
+        ReachableGraph {
+            kind: ExternalGraphKind::Dependency,
+            key: format!("{}/{}", key.ecosystem.as_str(), key.dir_name()),
+            krate: lib.name,
+            lib_root: lib.root,
+            fingerprint: format!(
+                "{}:{}:{}",
+                meta.built_at_ms, meta.extractor_version, meta.source_fingerprint
+            ),
+            location: GraphLocation::Shard { dir, source_dir },
+        }
+    }
 }
 
 /// Why a dependency was left out.
@@ -184,28 +204,13 @@ fn dependency_shards(
             skipped.no_shard += 1;
             continue;
         };
-        let source_dir = PathBuf::from(&meta.source_dir);
-        let lib = LibTarget::read(&source_dir, &dependency.key.name);
+        let graph = ReachableGraph::shard(&dependency.key, &meta, dir);
         by_name
-            .entry(lib.name.clone())
+            .entry(graph.krate.clone())
             .or_default()
             .push(Candidate {
                 direct: dependency.direct == Some(true),
-                graph: ReachableGraph {
-                    kind: ExternalGraphKind::Dependency,
-                    key: format!(
-                        "{}/{}",
-                        dependency.key.ecosystem.as_str(),
-                        dependency.key.dir_name()
-                    ),
-                    krate: lib.name,
-                    lib_root: lib.root,
-                    fingerprint: format!(
-                        "{}:{}:{}",
-                        meta.built_at_ms, meta.extractor_version, meta.source_fingerprint
-                    ),
-                    location: GraphLocation::Shard { dir, source_dir },
-                },
+                graph,
             });
     }
     let mut graphs = Vec::new();

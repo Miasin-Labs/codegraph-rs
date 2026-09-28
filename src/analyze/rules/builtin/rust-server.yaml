@@ -12,6 +12,15 @@ description: >-
 severity: medium
 tags: [CWE-208, timing]
 language: rust
+# A secret is named as one (`token`, `api_key`, `signature`…), or is the
+# `expected` value of a credential check. On 10 real projects (2026-09) a
+# bare `expected`/`actual` outside auth code was a status code, a schema, a
+# state machine or a test assertion (17 of 18 judged), a bare `token` a
+# lexer word, `*_tokens` LLM token counts, and a comparison with secrets on
+# both sides was reported twice. So `expected` counts only inside a
+# function named for credentials or handling them; a bare `token`, plural
+# `tokens`, public keys, hashes and sizes never; and the right-hand pattern
+# leaves a named secret on the left to the left-hand one.
 check-patterns:
   - name: secret-on-the-left
     query: |
@@ -19,22 +28,55 @@ check-patterns:
     at: cmp
     where:
       - capture: secret
-        regex: "(?i)(token|secret|password|passwd|passcode|api_?key|hmac|signature|expected)"
+        regex: &secret-words "(?i)(token|secret|password|passwd|passcode|api_?key|hmac|signature)"
       - capture: secret
-        not-regex: "(?i)(\\.len\\(\\)|is_empty|_len\\b|count|kind|type|name|header|none|epoch|generation|version|crc|checksum|default\\(\\))|^b?\"|(?-i:^[A-Z0-9_]+$)"
+        not-regex: &not-secret "(?i)(\\.len\\(\\)|is_empty|_len\\b|\\bcount|_count|kind|type|name|header|none|epoch|generation|version|crc|checksum|default\\(\\)|tokens|public_?key|pubkey)|^[*&]*token$|token\\.(slug|id|kind|label|scope\\w*|sub|exp\\w*|iat|issued\\w*|user\\w*|\\w+_at)\\b|^&?b?\"|(?-i:(^|::)[A-Z][A-Z0-9_]*$)"
       - capture: other
-        not-regex: "^(None|Some\\(\\w+\\)|\"\"|0|true|false)$|\\.len\\(\\)|^b?\"|default\\(\\)|(?i)crc|checksum|generation|epoch|version|(?-i:^[A-Z0-9_]+$)"
+        not-regex: &not-other "^(None|Some\\(\\w+\\)|\"\"|0|true|false)$|\\.len\\(\\)|^&?b?\"|default\\(\\)|(?i)crc|checksum|generation|epoch|version|(?-i:(^|::)[A-Z][A-Z0-9_]*$)"
   - name: secret-on-the-right
     query: |
       (binary_expression left: (_) @other operator: ["==" "!="] right: (_) @secret) @cmp
     at: cmp
     where:
       - capture: secret
-        regex: "(?i)(token|secret|password|passwd|passcode|api_?key|hmac|signature|expected)"
+        regex: *secret-words
       - capture: secret
-        not-regex: "(?i)(\\.len\\(\\)|is_empty|_len\\b|count|kind|type|name|header|none|epoch|generation|version|crc|checksum|default\\(\\))|^b?\"|(?-i:^[A-Z0-9_]+$)"
+        not-regex: *not-secret
       - capture: other
-        not-regex: "^(None|Some\\(\\w+\\)|\"\"|0|true|false)$|\\.len\\(\\)|^b?\"|default\\(\\)|(?i)crc|checksum|generation|epoch|version|(?-i:^[A-Z0-9_]+$)"
+        not-regex: *not-other
+      # A named secret on the left is the left-hand pattern's finding.
+      - capture: other
+        not-regex: "(?i)([._]\\w*|^\\w+_)(token|secret|password|passwd|passcode|api_?key|hmac)$"
+  - name: expected-on-the-left
+    query: |
+      (binary_expression left: (_) @secret operator: ["==" "!="] right: (_) @other) @cmp
+    at: cmp
+    where:
+      - capture: secret
+        regex: "(?i)expected"
+      - capture: secret
+        not-regex: &not-expected "(?i)(token|secret|password|passwd|passcode|api_?key|hmac|signature|hash|digest|sha\\d|len|count|size|version|status|kind|type|calls|crc|checksum|generation|epoch)|(?-i:(^|::)[A-Z][A-Z0-9_]*$)"
+      - capture: other
+        not-regex: *not-other
+      - inside: &credential-fn |
+          ((function_item name: (identifier) @n) @f
+           (#match? @n "(?i)(auth|token|bootstrap|bearer|secret|passw|csrf|state|nonce|hmac|signature|api_?key|credential|login|otp|admin)"))
+          ((function_item) @g
+           (#match? @g "(?i)(bearer|authorization|x-api-key|password)"))
+  - name: expected-on-the-right
+    query: |
+      (binary_expression left: (_) @other operator: ["==" "!="] right: (_) @secret) @cmp
+    at: cmp
+    where:
+      - capture: secret
+        regex: "(?i)expected"
+      - capture: secret
+        not-regex: *not-expected
+      - capture: other
+        not-regex: *not-other
+      - capture: other
+        not-regex: "(?i)expected"
+      - inside: *credential-fn
 message: "`{cmp}` compares a secret with a short-circuiting comparison"
 review:
   - Is the compared value a credential an attacker can guess against (a header, a cookie, a query param)?
@@ -42,11 +84,17 @@ review:
 examples:
   bad:
     - |
-      fn check(given: &str, expected: &str) -> bool { given.as_bytes() != expected.as_bytes() }
+      fn check_admin(expected: &str, given: &str) -> bool { given.as_bytes() != expected.as_bytes() }
     - |
       fn ok(req_token: &str, cfg: &Cfg) -> bool { req_token == cfg.admin_token }
     - |
       fn validate_state(expected: &str, received: &str) -> bool { expected != received }
+    - |
+      fn authed(&self, id: u64, token: &str) -> bool { self.entries[&id].read_write_token != token }
+    - |
+      fn cas(account: &Account, expected_refresh_token: &str) -> bool { account.refresh_token != expected_refresh_token }
+    - |
+      fn handshake(req: &Request, token: &str) -> bool { let expected = format!("bearer.{token}"); req.headers().get("authorization").is_some_and(|p| p == &expected) }
   good:
     - |
       fn check(given: &str, expected: &str) -> bool { token_matches(given, expected) }
@@ -66,6 +114,22 @@ examples:
       fn raw(key: &str) -> bool { key == RAW_VALUE_TOKEN }
     - |
       fn cas(expected: Option<u64>, generation: u64) -> bool { expected.is_some_and(|expected| expected != generation) }
+    - |
+      fn decode(resp: Response) -> bool { let expected = StatusCode::OK; resp.status != expected }
+    - |
+      fn json_mismatch(actual: &Value, expected: &Value) -> bool { actual != expected }
+    - |
+      fn parse(token: &str) -> Option<Action> { ALL.into_iter().find(|a| a.as_str() == token) }
+    - |
+      fn sync(entry: &Entry, agent: &Agent) -> bool { entry.latest_input_tokens != agent.latest_input_tokens }
+    - |
+      fn slugs(tokens: &[Token], token: &Token) -> bool { tokens.iter().any(|other| other.slug == token.slug) }
+    - |
+      fn check_server_key(presented: &str, expected: &str) -> bool { presented == expected }
+    - |
+      fn plugin(h: &str) -> bool { h == host::BUILTIN_TOTAL_TOKENS_HANDLER }
+    - |
+      fn stale(t: &Token, at: Instant) -> bool { t.token.obtained_at == at }
 ---
 id: rust-http-client-follows-redirects
 description: >-
@@ -122,11 +186,15 @@ language: rust
 check-patterns:
   - name: accept-with-question-mark
     query: |
-      ((try_expression (await_expression (call_expression function: (field_expression field: (field_identifier) @m)))) @try
+      ((try_expression (await_expression (call_expression function: (field_expression field: (field_identifier) @m) arguments: (arguments) @args))) @try
        (#eq? @m "accept"))
     at: try
     where:
       - inside: "(loop_expression) @loop"
+      # A listener's `accept()` takes nothing; `tls.accept(stream)` is the
+      # handshake of one connection.
+      - capture: args
+        regex: "^\\(\\s*\\)$"
 message: "`{try}` ends the accept loop on the first accept error"
 review:
   - Log the error, back off briefly (EMFILE clears as connections close) and `continue`.
@@ -139,6 +207,8 @@ examples:
       async fn run(l: TcpListener) { loop { let (s, _) = match l.accept().await { Ok(a) => a, Err(_) => continue }; spawn(s); } }
     - |
       async fn once(l: TcpListener) -> io::Result<()> { let (s, _) = l.accept().await?; spawn(s); Ok(()) }
+    - |
+      async fn tls(a: TlsAcceptor, s: TcpStream) -> io::Result<()> { loop { let t = a.accept(s).await?; serve(t).await; } }
 ---
 id: rust-subprocess-without-deadline
 description: >-
@@ -194,7 +264,9 @@ check-patterns:
           calls-not: "(?i)timeout|deadline"
           is-test: false
       - capture: read
-        not-regex: "(?i)file|fs::|stdin|body|response|resp\\b|res\\b"
+        # Files, HTTP bodies and a child process's pipes (EOF when it exits)
+        # are not peers.
+        not-regex: "(?i)file|fs::|stdin|stdout|stderr|child|pipe|body|response|resp\\b|res\\b"
 message: "`{read}` waits on a peer with no deadline"
 review:
   - Is the reader a socket a remote client controls (not a file, not a trusted child)?
@@ -206,6 +278,8 @@ examples:
   good:
     - |
       async fn cmd(r: &mut BufReader<TcpStream>, b: &mut String) -> io::Result<usize> { timeout(IDLE, r.read_line(b)).await? }
+    - |
+      async fn read_stderr(mut stderr: ChildStderr) -> String { let mut t = String::new(); let _ = stderr.read_to_string(&mut t).await; t }
 ---
 id: rust-unbounded-accept-spawn
 description: >-
@@ -218,11 +292,16 @@ language: rust
 check-patterns:
   - name: spawn-per-accept
     query: |
-      ((call_expression function: (field_expression field: (field_identifier) @m)) @accept
+      ((call_expression function: (field_expression field: (field_identifier) @m) arguments: (arguments) @args) @accept
        (#eq? @m "accept"))
     at: accept
     where:
       - inside: "(loop_expression) @loop"
+      # A listener's `accept()` takes nothing; `acceptor.accept(stream)` in
+      # the spawned task is that connection's TLS handshake (reported twice
+      # before, once per accept).
+      - capture: args
+        regex: "^\\(\\s*\\)$"
       - enclosing-function:
           calls: "spawn"
           calls-not: "(?i)semaphore|acquire|permit|limit"
@@ -237,6 +316,8 @@ examples:
   good:
     - |
       async fn run(l: TcpListener, sem: Arc<Semaphore>) { loop { if let Ok((s, _)) = l.accept().await { let Ok(p) = sem.clone().try_acquire_owned() else { continue }; tokio::spawn(serve(s, p)); } } }
+    - |
+      async fn handshakes(a: TlsAcceptor, mut rx: Receiver<TcpStream>) { loop { let Some(s) = rx.recv().await else { break }; let t = a.accept(s).await; tokio::spawn(serve(t)); } }
 ---
 id: rust-guarded-resolver-behind-proxy
 description: >-

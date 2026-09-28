@@ -128,11 +128,17 @@ impl Inference<'_> {
     /// that crate declares. `None` without such a graph (the in-project
     /// pass), or when the crate has no one such method.
     pub(super) fn foreign_method_value(&self, ty: &RustType, method: &str) -> Option<Value> {
-        let krate = ty.external_crate()?;
-        let found =
-            self.context
-                .foreign_types()?
-                .method_return(krate, ty.external_path(), method)?;
+        let foreign = self.context.foreign_types()?;
+        let found = match ty.external_crate() {
+            Some(krate) => foreign.method_return(krate, ty.external_path(), method)?,
+            None => {
+                // `Vec::new()`: the prelude type, when the toolchain's graph
+                // is reachable.
+                let (krate, path) = ty.prelude_home(self.context)?;
+                let path: Vec<String> = path.iter().map(|part| part.to_string()).collect();
+                foreign.method_return(krate, &path, method)?
+            }
+        };
         Some(Value::Written {
             text: found.text,
             self_ty: Some(ty.clone()),

@@ -173,6 +173,8 @@ pub(super) fn findings(
                 || a_calls.contains_key(&b)
                 // `B` must release what `A` acquires, by name.
                 || !is_companion_pair(a_name, &span(b).name)
+                // `range.start()`/`range.end()`: two getters of one value.
+                || accessor_twins(span(a), span(b))
             {
                 continue;
             }
@@ -294,6 +296,40 @@ pub(super) fn findings(
         });
     }
     out
+}
+
+/// Two getters, not an acquire and its release: each takes only its
+/// receiver and both return the same plain value (`ContextDropRange::start`
+/// / `end`, both `(self) -> u32` — the only companion finding on 10 real
+/// projects, 2026-09). An acquire hands out something else than its
+/// release (`begin() -> Tx` / `commit() -> Result<()>`, `start()` /
+/// `stop()` returning nothing).
+pub(super) fn accessor_twins(a: &FnSpan, b: &FnSpan) -> bool {
+    match (getter_type(a), getter_type(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// The value a receiver-only method returns (`(&self) -> u32` → `u32`),
+/// unless it is a status or wrapper (`Result`, `Option`, a guard).
+fn getter_type(span: &FnSpan) -> Option<&str> {
+    let signature = span.signature.as_deref()?.trim();
+    let (params, returns) = signature.strip_prefix('(')?.split_once(')')?;
+    // `self`, `&self`, `&'a self`, `&mut self`, `mut self`: the receiver
+    // and nothing else.
+    let receiver: Vec<&str> = params
+        .split(|c: char| c.is_whitespace() || c == '&')
+        .filter(|word| !word.is_empty() && *word != "mut" && !word.starts_with('\''))
+        .collect();
+    if receiver != ["self"] {
+        return None;
+    }
+    let returned = returns.trim().strip_prefix("->")?.trim();
+    let head = returned.split('<').next().unwrap_or(returned).trim();
+    let wrapper =
+        ["Result", "Option", "()"].iter().any(|w| head.ends_with(w)) || head.contains("Guard");
+    (!returned.is_empty() && !wrapper).then_some(returned)
 }
 
 /// Acquire/release verb pairs: `A` holding the first word, `B` the second.

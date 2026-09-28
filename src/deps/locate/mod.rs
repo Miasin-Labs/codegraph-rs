@@ -59,6 +59,11 @@ impl SourceRoots {
         Self::new(cargo_home, go_mod_cache)
     }
 
+    /// `$CARGO_HOME/registry/src/*`: one directory per registry index.
+    pub fn cargo_registry_dirs(&self) -> &[PathBuf] {
+        &self.cargo_registry_dirs
+    }
+
     /// Where `dep` (from the project at `project_root`) has its source here.
     pub fn locate(&self, dep: &ResolvedDep, project_root: &Path) -> Option<PathBuf> {
         if matches!(dep.source, DepSource::Path { .. }) {

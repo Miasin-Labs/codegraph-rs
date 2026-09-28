@@ -110,6 +110,10 @@ pub(crate) async fn cmd_deps(command: DepsCommands) {
             },
             json,
         ),
+        DepsCommands::Beliefs { command } => {
+            super::beliefs::cmd_beliefs(command);
+            Ok(())
+        }
         DepsCommands::Show {
             spec,
             ecosystem,

@@ -93,8 +93,96 @@ fn lookup_path_hops(
             found.reexported = true;
             return Some(found);
         }
+        if let Some(mut found) = through_module_reexport(cache, &graph, rest, kind, hops, 0) {
+            found.reexported = true;
+            return Some(found);
+        }
     }
     by_shape(cache, &graph, rest, kind)
+}
+
+/// How many in-crate `pub use` hops a module re-export is followed through.
+const MAX_MODULE_HOPS: u8 = 4;
+
+/// A module of the crate re-exports the item from another crate the project
+/// reaches, possibly through its own submodules: `std::ffi::CString` is
+/// `pub use self::c_str::CString` in `std/src/ffi/mod.rs`, then `pub use
+/// alloc::ffi::c_str::CString` in `std/src/ffi/c_str.rs`. Module files are
+/// found by the crate's layout (`m.rs`, `m/mod.rs` beside the library
+/// root); only a `use` naming the next segment (or a glob) is followed.
+fn through_module_reexport(
+    cache: &GraphCache<'_>,
+    graph: &Rc<ForeignGraph>,
+    rest: &[String],
+    kind: EdgeKind,
+    hops: u8,
+    depth: u8,
+) -> Option<Found> {
+    if depth >= MAX_MODULE_HOPS {
+        return None;
+    }
+    let lib_dir = graph.lib_root.rsplit_once('/').map_or("", |(dir, _)| dir);
+    for split in 1..rest.len() {
+        let (module, name, tail) = (&rest[..split], &rest[split], &rest[split + 1..]);
+        let stem = if lib_dir.is_empty() {
+            module.join("/")
+        } else {
+            format!("{lib_dir}/{}", module.join("/"))
+        };
+        for file in [format!("{stem}.rs"), format!("{stem}/mod.rs")] {
+            let uses = graph.context.get_rust_use_leaves(&file);
+            for found in uses.iter() {
+                let leaf = &found.leaf;
+                if leaf.vis != UseVisibility::Public || !found.inline_modules.is_empty() {
+                    continue;
+                }
+                let Some((root, inner)) = leaf.path.split_first() else {
+                    continue;
+                };
+                let target: Vec<String> = match &leaf.binding {
+                    UseBinding::Name(bound) if bound == name => {
+                        inner.iter().chain(tail.iter()).cloned().collect()
+                    }
+                    UseBinding::Glob => inner
+                        .iter()
+                        .chain(std::iter::once(name))
+                        .chain(tail.iter())
+                        .cloned()
+                        .collect(),
+                    _ => continue,
+                };
+                // Another crate: resolve there.
+                if root != &graph.krate && !matches!(root.as_str(), "self" | "super" | "crate") {
+                    if cache.knows(root) {
+                        if let Some(found) = lookup_path_hops(cache, root, &target, kind, hops + 1)
+                        {
+                            return Some(found);
+                        }
+                    }
+                    continue;
+                }
+                // This crate: continue from the module the `use` names.
+                let within: Vec<String> = match root.as_str() {
+                    "self" => module.iter().chain(target.iter()).cloned().collect(),
+                    "super" => module[..module.len() - 1]
+                        .iter()
+                        .chain(target.iter())
+                        .cloned()
+                        .collect(),
+                    _ => target,
+                };
+                if within.as_slice() == rest {
+                    continue;
+                }
+                if let Some(found) =
+                    through_module_reexport(cache, graph, &within, kind, hops, depth + 1)
+                {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// `crate::<rest>` resolved from the crate's library root.
@@ -212,37 +300,64 @@ pub(crate) fn lookup_method(
     graph: &Rc<ForeignGraph>,
     owner: &[String],
     method: &str,
-) -> Option<Node> {
+) -> Option<(Rc<ForeignGraph>, Node)> {
     let key = (graph.index, owner.join("::"), method.to_string());
-    if let Some(known) = cache.memo.methods.borrow().get(&key) {
-        return known.clone();
-    }
-    let found = find_method(cache, graph, owner, method, 0);
-    cache.memo.methods.borrow_mut().insert(key, found.clone());
-    found
+    let known = cache.memo.methods.borrow().get(&key).cloned();
+    let found = match known {
+        Some(found) => found,
+        None => {
+            let found = find_method(cache, graph, owner, method, 0)
+                .map(|(graph, node)| (graph.index, node));
+            cache.memo.methods.borrow_mut().insert(key, found.clone());
+            found
+        }
+    }?;
+    Some((cache.get_index(found.0)?, found.1))
 }
 
 /// `owner::method`, else — when the type itself has no such method — on
-/// what it stands for: an alias's aliased type, a `Deref` impl's `Target`
-/// (method calls auto-deref).
+/// what it stands for: the type another crate defines and this one
+/// re-exports, an alias's aliased type, a `Deref` impl's `Target` (method
+/// calls auto-deref). Returns the graph the method is in.
 fn find_method(
     cache: &GraphCache<'_>,
     graph: &Rc<ForeignGraph>,
     owner_path: &[String],
     method: &str,
     hops: u8,
-) -> Option<Node> {
+) -> Option<(Rc<ForeignGraph>, Node)> {
     let candidates = methods_named(cache, graph, owner_path, method)?;
     if !candidates.is_empty() {
-        return in_owner_file(cache, graph, owner_path, candidates);
+        return in_owner_file(cache, graph, owner_path, candidates)
+            .map(|node| (Rc::clone(graph), node));
     }
     if hops >= MAX_TYPE_HOPS {
         return None;
     }
-    let (krate, path) = aliased_type(cache, graph, owner_path)
+    let (krate, path) = reexported_type(cache, graph, owner_path)
+        .or_else(|| aliased_type(cache, graph, owner_path))
         .or_else(|| deref_target(cache, graph, owner_path))?;
     let target = cache.get(&krate)?;
     find_method(cache, &target, &path, method, hops + 1)
+}
+
+/// The type another reachable crate defines and this one re-exports
+/// (`std::ffi::CString` is `alloc`'s): its crate and name there.
+fn reexported_type(
+    cache: &GraphCache<'_>,
+    graph: &Rc<ForeignGraph>,
+    owner_path: &[String],
+) -> Option<(String, Vec<String>)> {
+    let found = lookup_path(cache, &graph.krate, owner_path, EdgeKind::References)?;
+    (found.reexported && found.graph.index != graph.index && is_type_node(&found.node))
+        .then(|| (found.graph.krate.clone(), vec![found.node.name.clone()]))
+}
+
+fn is_type_node(node: &Node) -> bool {
+    matches!(
+        node.kind,
+        NodeKind::Struct | NodeKind::Enum | NodeKind::Union | NodeKind::TypeAlias
+    )
 }
 
 /// The methods `Owner::method` (the owner's name, any module) of the crate

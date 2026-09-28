@@ -57,6 +57,7 @@ pub(in crate::resolution::name_matcher) use lookup::{
     external_path,
     file_is_module,
     fn_local_uses,
+    prelude_type,
     resolve_type,
 };
 pub(in crate::resolution::name_matcher) use types::signature_return;

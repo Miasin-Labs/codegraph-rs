@@ -198,6 +198,18 @@ fn checklist(rule: &str) -> Vec<&'static str> {
             "Most callers of the first function also call the companion. Is the companion (cleanup, commit, record, release) needed here, on every path?",
             "If it is intentionally absent, is there an equivalent elsewhere in this function?",
         ],
+        "ecosystem-result-discarded" => &[
+            "Most crates of the cargo cache use this library call's result; here it is dropped. What does it report (an error, whether anything happened) and who needs to know?",
+        ],
+        "ecosystem-missing-follow-up" | "ecosystem-missing-precursor" => &[
+            "Other crates call one of the named APIs on the same object around this call (initialise, finish, build). Does this object need it here, or does it happen elsewhere (a helper, the caller)?",
+        ],
+        "ecosystem-missing-pair" => &[
+            "Crates calling this API also call its named release. Is what it hands out (a raw pointer, a lock, a registration) ever given back, on every path? If it leaks on purpose, is that stated?",
+        ],
+        "ecosystem-held-across-await" => &[
+            "The value (a lock guard) is alive at a later `.await`. Can another task need the lock meanwhile, and must the future be `Send`? Drop it before the await, or use an async lock.",
+        ],
         "loop-no-progress" => &[
             "Can anything in the loop body change the condition? If not, can the loop end?",
             "Is the condition changed by another thread, a callback or a borrow the syntax hides?",

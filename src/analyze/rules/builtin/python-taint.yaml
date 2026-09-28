@@ -1,6 +1,6 @@
 # Python taint rules: web request input (Flask, Django), `input()` and
-# `sys.argv` reaching SQL, a shell, eval, templates or file paths in a
-# function, a script's top-level code, or through calls.
+# `sys.argv` reaching SQL, a shell, eval or templates (file paths: web input
+# only) in a function, a script's top-level code, or through calls.
 - id: py-sql-injection
   description: Request input reaches a SQL statement built as a string (CWE-89).
   severity: high
@@ -61,16 +61,27 @@
   message: "request input `{source}` reaches a shell command or eval"
   taint:
     sources: *py-sources
+    # Only what a shell parses: `os.system`/`os.popen`, `subprocess.*` with
+    # `shell=True`, and `getoutput`. An argument list (`subprocess.run(["git",
+    # x])`, `os.execvp`) runs one program with those arguments, whatever
+    # they hold — on 3 real projects (2026-09) every argument-list finding
+    # (9 of 9) was a CLI passing its own `sys.argv` on.
     sinks:
       - name: os
         query: |
           ((call function: (attribute object: (identifier) @o attribute: (identifier) @m) arguments: (argument_list . (_) @arg))
-           (#eq? @o "os") (#match? @m "^(system|popen|popen2|popen3|execl|execlp|execv|execvp|spawnl)$"))
+           (#eq? @o "os") (#match? @m "^(system|popen|popen2|popen3)$"))
         argument: arg
-      - name: subprocess
+      - name: subprocess-shell
+        query: |
+          ((call function: (attribute object: (identifier) @o attribute: (identifier) @m)
+                 arguments: (argument_list . (_) @arg (keyword_argument name: (identifier) @k value: (true))))
+           (#eq? @o "subprocess") (#match? @m "^(call|run|Popen|check_output|check_call)$") (#eq? @k "shell"))
+        argument: arg
+      - name: subprocess-getoutput
         query: |
           ((call function: (attribute object: (identifier) @o attribute: (identifier) @m) arguments: (argument_list . (_) @arg))
-           (#eq? @o "subprocess") (#match? @m "^(call|run|Popen|check_output|check_call|getoutput|getstatusoutput)$"))
+           (#eq? @o "subprocess") (#match? @m "^(getoutput|getstatusoutput)$"))
         argument: arg
       - name: eval
         query: |
@@ -87,11 +98,22 @@
         def f(request):
             domain = request.POST.get('domain')
             os.system("nslookup " + domain)
+      - |
+        def f(request):
+            domain = request.POST.get('domain')
+            subprocess.Popen("dig " + domain, shell=True, stdout=subprocess.PIPE)
     good:
       - |
         def f(request):
             domain = shlex.quote(request.POST.get('domain'))
             os.system("nslookup " + domain)
+      - |
+        def f(request):
+            domain = request.POST.get('domain')
+            subprocess.run(["dig", domain], capture_output=True)
+      - |
+        def main():
+            os.execvp(sys.argv[0], sys.argv)
 
 - id: py-template-from-input
   description: Request input is rendered as a template (server-side template injection, CWE-1336).
@@ -128,7 +150,21 @@
   language: python
   message: "request input `{source}` names a file"
   taint:
-    sources: *py-sources
+    # Web request input only: a command-line tool opening the file its own
+    # user named (`sys.argv`, `input()`) crosses no trust boundary — 12 of
+    # 12 such findings on portage (2026-09).
+    sources:
+      - name: request
+        query: |
+          ((attribute object: (identifier) @r attribute: (identifier) @a) @src
+           (#match? @r "^(request|req)$")
+           (#match? @a "^(args|form|values|cookies|headers|json|data|files|GET|POST|COOKIES|META|body|query_params|path_params)$"))
+        value: src
+      - name: request-method
+        query: |
+          ((call function: (attribute object: (identifier) @r attribute: (identifier) @a)) @src
+           (#match? @r "^(request|req)$") (#match? @a "^(get_json|get_data)$"))
+        value: src
     sinks:
       - name: open
         query: |
@@ -151,3 +187,7 @@
         def f():
             name = secure_filename(request.args.get('file'))
             return open("/srv/" + name).read()
+      - |
+        def main():
+            with open(sys.argv[1]) as f:
+                return f.read()

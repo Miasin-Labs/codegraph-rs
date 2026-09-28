@@ -264,6 +264,9 @@ pub(super) fn check_assignment_condition(node: Node<'_>, ctx: &mut Ctx<'_>) {
     if rules.double_parens_mean_it && parens >= 2 && !literal {
         return;
     }
+    if assigns_for_the_branch(node, left, value, rules, source) {
+        return;
+    }
     let message = format!(
         "the condition assigns (`{}`) rather than compares: `==` was meant?",
         ctx.snippet(inner)
@@ -275,6 +278,40 @@ pub(super) fn check_assignment_condition(node: Node<'_>, ctx: &mut Ctx<'_>) {
         message,
         Vec::new(),
     );
+}
+
+/// `if (result = item != null && item[RAW]) return result;`: a computed
+/// value (an operation, not a literal or a variable) assigned to the
+/// variable the branch then reads — assign-and-test, the idiom minifiers
+/// and hand-written JS use alike (a bundled library's `unwrap`, 2026-09).
+/// A slip for `==` leaves the variable unread (`if (x = y) { g(); }`).
+fn assigns_for_the_branch(
+    statement: Node<'_>,
+    left: Node<'_>,
+    value: Node<'_>,
+    rules: &Rules,
+    source: &str,
+) -> bool {
+    let computed = rules.binaries.iter().any(|b| b.kind == value.kind())
+        || rules.ternaries.iter().any(|t| t.kind == value.kind());
+    if !computed || !rules.idents.contains(&left.kind()) {
+        return false;
+    }
+    let name = text(left, source);
+    let Some(branch) = statement
+        .child_by_field_name("consequence")
+        .or_else(|| statement.child_by_field_name("body"))
+    else {
+        return false;
+    };
+    let mut read = false;
+    walk(branch, |n| {
+        if !read && rules.idents.contains(&n.kind()) && text(n, source) == name {
+            read = true;
+        }
+        !read
+    });
+    read
 }
 
 /// `x < Integer.MIN_VALUE`, `INT_MAX < x`, `x >= INT_MIN` for a variable
@@ -460,6 +497,9 @@ fn constant_value(condition: Node<'_>, ctx: &Ctx<'_>) -> Option<&'static str> {
         }
         if rules.literals.contains(&kind) {
             literals += 1;
+            // A build-time substitution (`"@INSTALL_TYPE@" == "MODULE"`,
+            // filled in by configure/meson): constant only unbuilt.
+            names_something |= is_substitution_placeholder(text(n, source));
             return false;
         }
         !names_something
@@ -469,4 +509,16 @@ fn constant_value(condition: Node<'_>, ctx: &Ctx<'_>) -> Option<&'static str> {
         return None;
     }
     Some("the same (it names no variable)")
+}
+
+/// A string literal that is a configure/meson/CMake substitution: `@NAME@`
+/// (quotes, if any, around it).
+fn is_substitution_placeholder(literal: &str) -> bool {
+    let inner = literal.trim_matches(|c| c == '"' || c == '\'');
+    inner.len() > 2
+        && inner.starts_with('@')
+        && inner.ends_with('@')
+        && inner[1..inner.len() - 1]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
 }

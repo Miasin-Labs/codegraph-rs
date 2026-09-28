@@ -141,12 +141,17 @@ pub(crate) struct Located {
     pub(crate) reexported: bool,
 }
 
+/// `(graph index, owner path, method)`.
+pub(crate) type MethodKey = (usize, String, String);
+
 /// Lookups already answered this pass: graphs are immutable while it runs,
 /// and one project asks the same few thousand questions many times.
 #[derive(Default)]
 pub(crate) struct Memo {
     pub(crate) paths: RefCell<HashMap<(String, Vec<String>, EdgeKind), Option<Located>>>,
-    pub(crate) methods: RefCell<HashMap<(usize, String, String), Option<Node>>>,
+    /// `(graph, owner, method)` → the graph index the method was found in
+    /// (another crate's, through a re-export, alias or `Deref`) and it.
+    pub(crate) methods: RefCell<HashMap<MethodKey, Option<(usize, Node)>>>,
     pub(crate) fields: RefCell<HashMap<(usize, String, String), Option<Node>>>,
     pub(crate) types: RefCell<HashMap<(usize, String), bool>>,
     pub(crate) visible: RefCell<HashMap<(usize, String), bool>>,

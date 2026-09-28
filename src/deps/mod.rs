@@ -19,9 +19,13 @@
 //!   budget, collecting unused shards, and the post-index hook that records
 //!   a project and starts one detached background build.
 //!
+//! * [`beliefs`] — per-API usage beliefs mined from the cargo cache's
+//!   crates (Engler's deviance at ecosystem scale), for `analyze bugs`.
+//!
 //! Local path dependencies are recorded (source `path`) but never built:
 //! linking a project to its sibling checkouts is the atlas's job.
 
+pub mod beliefs;
 pub mod builder;
 mod error;
 pub mod gc;

@@ -152,7 +152,14 @@ const CRATES: &[(&str, &str, &[(&str, &str)])] = &[
     (
         "facade",
         "4.0.0",
-        &[("src/lib.rs", "pub use facade_builder::*;\n")],
+        &[
+            ("src/lib.rs", "pub use facade_builder::*;\npub mod cli;\n"),
+            ("src/cli.rs", "pub use self::inner::Cmd;\nmod inner;\n"),
+            (
+                "src/cli/inner.rs",
+                "pub use facade_builder::Command as Cmd;\n",
+            ),
+        ],
     ),
     (
         "facade_builder",
@@ -211,7 +218,11 @@ fn make_thing() -> Thing {\n\
     Thing\n\
 }\n\
 \n\
-pub struct Thing;\n";
+pub struct Thing;\n\
+\n\
+pub fn nested() {\n\
+    let _cmd = facade::cli::Cmd::new(\"y\");\n\
+}\n";
 
 impl Federation {
     pub fn new() -> Self {
@@ -305,6 +316,7 @@ impl Federation {
             budget: Duration::from_secs(60),
             max_open: 4,
             home: self.federation_home(),
+            reach: None,
         }
     }
 

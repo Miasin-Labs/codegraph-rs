@@ -36,6 +36,7 @@ pub use pass::{
     ExternalReport,
     STATE_KEY,
     external_resolution_enabled,
+    resolve_read_only,
     run,
 };
 pub use rust::ExternalResolvedBy;

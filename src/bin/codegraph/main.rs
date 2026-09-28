@@ -104,6 +104,7 @@ use codegraph::{
 use codegraph_analysis::nodes::NodeId as ANodeId;
 
 mod analyze;
+mod beliefs;
 mod cli;
 mod compiler;
 mod context;
