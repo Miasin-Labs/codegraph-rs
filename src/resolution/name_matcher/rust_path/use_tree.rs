@@ -83,7 +83,7 @@ pub fn rust_fn_local_uses(source: &str) -> Vec<LocalUse> {
     let mut leaves = Vec::new();
     for (index, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
-        if trimmed.len() == line.len() || !trimmed.starts_with("use ") {
+        if trimmed.len() == line.len() || !starts_use_declaration(trimmed) {
             continue;
         }
         let mut declaration = (*line).to_string();
@@ -102,6 +102,26 @@ pub fn rust_fn_local_uses(source: &str) -> Vec<LocalUse> {
         );
     }
     leaves
+}
+
+/// `use …` or `pub use …` (`pub(crate) use …`, `pub(in a::b) use …`): a
+/// macro call's items (`cfg_rt! { pub use self::m::Item; }`) re-export too.
+fn starts_use_declaration(line: &str) -> bool {
+    let mut rest = line;
+    if let Some(after) = rest.strip_prefix("pub") {
+        rest = match after.strip_prefix('(') {
+            Some(scope) => match scope.find(')') {
+                Some(close) => &scope[close + 1..],
+                None => return false,
+            },
+            None => after,
+        };
+        if !rest.starts_with(char::is_whitespace) {
+            return false;
+        }
+        rest = rest.trim_start();
+    }
+    rest.starts_with("use ")
 }
 
 /// Every use leaf declared by a file's Rust Import nodes.

@@ -235,6 +235,7 @@ fn cfg_variants_of_one_item_are_not_ambiguous() {
 fn super_inside_an_inline_test_module_reaches_the_file_module() {
     // `mod tests { fn case() { super::production(); } }` in src/lib.rs.
     let ctx = Fixture::new(vec![
+        module("tests-mod", "tests", "src/lib.rs"),
         func("case", "case", "tests::case", "src/lib.rs"),
         func("prod", "production", "production", "src/lib.rs"),
         func("decoy", "production", "production", "src/other.rs"),
@@ -333,6 +334,10 @@ fn crate_path_follows_a_pub_use_chain_across_modules() {
             "pub use tools::{ToolHandler, tools as tool_list};",
         ),
         module("tools-ctx-mod", "tools", "src/mcp/tools/context.rs"),
+        // `mod registry;` / `mod catalog;`: a relative `use` path's first
+        // segment is a declared child module, not another crate.
+        module("registry-mod", "registry", "src/mcp/tools/mod.rs"),
+        module("catalog-mod", "catalog", "src/mcp/tools/registry.rs"),
         import(
             "tools-reexport",
             "registry",
@@ -383,6 +388,7 @@ fn super_super_reaches_a_restricted_brace_list_reexport() {
             "append",
             "src/mcp/tools/context/notices.rs",
         ),
+        module("budget-mod", "budget", "src/mcp/tools/format.rs"),
         import(
             "format-use",
             "budget",
@@ -577,6 +583,7 @@ fn a_use_inside_an_inline_module_binds_only_there() {
         ),
         func("util-helper", "helper", "helper", "src/util.rs"),
         func("misc-helper", "helper", "helper", "src/misc.rs"),
+        module("tests-mod", "tests", "src/lib.rs"),
         func("case", "case", "tests::case", "src/lib.rs"),
     ]);
     let r = rust_ref("caller", "crate::helper", "src/app.rs");

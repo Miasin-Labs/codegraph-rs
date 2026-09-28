@@ -20,6 +20,7 @@ mod qualified;
 mod razor;
 mod receiver;
 mod rust_call;
+mod rust_generics;
 mod rust_method;
 mod rust_path;
 mod std_method_names;
@@ -152,7 +153,9 @@ pub fn match_reference_full_hints(
 
     // 2. Method call pattern
     if let Some(result) = method_hinted(reference, context, s12) {
-        return Some(result);
+        if !rust_call::guessed_self_recursion(reference, &result) {
+            return Some(result);
+        }
     }
 
     // 3. Exact name match

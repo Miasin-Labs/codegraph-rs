@@ -47,6 +47,7 @@ mod types;
 mod variants;
 
 use bindings::{Binding, binding_in_line};
+pub(in crate::resolution::name_matcher) use crates::project_crate_dir;
 use expr::{Head, Tail, parse_initializer, scrutinee_end, statement_end, tuple_expression};
 pub(in crate::resolution::name_matcher) use fields::{declared_type, self_field_receiver_type};
 use locals::caller_fn;
@@ -60,8 +61,8 @@ pub(in crate::resolution::name_matcher) use lookup::{
     prelude_type,
     resolve_type,
 };
-pub(in crate::resolution::name_matcher) use types::signature_return;
-use types::{named_type, signature_params, unwrapped};
+pub(in crate::resolution::name_matcher) use types::{is_deref_wrapper, signature_return};
+use types::{named_type, signature_params, split_top_level, unwrapped};
 
 use crate::resolution::line_index::{LineSpan, Lines};
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
@@ -574,6 +575,11 @@ impl Inference<'_> {
             Head::Call { path, args } => self.call_value(&path, args, site, depth),
             Head::Local(local) => self.local_value(local, site.line, site.column, depth + 1),
             Head::SelfValue => self.owner.clone().map(Value::Resolved),
+            // `(StatusCode::OK, body).into_response()`: a tuple runs no
+            // project method.
+            Head::Paren(inner) if split_top_level(inner, b',').len() > 1 => {
+                Some(Value::Resolved(RustType::external(types::TUPLE)))
+            }
             Head::Paren(inner) => self.expression_value(inner, site, depth + 1),
         }
     }

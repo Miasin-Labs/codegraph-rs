@@ -34,14 +34,17 @@ use super::receiver::{
     file_is_module,
     fn_local_uses,
     infer_rust_chain_type,
+    is_deref_wrapper,
     is_local_at_call,
     self_field_receiver_type,
 };
+use super::rust_generics::is_generic_param;
 use super::rust_method::match_typed_call;
+use super::rust_path::{BareBinding, bare_binding};
 use super::std_methods::{is_receiverless_dependency_method_call, is_receiverless_std_method_call};
 use super::{UseBinding, UseLeaf};
 use crate::resolution::line_index::Lines;
-use crate::resolution::types::{ResolutionContext, ResolvedRef, UnresolvedRef};
+use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
 use crate::types::{
     EdgeKind,
     Language,
@@ -64,6 +67,9 @@ const PRELUDE_VALUES: &[&str] = &[
     "size_of",
     "size_of_val",
 ];
+
+/// The confidence of a method call resolved on its receiver's inferred type.
+pub(super) const TYPED_CONFIDENCE: f64 = 0.9;
 
 /// Types the std prelude brings into every module: a bare reference to one
 /// names std's unless the file defines or imports a project namesake (as
@@ -98,21 +104,60 @@ pub(super) fn match_rust_call(
             return Some(decided);
         }
     }
+    // `self.m()` runs `m` on the enclosing impl's type, as a typed local's
+    // call does.
+    if syntax == Syntax::OnSelf {
+        // (`impl Schedule for Arc<Handle>` reaches `Handle`'s methods
+        // through `Deref`, which `Self` = `Arc` does not say.)
+        let typed = infer_rust_chain_type("self", reference, context)
+            .filter(|ty| !is_deref_wrapper(&ty.name))
+            .and_then(|ty| match_typed_call(&ty, &reference.reference_name, reference, context));
+        if let Some(decided) = typed {
+            return Some(decided);
+        }
+    }
     if is_receiverless_std_method_call(reference)
         || imports_from_another_crate(syntax, reference, context)
     {
         return Some(None);
     }
+    let mut scope = FileScope::new(reference, context);
+    // `f(..)` runs what its module binds `f` to, when a `use` or an item
+    // of the module binds it (see `rust_path::bare`).
+    if syntax == Syntax::Bare {
+        match bare_binding(reference, context) {
+            BareBinding::Item { node, imported } => {
+                let runs =
+                    syntax.admits(&node, &mut scope) && !syntax.names_local(reference, context);
+                return Some(runs.then(|| bound_to(reference, context, &node, imported)));
+            }
+            // `cfg` alternatives: one of them, as the name rules pick.
+            BareBinding::Ambiguous(nodes) => {
+                if syntax.names_local(reference, context) {
+                    return Some(None);
+                }
+                let admitted: Vec<Node> = nodes
+                    .into_iter()
+                    .filter(|node| syntax.admits(node, &mut scope))
+                    .collect();
+                return Some(pick_alternative(reference, &admitted, context));
+            }
+            BareBinding::External => return Some(None),
+            BareBinding::Unbound => {}
+        }
+    }
     // A dependency's method name reaches only types the file names.
     let file = is_receiverless_dependency_method_call(reference, context)
         .then(|| FileText::read(reference, context));
-    let mut scope = FileScope::new(reference, context);
     let candidates: Vec<Node> = context
         .get_nodes_by_name(&reference.reference_name)
         .into_iter()
         .filter(|node| {
             syntax.admits(node, &mut scope)
                 && file.as_ref().is_none_or(|file| file.names_owner_of(node))
+                // `self.inner.m()` inside `fn m` delegates to the field's
+                // `m`: an untyped receiver is not taken for `self`.
+                && !(syntax == Syntax::DroppedReceiver && node.id == reference.from_node_id)
         })
         .collect();
     if candidates.is_empty() || syntax.names_local(reference, context) {
@@ -133,6 +178,7 @@ pub(crate) fn rust_call_admits(
     };
     !is_receiverless_std_method_call(reference)
         && !imports_from_another_crate(syntax, reference, context)
+        && (syntax != Syntax::Bare || binding_admits(reference, context, target))
         && (!is_receiverless_dependency_method_call(reference, context)
             || FileText::read(reference, context).names_owner_of(target))
         && syntax.admits(target, &mut FileScope::new(reference, context))
@@ -150,6 +196,21 @@ fn imports_from_another_crate(
     syntax == Syntax::Bare
         && !reference.reference_name.contains("::")
         && external_path(&reference.reference_name, &reference.file_path, context).is_some()
+}
+
+/// `recv.m()` inside `fn m`, `recv` not `self`, resolved to that `m` by a
+/// name rule rather than the receiver's type: a wrapper delegating to what
+/// it wraps (`self.inner.poll_read()`), not recursion.
+pub(super) fn guessed_self_recursion(reference: &UnresolvedRef, result: &ResolvedRef) -> bool {
+    reference.language == Language::Rust
+        && reference.reference_kind == EdgeKind::Calls
+        && result.target_node_id == reference.from_node_id
+        && !(result.resolved_by == ResolvedBy::InstanceMethod
+            && result.confidence >= TYPED_CONFIDENCE)
+        && reference
+            .reference_name
+            .rsplit_once('.')
+            .is_some_and(|(receiver, _)| receiver != "self")
 }
 
 /// How a Rust call spells its callee, for the external resolution pass.
@@ -204,7 +265,36 @@ pub(super) fn match_rust_reference(
     if !is_role_gated_reference(reference) {
         return None;
     }
+    // `include!(…)`, `vec![…]`: a macro, from the macro namespace alone.
+    if invokes_macro(reference, context) {
+        let macros: Vec<Node> = context
+            .get_nodes_by_name_and_kind(&reference.reference_name, NodeKind::Macro)
+            .into_iter()
+            .filter(|node| node.language == Language::Rust)
+            .collect();
+        return Some(pick_exact(reference, &macros, context, None));
+    }
+    // A generic parameter (`R` in `impl<R: Read>`) shadows every item.
+    if names_generic_param(reference, context) {
+        return Some(None);
+    }
     let mut scope = FileScope::new(reference, context);
+    // A name its module binds (a `use`, an item) names that item alone.
+    match bare_binding(reference, context) {
+        BareBinding::Item { node, imported } => {
+            let admitted = reference_admits(reference.reference_kind, &node, &mut scope);
+            return Some(admitted.then(|| bound_to(reference, context, &node, imported)));
+        }
+        BareBinding::Ambiguous(nodes) => {
+            let admitted: Vec<Node> = nodes
+                .into_iter()
+                .filter(|node| reference_admits(reference.reference_kind, node, &mut scope))
+                .collect();
+            return Some(pick_alternative(reference, &admitted, context));
+        }
+        BareBinding::External => return Some(None),
+        BareBinding::Unbound => {}
+    }
     let (admitted, ruled_out): (Vec<Node>, Vec<Node>) = context
         .get_nodes_by_name(&reference.reference_name)
         .into_iter()
@@ -225,19 +315,120 @@ pub(crate) fn rust_reference_admits(
     context: &dyn ResolutionContext,
     target: &Node,
 ) -> bool {
+    if is_role_gated_reference(reference) && invokes_macro(reference, context) {
+        return target.kind == NodeKind::Macro;
+    }
     !is_role_gated_reference(reference)
-        || reference_admits(
-            reference.reference_kind,
-            target,
-            &mut FileScope::new(reference, context),
-        )
+        || (!names_generic_param(reference, context)
+            && binding_admits(reference, context, target)
+            && reference_admits(
+                reference.reference_kind,
+                target,
+                &mut FileScope::new(reference, context),
+            ))
+}
+
+/// A reference written as a macro invocation: `name!` at its position.
+fn invokes_macro(reference: &UnresolvedRef, context: &dyn ResolutionContext) -> bool {
+    if reference.reference_kind != EdgeKind::References {
+        return false;
+    }
+    let Some(source) = context.read_file_arc(&reference.file_path) else {
+        return false;
+    };
+    let Some(index) = (reference.line as usize).checked_sub(1) else {
+        return false;
+    };
+    let lines = Lines::of(&source);
+    if index >= lines.len() {
+        return false;
+    }
+    let line = lines.raw_text(index..index + 1);
+    line.get(reference.column as usize..)
+        .and_then(|at| strip_word(at, &reference.reference_name))
+        .is_some_and(|rest| rest.trim_start().starts_with('!'))
+}
+
+/// A type reference naming a generic parameter of an enclosing item.
+fn names_generic_param(reference: &UnresolvedRef, context: &dyn ResolutionContext) -> bool {
+    reference.reference_kind == EdgeKind::References
+        && is_generic_param(&reference.reference_name, reference, context)
+}
+
+/// Whether what the reference's module binds its bare name to allows
+/// `target`: the bound item itself, or anything when nothing binds it.
+fn binding_admits(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+    target: &Node,
+) -> bool {
+    match bare_binding(reference, context) {
+        BareBinding::Item { node, .. } => {
+            node.id == target.id
+                || (node.file_path == target.file_path
+                    && node.qualified_name == target.qualified_name)
+        }
+        BareBinding::Ambiguous(nodes) => nodes.iter().any(|node| {
+            node.id == target.id
+                || (node.file_path == target.file_path
+                    && node.qualified_name == target.qualified_name)
+        }),
+        BareBinding::External => false,
+        BareBinding::Unbound => true,
+    }
+}
+
+/// One of the `cfg` alternatives a module binds a name to, picked by the
+/// name rules' nearness (and resolved by the `use`s, as an import).
+fn pick_alternative(
+    reference: &UnresolvedRef,
+    alternatives: &[Node],
+    context: &dyn ResolutionContext,
+) -> Option<ResolvedRef> {
+    pick_exact(reference, alternatives, context, None).map(|picked| ResolvedRef {
+        resolved_by: ResolvedBy::Import,
+        ..picked
+    })
+}
+
+/// The reference resolved to the item its module binds the name to.
+/// Definitions that differ only by `cfg` (same file, qualified name and
+/// kind) are one item; the name rules pick which of them stands for it.
+fn bound_to(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+    node: &Node,
+    imported: bool,
+) -> ResolvedRef {
+    let twins: Vec<Node> = context
+        .get_nodes_in_file_named(&node.file_path, &node.name)
+        .into_iter()
+        .filter(|twin| twin.qualified_name == node.qualified_name && twin.kind == node.kind)
+        .collect();
+    let target = (twins.len() > 1)
+        .then(|| pick_exact(reference, &twins, context, None))
+        .flatten()
+        .map_or_else(|| node.id.clone(), |picked| picked.target_node_id);
+    ResolvedRef {
+        original: reference.clone(),
+        target_node_id: target,
+        confidence: 0.95,
+        resolved_by: if imported {
+            ResolvedBy::Import
+        } else {
+            ResolvedBy::ExactMatch
+        },
+    }
 }
 
 fn is_role_gated_reference(reference: &UnresolvedRef) -> bool {
     reference.language == Language::Rust
         && matches!(
             reference.reference_kind,
-            EdgeKind::References | EdgeKind::Implements | EdgeKind::Extends
+            EdgeKind::References
+                | EdgeKind::Implements
+                | EdgeKind::Extends
+                | EdgeKind::Instantiates
         )
         && is_identifier(&reference.reference_name)
 }
@@ -252,9 +443,31 @@ fn reference_admits(kind: EdgeKind, node: &Node, scope: &mut FileScope<'_>) -> b
                 || (node.language == Language::Rust && scope.variant_in_scope(node));
             let prelude = PRELUDE_VALUES.contains(&node.name.as_str())
                 || PRELUDE_TYPES.contains(&node.name.as_str());
-            visible && (!prelude || node.kind == NodeKind::EnumMember || scope.item_in_scope(node))
+            visible
+                && !is_associated_item(node)
+                && (!prelude || node.kind == NodeKind::EnumMember || scope.item_in_scope(node))
         }
     }
+}
+
+/// An impl's or trait's associated item (`UdpSocket::Error`, `Pool::MAX`,
+/// `Type::m`): reachable through its owner (`Self::Error`, `T::Error`),
+/// never by its bare name.
+fn is_associated_item(node: &Node) -> bool {
+    node.language == Language::Rust
+        && matches!(
+            node.kind,
+            NodeKind::TypeAlias | NodeKind::Constant | NodeKind::Method
+        )
+        && node
+            .qualified_name
+            .rsplit_once("::")
+            .is_some_and(|(owner, _)| {
+                owner
+                    .rsplit("::")
+                    .next()
+                    .is_some_and(|segment| segment.starts_with(|c: char| c.is_ascii_uppercase()))
+            })
 }
 
 /// How a call spells its callee.

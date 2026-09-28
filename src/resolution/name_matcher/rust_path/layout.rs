@@ -5,6 +5,9 @@
 //! `mod` blocks, which show up as leading snake_case segments of a qualified
 //! name (`tests::case`).
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use crate::types::{Node, NodeKind};
 
 /// Where a file or module sits: which crate, and the module path inside it.
@@ -18,6 +21,11 @@ impl ModuleLocation {
     /// Whether `self` is `ancestor` or nested inside it.
     pub(super) fn is_within(&self, ancestor: &ModuleLocation) -> bool {
         self.crate_key == ancestor.crate_key && self.module.starts_with(&ancestor.module)
+    }
+
+    /// Whether `self` is `module` or one of its direct children.
+    pub(super) fn is_within_child_of(&self, module: &ModuleLocation) -> bool {
+        self.is_within(module) && self.module.len() <= module.module.len() + 1
     }
 
     /// The parent module, or `None` at the crate root.
@@ -64,6 +72,24 @@ impl ModuleLocation {
 /// `src/bin/<name>/` is its own crate. Files outside a `src/` tree (integration
 /// tests, examples) are single-file crates.
 pub(super) fn module_location(file_path: &str) -> ModuleLocation {
+    thread_local! {
+        /// Asked for every candidate of every name looked up in a module:
+        /// the path is split once per file and thread.
+        static LOCATIONS: RefCell<HashMap<String, ModuleLocation>> = RefCell::new(HashMap::new());
+    }
+    if let Some(known) = LOCATIONS.with(|cache| cache.borrow().get(file_path).cloned()) {
+        return known;
+    }
+    let location = locate(file_path);
+    LOCATIONS.with(|cache| {
+        cache
+            .borrow_mut()
+            .insert(file_path.to_string(), location.clone())
+    });
+    location
+}
+
+fn locate(file_path: &str) -> ModuleLocation {
     let normalized = file_path.replace('\\', "/");
     let parts: Vec<&str> = normalized.split('/').filter(|p| !p.is_empty()).collect();
     // The innermost `src` owns the file: `src/tools/clippy/clippy_lints/src/x.rs`

@@ -9,10 +9,10 @@ use super::bindings::assignment;
 use super::crates::project_crate_dir;
 use super::types::{Named, named_type, signature_return};
 use crate::resolution::line_index::Lines;
-use crate::resolution::name_matcher::rust_path::crate_key;
-use crate::resolution::name_matcher::{LocalUse, UseBinding};
+use crate::resolution::name_matcher::rust_path::{crate_key, fn_definition, type_definition};
+use crate::resolution::name_matcher::{LocalUse, UseBinding, UseLeaf};
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
-use crate::types::{Language, Node, NodeKind};
+use crate::types::{Language, Node, NodeKind, Visibility};
 
 /// How many `use`/alias hops a type path is followed through.
 const MAX_HOPS: u8 = 6;
@@ -31,6 +31,8 @@ enum Home {
     /// Only the name is known (a type in scope without a `use` naming it),
     /// with the modules the file glob-imports (`use crate::fixture::*`).
     Anywhere { globs: Vec<String> },
+    /// The type node the module tree found: `qualified` in `file`.
+    Defined { file: String, qualified: String },
     /// A crate of the project, and the module its path names, if any.
     Project {
         scope: CrateScope,
@@ -163,7 +165,7 @@ impl RustType {
         let unplaced = match &self.home {
             Home::Anywhere { .. } => true,
             Home::External { krate, .. } => krate.is_none(),
-            Home::Project { .. } => false,
+            Home::Project { .. } | Home::Defined { .. } => false,
         };
         if !unplaced {
             return None;
@@ -180,9 +182,56 @@ impl RustType {
         !self.is_external() && is_rust_project_type(&self.name, context)
     }
 
-    /// The method `Self::method` the project defines, best match first. An
-    /// external type's methods are project methods only when no project
-    /// type shares its name (an extension trait implemented for `Vec`).
+    /// The methods `Self::method` the project defines that match the type's
+    /// home best, all tied (an inherent method and a trait impl's in the
+    /// type's module, two impls of one file). An external type's methods
+    /// are project methods only when no project type shares its name (an
+    /// extension trait implemented for `Vec`).
+    pub(in crate::resolution::name_matcher) fn methods<'a>(
+        &self,
+        method: &str,
+        nodes: &'a [Node],
+        reference: &UnresolvedRef,
+        context: &dyn ResolutionContext,
+    ) -> Vec<&'a Node> {
+        if self.is_external() && is_rust_project_type(&self.name, context) {
+            return Vec::new();
+        }
+        let mut methods = methods_of(self, nodes, method, reference);
+        if let Home::Defined { file, qualified } = &self.home {
+            // `Sender::send` of `broadcast.rs` is another `Sender`'s: keep
+            // the methods whose impl names this type where it is written.
+            let owned: Vec<Option<bool>> = methods
+                .iter()
+                .map(|candidate| {
+                    type_definition(&self.name, &candidate.file_path, context)
+                        .map(|owner| owner.file_path == *file && owner.qualified_name == *qualified)
+                })
+                .collect();
+            let known = owned.contains(&Some(true));
+            let mut keep = owned.iter().map(|owns| {
+                if known {
+                    *owns == Some(true)
+                } else {
+                    *owns != Some(false)
+                }
+            });
+            methods.retain(|_| keep.next().unwrap_or(false));
+            // An inherent method runs before a trait impl's of the same
+            // name; a trait impl's method is never `pub`.
+            let public = |node: &&Node| {
+                node.visibility
+                    .is_some_and(|vis| vis != Visibility::Private)
+            };
+            if methods.iter().any(public) {
+                methods.retain(public);
+            }
+        }
+        self.nearest(methods, reference)
+    }
+
+    /// The one method [`Self::methods`] finds, `None` when none or several.
+    #[cfg(test)]
     pub(in crate::resolution::name_matcher) fn method<'a>(
         &self,
         method: &str,
@@ -190,10 +239,10 @@ impl RustType {
         reference: &UnresolvedRef,
         context: &dyn ResolutionContext,
     ) -> Option<&'a Node> {
-        if self.is_external() && is_rust_project_type(&self.name, context) {
-            return None;
+        match self.methods(method, nodes, reference, context).as_slice() {
+            [only] => Some(only),
+            _ => None,
         }
-        methods_of(self, nodes, method, reference).first().copied()
     }
 
     /// The field `Self::field` the project declares, best match first.
@@ -260,6 +309,11 @@ impl RustType {
                 true,
                 false,
                 globs.iter().any(|module| file_is_module(path, module)),
+            ),
+            Home::Defined { file: defined, .. } => (
+                crate_key(path) == crate_key(defined),
+                path == defined,
+                false,
             ),
             Home::External { .. } => (true, false, false),
         };
@@ -377,11 +431,18 @@ fn resolve_path(path: &str, file: &str, context: &dyn ResolutionContext) -> Reso
         }
     }
     if rest.is_empty() {
-        return Resolved::Type(RustType {
-            name: name.to_string(),
-            home: Home::Anywhere {
+        let home = match type_definition(name, file, context) {
+            Some(node) => Home::Defined {
+                file: node.file_path,
+                qualified: node.qualified_name,
+            },
+            None => Home::Anywhere {
                 globs: glob_modules(file, context),
             },
+        };
+        return Resolved::Type(RustType {
+            name: name.to_string(),
+            home,
         });
     }
     let module = (segments.len() >= 3).then(|| segments[segments.len() - 2].to_string());
@@ -405,6 +466,17 @@ fn resolve_path(path: &str, file: &str, context: &dyn ResolutionContext) -> Reso
                 path: rest.iter().map(|segment| segment.to_string()).collect(),
             },
         },
+    };
+    // A project path the module tree follows to its type pins the file.
+    let home = match home {
+        Home::Project { .. } => match type_definition(path, file, context) {
+            Some(node) => Home::Defined {
+                file: node.file_path,
+                qualified: node.qualified_name,
+            },
+            None => home,
+        },
+        home => home,
     };
     Resolved::Type(RustType {
         name: name.to_string(),
@@ -464,20 +536,24 @@ fn glob_modules(file: &str, context: &dyn ResolutionContext) -> Vec<String> {
         .collect()
 }
 
-/// The full path a `use` in `file` binds `name` to (`use a::b as name`).
+/// The full path a `use` in `file` binds `name` to (`use a::b as name`,
+/// or `use a::name::{self}` for a module).
 fn use_path(name: &str, file: &str, context: &dyn ResolutionContext) -> Option<Vec<String>> {
-    let binding = UseBinding::Name(name.to_string());
+    let binds = |leaf: &UseLeaf| match &leaf.binding {
+        UseBinding::Name(bound) | UseBinding::Module(bound) => bound == name,
+        UseBinding::Glob => false,
+    };
     let declared = context
         .get_rust_use_leaves(file)
         .iter()
         .map(|found| &found.leaf)
-        .find(|leaf| leaf.binding == binding)
+        .find(|leaf| binds(leaf))
         .cloned();
     declared
         .or_else(|| {
             fn_local_uses(file, context)
                 .iter()
-                .find(|local| local.leaf.binding == binding)
+                .find(|local| binds(&local.leaf))
                 .map(|local| local.leaf.clone())
         })
         .map(|leaf| leaf.path)
@@ -589,6 +665,10 @@ pub(super) fn free_fn_return(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
 ) -> Option<(String, String)> {
+    // The module tree names the fn: `mpsc::channel`, not `oneshot::channel`.
+    if let Some(defined) = fn_definition(path, &reference.file_path, context) {
+        return agreed_return(vec![&defined], None);
+    }
     // A path or `use` pins the fn's crate and module like a type's.
     let home = resolve_type(path, &reference.file_path, reference, context);
     if home.is_external() {

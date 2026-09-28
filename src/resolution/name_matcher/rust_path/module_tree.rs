@@ -9,10 +9,13 @@
 //! only the chain the queried name needs, guarded like rustc's
 //! `cycle_detection` against re-export cycles.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::layout::{ModuleLocation, inline_modules, module_files, module_location};
 use super::use_tree::{UseBinding, UseLeaf, UseVisibility};
+use crate::resolution::name_matcher::receiver::project_crate_dir;
 use crate::resolution::types::ResolutionContext;
 use crate::types::{EdgeKind, Language, Node, NodeKind, Visibility};
 
@@ -44,7 +47,8 @@ impl Namespace {
         match (self, kind) {
             (Self::Module, kind) => kind == NodeKind::Module,
             (_, NodeKind::Import | NodeKind::File) => false,
-            (Self::Value, NodeKind::Module) => false,
+            // A call runs a value: never a module, nor a macro (`m!()`).
+            (Self::Value, NodeKind::Module | NodeKind::Macro) => false,
             _ => true,
         }
     }
@@ -58,8 +62,13 @@ impl Namespace {
 #[derive(Debug, Clone)]
 pub(super) enum Resolution {
     Found(Box<Node>),
-    /// Several distinct items (or an unfinished lookup) could be meant.
-    Ambiguous,
+    /// Several distinct items could be meant (`cfg` alternatives: `#[cfg(test)]
+    /// use mocks::f; #[cfg(not(test))] use real::f;`), or none is known
+    /// when the lookup could not finish.
+    Ambiguous(Vec<Node>),
+    /// Only a `use` of another crate's item binds the name (`use
+    /// std::path::Path;`, directly or through a re-export).
+    External,
     NotFound,
 }
 
@@ -104,7 +113,7 @@ impl ModuleTree<'_> {
     ) -> Resolution {
         if depth > MAX_DEPTH {
             // Evidence we did not finish reading cannot pick a target.
-            return Resolution::Ambiguous;
+            return Resolution::Ambiguous(Vec::new());
         }
         let key = (module.clone(), name.to_string(), importer.cloned());
         match self.lookups.get(&key) {
@@ -135,12 +144,13 @@ impl ModuleTree<'_> {
             |leaf: &UseLeaf| importer.is_none_or(|from| leaf_visible(&leaf.vis, module, from));
 
         let mut targets = Targets::default();
+        let mut external = false;
         for item in self.items(module, name) {
             if visible_item(&item) {
                 targets.add(item);
             }
         }
-        let uses = self.uses(module);
+        let uses = self.uses(module, name);
         for leaf in &uses {
             let binds = leaf.bound_name() == Some(name)
                 && self.namespace.admits_binding(&leaf.binding)
@@ -151,17 +161,28 @@ impl ModuleTree<'_> {
             let Some((original, path)) = leaf.path.split_last() else {
                 continue;
             };
-            let Some(source) = module.walk(path) else {
+            if is_external_root(self.context, module, &leaf.path) {
+                external = true;
+                continue;
+            }
+            let Some(source) = use_source(self.context, module, path) else {
                 continue;
             };
             match self.resolve(&source, original, None, depth + 1) {
                 Resolution::Found(node) => targets.add(*node),
-                Resolution::Ambiguous => return Resolution::Ambiguous,
+                Resolution::Ambiguous(nodes) if nodes.is_empty() => {
+                    return Resolution::Ambiguous(nodes);
+                }
+                Resolution::Ambiguous(nodes) => targets.add_all(nodes),
+                Resolution::External => external = true,
                 Resolution::NotFound => {}
             }
         }
         if !targets.is_empty() {
             return targets.finish();
+        }
+        if external {
+            return Resolution::External;
         }
 
         // Globs only fill in names nothing above binds.
@@ -169,16 +190,26 @@ impl ModuleTree<'_> {
             if leaf.binding != UseBinding::Glob || !visible_leaf(leaf) {
                 continue;
             }
-            let Some(source) = module.walk(&leaf.path) else {
+            if is_external_root(self.context, module, &leaf.path) {
+                continue;
+            }
+            let Some(source) = use_source(self.context, module, &leaf.path) else {
                 continue;
             };
             match self.resolve(&source, name, Some(module), depth + 1) {
                 Resolution::Found(node) => targets.add(*node),
-                Resolution::Ambiguous => return Resolution::Ambiguous,
+                Resolution::Ambiguous(nodes) if nodes.is_empty() => {
+                    return Resolution::Ambiguous(nodes);
+                }
+                Resolution::Ambiguous(nodes) => targets.add_all(nodes),
+                Resolution::External => external = true,
                 Resolution::NotFound => {}
             }
         }
-        targets.finish()
+        match targets.finish() {
+            Resolution::NotFound if external => Resolution::External,
+            resolution => resolution,
+        }
     }
 
     /// Free items named `name` defined directly in `module` — in one of its
@@ -227,7 +258,12 @@ impl ModuleTree<'_> {
 
     /// Use leaves declared directly in `module`: at the top level of its
     /// files, or inside inline `mod` blocks of an ancestor's file.
-    fn uses(&self, module: &ModuleLocation) -> Vec<UseLeaf> {
+    /// Only the leaves a lookup of `name` reads: those binding it, and
+    /// globs (a module declares many `use`s; cloning them all per lookup
+    /// made every lookup linear in them).
+    fn uses(&self, module: &ModuleLocation, name: &str) -> Vec<UseLeaf> {
+        let wanted =
+            |leaf: &UseLeaf| leaf.binding == UseBinding::Glob || leaf.bound_name() == Some(name);
         let mut leaves = Vec::new();
         for split in 0..=module.module.len() {
             let (file_module, inline) = module.module.split_at(split);
@@ -240,13 +276,151 @@ impl ModuleTree<'_> {
                 leaves.extend(
                     declared
                         .iter()
-                        .filter(|entry| entry.inline_modules == inline)
+                        .filter(|entry| entry.inline_modules == inline && wanted(&entry.leaf))
                         .map(|entry| entry.leaf.clone()),
                 );
+                if inline.is_empty() {
+                    leaves.extend(
+                        macro_level_uses(self.context, &file)
+                            .iter()
+                            .filter(|leaf| wanted(leaf))
+                            .cloned(),
+                    );
+                }
             }
         }
         leaves
     }
+}
+
+/// The `use` declarations a file writes at its top level inside a macro
+/// call (`cfg_rt! { mod builder; pub use self::builder::Builder; }`),
+/// which the index keeps no Import node for: its indented `use` lines no
+/// fn, type or inline `mod` encloses. Read once per file.
+pub(super) fn macro_level_uses(context: &dyn ResolutionContext, file: &str) -> Arc<Vec<UseLeaf>> {
+    thread_local! {
+        /// Per file, with the source it was read from: a lookup visits the
+        /// files of every module on its path, more than a few-file memo
+        /// holds, and the scope test per `use` must run once per file.
+        static USES: RefCell<HashMap<String, (Arc<str>, Arc<Vec<UseLeaf>>)>> =
+            RefCell::new(HashMap::new());
+    }
+    let locals = context.get_rust_fn_local_uses(file);
+    if locals.is_empty() {
+        return Arc::default();
+    }
+    let Some(source) = context.read_file_arc(file) else {
+        return Arc::default();
+    };
+    if let Some(uses) = USES.with(|memo| {
+        memo.borrow()
+            .get(file)
+            .filter(|(seen, _)| Arc::ptr_eq(seen, &source))
+            .map(|(_, uses)| Arc::clone(uses))
+    }) {
+        return uses;
+    }
+    let uses: Arc<Vec<UseLeaf>> = Arc::new(
+        locals
+            .iter()
+            .filter(|local| {
+                !context
+                    .scopes_enclosing_line(file, local.line)
+                    .iter()
+                    .any(|scope| scope.language == Language::Rust)
+            })
+            .map(|local| local.leaf.clone())
+            .collect(),
+    );
+    USES.with(|memo| {
+        memo.borrow_mut()
+            .insert(file.to_string(), (source, Arc::clone(&uses)))
+    });
+    uses
+}
+
+/// The module a `use` path's leading segments (`path`, written in `module`)
+/// name: a crate of the workspace by its name (`codegraph::types`), else
+/// as a 2018-edition path walks from `module`.
+pub(super) fn use_source<S: AsRef<str>>(
+    context: &dyn ResolutionContext,
+    module: &ModuleLocation,
+    path: &[S],
+) -> Option<ModuleLocation> {
+    if let Some((root, rest)) = path.split_first() {
+        let root = root.as_ref();
+        if !is_path_keyword(root) && !is_local_module(context, module, root) {
+            if let Some(dir) = project_crate_dir(root, context) {
+                let crate_root = ModuleLocation {
+                    crate_key: dir.trim_end_matches('/').to_string(),
+                    module: Vec::new(),
+                };
+                return crate_root.walk(rest);
+            }
+        }
+    }
+    module.walk(path)
+}
+
+/// Whether the `use` path `path`, written in `module`, starts at a crate
+/// outside the project (`std`, `axum`): not `crate`/`self`/`super`, not a
+/// crate of the workspace, a module of this crate, or a project type
+/// (`use Kind::Leaf`).
+pub(super) fn is_external_root<S: AsRef<str>>(
+    context: &dyn ResolutionContext,
+    module: &ModuleLocation,
+    path: &[S],
+) -> bool {
+    let [root, _, ..] = path else {
+        return false;
+    };
+    let root = root.as_ref();
+    !is_path_keyword(root)
+        && project_crate_dir(root, context).is_none()
+        && !is_local_module(context, module, root)
+        && !names_rust_type(context, root)
+}
+
+/// `name` is a Rust struct, enum, union, trait or type alias of the
+/// project. Asked by kind: `std` or `fmt` name thousands of imports a
+/// by-name lookup would copy.
+pub(super) fn names_rust_type(context: &dyn ResolutionContext, name: &str) -> bool {
+    [
+        NodeKind::Struct,
+        NodeKind::Enum,
+        NodeKind::Union,
+        NodeKind::Trait,
+        NodeKind::TypeAlias,
+    ]
+    .into_iter()
+    .any(|kind| {
+        context
+            .get_nodes_by_name_and_kind(name, kind)
+            .iter()
+            .any(|node| node.language == Language::Rust)
+    })
+}
+
+fn is_path_keyword(segment: &str) -> bool {
+    matches!(segment, "crate" | "$crate" | "self" | "super" | "Self")
+}
+
+/// `name` is a module of `module`'s crate: a `mod` the index has, or the
+/// indexed file of a child module.
+fn is_local_module(context: &dyn ResolutionContext, module: &ModuleLocation, name: &str) -> bool {
+    context
+        .get_nodes_by_name_and_kind(name, NodeKind::Module)
+        .iter()
+        .any(|node| {
+            node.language == Language::Rust
+                && module_location(&node.file_path).crate_key == module.crate_key
+        })
+        || module.walk(&[name]).is_some_and(|child| {
+            module_file(context, &child).is_some()
+                || module_files(&child)
+                    .iter()
+                    .any(|file| !context.get_rust_use_leaves(file).is_empty())
+        })
 }
 
 /// The File node of an indexed file holding `module`'s items (`m.rs` or
@@ -290,6 +464,12 @@ impl Targets {
         }
     }
 
+    fn add_all(&mut self, nodes: Vec<Node>) {
+        for node in nodes {
+            self.add(node);
+        }
+    }
+
     fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -298,7 +478,7 @@ impl Targets {
         match self.0.len() {
             0 => Resolution::NotFound,
             1 => Resolution::Found(Box::new(self.0.remove(0))),
-            _ => Resolution::Ambiguous,
+            _ => Resolution::Ambiguous(self.0),
         }
     }
 }

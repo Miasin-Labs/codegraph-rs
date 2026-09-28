@@ -16,12 +16,21 @@
 //! parsed by [`use_tree`]). `Self` becomes the enclosing impl type of the
 //! referencing method.
 
+mod bare;
 mod layout;
 mod module_tree;
 mod use_tree;
 
+pub(in crate::resolution::name_matcher) use bare::{BareBinding, bare_binding};
 use layout::{ModuleLocation, declared_module, inline_modules, item_location, module_location};
-use module_tree::{Namespace, Resolution, module_file, resolve_in_module};
+use module_tree::{
+    Namespace,
+    Resolution,
+    module_file,
+    names_rust_type,
+    resolve_in_module,
+    use_source,
+};
 pub use use_tree::{
     LocalUse,
     RustUse,
@@ -33,8 +42,9 @@ pub use use_tree::{
     rust_use_leaves,
 };
 
+use crate::resolution::name_matcher::receiver::project_crate_dir;
 use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
-use crate::types::{Language, Node, NodeKind, Visibility};
+use crate::types::{EdgeKind, Language, Node, NodeKind, Visibility};
 
 /// The module path of a `.rs` file inside its crate (see
 /// [`layout::module_location`]).
@@ -102,6 +112,12 @@ fn resolve_self(
         .filter(|node| module_location(&node.file_path).crate_key == here)
         .collect();
     if let Some(node) = unique(&same_crate).or_else(|| unique(&rust)) {
+        // `Self::Output` in `impl Future for T` names the trait's associated
+        // type, which the impl's `type Output = …;` only defines: the trait
+        // is where rustc's path leads.
+        if node.kind == NodeKind::TypeAlias && !owner_is_trait(owner, node, context) {
+            return None;
+        }
         return Some(resolved(reference, node, 0.95));
     }
     // In a trait impl the method is keyed by the trait (`Default::default`),
@@ -117,20 +133,67 @@ fn resolve_self(
         .filter(|node| {
             node.qualified_name.ends_with(&suffix)
                 && node.qualified_name != format!("{owner}::{item}")
+                && node.kind != NodeKind::TypeAlias
         })
         .collect();
     let local_refs: Vec<&Node> = local.iter().collect();
     unique(&local_refs).map(|node| resolved(reference, node, 0.8))
 }
 
+/// `owner` (the `Self` of the referencing item) is the trait declaring
+/// `item`: a reference inside the trait's own definition.
+fn owner_is_trait(owner: &str, item: &Node, context: &dyn ResolutionContext) -> bool {
+    let name = owner.rsplit("::").next().unwrap_or(owner);
+    context
+        .get_nodes_in_file_named(&item.file_path, name)
+        .iter()
+        .any(|node| node.kind == NodeKind::Trait && node.language == Language::Rust)
+}
+
 /// The module a reference is written in: its file's module plus any inline
 /// `mod` blocks around the referencing item — `super::f` inside `mod tests
 /// { … }` in lib.rs means the crate root, not "above the crate root".
+///
+/// The referencing item's qualified name spells the inline modules around
+/// it, except a method's (`Type::m` wherever its `impl` sits): the
+/// innermost `mod` block enclosing the reference's line says so then.
 fn caller_module(reference: &UnresolvedRef, context: &dyn ResolutionContext) -> ModuleLocation {
     let mut here = module_location(&reference.file_path);
-    if let Some(from) = context.get_node_by_id(&reference.from_node_id) {
-        here.module.extend(inline_modules(&from.qualified_name));
-    }
+    // (A node a framework synthesized — `src/lib.rs::route:/x` — names no
+    // module: only identifier segments count, that name a `mod` of the file.)
+    let from_item: Vec<String> = context
+        .get_node_by_id(&reference.from_node_id)
+        .map(|from| inline_modules(&from.qualified_name))
+        .unwrap_or_default()
+        .into_iter()
+        .take_while(|segment| {
+            segment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                // A fn nested in `outer` is `outer::walk`, a method of
+                // `impl Index for usize` is `usize::index_into`: only a
+                // `mod` of the file is a module.
+                && context
+                    .get_nodes_in_file_named(&reference.file_path, segment)
+                    .iter()
+                    .any(|node| node.kind == NodeKind::Module)
+        })
+        .collect();
+    let from_scope = context
+        .scopes_enclosing_line(&reference.file_path, reference.line)
+        .into_iter()
+        .find(|scope| {
+            scope.kind == NodeKind::Module
+                && scope.language == Language::Rust
+                && scope.end_line > scope.start_line
+        })
+        .map(|module| inline_modules(&format!("{}::item", module.qualified_name)))
+        .unwrap_or_default();
+    here.module.extend(if from_scope.len() > from_item.len() {
+        from_scope
+    } else {
+        from_item
+    });
     here
 }
 
@@ -272,7 +335,7 @@ fn module_in_scope(
 
     match resolve_in_module(context, caller, name, Namespace::Module) {
         Resolution::Found(node) => Some(declared_module(&node)),
-        Resolution::Ambiguous | Resolution::NotFound => None,
+        Resolution::Ambiguous(_) | Resolution::External | Resolution::NotFound => None,
     }
 }
 
@@ -310,10 +373,10 @@ fn imported_module(
     path: &[String],
 ) -> Option<ModuleLocation> {
     let (last, parent) = path.split_last()?;
-    let source = from.walk(parent)?;
+    let source = use_source(context, from, parent)?;
     match resolve_in_module(context, &source, last, Namespace::Module) {
         Resolution::Found(node) => Some(declared_module(&node)),
-        Resolution::Ambiguous | Resolution::NotFound => None,
+        Resolution::Ambiguous(_) | Resolution::External | Resolution::NotFound => None,
     }
 }
 
@@ -424,7 +487,8 @@ fn resolve_in_target(
                 return visible_from(&node, &home, caller)
                     .then(|| resolved(reference, &node, 0.95));
             }
-            Resolution::Ambiguous => return None,
+            // A re-export of another crate's item names nothing here.
+            Resolution::Ambiguous(_) | Resolution::External => return None,
             Resolution::NotFound => {}
         }
     }
@@ -452,12 +516,90 @@ fn resolve_in_target(
     if let Some(node) = unique(&same_crate) {
         return Some(resolved(reference, node, 0.8));
     }
+    // Re-exports mostly lift an item out of a child module (`pub use
+    // self::builder::Builder;` inside a `cfg_rt! { … }` the index cannot
+    // read): the one such item in the module the path names or a child.
+    let module = if owner.is_some() {
+        target.parent()
+    } else {
+        Some(target.clone())
+    };
+    if let Some(module) = module {
+        let below: Vec<&Node> = same_crate
+            .iter()
+            .copied()
+            .filter(|node| item_location(node).0.is_within_child_of(&module))
+            .collect();
+        if let Some(node) = unique(&below) {
+            return Some(resolved(reference, node, 0.8));
+        }
+    }
     if *guess == Guess::Project && same_crate.is_empty() {
         if let Some(node) = unique(&shape) {
             return Some(resolved(reference, node, 0.7));
         }
     }
     None
+}
+
+/// The one project type a type path written at the top level of `file`
+/// names (`Sender`, `crate::loom::sync::Mutex`), found as rustc would:
+/// the module's items, `use`s, re-exports and globs followed. `None` when
+/// the module tree cannot say, or the path names something else.
+pub(in crate::resolution::name_matcher) fn type_definition(
+    path: &str,
+    file: &str,
+    context: &dyn ResolutionContext,
+) -> Option<Node> {
+    item_definition(path, file, EdgeKind::References, context).filter(|node| {
+        matches!(
+            node.kind,
+            NodeKind::Struct
+                | NodeKind::Enum
+                | NodeKind::Union
+                | NodeKind::Trait
+                | NodeKind::TypeAlias
+        )
+    })
+}
+
+/// The one free fn a call path written at the top level of `file` names
+/// (`mpsc::channel`, `load`), found like [`type_definition`]'s type.
+pub(in crate::resolution::name_matcher) fn fn_definition(
+    path: &str,
+    file: &str,
+    context: &dyn ResolutionContext,
+) -> Option<Node> {
+    item_definition(path, file, EdgeKind::Calls, context)
+        .filter(|node| node.kind == NodeKind::Function)
+}
+
+fn item_definition(
+    path: &str,
+    file: &str,
+    kind: EdgeKind,
+    context: &dyn ResolutionContext,
+) -> Option<Node> {
+    let reference = UnresolvedRef {
+        from_node_id: String::new(),
+        reference_name: path.to_string(),
+        reference_kind: kind,
+        line: 0,
+        column: 0,
+        file_path: file.to_string(),
+        language: Language::Rust,
+        candidates: None,
+        metadata: None,
+    };
+    if path.contains("::") {
+        let found = match_rust_path(&reference, context)?;
+        context.get_node_by_id(&found.target_node_id)
+    } else {
+        match bare_binding(&reference, context) {
+            BareBinding::Item { node, .. } => Some(*node),
+            _ => None,
+        }
+    }
 }
 
 /// Resolve a Rust path whose head is `crate`, `self`, `super`, `Self`, or a
@@ -477,8 +619,72 @@ pub fn match_rust_path(
     match head {
         "Self" => resolve_self(reference, rest, context),
         "crate" | "self" | "super" => resolve_module_path(reference, &parts, context),
-        _ => resolve_scoped_path(reference, &parts, context),
+        _ => resolve_scoped_path(reference, &parts, context)
+            .or_else(|| resolve_crate_path(reference, &parts, context))
+            .or_else(|| resolve_projection(reference, &parts, context)),
     }
+}
+
+/// `codegraph::types::Node`, `tokio::sync::Mutex::new`: a path whose first
+/// segment names a crate of the workspace (no module in scope does),
+/// resolved from that crate's root like a `crate::` path of it.
+fn resolve_crate_path(
+    reference: &UnresolvedRef,
+    parts: &[&str],
+    context: &dyn ResolutionContext,
+) -> Option<ResolvedRef> {
+    let (&head, rest) = parts.split_first()?;
+    let (&item, module_path) = rest.split_last()?;
+    if module_path.iter().any(|segment| is_path_keyword(segment)) {
+        return None;
+    }
+    let dir = project_crate_dir(head, context)?;
+    let root = ModuleLocation {
+        crate_key: dir.trim_end_matches('/').to_string(),
+        module: Vec::new(),
+    };
+    let path = ModulePath {
+        caller: caller_module(reference, context),
+        target: root.walk(module_path)?,
+        owner: owner_segment(module_path),
+        item,
+        guess: Guess::SameCrate,
+    };
+    resolve_in_target(reference, &path, context)
+}
+
+/// `T::Value` in a type, `T` a generic parameter bounded by a project trait
+/// (`T: RequestConfigValue`): the associated type the trait declares, when
+/// exactly one project trait declares one of that name. A `T` the project
+/// defines as a type is left to the other rules.
+fn resolve_projection(
+    reference: &UnresolvedRef,
+    parts: &[&str],
+    context: &dyn ResolutionContext,
+) -> Option<ResolvedRef> {
+    let [param, item] = parts else {
+        return None;
+    };
+    if reference.reference_kind == EdgeKind::Calls
+        || !starts_uppercase(param)
+        || !starts_uppercase(item)
+        || names_rust_type(context, param)
+    {
+        return None;
+    }
+    let declared: Vec<Node> = context
+        .get_nodes_by_name_and_kind(item, NodeKind::TypeAlias)
+        .into_iter()
+        .filter(|node| {
+            node.language == Language::Rust
+                && node
+                    .qualified_name
+                    .rsplit_once("::")
+                    .is_some_and(|(owner, _)| owner_is_trait(owner, node, context))
+        })
+        .collect();
+    let declared: Vec<&Node> = declared.iter().collect();
+    unique(&declared).map(|node| resolved(reference, node, 0.8))
 }
 
 #[cfg(test)]

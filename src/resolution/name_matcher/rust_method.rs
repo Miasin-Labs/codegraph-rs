@@ -25,9 +25,13 @@
 //! fallbacks.
 
 use super::dependency_names::match_dependency_method;
+use super::exact::pick_exact;
 use super::receiver::{RustType, infer_rust_receiver_type, resolve_type};
+use super::rust_call::TYPED_CONFIDENCE;
+use super::rust_generics::is_generic_param;
 use super::std_methods::{is_common_std_method_name, is_std_method_name};
 use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
+use crate::types::Node;
 
 /// Decide `receiver.method(..)`: `Some(result)` is final, `None` leaves the
 /// call to the remaining strategies.
@@ -48,7 +52,7 @@ pub(super) fn match_instance_call(
         method,
         reference,
         context,
-        0.9,
+        TYPED_CONFIDENCE,
         ResolvedBy::InstanceMethod,
     )
 }
@@ -66,7 +70,7 @@ pub(super) fn match_typed_call(
         method,
         reference,
         context,
-        0.9,
+        TYPED_CONFIDENCE,
         ResolvedBy::InstanceMethod,
     )
 }
@@ -81,6 +85,11 @@ pub(super) fn match_type_path_call(
     if owner == "Self" {
         // `match_rust_path` already looked in the enclosing impl.
         return is_common_std_method_name(method).then_some(None);
+    }
+    // `T::default()`, `R::new()`: a generic parameter's, not a project
+    // type's that shares its name.
+    if is_generic_param(owner, reference, context) {
+        return Some(None);
     }
     let ty = resolve_type(owner, &reference.file_path, reference, context);
     if !ty.is_project_type(context) {
@@ -105,10 +114,28 @@ fn decide_on_type(
     resolved_by: ResolvedBy,
 ) -> Option<Option<ResolvedRef>> {
     let candidates = context.get_nodes_by_name(method);
-    if let Some(target) = ty.method(method, &candidates, reference, context) {
+    let target = match ty
+        .methods(method, &candidates, reference, context)
+        .as_slice()
+    {
+        [] => None,
+        [only] => Some(only.id.clone()),
+        // Tied on the type's home: the name rules' nearness picks, never
+        // the calling fn itself — `Type::m(self)` or `self.m()` inside a
+        // trait impl's `m` runs the inherent `m` it wraps.
+        tied => {
+            let tied: Vec<Node> = tied
+                .iter()
+                .filter(|node| node.id != reference.from_node_id)
+                .map(|node| (*node).clone())
+                .collect();
+            pick_exact(reference, &tied, context, None).map(|picked| picked.target_node_id)
+        }
+    };
+    if let Some(target_node_id) = target {
         return Some(Some(ResolvedRef {
             original: reference.clone(),
-            target_node_id: target.id.clone(),
+            target_node_id,
             confidence,
             resolved_by,
         }));

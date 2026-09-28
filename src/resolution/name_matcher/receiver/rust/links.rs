@@ -12,11 +12,16 @@
 //! and nothing after them is guessed.
 
 use super::adaptors::{Adapted, adapt, guarded, indexed, item};
+use super::calls::CELLS;
 use super::expr::Tail;
 use super::fields::declared_type;
 use super::lookup::{RustType, assoc_fn_return};
-use super::types::{Named, named_type, peeled, split_path, split_top_level};
+use super::types::{Named, is_deref_wrapper, named_type, peeled, split_path, split_top_level};
 use super::{Inference, Origin, Value};
+
+/// The toolchain's crates, whose generic wrappers (`Option<T>`, `Arc<T>`)
+/// can hand back a project type (see `adaptors`).
+const STD_CRATES: &[&str] = &["alloc", "core", "std"];
 
 /// How many lock guards deep one method call is followed.
 const MAX_GUARDS: u8 = 2;
@@ -59,15 +64,22 @@ impl Inference<'_> {
         if let Some(value) = self.foreign_method_value(&ty, method) {
             return Some(value);
         }
+        let adapted = match &value {
+            Value::Written { text, .. } => adapt(text, method),
+            Value::Resolved(_) => None,
+        };
+        let Some(adapted) = adapted else {
+            return self.external_method_value(&value, &ty);
+        };
         let Value::Written {
-            text,
+            text: _,
             self_ty,
             file,
         } = value
         else {
             return None;
         };
-        match adapt(&text, method)? {
+        match adapted {
             Adapted::Written(text) => Some(Value::Written {
                 text,
                 self_ty,
@@ -84,6 +96,27 @@ impl Inference<'_> {
             }
             Adapted::Guarded(_) => None,
         }
+    }
+
+    /// What a method no adaptor knows returns on `ty`, a type of a crate
+    /// outside the project and the toolchain (`Router::route`,
+    /// `Builder::status`): a type of that crate, never a project type —
+    /// taken to be `ty` itself, the builder shape, so a project extension
+    /// trait's method on it still resolves and nothing else does. A cell,
+    /// lock or pointer whose held type was not kept may hand back a
+    /// project type: unknown.
+    fn external_method_value(&self, value: &Value, ty: &RustType) -> Option<Value> {
+        let krate = ty
+            .external_crate()
+            .filter(|krate| !STD_CRATES.contains(krate))?;
+        let holds_unknown = match value {
+            Value::Written { text, .. } => text.contains('<'),
+            Value::Resolved(ty) => CELLS.contains(&ty.name.as_str()) || is_deref_wrapper(&ty.name),
+        };
+        if holds_unknown {
+            return None;
+        }
+        RustType::in_crate(krate, ty.external_path().to_vec()).map(Value::Resolved)
     }
 
     /// What `value.field` holds: the field's declared type, on a project
