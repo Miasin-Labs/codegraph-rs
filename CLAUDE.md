@@ -419,14 +419,30 @@ cargo test --workspace
   Never from MCP or the prompt hook.
   `CODEGRAPH_NO_BACKGROUND_SYNC=1` stops the spawn, `CODEGRAPH_DEPS=0`
   the whole hook. **The toolchain's library** (`deps/toolchain.rs`,
-  `Ecosystem::Rust`, dir `deps/rust/std-<release>+<commit12>/`): a
-  project with a `Cargo.lock` also records its rustc's std/core/alloc
-  (`rustc -vV`/`--print sysroot` in the project dir, 5 s deadline; needs
-  `rust-src`), built like a shard from `library/{std,core,alloc}/src`
-  (no tests/benches/stdarch; ~1k files, 33k nodes, 15 s). The external
-  pass reaches it as the graphs `std`/`core`/`alloc` (edges named
-  `std::<qname>` for `resolves-to`). `CODEGRAPH_STD=0` turns it off;
-  `CODEGRAPH_RUST_SRC` + `CODEGRAPH_RUST_VERSION` name one explicitly.
+  `Ecosystem::Rust`, dir `deps/rust/std-<release>+<commit12>/`) — the ONE
+  representation of std/core/alloc, used by the external pass, taint and
+  the ecosystem beliefs alike: a project with a `Cargo.lock` also records
+  its rustc's std/core/alloc (`rustc -vV`/`--print sysroot` in the project
+  dir, so `rust-toolchain.toml` holds; 5 s deadline; needs `rust-src`),
+  built like a shard from `library/{std,core,alloc}/src` (no tests/
+  benches/stdarch; ~1k files, 33k nodes, 15 s) under `toolchain::
+  shard_limits` whoever builds it (`deps build` or `toolchain::ensure`,
+  the beliefs build's), gc'd like any shard. `toolchain::graphs` reads it
+  as four graphs on one key (`rust/std-…`): `std`, `core`, `alloc` — each
+  scoped to its own directory (`GraphLocation::Shard.crate_dir`), so
+  `core::x` never answers with std's items — plus `alloc_crate` (= alloc;
+  std's `pub use alloc_crate::…`). `std` is also the *facade* of core/
+  alloc (`facade_of`, `Scope::Facade` in `external/open.rs`): only after
+  its own items and every re-export hop fail, a type or a type's member
+  (`RefCell::borrow`, `str::len`, `Poll::Ready`) is looked up there and
+  answered from the defining crate's graph; never a bare fn/const
+  (`std::str::eq` is not `core::ptr::eq`). That covers re-exports the
+  path rules can't follow (`pub mod task { pub use core::task::*; }`
+  inline) and type nodes the grammar drops (nightly `RefCell`). Edges into
+  it are named `std::<qname>` for `resolves-to`; the target file's first
+  segment names the crate (`toolchain::crate_of_file`). `CODEGRAPH_STD=0`
+  turns it off; `CODEGRAPH_RUST_SRC` + `CODEGRAPH_RUST_VERSION` name one
+  explicitly.
 - **Dependency taint summaries** (`src/deps/summaries/`): per Rust crate
   shard, once per version, `taint-summaries.json` inside the shard dir
   (versioned `SUMMARY_VERSION` — bump when the lowering, engine or stored
@@ -510,11 +526,13 @@ cargo test --workspace
   `build` (CLI only, `--detach` = one detached builder; `--max-crates`,
   `--budget-ms`, per-crate resolution budget) takes one version per cached
   crate, builds its shard + its direct deps' shards from the cache (reqs →
-  newest cached match, never the network) + `std`/`core`/`alloc` shards
-  from local rust-src (`deps/beliefs/toolchain/`), runs a READ-ONLY
-  external pass over a private copy (`resolve_read_only`: explicit
-  `Reach`, writes nothing; bare prelude types map to alloc/core only
-  there), and walks the syntax (`observe.rs`: use class, receiver-root
+  newest cached match, never the network) + the toolchain shard above
+  (`toolchain::ensure` for the rustc of the working directory, into the
+  shared `deps/rust/`; no registry row, so `gc` takes it as an orphan
+  unless a project records it — the next build remakes it), runs a
+  READ-ONLY external pass over a private copy (`resolve_read_only`:
+  explicit `Reach`, writes nothing; bare prelude types map to alloc/core
+  wherever the toolchain graphs are reachable), and walks the syntax (`observe.rs`: use class, receiver-root
   object, APIs before/after on it, escapes, constructed-in-view, guard
   alive at a later `.await`). Observations cache per crate
   (`deps/beliefs/obs/`, input fingerprint) → `beliefs.json` (keys
@@ -524,12 +542,21 @@ cargo test --workspace
   (`into_raw`/`from_raw`, `alloc`/`dealloc`; `into`/`from` only over
   `raw`, never `push`/`pop`), not-held-across-await; ≥5 agreeing crates,
   ≥10 sites, 90% sites + 85% crates, ≤20 sites/crate/API, lift ≥3.
-  `analyze bugs|review` load it read-only (`--no-ecosystem` skips) and
+  `analyze bugs|review` load it read-only (`--no-ecosystem` skips; their
+  `std` calls resolve read-only into the toolchain shard the project
+  records, else the one `beliefs.json`'s `toolchain` names — keys are
+  `std@1`, so either answers; the index's own edges into it are skipped,
+  never counted twice) and
   report `ecosystem-*`; ordering departures need the object abandoned
   (nothing after and its value dropped / nothing before but its
   constructor), and a raw-pointer acquire is released by any `from_raw*`
   (`Box::from_raw(alloc(l))`). Bump `OBSERVE_VERSION` when observation
-  changes. Whole cache 2026-09: 1,975 crates, 311k sites, 199 beliefs,
+  changes; the input fingerprint carries the toolchain's release+commit,
+  so a new nightly re-observes. Builds before the unification kept
+  separate std/core/alloc shards under `deps/beliefs/toolchain/`; `deps
+  gc` removes those (shard dirs with a `meta.json`, their locks, build
+  leftovers — nothing else, never while a beliefs build holds its lock).
+  Whole cache 2026-09: 1,975 crates, 311k sites, 199 beliefs,
   ~7 min cold / ~90 s warm / <1 s re-mine; 8 real projects (51k library
   calls) 23 → 1 finding, rustsec-adjacent 49 → 0 (none were near a fix);
   the cache's own departures found tokio-cron-scheduler's check-then-
