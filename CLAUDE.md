@@ -391,6 +391,27 @@ cargo test --workspace
   `--base` narrows the report (beliefs are still learned project-wide).
   `analyze bugs|rules --json` lists every finding (a consumer filters it);
   the human form shows the 50 most confident; `--top` caps either.
+- **Compiler detector** (`src/analyze/bugs/compiler/`, `analyze bugs|review
+  --detector compiler`; opt-in, never in the default set — it builds;
+  design + measurements: `docs/architecture/compiler-detector.md`):
+  `cargo clippy --offline --message-format=json --workspace` (lib/bins
+  only) through the diagnostics runner (`clippy_lints_or_poll`: detached,
+  `--compiler-wait` ≤300 s default, a later call picks the run up), with
+  the lint table `lints.rs` (`correctness`+`suspicious` minus doc/tooling
+  hygiene, bug-relevant restriction/pedantic lints, rustc UB/`must_use`
+  lints — every name checked by a test against the installed clippy, each
+  with a reason and review questions). Result cache keyed by lockfile
+  content + indexed files' size/mtime + args, stored after the run and
+  never when a source changed mid-run. A finding sits at the outermost
+  in-project macro call site, in an *indexed* file only, rule
+  `clippy::x`/`rustc::x` (suppression ids may contain `::`). Confidence =
+  measured class (High .8/Medium .55/Low .3/Rare .15) × text shapes
+  (`shapes.rs`: lock and literal unwraps, `x += 1` dropped) × reach
+  (`reach.rs`: route handlers → extractor-taking fns → a library's public
+  fns taking bytes/text/readers; BFS ≤8 calls; input lints rise to ≤2.5×
+  base). Measured: restriction lints were ~all guarded code on rms,
+  codegraph-rs and 84 buildable RustSec pairs (184/612 units build
+  offline), so a reached Rare lint (≤.375) stays below a correctness hit.
 - **Rules engine** (`src/analyze/rules/`, `codegraph analyze rules`,
   `analyze review --rules|--builtin`): model-writable YAML rules
   (weggli-ruleset format, `deny_unknown_fields`, `serde_yaml_ng`) whose
