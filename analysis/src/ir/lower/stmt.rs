@@ -35,6 +35,16 @@ impl Lowerer<'_, '_> {
         if node.is_extra() || self.rules.ignored.contains(&kind) || self.cfg.is_nested_scope(kind) {
             return;
         }
+        if let Some(expression) = self.rules.expression {
+            if let Some(shape) = expression.binding(kind) {
+                self.binding(node, *shape);
+                return;
+            }
+            if self.cfg.classify(kind) == Construct::Switch {
+                drop(self.match_value(node));
+                return;
+            }
+        }
         match self.cfg.classify(kind) {
             Construct::Block => {
                 for child in self.named_children(node) {
@@ -236,8 +246,12 @@ impl Lowerer<'_, '_> {
                 });
                 self.record_call(iterable.place, Vec::new());
                 if let Some(binding) = self.slot(node, shape.binding) {
-                    self.declare_all(binding);
-                    self.write(binding, Operand::Var(element));
+                    if self.rules.expression.is_some() {
+                        self.bind(binding, &Operand::Var(element));
+                    } else {
+                        self.declare_all(binding);
+                        self.write(binding, Operand::Var(element));
+                    }
                 }
                 Operand::Const("<has-next>".into())
             }
