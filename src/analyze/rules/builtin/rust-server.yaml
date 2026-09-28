@@ -140,6 +140,14 @@ description: >-
 severity: medium
 tags: [CWE-918, ssrf]
 language: rust
+# Only in server context: the client is built in code a route, request
+# handler, listener or message handler reaches, or in a method of a type
+# such code uses (`via-type`: `FeedManager::new` builds the client the
+# routes reaching `FeedManager::article_to_epub` use). On 10 real
+# checkouts (2026-09) 45 → 5: the 40 dropped were CLI tools and clients
+# of fixed API hosts (27 judged before, all harmless); kept are rms's two
+# audit fixes (feeds, Wallabag), its provider client (redirects by
+# design) and two server-side clients of fixed hosts.
 check-patterns:
   - name: builder-without-redirect-policy
     query: |
@@ -151,6 +159,8 @@ check-patterns:
         regex: "Client::builder\\(\\)|ClientBuilder::new\\(\\)"
       - capture: call
         not-regex: "\\.redirect\\("
+      - reached-from: server
+        via-type: true
   - name: default-client
     query: |
       ((call_expression function: (scoped_identifier path: (_) @ty name: (identifier) @f)) @call
@@ -159,21 +169,33 @@ check-patterns:
     where:
       - capture: ty
         regex: "^(reqwest::)?Client$"
+      - reached-from: server
+        via-type: true
 message: "reqwest client without a redirect policy (follows redirects by default)"
 review:
   - Does this client ever talk to a URL a user or tenant configures? Then a redirect can point it at localhost or the cloud metadata address.
   - "`.redirect(reqwest::redirect::Policy::none())` unless the API is known to redirect."
 examples:
   bad:
+    - code: |
+        fn c() -> reqwest::Client { reqwest::Client::builder().timeout(T).build().unwrap() }
+      reached: true
+    - code: |
+        fn c() -> Client { Client::new() }
+      reached: route
+  good:
+    - code: |
+        fn c() -> reqwest::Client { reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap() }
+      reached: true
+    - code: |
+        fn c() -> Foo { Foo::new() }
+      reached: true
+    # A CLI's client: no server entry point reaches it.
     - |
       fn c() -> reqwest::Client { reqwest::Client::builder().timeout(T).build().unwrap() }
-    - |
-      fn c() -> Client { Client::new() }
-  good:
-    - |
-      fn c() -> reqwest::Client { reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap() }
-    - |
-      fn c() -> Foo { Foo::new() }
+    - code: |
+        fn c() -> Client { Client::new() }
+      reached: public-api
 ---
 id: rust-accept-error-ends-server
 description: >-
@@ -218,6 +240,19 @@ description: >-
 severity: medium
 tags: [CWE-400, dos]
 language: rust
+# Waiting on a child is a bug where input decides how long it runs: in a
+# server (a route, request handler, listener or message handler reaches the
+# function), or wherever the child runs code or parses a file (an
+# interpreter, a test runner, `docker run`, a document converter) — agents
+# and CI tools run generated code that way. On 10 real checkouts
+# (2026-09) 127 → 18: the 9 in server context hold rms's pdftotext and
+# testsprite's runners of generated code; 9 code runners and converters
+# outside servers stay at 0.45 (jfc's `cargo test` of a validator's test
+# and `bash -c` of a task's check, ers's pdftotext of downloaded
+# statements); the 109 dropped were CLIs waiting on `git` (55), `tmux`,
+# `gh`, `gcloud`, `cargo build`, their own binaries. For the second
+# pattern `Command::new("x")` must be in the call's chain, and `sh -c`
+# with a literal script is no code runner.
 check-patterns:
   - name: run-to-completion
     query: |
@@ -226,23 +261,59 @@ check-patterns:
     at: call
     where:
       - enclosing-function:
-          calls: "Command::new|^new$"
-          calls-not: "(?i)timeout|wait_timeout|kill|run_bounded|deadline"
+          calls: &spawns "Command::new|^new$"
+          calls-not: &bounded "(?i)timeout|wait_timeout|kill|run_bounded|deadline"
       - capture: call
-        regex: "Command::new|\\.arg|\\.spawn\\(|child|\\.stdout"
+        regex: &child "Command::new|\\.arg|\\.spawn\\(|child|\\.stdout"
+      - capture: call
+        not-regex: &runs-code "Command::new\\(\\s*\"(?:python3?|node|deno|bun|ruby|perl|php|pwsh|powershell|npx|pytest|java|dotnet|pdftotext|pdfinfo|pdftoppm|mutool|qpdf|gs|ffmpeg|ffprobe|magick|convert|tesseract|pandoc|soffice|libreoffice|unzip|7z)\"|Command::new\\(\\s*\"(?:sh|bash|zsh)\"\\)\\s*\\.args?\\(\\s*\\[?\\s*\"-c\"\\s*(?:,|\\)\\s*\\.arg\\()\\s*[^\"\\s]|Command::new\\(\\s*\"(?:cargo|go|docker|podman|npm|pnpm|yarn)\"\\)[\\s\\S]*?\"(?:test|run|exec)\""
+      - reached-from: server
+  - name: runs-code-or-parses-input
+    query: |
+      ((call_expression function: (field_expression field: (field_identifier) @m)) @call
+       (#match? @m "^(output|status|wait|wait_with_output)$"))
+    at: call
+    where:
+      - enclosing-function:
+          calls: *spawns
+          calls-not: *bounded
+      - capture: call
+        regex: *runs-code
+      - reached-from: server
+        unreached-confidence: 0.45
 message: "`{m}()` waits for a child process with no deadline"
 review:
-  - Can the input (a user file, a URL) make this tool run for a long time or print without end?
+  - Can the input (a user file, a URL, generated code) make this tool run for a long time or print without end?
   - Bound it (a timeout that kills the process group, and a cap on output).
 examples:
   bad:
+    - code: |
+        fn text(p: &Path) -> io::Result<Output> { Command::new("pdftotext").arg(p).output() }
+      reached: route
+    - code: |
+        fn head(dir: &Path) -> io::Result<Output> { Command::new("git").arg("rev-parse").current_dir(dir).output() }
+      reached: listener
+    # Code or documents run outside a server: kept, ranked lower.
+    - |
+      async fn adjudicate(dir: &Path) -> io::Result<Output> { tokio::process::Command::new("cargo").args(["test", "--test", "t"]).current_dir(dir).output().await }
     - |
       fn text(p: &Path) -> io::Result<Output> { Command::new("pdftotext").arg(p).output() }
+    - |
+      fn verify(cmd: &str) -> io::Result<Output> { Command::new("bash").arg("-c").arg(cmd).output() }
   good:
+    - code: |
+        async fn text(p: &Path) -> io::Result<Output> { tokio::time::timeout(T, Command::new("pdftotext").arg(p).output()).await? }
+      reached: true
+    - code: |
+        fn n(v: &[u8]) -> usize { v.iter().map(|b| b.status()).count() }
+      reached: true
+    # A CLI waiting on a local tool, or on a shell script it wrote itself.
     - |
-      async fn text(p: &Path) -> io::Result<Output> { tokio::time::timeout(T, Command::new("pdftotext").arg(p).output()).await? }
+      fn head(dir: &Path) -> io::Result<Output> { Command::new("git").arg("rev-parse").current_dir(dir).output() }
     - |
-      fn n(v: &[u8]) -> usize { v.iter().map(|b| b.status()).count() }
+      fn procs() -> io::Result<Output> { Command::new("sh").args(["-c", "ps aux | wc -l"]).output() }
+    - |
+      fn build(dir: &Path) -> io::Result<Output> { Command::new("cargo").arg("build").current_dir(dir).output() }
 ---
 id: rust-network-read-without-deadline
 description: >-
@@ -253,6 +324,12 @@ description: >-
 severity: low
 tags: [CWE-400, dos]
 language: rust
+# A server's reads are the slowloris case; a client's (an SMTP or tunnel
+# client reading its server) can hang too, but only on a peer it chose. On
+# 10 real checkouts (2026-09) 4 of 8 reads are a server's (rms's SMTP
+# session, fixed by its audit; unlace-lumina's frame reads) and 4 a
+# client's (SMTP/OAuth/tunnel clients, one child pipe): those stay, ranked
+# lower.
 check-patterns:
   - name: read-without-timeout
     query: |
@@ -267,17 +344,24 @@ check-patterns:
         # Files, HTTP bodies and a child process's pipes (EOF when it exits)
         # are not peers.
         not-regex: "(?i)file|fs::|stdin|stdout|stderr|child|pipe|body|response|resp\\b|res\\b"
+      - reached-from: server
+        unreached-confidence: 0.25
 message: "`{read}` waits on a peer with no deadline"
 review:
   - Is the reader a socket a remote client controls (not a file, not a trusted child)?
   - Is a timeout applied by the caller instead (`tokio::time::timeout` around the session)?
 examples:
   bad:
+    - code: |
+        async fn cmd(r: &mut BufReader<TcpStream>, b: &mut String) -> io::Result<usize> { r.read_line(b).await }
+      reached: listener
+    # A client's read: kept, ranked lower.
     - |
-      async fn cmd(r: &mut BufReader<TcpStream>, b: &mut String) -> io::Result<usize> { r.read_line(b).await }
+      async fn reply(r: &mut BufReader<TcpStream>, b: &mut String) -> io::Result<usize> { r.read_line(b).await }
   good:
-    - |
-      async fn cmd(r: &mut BufReader<TcpStream>, b: &mut String) -> io::Result<usize> { timeout(IDLE, r.read_line(b)).await? }
+    - code: |
+        async fn cmd(r: &mut BufReader<TcpStream>, b: &mut String) -> io::Result<usize> { timeout(IDLE, r.read_line(b)).await? }
+      reached: true
     - |
       async fn read_stderr(mut stderr: ChildStderr) -> String { let mut t = String::new(); let _ = stderr.read_to_string(&mut t).await; t }
 ---

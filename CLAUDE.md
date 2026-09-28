@@ -600,9 +600,7 @@ cargo test --workspace
   `clippy::x`/`rustc::x` (suppression ids may contain `::`). Confidence =
   measured class (High .8/Medium .55/Low .3/Rare .15) × text shapes
   (`shapes.rs`: lock and literal unwraps, `x += 1` dropped) × reach
-  (`reach.rs`: route handlers → extractor-taking fns → a library's public
-  fns taking bytes/text/readers; BFS ≤8 calls; input lints rise to ≤2.5×
-  base). Measured: restriction lints were ~all guarded code on rms,
+  (`bugs/reach.rs`, below; input lints rise to ≤2.5× base). Measured: restriction lints were ~all guarded code on rms,
   codegraph-rs and 84 buildable RustSec pairs (184/612 units build
   offline), so a reached Rare lint (≤.375) stays below a correctness hit.
   **Ecosystem beliefs** (`deviance/ecosystem/`, `src/deps/beliefs/`,
@@ -663,10 +661,25 @@ cargo test --workspace
   `enclosing-function` {`calls`, `calls-not` (resolved callees, or the
   callee as written when unresolved), `name-regex`, `is-test`},
   `inside`/`not-inside` (an ancestor matches a query), capture `regex`/
-  `not-regex`. `ignore-patterns` drop check matches reported inside their
+  `not-regex`, and `reached-from: [route|extractor|listener|message|
+  public-api]` (`server` = the first four; evidence: the call path).
+  **Reach** (`src/analyze/bugs/reach.rs`, `Project::reach()`: computed once
+  per project, shared with the compiler detector) — entries: index
+  `route` nodes (any framework the index extracts), request-typed params
+  (Rust extractors, Go `*http.Request`, Django/Next…; not rmcp MCP tools —
+  their one client is the local agent), listeners (an unresolved
+  `accept`/`incoming`, not on a request), message handlers (lapin
+  `Delivery`, rdkafka, nats, rumqttc); public fns only when none exist;
+  one BFS per kind over resolved non-test calls, ≤8 deep. Unresolved or
+  unknown = NOT reached. `via-type: true` also counts a method whose
+  type's other methods (same owner + file) are reached — a constructor
+  whose object serves requests; `unreached-confidence: x` keeps unreached
+  matches at confidence x (check patterns/sinks only) instead of
+  dropping them. `ignore-patterns` drop check matches reported inside their
   span. Every rule must carry `examples: {bad, good}`; `--check` runs them
   with no index (calls resolve as written, or per the example's `resolves`
-  map) and explains each failure (which pattern matched where, which
+  map; code is reached only if it says `reached: true|<kinds>`) and
+  explains each failure (which pattern matched where, which
   predicate or ignore-pattern rejected it); load errors name file, line,
   rule, pattern and the key meant. Language specifics live in `lang.rs`
   tables; per-match work is O(depth) (tree positions, a per-file line →
@@ -686,7 +699,13 @@ cargo test --workspace
   after; on 10 real projects, 2026-09: secret-compare's `expected` counts
   only in credential fns, only a zero-arg listener `accept()` counts, child
   pipes are no peer reads; python command injection needs a shell,
-  py-path-from-input web input — 12% real / 89% real-or-harmless after),
+  py-path-from-input web input — 12% real / 89% real-or-harmless after;
+  gated on `reached-from: server`, 10 checkouts: redirects 45 → 5 (with
+  `via-type`; rms's feeds/Wallabag fixes kept), subprocess waits 127 →
+  18 (+ code runners/converters anywhere at .45: jfc's `cargo test` of
+  generated tests), network reads kept, clients at .25; the Python/JS
+  command/SSRF rules had no findings there and already need request
+  input or a shell, so they are not gated),
   and RFC-sourced soundness rules (`rust-rfc.yaml`). Each of those cites
   its RFC/Reference section; they cover `Pin::new_unchecked` on a `&mut
   self` field, unaligned reads through byte-pointer casts, and

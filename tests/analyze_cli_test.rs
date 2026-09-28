@@ -37,6 +37,7 @@ include!("analyze_cli_test/fuzz.rs");
 include!("analyze_cli_test/miri.rs");
 include!("analyze_cli_test/rules.rs");
 include!("analyze_cli_test/rules_taint.rs");
+include!("analyze_cli_test/rules_reached.rs");
 include!("analyze_cli_test/coverage.rs");
 include!("analyze_cli_test/validate.rs");
 include!("analyze_cli_test/traits.rs");
