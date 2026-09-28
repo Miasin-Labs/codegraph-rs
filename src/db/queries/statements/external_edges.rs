@@ -109,11 +109,11 @@ pub struct ExternalEdgeCount {
     pub edges: u64,
 }
 
-const COLUMNS: &str = "source, kind, target_graph_kind, target_graph_key, target_node_id, \
+pub(super) const COLUMNS: &str = "source, kind, target_graph_kind, target_graph_key, target_node_id, \
      target_name, target_qualified_name, target_kind, target_file_path, target_line, \
      reference_name, line, col, confidence, resolved_by, metadata";
 
-fn external_edge_from_row(row: &Row<'_>) -> rusqlite::Result<Option<ExternalEdge>> {
+pub(super) fn external_edge_from_row(row: &Row<'_>) -> rusqlite::Result<Option<ExternalEdge>> {
     let kind: String = row.get(1)?;
     let graph_kind: String = row.get(2)?;
     let target_kind: String = row.get(7)?;
@@ -335,7 +335,9 @@ impl QueryBuilder {
 
     /// Turn every external edge into `graph_keys` back into an unresolved
     /// reference (as written, with its metadata) and drop the edge, in one
-    /// transaction. Returns how many were restored.
+    /// transaction. Edges only the compiler layer knew (`compilerOnly`) are
+    /// dropped without a reference: tree-sitter never recorded one. Returns
+    /// how many were restored.
     pub fn restore_external_edges(&self, graph_keys: &[String]) -> Result<usize> {
         if graph_keys.is_empty() {
             return Ok(0);
@@ -354,7 +356,8 @@ impl QueryBuilder {
                                 IFNULL(e.line, n.start_line), IFNULL(e.col, n.start_column),
                                 e.metadata, n.file_path, n.language
                          FROM external_edges e JOIN nodes n ON n.id = e.source
-                         WHERE e.target_graph_key IN ({marks})"
+                         WHERE e.target_graph_key IN ({marks})
+                           AND IFNULL(json_extract(e.metadata, '$.compilerOnly'), 0) = 0"
                     ),
                     params_from_iter(chunk.iter().map(String::as_str)),
                 )?;

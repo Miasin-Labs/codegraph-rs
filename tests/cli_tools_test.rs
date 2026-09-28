@@ -140,10 +140,10 @@ fn sql_count(root: &Path, query: &str) -> i64 {
 const FORGET_VOCAB: &str = "DELETE FROM name_segment_vocab;
      DELETE FROM project_metadata WHERE key = 'name_segment_vocab_state';";
 const VOCAB_COMPLETE: &str = "SELECT COUNT(*) FROM project_metadata WHERE key = 'name_segment_vocab_state' AND value = 'complete'";
-const SCHEMA_CURRENT: &str = "SELECT COUNT(*) FROM schema_versions WHERE version = 10";
-// A real v9 index keeps its earlier rows; relabel rather than delete the v10
-// row so only migration 10 is pending.
-const SCHEMA_BACK_TO_V9: &str = "UPDATE schema_versions SET version = 9 WHERE version = 10;";
+const SCHEMA_CURRENT: &str = "SELECT COUNT(*) FROM schema_versions WHERE version = 11";
+// A real v9 index keeps its earlier rows; relabel rather than delete the
+// current row so only the later migrations are pending.
+const SCHEMA_BACK_TO_V9: &str = "UPDATE schema_versions SET version = 9 WHERE version = 11;";
 
 /// Run the prompt hook on `prompt`; `background` allows its detached sync.
 fn run_prompt_hook(root: &Path, registry: &Path, prompt: &str, background: bool) -> Output {
@@ -199,7 +199,7 @@ async fn prompt_hook_never_migrates_or_rebuilds_inline() {
     // A never-built vocabulary would be rebuilt.
     sql(
         &root,
-        "UPDATE schema_versions SET version = 10 WHERE version = 9;",
+        "UPDATE schema_versions SET version = 11 WHERE version = 9;",
     );
     sql(&root, FORGET_VOCAB);
     let output = run_prompt_hook(&root, &registry, PROSE_PROMPT, false);

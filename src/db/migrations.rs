@@ -14,13 +14,16 @@ use crate::error::Result;
 /// can open. Shape repair remains idempotent because a foreign v9 database is
 /// already version-current and would otherwise skip Rust's missing columns.
 /// Version 10 adds `external_edges` (cross-graph references); every table a
-/// v9 reader uses is unchanged.
-pub const CURRENT_SCHEMA_VERSION: u32 = 10;
+/// v9 reader uses is unchanged. Version 11 adds `compiler_symbols` (the
+/// compiler layer's SCIP symbol per node, and which nodes a macro
+/// generated), a project-side table no reader of another graph needs.
+pub const CURRENT_SCHEMA_VERSION: u32 = 11;
 
 /// The oldest schema whose `nodes`/`edges`/`files` tables this build reads
 /// as its own. Read-only consumers of *another* graph (a dependency shard, a
 /// linked project's index) accept anything from here to
-/// [`CURRENT_SCHEMA_VERSION`]; only v10's `external_edges` is missing below.
+/// [`CURRENT_SCHEMA_VERSION`]; only v10's `external_edges` and v11's
+/// `compiler_symbols` are missing below.
 pub const MIN_READABLE_SCHEMA_VERSION: u32 = 9;
 
 /// Migration definition.
@@ -34,7 +37,7 @@ pub struct Migration {
 ///
 /// Note: Version 1 is the initial schema, handled by schema.sql.
 /// Future migrations go here.
-static MIGRATIONS: [Migration; 9] = [
+static MIGRATIONS: [Migration; 10] = [
     Migration {
         version: 2,
         description: "Add project metadata, provenance tracking, and unresolved ref context",
@@ -108,7 +111,32 @@ static MIGRATIONS: [Migration; 9] = [
         description: "Add external_edges: references resolved into dependency shards and linked projects",
         up: create_external_edges,
     },
+    Migration {
+        version: 11,
+        description: "Add compiler_symbols: SCIP symbols of nodes and the nodes macros generate",
+        up: create_compiler_symbols,
+    },
 ];
+
+/// v11: the compiler layer's per-node symbols (idempotent; `schema.sql`
+/// holds the same DDL for fresh databases).
+pub(crate) fn create_compiler_symbols(db: &Db) -> Result<()> {
+    db.exec(COMPILER_SYMBOLS_DDL)
+}
+
+/// The `compiler_symbols` table — kept in step with `schema.sql` (a test
+/// compares them).
+pub(crate) const COMPILER_SYMBOLS_DDL: &str = "
+CREATE TABLE IF NOT EXISTS compiler_symbols (
+    node_id TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    generated INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_compiler_symbols_symbol ON compiler_symbols(symbol);
+CREATE INDEX IF NOT EXISTS idx_compiler_symbols_generated
+  ON compiler_symbols(node_id) WHERE generated = 1;
+";
 
 /// v10: the cross-graph edge table (idempotent; `schema.sql` holds the same
 /// DDL for fresh databases).
@@ -386,4 +414,19 @@ pub fn get_migration_history(db: &Db) -> Result<Vec<MigrationRecord>> {
         out.push(r?);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::COMPILER_SYMBOLS_DDL;
+    use crate::db::SCHEMA_SQL;
+
+    fn squash(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn compiler_symbols_ddl_matches_schema_sql() {
+        assert!(squash(SCHEMA_SQL).contains(&squash(COMPILER_SYMBOLS_DDL)));
+    }
 }

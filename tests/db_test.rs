@@ -374,8 +374,8 @@ fn gets_schema_version() {
     let (_dir, db, _q) = setup();
     let version = db.get_schema_version().unwrap();
     assert!(version.is_some());
-    assert_eq!(version.unwrap().version, 10);
-    assert_eq!(CURRENT_SCHEMA_VERSION, 10);
+    assert_eq!(version.unwrap().version, 11);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 11);
 }
 
 #[test]
@@ -829,7 +829,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 10);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 11);
 
     let handle = db.get_db().unwrap();
     // Migration 2 added columns + project_metadata
@@ -870,7 +870,7 @@ fn open_migrates_legacy_v1_database_to_current() {
     // History records each applied migration
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 }
 
 #[test]
@@ -881,12 +881,12 @@ fn open_does_not_rerun_migrations_on_current_database() {
         let _db = DatabaseConnection::initialize(&db_path).unwrap();
     }
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 10);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 11);
     let handle = db.get_db().unwrap();
     assert!(!codegraph::db::needs_migration(&handle));
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 10]);
+    assert_eq!(versions, vec![1, 11]);
 }
 
 #[test]
@@ -942,7 +942,7 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 10);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 11);
     let handle = db.get_db().unwrap();
 
     // v5 added the nullable byte-offset columns.
@@ -991,7 +991,7 @@ fn open_migrates_v4_database_adding_byte_offset_columns() {
 
     let history = codegraph::db::get_migration_history(&handle).unwrap();
     let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 }
 
 #[test]
@@ -1047,7 +1047,7 @@ fn open_migrates_rust_v7_shape_and_enforces_edge_identity() {
     assert!(!codegraph::db::database_schema_is_current(&db_path));
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 10);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 11);
     assert!(codegraph::db::database_schema_is_current(&db_path));
     let handle = db.get_db().unwrap();
 
@@ -1149,7 +1149,7 @@ fn open_migrates_typescript_v7_shape_without_duplicate_column_failures() {
     }
 
     let db = DatabaseConnection::open(&db_path).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 10);
+    assert_eq!(db.get_schema_version().unwrap().unwrap().version, 11);
     let handle = db.get_db().unwrap();
 
     let node_columns: Vec<String> = {
@@ -1847,7 +1847,8 @@ fn migration_10_adds_external_edges_to_a_v9_index_idempotently() {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.execute_batch(
             "DROP TABLE external_edges;
-             UPDATE schema_versions SET version = 9 WHERE version = 10;",
+             DROP TABLE compiler_symbols;
+             UPDATE schema_versions SET version = 9 WHERE version = 11;",
         )
         .unwrap();
     }
@@ -1864,15 +1865,76 @@ fn migration_10_adds_external_edges_to_a_v9_index_idempotently() {
     };
     for _ in 0..2 {
         let db = DatabaseConnection::open(&db_path).unwrap();
-        assert_eq!(db.get_schema_version().unwrap().unwrap().version, 10);
+        assert_eq!(db.get_schema_version().unwrap().unwrap().version, 11);
         assert_eq!(table(&db), 1);
         let history = codegraph::db::get_migration_history(&db.get_db().unwrap()).unwrap();
         let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
-        assert_eq!(versions, vec![1, 9, 10], "migration 10 ran exactly once");
+        assert_eq!(
+            versions,
+            vec![1, 9, 10, 11],
+            "migration 10 ran exactly once"
+        );
     }
     // A fresh index has the table from schema.sql.
     let (_fresh, db, _q) = setup();
     assert_eq!(table(&db), 1);
+}
+
+#[test]
+fn migration_11_adds_compiler_symbols_to_a_v10_index_idempotently() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("v10.db");
+    {
+        // A current index with a node, taken back to v10: no compiler_symbols.
+        let db = DatabaseConnection::initialize(&db_path).unwrap();
+        QueryBuilder::new(db.get_db().unwrap())
+            .insert_nodes(&[make_node("kept", "kept")])
+            .unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "DROP TABLE compiler_symbols;
+             UPDATE schema_versions SET version = 10 WHERE version = 11;",
+        )
+        .unwrap();
+    }
+    for _ in 0..2 {
+        let db = DatabaseConnection::open(&db_path).unwrap();
+        assert_eq!(db.get_schema_version().unwrap().unwrap().version, 11);
+        let history = codegraph::db::get_migration_history(&db.get_db().unwrap()).unwrap();
+        let versions: Vec<u32> = history.iter().map(|h| h.version).collect();
+        assert_eq!(versions, vec![1, 10, 11], "migration 11 ran exactly once");
+        let conn = db.get_db().unwrap();
+        let columns: Vec<String> = conn
+            .conn()
+            .prepare("SELECT name FROM pragma_table_info('compiler_symbols') ORDER BY cid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(columns, ["node_id", "symbol", "generated"]);
+    }
+    // Rows follow their node: deleting the node deletes its symbol row.
+    let db = DatabaseConnection::open(&db_path).unwrap();
+    let conn = db.get_db().unwrap();
+    conn.conn()
+        .execute(
+            "INSERT INTO compiler_symbols (node_id, symbol, generated) VALUES ('kept', 's', 1)",
+            [],
+        )
+        .unwrap();
+    conn.conn()
+        .execute("DELETE FROM nodes WHERE id = 'kept'", [])
+        .unwrap();
+    let left: i64 = conn
+        .conn()
+        .query_row("SELECT COUNT(*) FROM compiler_symbols", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(left, 0);
+    // The node table is untouched: readers of v9/v10 shards still read it.
+    const { assert!(codegraph::db::MIN_READABLE_SCHEMA_VERSION <= 10) };
 }
 
 #[test]
