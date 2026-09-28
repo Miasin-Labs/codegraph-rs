@@ -23,7 +23,10 @@ static CRATE_DIRS: LazyLock<Mutex<HashMap<(String, u64), CrateDirs>>> =
 
 /// The source directory (`analysis/src/`) of the project crate `name`, or
 /// `None` when `name` is not a crate of the project.
-pub(super) fn project_crate_dir(name: &str, context: &dyn ResolutionContext) -> Option<String> {
+pub(in crate::resolution::name_matcher) fn project_crate_dir(
+    name: &str,
+    context: &dyn ResolutionContext,
+) -> Option<String> {
     crate_dirs(context).get(name).cloned()
 }
 

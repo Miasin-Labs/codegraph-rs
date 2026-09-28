@@ -226,6 +226,30 @@ impl ResolutionContext for SnapshotContext {
         leaves
     }
 
+    fn get_rust_file_derived(
+        &self,
+        file_path: &str,
+        kind: &'static str,
+        derive: &mut dyn FnMut() -> Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Arc<dyn std::any::Any + Send + Sync> {
+        let key = (file_path.to_string(), kind);
+        if let Some(cached) = self
+            .rust_derived_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&key)
+        {
+            return Arc::clone(cached);
+        }
+        // Derived without the lock held: deriving reads other caches.
+        let derived = derive();
+        self.rust_derived_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, Arc::clone(&derived));
+        derived
+    }
+
     fn get_rust_fn_local_uses(&self, file_path: &str) -> Arc<[LocalUse]> {
         {
             let cache = self

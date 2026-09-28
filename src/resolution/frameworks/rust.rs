@@ -2,6 +2,11 @@
 //!
 //! Handles Actix-web, Rocket, Axum, and common Rust patterns.
 //!
+//! A bare PascalCase name is not resolved here: it once took the first
+//! same-named struct (preferring `/types/` dirs) whatever the file `use`d,
+//! and the compiler agreed with 28–34% of those edges. The name matcher's
+//! `use`-aware lookup (`name_matcher/rust_path/bare.rs`) decides them.
+//!
 //! Ported from `src/resolution/frameworks/rust.ts`. The TS per-context
 //! `WeakMap` cache for the cargo workspace crate map becomes a
 //! per-instance `Mutex` cache keyed by project root (object identity
@@ -35,24 +40,23 @@ const HANDLER_DIRS: &[&str] = &[
     "/controllers/",
 ];
 const SERVICE_DIRS: &[&str] = &["/services/", "/service/", "/repository/", "/domain/"];
-const MODEL_DIRS: &[&str] = &[
-    "/models/",
-    "/model/",
-    "/entities/",
-    "/entity/",
-    "/domain/",
-    "/types/",
-];
-
 const FUNCTION_KINDS: &[NodeKind] = &[NodeKind::Function];
 const SERVICE_KINDS: &[NodeKind] = &[NodeKind::Struct, NodeKind::Trait];
-const STRUCT_KINDS: &[NodeKind] = &[NodeKind::Struct];
 
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// A route's handler as written (`list`, `api::list`), without a leading
+/// `self::`: a path the name matcher resolves against the module tree
+/// (the bare last segment named any same-named fn of the project).
+fn handler_path(written: &str) -> Option<&str> {
+    let path = written.trim_matches(':');
+    let path = path.strip_prefix("self::").unwrap_or(path);
+    (!path.is_empty()).then_some(path)
 }
 
 /// Index of the ')' that matches the '(' at `open_idx`, or `None` if unbalanced.
@@ -227,8 +231,6 @@ impl FrameworkResolver for RustResolver {
         reference: &UnresolvedRef,
         context: &dyn ResolutionContext,
     ) -> Option<ResolvedRef> {
-        static PASCAL_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"^[A-Z][a-zA-Z]+$").unwrap());
         static MODULE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z_]+$").unwrap());
 
         // Pattern 1: Handler references
@@ -264,23 +266,6 @@ impl FrameworkResolver for RustResolver {
                     original: reference.clone(),
                     target_node_id: result,
                     confidence: 0.8,
-                    resolved_by: ResolvedBy::Framework,
-                });
-            }
-        }
-
-        // Pattern 3: Struct references (PascalCase)
-        if PASCAL_RE.is_match(&reference.reference_name) {
-            if let Some(result) = resolve_by_name_and_kind(
-                &reference.reference_name,
-                STRUCT_KINDS,
-                MODEL_DIRS,
-                context,
-            ) {
-                return Some(ResolvedRef {
-                    original: reference.clone(),
-                    target_node_id: result,
-                    confidence: 0.7,
                     resolved_by: ResolvedBy::Framework,
                 });
             }
@@ -368,8 +353,8 @@ impl FrameworkResolver for RustResolver {
 
         // Axum: .route("/path", get(h1).post(h2)…) — balanced-paren scan the route
         // call, then emit one route node per chained method. Handlers may be
-        // namespaced (`get(module::handler)`, `get(self::list)`); take the last
-        // path segment so the ref names the fn, not the module.
+        // namespaced (`get(module::handler)`, `get(self::list)`): the ref
+        // keeps the path, which names the module the handler is in.
         static ROUTE_OPEN_RE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"\.route\s*\(").unwrap());
         static PATH_RE: LazyLock<Regex> =
@@ -397,14 +382,7 @@ impl FrameworkResolver for RustResolver {
             let method_body = &args[path_caps.get(0).unwrap().end()..];
             for mh in METHOD_HANDLER_RE.captures_iter(method_body) {
                 let upper = mh.get(1).unwrap().as_str().to_uppercase();
-                let Some(handler) = mh
-                    .get(2)
-                    .unwrap()
-                    .as_str()
-                    .split("::")
-                    .filter(|s| !s.is_empty())
-                    .last()
-                else {
+                let Some(handler) = handler_path(mh.get(2).unwrap().as_str()) else {
                     continue;
                 };
 
@@ -444,7 +422,7 @@ impl FrameworkResolver for RustResolver {
                                 method: &str,
                                 handler_expr: &str,
                                 line: u32| {
-            let Some(handler) = handler_expr.split("::").filter(|s| !s.is_empty()).last() else {
+            let Some(handler) = handler_path(handler_expr) else {
                 return;
             };
             let upper = method.to_uppercase();

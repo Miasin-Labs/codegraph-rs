@@ -419,6 +419,19 @@ pub trait ResolutionContext {
     fn get_rust_use_leaves(&self, file_path: &str) -> Arc<[RustUse]> {
         rust_use_leaves(&self.get_nodes_in_file(file_path)).into()
     }
+    /// Something per-reference Rust resolution derives once from a whole
+    /// file (its generic parameter scopes, the `use`s inside its macro
+    /// calls), under `kind`. The production contexts keep it per file for
+    /// their lifetime, like [`Self::get_rust_fn_local_uses`]; the default
+    /// derives it on every call.
+    fn get_rust_file_derived(
+        &self,
+        _file_path: &str,
+        _kind: &'static str,
+        derive: &mut dyn FnMut() -> Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Arc<dyn std::any::Any + Send + Sync> {
+        derive()
+    }
     /// Rust `use` leaves declared inside fn bodies of a file, read from its
     /// source ([`rust_fn_local_uses`]). Receiver inference asks for them on
     /// every type path it resolves, so the production contexts cache this

@@ -254,7 +254,11 @@ fn rust_extracts_multiline_axum_route_with_namespaced_handler() {
     let src = "\nlet app = Router::new()\n    .route(\n        \"/articles/feed\",\n        get(listing::feed_articles),\n    );\n";
     let result = RustResolver::new().extract("main.rs", src).unwrap();
     assert_eq!(result.nodes[0].name, "GET /articles/feed");
-    assert_eq!(result.references[0].reference_name, "feed_articles");
+    // The handler keeps its path: `listing::` names the module it is in.
+    assert_eq!(
+        result.references[0].reference_name,
+        "listing::feed_articles"
+    );
 }
 
 #[test]

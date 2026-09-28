@@ -144,6 +144,12 @@ impl<'a> TreeSitterExtractor<'a> {
                 }
             }
         }
+        // A direct member of an impl block whose Self type lives elsewhere.
+        if let Some((owner, depth)) = &self.rust_impl_owner {
+            if *depth == self.node_stack.len() {
+                parts.push(owner);
+            }
+        }
         parts.push(name);
         parts.join("::")
     }

@@ -78,86 +78,53 @@ impl<'a> TreeSitterExtractor<'a> {
     }
 
     pub(super) fn extract_rust_impl_item(&mut self, node: SyntaxNode<'_>) {
-        // Check if this is `impl Trait for Type` by looking for a `for` keyword
-        let mut has_for = false;
-        let mut cursor = node.walk();
-        for c in node.children(&mut cursor) {
-            if c.kind() == "for" && !c.is_named() {
-                has_for = true;
-                break;
-            }
-        }
-        if !has_for {
+        // `impl Trait for Type`: the grammar's `trait` field is the trait,
+        // `type` the implementing type (generic, borrowed or path-qualified:
+        // `impl<T> Tr for a::B<T>`, `impl Tr for &mut B`).
+        let Some(trait_node) = node.child_by_field_name("trait") else {
             return;
-        }
-
-        // In `impl Trait for Type`, the type_identifiers are:
-        // first = Trait name, last = implementing Type name
-        // Also handle generic types like `impl<T> Trait for MyStruct<T>`
-        let type_idents: Vec<SyntaxNode<'_>> = named_children(node)
-            .into_iter()
-            .filter(|c| {
-                matches!(
-                    c.kind(),
-                    "type_identifier" | "generic_type" | "scoped_type_identifier"
-                )
-            })
-            .collect();
-        if type_idents.len() < 2 {
-            return;
-        }
-
-        let trait_node = type_idents[0];
-        let type_node = type_idents[type_idents.len() - 1];
-
-        // Get the trait name (handle scoped paths like std::fmt::Display)
-        let trait_name = get_node_text(trait_node, self.source).to_string();
-
-        // Get the implementing type name (extract inner type_identifier for generics)
-        let type_name = if type_node.kind() == "generic_type" {
-            match find_named_child(type_node, "type_identifier") {
-                Some(inner) => get_node_text(inner, self.source).to_string(),
-                None => get_node_text(type_node, self.source).to_string(),
-            }
-        } else {
-            get_node_text(type_node, self.source).to_string()
         };
-
+        // The trait as a path, without generic arguments
+        // (`de::Deserializer<'de>` -> `de::Deserializer`).
+        let trait_path = if trait_node.kind() == "generic_type" {
+            trait_node.child_by_field_name("type").unwrap_or(trait_node)
+        } else {
+            trait_node
+        };
+        let trait_name = get_node_text(trait_path, self.source).to_string();
+        let Some(type_name) = self.rust_impl_self_type_name(node) else {
+            return;
+        };
         // Find the struct/type node for the implementing type
         if let Some(type_node_id) = self.find_node_by_name(&type_name) {
-            self.push_ref(&type_node_id, trait_name, EdgeKind::Implements, trait_node);
+            self.push_ref(&type_node_id, trait_name, EdgeKind::Implements, trait_path);
+        }
+    }
+
+    /// The name of an `impl` block's implementing (Self) type: `Foo` for
+    /// `impl Foo`, `impl<T> Trait for Foo<T>`, `impl Trait for &mut Foo`
+    /// and `impl Trait for a::Foo`; a primitive's own name (`usize`).
+    pub(super) fn rust_impl_self_type_name(&self, node: SyntaxNode<'_>) -> Option<String> {
+        let mut ty = node.child_by_field_name("type")?;
+        loop {
+            match ty.kind() {
+                "type_identifier" | "primitive_type" => {
+                    return Some(get_node_text(ty, self.source).to_string());
+                }
+                "generic_type" | "reference_type" | "pointer_type" => {
+                    ty = ty.child_by_field_name("type")?;
+                }
+                "scoped_type_identifier" => ty = ty.child_by_field_name("name")?,
+                _ => return None,
+            }
         }
     }
 
     /// The node id of an `impl` block's implementing (Self) type, if it was
-    /// already extracted. For `impl Foo`, `impl Trait for Foo`, and the generic
-    /// forms (`impl<T> Foo<T>`, `impl<T> Trait for Foo<T>`) the Self type is the
-    /// LAST type child (the first, when present before `for`, is the trait).
-    /// Used to scope an impl body so associated items get a `Foo::member` name.
+    /// already extracted in this file. Used to scope an impl body so
+    /// associated items get a `Foo::member` name.
     pub(super) fn rust_impl_self_type_id(&self, node: SyntaxNode<'_>) -> Option<String> {
-        let type_children: Vec<SyntaxNode<'_>> = named_children(node)
-            .into_iter()
-            .filter(|c| {
-                matches!(
-                    c.kind(),
-                    "type_identifier" | "generic_type" | "scoped_type_identifier"
-                )
-            })
-            .collect();
-        let self_type = type_children.last()?;
-        let type_name = if self_type.kind() == "generic_type" {
-            match find_named_child(*self_type, "type_identifier") {
-                Some(inner) => get_node_text(inner, self.source).to_string(),
-                None => get_node_text(*self_type, self.source).to_string(),
-            }
-        } else {
-            // scoped_type_identifier (`module::Foo`) → take the last segment.
-            get_node_text(*self_type, self.source)
-                .rsplit("::")
-                .next()
-                .unwrap_or_default()
-                .to_string()
-        };
+        let type_name = self.rust_impl_self_type_name(node)?;
         self.find_node_by_name(&type_name)
     }
 

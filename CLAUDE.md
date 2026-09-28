@@ -180,10 +180,36 @@ cargo test --workspace
   (`v.iter().next()` reaches resolution as bare `next`) **and the receiver as
   compact text** in `receiver` metadata (`extraction/languages/rust/
   receiver_text.rs`, also for macro-token calls: whitespace/comments gone, a
-  method call's args `()`/`(..)`, ≤200 bytes or not recorded; changing it
-  bumps `EXTRACTION_VERSION`). Resolution types that chain link by link
+  method call's args `()`/`(..)`, a tuple `(..,..)`, ≤200 bytes or not
+  recorded; changing it bumps `EXTRACTION_VERSION`). Resolution types that chain link by link
   (`infer_rust_chain_type`) instead of re-reading the file; a chain it
   cannot type falls back to the name rules below.
+- **Rust extraction keeps what names a Rust item** (`EXTRACTION_VERSION`
+  35): a path type is one reference to the whole path (`fmt::Result`,
+  `D::Error`, `crate::a::B` — never a bare `Result`), `Iterator<Item = T>`
+  references `T` only; an impl's associated `type`/`const` is qualified by
+  its Self type even when that type is borrowed, generic or in another
+  file (`impl Visitor for Map<K, V>` -> `Map::Value`, never a bare
+  module-level `Value`), and `impl Tr for a::B`/`&mut B` gets its implements
+  edge; a `const`/`static` initializer's calls (closures too) are the
+  item's; `x.m::<T>()` inside macro arguments is a call; route handlers
+  keep their path (`get(api::list)` -> `api::list`).
+- **A bare Rust name resolves as rustc scopes it** (`rust_path/bare.rs`):
+  a type reference, bare call or `impl` trait resolves through the module
+  tree — the fn-local `use`s holding it, the file's own `use`s, then the
+  module's items and globs — to the one project item it binds; nothing when
+  a `use` binds another crate's item (`use axum::extract::State`, `use
+  std::path::Path`, directly or through a re-export: `Resolution::External`);
+  one of the `cfg` alternatives (`#[cfg(test)] use mocks::f;` beside the real
+  `use`) by nearness, never a third namesake. Only a name nothing binds (a
+  prelude item, a local, a macro's item) reaches the name rules. A generic
+  parameter shadows every item (`rust_generics.rs`: one scan per file,
+  kept by the context's `get_rust_file_derived` — a wrapping context must
+  delegate it), `name!(…)` resolves only to a `Macro`, and a bare name never
+  names an impl's associated item. `main.rs` does not see `lib.rs`'s `use`s
+  (the layout gives both one module path). The frameworks' PascalCase rule
+  (first same-named struct, `/types/` preferred) is retired: the compiler
+  agreed with 28–34% of its edges.
 - **Rust call syntax decides what a call can run** (`name_matcher/rust_call.rs`):
   a bare `f()` targets a function, tuple struct, const/static or enum variant,
   never a method or field; a name bound locally (param, `let`, closure, match
@@ -229,7 +255,19 @@ cargo test --workspace
   from the static table in `receiver/rust/newtypes.rs` (axum `State`/
   `Json`/`Path`/…, actix `web::Json`/…; never `web::Data`). A call made
   directly on a lock result runs on the guarded `T` (`through_guard`)
-  unless it is a `Result` method.
+  unless it is a `Result` method. A type the module tree finds is pinned to
+  its definition (`Home::Defined`, `type_definition`/`fn_definition` in
+  `rust_path/`): its methods are those whose impl names that same type
+  where written (`broadcast::Sender::send` is not `mpsc::Sender`'s), an
+  inherent (`pub`) method beats a trait impl's (never `pub`), and ties go
+  to the name rules' nearness — never to the calling fn itself (`Type::
+  m(self)` in a trait impl's `m` delegates to the inherent `m`). `self.m()`
+  is typed on the enclosing impl (a `Deref` wrapper `Self` like `Arc` is
+  left to the name rules), and `recv.m()` inside `fn m` with an untyped
+  receiver is never `m` (wrappers delegate). A method of another crate's
+  type no adaptor knows returns that crate's type (`Router::new().route(..)
+  .with_state(s)` runs no project method; extension-trait methods on it
+  still resolve), and a tuple receiver runs none.
   The first unknown or external link ends the chain — never guess the
   rest — and a generic parameter (`T`, `Self::Item`) is unknown, not a type.
   (Only the external pass continues past a dependency type, below; an
@@ -245,7 +283,18 @@ cargo test --workspace
   when `m` is a module *in scope there* — a child `mod m` (file, `mod.rs`
   or inline), or a `use` (renames, globs, `pub`/`pub(crate)` re-exports)
   resolved in the module namespace (`Namespace::Module`); a `mod` hidden in
-  a macro call (`cfg_rt! { mod m; }`) is stood in for by its File node.
+  a macro call (`cfg_rt! { mod m; }`) is stood in for by its File node, and
+  `use`/`pub use` lines at a file's top level inside a macro call (`cfg_rt! {
+  pub use self::builder::Builder; }`) count as the module's (`macro_level_
+  uses`, derived once per file the same way); a re-export the tree still cannot follow guesses
+  only the one item of that name in the named module or a child of it. A
+  path whose first segment is a workspace crate (`codegraph::types::Node`,
+  `tokio::sync::Mutex` in tokio's tests) starts at that crate's root;
+  `T::Value` (a generic over a project trait) is the one project trait's
+  associated type of that name; `Self::Output` in a trait impl names the
+  trait's type, so an impl alias is not its target. Inline modules of the
+  caller come from its enclosing `mod` scope or real `mod`s in its
+  qualified name (`outer::walk`, `usize::index_into` are no modules).
   A fn-local `use` (`LocalUse`, cached with its line) binds only inside
   the fns enclosing that line, and shadows the module's names there.
   `use std::fmt` + a project `fmt` elsewhere stays std's; a private free
@@ -914,12 +963,14 @@ compiler_layer`); never MCP, the watcher or the prompt hook.
   is a corrected/refuted verdict, ~130 hand-checked, non-Rust edges
   byte-identical): tree-sitter edges the compiler agrees with — codegraph-rs
   93.9%, rms 90.9%, serde_json 89.6%, reqwest 84.8%, tokio (all features,
-  `.codegraph/compiler/rust-analyzer.json`) 79.4%. By strategy on
-  codegraph-rs: qualified-name 99.9%, instance-method 99.8%, exact-match
-  95.6%, `framework` (frameworks/rust.rs PascalCase rule) 28%. Top misses:
-  `use`d std/dependency types taken for same-named project types, the
-  PascalCase rule ignoring `use`, same-named items of other modules,
-  calls inside `fn m` resolved to `m` itself.
+  `.codegraph/compiler/rust-analyzer.json`) 79.4%. After the module-tree
+  scoping above (same method, serde_json 1.0.151, reqwest 0.13.5, tokio
+  1.53.1): codegraph-rs 93.7% -> 99.9%, rms 93.0% -> 99.8%, serde_json 83.1%
+  -> 96.6%, reqwest 81.7% -> 94.0%, tokio 78.7% -> 92.2%; 4 confirmed edges
+  of ~84k became nothing or another guess (overloads, a recursion through
+  `downcast_ref`, an extension trait on `http::response::Builder`). Left:
+  tokio's loom/std twins and trait-object dispatch, `#[path]` test modules
+  (`tests/x/fixture.rs` is not a module of `tests/x.rs` in the layout).
 
 ## Cross-graph resolution (federation phase 2)
 

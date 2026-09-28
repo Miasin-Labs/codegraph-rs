@@ -155,7 +155,11 @@ fn path_start(tokens: &[SyntaxNode<'_>], last: usize) -> usize {
 /// The call whose argument list is the `(`-tree at `open`, if the tokens
 /// before it spell a callee.
 fn call_before(tokens: &[SyntaxNode<'_>], open: usize, source: &str) -> Option<TokenCall> {
-    let last = open.checked_sub(1)?;
+    let mut last = open.checked_sub(1)?;
+    // `x.get::<T>(…)`, `parse::<u8>(…)`: the callee is before the turbofish.
+    if matches!(tokens[last].kind(), ">" | ">>") {
+        last = turbofish_start(tokens, last)?.checked_sub(2)?;
+    }
     let callee = tokens[last];
     if callee.kind() != "identifier" || CALL_SHAPED_TYPES.contains(&get_node_text(callee, source)) {
         return None;
@@ -174,6 +178,29 @@ fn call_before(tokens: &[SyntaxNode<'_>], open: usize, source: &str) -> Option<T
             Some(TokenCall::at(path.join("::"), tokens[first]))
         }
     }
+}
+
+/// The `<` opening the generic arguments that end at the `>` at `close`,
+/// when a `::` precedes it (a turbofish, not a comparison).
+fn turbofish_start(tokens: &[SyntaxNode<'_>], close: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    for index in (0..=close).rev() {
+        depth += match tokens[index].kind() {
+            ">" => 1,
+            ">>" => 2,
+            "<" => -1,
+            "<<" => -2,
+            ";" | "," | "token_tree" if depth == 0 => return None,
+            _ => 0,
+        };
+        if depth == 0 {
+            return (index >= 1 && tokens[index - 1].kind() == "::").then_some(index);
+        }
+        if depth < 0 {
+            return None;
+        }
+    }
+    None
 }
 
 /// `recv.m(…)` with the `.` at `dot`. A plain identifier receiver is kept

@@ -25,10 +25,10 @@ const DEREF_WRAPPERS: &[&str] = &[
 
 /// Placeholder names for the structural types (`[T]`, `(A, B)`, `*const T`).
 pub(super) const SLICE: &str = "[slice]";
-const TUPLE: &str = "(tuple)";
+pub(super) const TUPLE: &str = "(tuple)";
 const POINTER: &str = "*pointer";
 
-pub(super) fn is_deref_wrapper(name: &str) -> bool {
+pub(in crate::resolution::name_matcher) fn is_deref_wrapper(name: &str) -> bool {
     DEREF_WRAPPERS.contains(&name)
 }
 

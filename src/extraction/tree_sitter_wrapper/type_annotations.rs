@@ -26,6 +26,28 @@ pub(super) fn is_type_annotation_language(language: Language) -> bool {
     )
 }
 
+/// A Rust `scoped_type_identifier` written as a plain path (`fmt::Result`,
+/// `crate::a::B`, `Self::Item`, `D::Error`), without whitespace. `None` for a
+/// qualified path (`<T as Trait>::Output`) or one with generic arguments,
+/// whose types are walked one by one instead.
+fn rust_type_path(node: SyntaxNode<'_>, source: &str) -> Option<String> {
+    let path = get_child_by_field(node, "path")?;
+    if !matches!(
+        path.kind(),
+        "identifier" | "scoped_identifier" | "crate" | "self" | "super"
+    ) {
+        return None;
+    }
+    let text: String = get_node_text(node, source)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let plain = text.split("::").all(|segment| {
+        !segment.is_empty() && segment.chars().all(|c| c.is_alphanumeric() || c == '_')
+    });
+    plain.then_some(text)
+}
+
 fn is_web3_type_annotation_language(language: Language) -> bool {
     matches!(
         language,
@@ -476,6 +498,23 @@ impl<'a> TreeSitterExtractor<'a> {
                     self.push_ref(from_node_id, type_name, EdgeKind::References, node);
                 }
                 return; // type_identifier is a leaf
+            }
+            // Rust `fmt::Result`, `io::Error`, `D::Error`, `crate::a::B`: the
+            // type is the whole path. Its last segment alone named a
+            // same-named project type (`Result`, `Error`) the path rules out.
+            if self.language == Language::Rust && node.kind() == "scoped_type_identifier" {
+                if let Some(path) = rust_type_path(node, self.source) {
+                    self.push_ref(from_node_id, path, EdgeKind::References, node);
+                    return;
+                }
+            }
+            // `Iterator<Item = T>`: `Item` names the trait's associated
+            // type, not a type in scope; only `T` is one.
+            if self.language == Language::Rust && node.kind() == "type_binding" {
+                if let Some(bound) = get_child_by_field(node, "type") {
+                    self.extract_type_refs_from_subtree(bound, from_node_id);
+                }
+                return;
             }
 
             // Recurse into children (handles union_type, intersection_type, generic_type, etc.)

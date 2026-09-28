@@ -7,7 +7,7 @@ use super::types::{is_deref_wrapper, starts_uppercase};
 use super::{Inference, Origin, Site, Value};
 
 /// Std cells and locks whose `new(x)` holds `x` (see `adaptors`).
-const CELLS: &[&str] = &["Cell", "Mutex", "OnceCell", "RefCell", "RwLock"];
+pub(super) const CELLS: &[&str] = &["Cell", "Mutex", "OnceCell", "RefCell", "RwLock"];
 
 /// Std traits called as `Trait::f(..)`: the type is whatever `Self` is.
 const STD_TRAITS: &[&str] = &[

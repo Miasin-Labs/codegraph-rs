@@ -1,7 +1,7 @@
 //! Qualified-name matching strategy.
 
 use crate::resolution::types::{ResolutionContext, ResolvedBy, ResolvedRef, UnresolvedRef};
-use crate::types::Node;
+use crate::types::{Language, Node};
 
 /// Try to resolve by qualified name
 pub fn match_by_qualified_name(
@@ -28,12 +28,23 @@ pub fn match_by_qualified_name(
     let parts: Vec<&str> = reference.reference_name.split([':', '.']).collect();
     let last_name = parts.last().filter(|s| !s.is_empty())?;
     let partial_candidates = context.get_nodes_by_name(last_name);
-    let matches: Vec<&Node> = partial_candidates
+    let mut matches: Vec<&Node> = partial_candidates
         .iter()
         .filter(|candidate| {
             ends_at_name_boundary(&candidate.qualified_name, &reference.reference_name)
         })
         .collect();
+    // `Type::m(self)` inside a trait impl's `m` delegates to the inherent
+    // `Type::m` it shares a name with: the caller is not its own target
+    // while another `Type::m` exists.
+    if reference.language == Language::Rust
+        && matches.len() > 1
+        && matches
+            .iter()
+            .any(|candidate| candidate.id != reference.from_node_id)
+    {
+        matches.retain(|candidate| candidate.id != reference.from_node_id);
+    }
     one_candidate(&matches, reference).map(|candidate| ResolvedRef {
         original: reference.clone(),
         target_node_id: candidate.id.clone(),

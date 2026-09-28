@@ -109,6 +109,15 @@ impl ResolutionContext for ExternalContext<'_> {
         self.project.get_rust_fn_local_uses(file_path)
     }
 
+    fn get_rust_file_derived(
+        &self,
+        file_path: &str,
+        kind: &'static str,
+        derive: &mut dyn FnMut() -> Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Arc<dyn std::any::Any + Send + Sync> {
+        self.project.get_rust_file_derived(file_path, kind, derive)
+    }
+
     fn list_directories(&self, relative_path: &str) -> Vec<String> {
         self.project.list_directories(relative_path)
     }

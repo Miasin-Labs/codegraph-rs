@@ -36,6 +36,7 @@ pub struct ResolverContext {
     pub(super) re_export_cache: RefCell<LRUCache<String, Vec<ReExport>>>,
     pub(super) rust_use_cache: RefCell<LRUCache<String, Arc<[RustUse]>>>,
     pub(super) rust_fn_use_cache: RefCell<LRUCache<String, Arc<[LocalUse]>>>,
+    pub(super) rust_derived_cache: RefCell<LRUCache<String, Arc<dyn std::any::Any + Send + Sync>>>,
     pub(super) name_cache: RefCell<LRUCache<String, Vec<Node>>>,
     pub(super) lower_name_cache: RefCell<LRUCache<String, Vec<Node>>>,
     pub(super) qualified_name_cache: RefCell<LRUCache<String, Vec<Node>>>,
@@ -101,6 +102,7 @@ impl ResolverContext {
             re_export_cache: RefCell::new(LRUCache::new(limit)),
             rust_use_cache: RefCell::new(LRUCache::new(limit)),
             rust_fn_use_cache: RefCell::new(LRUCache::new(limit)),
+            rust_derived_cache: RefCell::new(LRUCache::new(limit)),
             name_cache: RefCell::new(LRUCache::new(limit)),
             lower_name_cache: RefCell::new(LRUCache::new(limit)),
             qualified_name_cache: RefCell::new(LRUCache::new(limit)),
@@ -122,6 +124,7 @@ impl ResolverContext {
         self.re_export_cache.borrow_mut().clear();
         self.rust_use_cache.borrow_mut().clear();
         self.rust_fn_use_cache.borrow_mut().clear();
+        self.rust_derived_cache.borrow_mut().clear();
         self.name_cache.borrow_mut().clear();
         self.lower_name_cache.borrow_mut().clear();
         self.qualified_name_cache.borrow_mut().clear();
@@ -217,6 +220,24 @@ impl ResolutionContext for ResolverContext {
 
     fn get_rust_fn_local_uses(&self, file_path: &str) -> Arc<[LocalUse]> {
         self.cached_rust_fn_local_uses(file_path)
+    }
+
+    fn get_rust_file_derived(
+        &self,
+        file_path: &str,
+        kind: &'static str,
+        derive: &mut dyn FnMut() -> Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Arc<dyn std::any::Any + Send + Sync> {
+        let key = format!("{kind}\0{file_path}");
+        if let Some(cached) = self.rust_derived_cache.borrow_mut().get(&key) {
+            return Arc::clone(cached);
+        }
+        // Derived without the cache borrowed: deriving reads other caches.
+        let derived = derive();
+        self.rust_derived_cache
+            .borrow_mut()
+            .set(key, Arc::clone(&derived));
+        derived
     }
 
     fn get_cpp_include_dirs(&self) -> Vec<String> {
