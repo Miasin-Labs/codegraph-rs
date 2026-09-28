@@ -1,0 +1,30 @@
+
+running 1 test
+error: Undefined Behavior: reading memory at alloc42647[0x0..0x1], but memory is uninitialized at [0x0..0x1], and this operation requires initialized memory
+ --> src/lib.rs:4:5
+  |
+4 |     v[0]
+  |     ^^^^ Undefined Behavior occurred here
+  |
+  = help: this indicates a bug in the program: it performed an invalid operation, and caused Undefined Behavior
+  = help: see https://doc.rust-lang.org/nightly/reference/behavior-considered-undefined.html for further information
+  = note: this is on thread `tests::reads_first`
+  = note: stack backtrace:
+          0: first_uninit
+              at src/lib.rs:4:5: 4:9
+          1: tests::reads_first
+              at src/lib.rs:52:20: 52:35
+          2: tests::reads_first::{closure#0}
+              at src/lib.rs:51:21: 51:21
+
+Uninitialized memory occurred at alloc42647[0x0..0x1], in this allocation:
+alloc42647 (Rust heap, size: 4, align: 1) {
+    __ __ __ __                                     │ ░░░░
+}
+
+note: some details are omitted, run with `MIRIFLAGS=-Zmiri-backtrace=full` for a verbose backtrace
+
+error: aborting due to 1 previous error
+
+error: test failed, to rerun pass `--lib`
+

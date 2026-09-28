@@ -40,6 +40,7 @@ use super::{
     parse_int_js,
     print_report_json,
     process,
+    red,
     resolve_project_path,
     white,
     yellow,
@@ -123,13 +124,14 @@ fn bugs_options(
             "lint" => Ok(Detector::Lint),
             "compiler" => Ok(Detector::Compiler),
             "rule" if allow_rule => Ok(Detector::Rule),
+            "miri" if allow_rule => Ok(Detector::Miri),
             "rule" => Err(
                 "rule findings come from `codegraph analyze rules` (or `analyze review --rules`)"
                     .to_string(),
             ),
             other => Err(format!(
                 "unknown detector \"{other}\" — known: deviance, lint, compiler{}",
-                if allow_rule { ", rule" } else { "" }
+                if allow_rule { ", rule, miri" } else { "" }
             )),
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -280,6 +282,22 @@ fn print_packet(number: usize, total: usize, packet: &ReviewPacket) {
                 "  {} {}",
                 caller.name,
                 dim(&format!("{}:{}", caller.file, caller.line))
+            );
+        }
+        println!();
+    }
+    for proof in &packet.confirmed_by {
+        println!(
+            "{} {} {}",
+            red("Confirmed by Miri:"),
+            proof.rule,
+            dim(&format!("at {}:{}", proof.file, proof.line))
+        );
+        println!("  {}", proof.message);
+        for frame in &proof.evidence {
+            println!(
+                "  {}",
+                dim(&format!("{}:{} {}", frame.file, frame.line, frame.note))
             );
         }
         println!();

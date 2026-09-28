@@ -1,0 +1,37 @@
+
+running 1 test
+error: Undefined Behavior: read access through <130797> at alloc41952[0x0] is forbidden
+  --> src/lib.rs:24:5
+   |
+24 |     *r3 += 1;
+   |     ^^^^^^^^ Undefined Behavior occurred here
+   |
+   = help: this indicates a potential bug in the program: it performed an invalid operation, but the Tree Borrows rules it violated are still experimental
+   = help: see https://github.com/rust-lang/unsafe-code-guidelines/blob/master/wip/tree-borrows.md for further information
+   = help: the accessed tag <130797> has state Disabled which forbids this child read access
+help: the accessed tag <130797> was created here, in the initial state Reserved
+  --> src/lib.rs:22:23
+   |
+22 |     let r3 = unsafe { &mut *r };
+   |                       ^^^^^^^
+help: the accessed tag <130797> later transitioned to Disabled due to a foreign write access at offsets [0x0..0x4]
+  --> src/lib.rs:23:5
+   |
+23 |     *r2 = 2;
+   |     ^^^^^^^
+   = help: this transition corresponds to a loss of read and write permissions
+   = note: this is on thread `tests::t_sb`
+   = note: stack backtrace:
+           0: sb
+               at src/lib.rs:24:5: 24:13
+           1: tests::t_sb
+               at src/lib.rs:59:17: 59:21
+           2: tests::t_sb::{closure#0}
+               at src/lib.rs:59:14: 59:14
+
+note: some details are omitted, run with `MIRIFLAGS=-Zmiri-backtrace=full` for a verbose backtrace
+
+error: aborting due to 1 previous error
+
+error: test failed, to rerun pass `--lib`
+

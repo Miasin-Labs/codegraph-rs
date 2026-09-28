@@ -189,6 +189,30 @@ pub fn render(callable: &RustCallable) -> HarnessText {
         }
     }
 
+    push_call(callable, args, &mut body);
+    if !capped.is_empty() {
+        let _ = writeln!(
+            out,
+            "    // Size-like arguments ({}) are taken modulo {SIZE_CAP} so allocations stay bounded.",
+            capped.join(", ")
+        );
+    }
+    out.push_str(&body);
+    out.push_str("});\n");
+
+    HarnessText {
+        target,
+        source: out,
+        needs_arbitrary: structured,
+    }
+}
+
+/// Append the statements that call `callable` with `args` (the
+/// constructor's arguments first, then the target's) to `body`: the
+/// receiver from its constructor (`return` when that fails), then the call,
+/// its result drained when it is a lazy iterator. The Miri harness
+/// (`analyze::miri::harness`) calls the same way.
+pub(crate) fn push_call(callable: &RustCallable, args: Vec<String>, body: &mut String) {
     // Arguments split between constructor and target, in order.
     let (constructor_args, target_args) = match &callable.call {
         CallForm::Method {
@@ -251,25 +275,10 @@ pub fn render(callable: &RustCallable) -> HarnessText {
         ),
     };
     if matches!(callable.call, CallForm::Method { .. }) {
-        body = body.replace(
+        *body = body.replace(
             "    let mut value",
             "    #[allow(unused_mut)]\n    let mut value",
         );
-    }
-    if !capped.is_empty() {
-        let _ = writeln!(
-            out,
-            "    // Size-like arguments ({}) are taken modulo {SIZE_CAP} so allocations stay bounded.",
-            capped.join(", ")
-        );
-    }
-    out.push_str(&body);
-    out.push_str("});\n");
-
-    HarnessText {
-        target,
-        source: out,
-        needs_arbitrary: structured,
     }
 }
 

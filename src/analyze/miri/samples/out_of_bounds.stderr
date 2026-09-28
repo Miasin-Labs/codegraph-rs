@@ -1,0 +1,25 @@
+
+running 1 test
+error: Undefined Behavior: memory access failed: attempting to access 1 byte, but got alloc99+0x2 which is at or beyond the end of the allocation of size 2 bytes
+ --> src/lib.rs:8:14
+  |
+8 |     unsafe { *data.as_ptr().add(data.len()) }
+  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Undefined Behavior occurred here
+  |
+  = help: this indicates a bug in the program: it performed an invalid operation, and caused Undefined Behavior
+  = help: see https://doc.rust-lang.org/nightly/reference/behavior-considered-undefined.html for further information
+  = note: this is on thread `tests::t_oob`
+  = note: stack backtrace:
+          0: oob
+              at src/lib.rs:8:14: 8:44
+          1: tests::t_oob
+              at src/lib.rs:55:18: 55:30
+          2: tests::t_oob::{closure#0}
+              at src/lib.rs:55:15: 55:15
+
+note: some details are omitted, run with `MIRIFLAGS=-Zmiri-backtrace=full` for a verbose backtrace
+
+error: aborting due to 1 previous error
+
+error: test failed, to rerun pass `--lib`
+

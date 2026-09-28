@@ -41,13 +41,13 @@ use std::path::Path;
 pub use compiler::{CompilerState, CompilerStatus};
 pub use project::{CallSite, FnSpan, Project, RouteHandler};
 pub use review::{ReviewPacket, review_packets};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::codegraph::CodeGraph;
 use crate::resolution::line_index::LineStarts;
 
 /// Which detector family found it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Detector {
     Deviance,
@@ -56,11 +56,14 @@ pub enum Detector {
     Rule,
     /// A rustc or clippy lint (`--detector compiler`; opt-in).
     Compiler,
+    /// Undefined behaviour Miri reported on a real execution
+    /// (`codegraph analyze miri`).
+    Miri,
 }
 
 /// A place that supports (or contradicts) a finding: another call site that
 /// uses the result, the sibling arms of a match, the store that is lost.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Evidence {
     pub file: String,
@@ -69,7 +72,7 @@ pub struct Evidence {
 }
 
 /// One suspected bug.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Finding {
     pub detector: Detector,
@@ -86,7 +89,7 @@ pub struct Finding {
     /// How strongly the code's own behaviour backs the finding, 0..=1
     /// (deviance: the belief's agreement; lint: the rule's precision class).
     pub confidence: f64,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<Evidence>,
 }
 
@@ -223,8 +226,17 @@ pub fn bugs_review(
             rules,
             options,
         )?);
-        rank(&mut findings);
     }
+    // UB the last `analyze miri` run proved: reviewed first (they are
+    // proofs), and shown beside the static findings in their functions.
+    let miri = crate::analyze::miri::saved_findings(project_root);
+    let wants_miri = options.detectors.is_empty() || options.detectors.contains(&Detector::Miri);
+    if wants_miri && !miri.is_empty() {
+        let mut proven = miri.clone();
+        retain_selected(&mut project, &mut proven, options);
+        findings.extend(proven);
+    }
+    rank(&mut findings);
     findings.retain(|finding| {
         selection
             .rule
@@ -235,13 +247,17 @@ pub fn bugs_review(
             })
     });
     findings.truncate(selection.top.max(1));
-    Ok(review_packets(&mut project, &findings, &|finding| {
+    let mut packets = review_packets(&mut project, &findings, &|finding| {
         let mut questions = compiler::review_questions(finding);
         if let Some(rules) = rules {
             questions.extend(crate::analyze::rules::review_questions(rules, finding));
         }
         questions
-    }))
+    });
+    for packet in &mut packets {
+        packet.confirmed_by = review::confirmations(&project, &packet.finding, &miri);
+    }
+    Ok(packets)
 }
 
 /// The selected detectors' findings, filtered by `options`, most confident
