@@ -1068,6 +1068,19 @@ impl CodeGraph {
         Ok(result)
     }
 
+    /// The external edges this index's unresolved Rust references would get
+    /// in `reach`, computed with the project's resolution context and
+    /// written nowhere (the second value is false when `budget` cut the
+    /// pass short). Readers use it for graphs the project's own pass does
+    /// not reach, such as the toolchain's `std`.
+    pub fn external_edges_read_only(
+        &self,
+        reach: &crate::resolution::external::Reach,
+        budget: std::time::Duration,
+    ) -> Result<(Vec<crate::db::ExternalEdge>, bool)> {
+        self.resolver.resolve_external_read_only(reach, budget)
+    }
+
     /// Resolve the references in-project resolution left unresolved into
     /// the graphs this project reaches — its dependencies' shards and the
     /// projects the atlas links it to ([`crate::resolution::external`]),

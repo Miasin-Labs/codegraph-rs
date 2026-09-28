@@ -21,10 +21,18 @@ pub(crate) struct CrateType {
 }
 
 impl CrateType {
-    fn of(ty: RustType) -> Option<CrateType> {
+    fn of(ty: RustType, context: &dyn ResolutionContext) -> Option<CrateType> {
+        if let Some(krate) = ty.external_crate() {
+            return Some(CrateType {
+                krate: krate.to_string(),
+                path: ty.external_path().to_vec(),
+            });
+        }
+        // `Vec`, `String`, `Option`… named bare: the toolchain's.
+        let (krate, path) = ty.prelude_home(context)?;
         Some(CrateType {
-            krate: ty.external_crate()?.to_string(),
-            path: ty.external_path().to_vec(),
+            krate: krate.to_string(),
+            path: path.iter().map(|segment| segment.to_string()).collect(),
         })
     }
 }
@@ -48,7 +56,7 @@ pub(crate) fn receiver_crate_type(
     } else {
         infer_rust_receiver_type(receiver, reference, context)
     };
-    CrateType::of(ty?)
+    CrateType::of(ty?, context)
 }
 
 /// The type of the receiver a method call dropped (`a.b().m()` recorded as
@@ -57,7 +65,10 @@ pub(crate) fn dropped_receiver_crate_type(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
 ) -> Option<CrateType> {
-    CrateType::of(super::rust_call::dropped_receiver_type(reference, context)?)
+    CrateType::of(
+        super::rust_call::dropped_receiver_type(reference, context)?,
+        context,
+    )
 }
 
 /// The return type written in a Rust fn signature (`None` for `()`).
@@ -80,5 +91,12 @@ pub(crate) fn external_path(
     file: &str,
     context: &dyn ResolutionContext,
 ) -> Option<(String, Vec<String>)> {
-    super::receiver::external_path(path, file, context)
+    let (root, rest) = super::receiver::external_path(path, file, context)?;
+    // `Vec::with_capacity`: a prelude type named bare is the toolchain's.
+    if let Some((krate, module, name)) = super::receiver::prelude_type(&root, context) {
+        let mut full = vec![module.to_string(), name.to_string()];
+        full.extend(rest);
+        return Some((krate.to_string(), full));
+    }
+    Some((root, rest))
 }

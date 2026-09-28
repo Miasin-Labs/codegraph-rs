@@ -31,6 +31,15 @@ pub(crate) struct Outcome {
 }
 
 impl Outcome {
+    /// The edges this worker found, and whether it examined everything it
+    /// was handed.
+    pub(super) fn into_edges(self) -> (Vec<ExternalEdge>, bool) {
+        (
+            self.resolved.into_iter().map(|r| r.edge).collect(),
+            self.complete,
+        )
+    }
+
     /// A worker that died: nothing it resolved is kept, and the pass is
     /// not complete (the references it held are examined again).
     pub(super) fn lost() -> Outcome {

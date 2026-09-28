@@ -21,6 +21,7 @@ pub(super) use rust::{
     infer_rust_chain_type,
     infer_rust_receiver_type,
     is_local_at_call,
+    prelude_type,
     resolve_type,
     self_field_receiver_type,
     signature_return,

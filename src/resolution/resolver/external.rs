@@ -41,4 +41,21 @@ impl ReferenceResolver {
         external::pass::trace("resolve (sequential)", at);
         report
     }
+
+    /// The edges the unresolved references would get in `reach`, resolved
+    /// with this project's context and written nowhere
+    /// ([`external::resolve_read_only`]).
+    pub fn resolve_external_read_only(
+        &self,
+        reach: &external::Reach,
+        budget: std::time::Duration,
+    ) -> Result<(Vec<crate::db::ExternalEdge>, bool)> {
+        external::resolve_read_only(
+            &self.context.queries,
+            &self.context,
+            reach,
+            budget,
+            external::open::DEFAULT_MAX_OPEN_GRAPHS,
+        )
+    }
 }
