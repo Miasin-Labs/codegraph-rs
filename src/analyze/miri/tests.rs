@@ -359,3 +359,110 @@ fn tests_are_chosen_nearest_first_covering_every_aimed_function() {
     let names: Vec<&str> = capped.iter().map(|s| s.test.path.as_str()).collect();
     assert_eq!(names, ["tests::parses", "tests::other"]);
 }
+
+#[test]
+fn a_compile_error_at_run_time_is_a_build_failure_not_a_verdict() {
+    // cargo-miri compiles the crate under test when the runner starts.
+    let output = "error[E0432]: unresolved import `core::array::FixedSizeArray`\n  --> \
+                  src/lib.rs:39:5\n\nerror: aborting due to 2 previous errors\n\nerror: test \
+                  failed, to rerun pass `--lib`\n";
+    let parsed = parse_output(output);
+    assert!(parsed.primary().is_none());
+    assert_eq!(status_of(&parsed, false, false, false), RunStatus::Error);
+    assert!(super::run::is_compile_error(output));
+    assert!(!super::run::is_compile_error(
+        "running 1 test\ntest t ... ok\n"
+    ));
+}
+
+#[test]
+fn headers_classify_by_message_and_model() {
+    use UbKind as K;
+    let ub = |message: &str| UbKind::classify(Category::UndefinedBehavior, message, &[]);
+    let table = [
+        (
+            "memory access failed: attempting to access 4 bytes, but got ALLOC which is only 1 \
+             byte from the end of the allocation",
+            K::OutOfBounds,
+        ),
+        (
+            "in-bounds pointer arithmetic failed: ALLOC has been freed, so this pointer is dangling",
+            K::UseAfterFree,
+        ),
+        (
+            "constructing invalid value: encountered a dangling reference (use-after-free)",
+            K::UseAfterFree,
+        ),
+        ("accessing a dead local variable", K::UseAfterFree),
+        (
+            "memory access failed: attempting to access 4 bytes, but got null pointer",
+            K::DanglingPointer,
+        ),
+        ("dereferencing a null box", K::DanglingPointer),
+        ("enum value has invalid tag: 0x03", K::InvalidValue),
+        (
+            "incorrect layout on deallocation: ALLOC has size 1 and alignment 1, but gave size 2 \
+             and alignment 1",
+            K::InvalidDealloc,
+        ),
+        (
+            "calling a function with calling convention \"C\" using calling convention \"Rust\"",
+            K::InvalidCall,
+        ),
+        (
+            "extern static `FOO` is declared as an immutable `static`, but the backing static is \
+             mutable",
+            K::InvalidCall,
+        ),
+        ("entering unreachable code", K::Unreachable),
+        ("arithmetic overflow in `unchecked_add`", K::Arithmetic),
+        ("`ctlz_nonzero` called on 0", K::Arithmetic),
+        (
+            "`copy_nonoverlapping` called on overlapping ranges",
+            K::OverlappingCopy,
+        ),
+        ("writing to ALLOC which is read-only", K::ReadOnlyWrite),
+        (
+            "unwinding past a stack frame that does not allow unwinding",
+            K::InvalidUnwind,
+        ),
+        (
+            "Data race detected between (1) non-atomic write on thread `unnamed-1` and (2) \
+             non-atomic read",
+            K::DataRace,
+        ),
+        (
+            "creating allocation with non-power-of-two alignment 3",
+            K::Other,
+        ),
+    ];
+    for (message, kind) in table {
+        assert_eq!(ub(message), kind, "{message}");
+    }
+    // The aliasing model is named in a help line, whatever the message.
+    let help = vec![
+        "this indicates a potential bug in the program: it performed an invalid operation, but \
+         the Tree Borrows rules it violated are still experimental"
+            .to_string(),
+    ];
+    assert_eq!(
+        UbKind::classify(
+            Category::UndefinedBehavior,
+            "read access through <TAG> at ALLOC[0x0] is forbidden",
+            &help
+        ),
+        K::TreeBorrows
+    );
+    assert_eq!(
+        UbKind::classify(
+            Category::Unsupported,
+            "inline assembly is not supported",
+            &[]
+        ),
+        K::Unsupported
+    );
+    assert_eq!(
+        UbKind::classify(Category::Deadlock, "", &[]).id(),
+        "deadlock"
+    );
+}

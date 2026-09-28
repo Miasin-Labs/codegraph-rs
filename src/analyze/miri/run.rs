@@ -294,6 +294,15 @@ pub fn build_reason(output: &str, status: RunStatus) -> String {
     build_errors(output)
 }
 
+/// rustc refused the code (`error[E0432]`, a deny-by-default lint such as
+/// `invalid_reference_casting`, `aborting due to` errors).
+pub fn is_compile_error(output: &str) -> bool {
+    output
+        .lines()
+        .any(|line| line.starts_with("error[E") || line.starts_with("error: aborting due to"))
+        || output.contains("error: could not compile")
+}
+
 /// Run one test (`-- --exact <path>`), or every test of the binary when
 /// `test` is `None`.
 pub fn run_test(
@@ -311,7 +320,12 @@ pub fn run_test(
     }
     let finished = run_bounded_capped(command, log, options.run_timeout, options.max_output)?;
     let parsed = parse_output(&finished.output);
-    let status = status_of(&parsed, finished.success, finished.killed, finished.capped);
+    let mut status = status_of(&parsed, finished.success, finished.killed, finished.capped);
+    // cargo-miri compiles the crate under test only when its runner starts
+    // (`--no-run` builds the dependencies): a compile error shows up here.
+    if status == RunStatus::Error && !parsed.ran_tests && is_compile_error(&finished.output) {
+        status = RunStatus::BuildFailed;
+    }
     let reason = match status {
         RunStatus::Unsupported | RunStatus::Aborted | RunStatus::Deadlock => {
             parsed.primary().map(|d| {

@@ -162,7 +162,7 @@ impl UbKind {
         }
         if has("data race") || has("race condition") {
             Self::DataRace
-        } else if has("has been freed") || has("use-after-free") {
+        } else if has("has been freed") || has("use-after-free") || has("dead local") {
             Self::UseAfterFree
         } else if has("uninitialized") {
             Self::UninitRead
@@ -187,6 +187,7 @@ impl UbKind {
         {
             Self::OutOfBounds
         } else if has("null pointer")
+            || has("null box")
             || has("null reference")
             || has("dangling")
             || has("[noalloc]")
@@ -195,6 +196,9 @@ impl UbKind {
         {
             Self::DanglingPointer
         } else if has("calling a function")
+            || has("extern static")
+            || has("exported symbol")
+            || has("contains a function")
             || has("calling convention")
             || has("abi mismatch")
             || has("vtable")
@@ -207,6 +211,7 @@ impl UbKind {
         } else if has("unreachable") || has("`assume`") {
             Self::Unreachable
         } else if has("overflow")
+            || has("_nonzero` called on 0")
             || has("divid")
             || has("divisor of zero")
             || has("cannot be represented")

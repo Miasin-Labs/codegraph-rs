@@ -58,6 +58,10 @@ pub enum MiriFocus {
     Function(String),
     /// Every function with `unsafe` in it.
     AllUnsafe,
+    /// Several findings and functions (repeated `--finding`/`--function`):
+    /// their union. One that names no indexed function is reported as
+    /// uncovered unless none resolves.
+    Several(Vec<MiriFocus>),
 }
 
 /// A `codegraph analyze miri` request.
@@ -251,14 +255,22 @@ pub fn miri_report(
     request: &MiriRequest,
 ) -> Result<MiriReport, String> {
     let mut analysis = Analysis::load(cg, root, false)?;
-    let aimed = aimed_functions(&analysis, &request.focus)?;
+    let (aimed, missing) = aimed_functions(&analysis, &request.focus)?;
     let tests = select::discover_tests(&mut analysis.project, &analysis.graph, &analysis.api);
     let (selected, without_tests) =
         select::select_tests(&analysis.graph, &tests, &aimed, request.max_tests);
 
     let mut planned: Vec<PlannedRun> = selected.iter().map(|s| planned_test(root, s)).collect();
     let mut harnesses: Vec<HarnessPlan> = Vec::new();
-    let mut uncovered: Vec<Uncovered> = Vec::new();
+    let mut uncovered: Vec<Uncovered> = missing
+        .into_iter()
+        .map(|(function, reason)| Uncovered {
+            function,
+            file: String::new(),
+            line: 0,
+            reason,
+        })
+        .collect();
     for &function in &without_tests {
         let span = &analysis.graph.functions[function];
         let reason = if request.harness {
@@ -390,7 +402,24 @@ pub fn report_from_log(cg: &CodeGraph, root: &Path, output: &str) -> Result<Miri
     let mut project = Project::load(cg, root)?;
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let parsed = parse_output(output);
-    let status = run::status_of(&parsed, parsed.primary().is_none(), false, false);
+    // A log does not say how the process exited: a test result or a Miri
+    // report decides, else a compile error or missing dependency is a
+    // failed build, and anything else is unrecognized.
+    let (status, reason) = if parsed.primary().is_some() || parsed.ran_tests {
+        let passed = parsed.failed == 0 && parsed.panics.is_empty();
+        (run::status_of(&parsed, passed, false, false), None)
+    } else {
+        let reason = run::build_reason(output, RunStatus::BuildFailed);
+        let offline = reason.starts_with("a dependency is not in the local cargo cache");
+        if offline || run::is_compile_error(output) {
+            (RunStatus::BuildFailed, Some(reason))
+        } else {
+            (
+                RunStatus::Error,
+                Some("the log holds no Miri report and no test result".to_string()),
+            )
+        }
+    };
     let test = parsed
         .primary()
         .and_then(|d| d.thread.clone())
@@ -414,7 +443,7 @@ pub fn report_from_log(cg: &CodeGraph, root: &Path, output: &str) -> Result<Miri
         elapsed_secs: 0.0,
         parsed,
         log: String::new(),
-        reason: None,
+        reason,
     };
     let run = map_run(&project, root, &canonical, Some(root), planned, invocation);
     let mut report = MiriReport {
@@ -488,27 +517,64 @@ fn finish(cg: &CodeGraph, project: &mut Project, root: &Path, report: &mut MiriR
     save(root, report);
 }
 
-/// The dense indices `focus` aims at.
-fn aimed_functions(analysis: &Analysis, focus: &MiriFocus) -> Result<Vec<usize>, String> {
-    match focus {
-        MiriFocus::Finding { file, line } => analysis.resolve_focus(&Focus::Finding {
-            file: file.clone(),
-            line: *line,
-        }),
-        MiriFocus::Function(name) => analysis.resolve_focus(&Focus::Function(name.clone())),
-        MiriFocus::AllUnsafe => Ok((0..analysis.graph.functions.len())
-            .filter(|&i| {
-                let span = &analysis.graph.functions[i];
-                if span.is_test || !span.file.ends_with(".rs") {
-                    return false;
+/// The dense indices `focus` aims at, and the parts of a
+/// [`MiriFocus::Several`] that named nothing (with why).
+fn aimed_functions(
+    analysis: &Analysis,
+    focus: &MiriFocus,
+) -> Result<(Vec<usize>, Vec<(String, String)>), String> {
+    let one = |focus: &MiriFocus| -> Result<Vec<usize>, String> {
+        match focus {
+            MiriFocus::Finding { file, line } => analysis.resolve_focus(&Focus::Finding {
+                file: file.clone(),
+                line: *line,
+            }),
+            MiriFocus::Function(name) => analysis.resolve_focus(&Focus::Function(name.clone())),
+            MiriFocus::AllUnsafe => Ok((0..analysis.graph.functions.len())
+                .filter(|&i| {
+                    let span = &analysis.graph.functions[i];
+                    if span.is_test || !span.file.ends_with(".rs") {
+                        return false;
+                    }
+                    let unsafe_fn = analysis.syntax.get(&span.id).is_some_and(|syntax| {
+                        syntax.modifiers.split_whitespace().any(|m| m == "unsafe")
+                    });
+                    unsafe_fn || analysis.sites(i).unsafe_blocks > 0
+                })
+                .collect()),
+            MiriFocus::Several(_) => Err("nested focus lists are not supported".into()),
+        }
+    };
+    let MiriFocus::Several(parts) = focus else {
+        return one(focus).map(|aimed| (aimed, Vec::new()));
+    };
+    let mut aimed: Vec<usize> = Vec::new();
+    let mut missing: Vec<(String, String)> = Vec::new();
+    for part in parts {
+        match one(part) {
+            Ok(found) => {
+                for index in found {
+                    if !aimed.contains(&index) {
+                        aimed.push(index);
+                    }
                 }
-                let unsafe_fn = analysis.syntax.get(&span.id).is_some_and(|syntax| {
-                    syntax.modifiers.split_whitespace().any(|m| m == "unsafe")
-                });
-                unsafe_fn || analysis.sites(i).unsafe_blocks > 0
-            })
-            .collect()),
+            }
+            Err(reason) => {
+                let label = match part {
+                    MiriFocus::Finding { file, line } => format!("{file}:{line}"),
+                    MiriFocus::Function(name) => name.clone(),
+                    _ => String::new(),
+                };
+                missing.push((label, reason));
+            }
+        }
     }
+    if aimed.is_empty() {
+        if let Some((_, reason)) = missing.first() {
+            return Err(reason.clone());
+        }
+    }
+    Ok((aimed, missing))
 }
 
 fn planned_test(root: &Path, selected: &Selected) -> PlannedRun {

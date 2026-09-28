@@ -33,8 +33,8 @@ use super::{
 
 /// `codegraph analyze miri` arguments, as clap parsed them.
 pub(crate) struct MiriArgs {
-    pub finding: Option<String>,
-    pub function: Option<String>,
+    pub finding: Vec<String>,
+    pub function: Vec<String>,
     pub seconds: String,
     pub build_timeout: String,
     pub max_tests: String,
@@ -60,13 +60,16 @@ fn parse_finding(at: &str) -> Result<(String, u32), String> {
 }
 
 fn request(args: &MiriArgs) -> Result<MiriRequest, String> {
-    let focus = match (&args.finding, &args.function) {
-        (Some(at), _) => {
-            let (file, line) = parse_finding(at)?;
-            MiriFocus::Finding { file, line }
-        }
-        (None, Some(function)) => MiriFocus::Function(function.clone()),
-        (None, None) => MiriFocus::AllUnsafe,
+    let mut parts: Vec<MiriFocus> = Vec::new();
+    for at in &args.finding {
+        let (file, line) = parse_finding(at)?;
+        parts.push(MiriFocus::Finding { file, line });
+    }
+    parts.extend(args.function.iter().cloned().map(MiriFocus::Function));
+    let focus = match parts.len() {
+        0 => MiriFocus::AllUnsafe,
+        1 => parts.remove(0),
+        _ => MiriFocus::Several(parts),
     };
     let borrows = match args.borrows.as_str() {
         "stacked" => Borrows::Stacked,

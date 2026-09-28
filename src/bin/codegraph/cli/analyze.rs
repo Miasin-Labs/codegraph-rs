@@ -482,12 +482,12 @@ findings in a function Miri proved UB in are listed as confirmed, and `analyze r
 the Miri report beside them. `--log FILE` maps a Miri output you ran yourself."
     )]
     Miri {
-        /// Aim at the function containing FILE:LINE
-        #[arg(long, value_name = "file:line", conflicts_with_all = ["function", "all_unsafe"])]
-        finding: Option<String>,
-        /// Aim at this function (qualified name or public path)
+        /// Aim at the function containing FILE:LINE (repeatable)
+        #[arg(long, value_name = "file:line", conflicts_with = "all_unsafe")]
+        finding: Vec<String>,
+        /// Aim at this function, qualified name or public path (repeatable)
         #[arg(long, value_name = "qname", conflicts_with = "all_unsafe")]
-        function: Option<String>,
+        function: Vec<String>,
         /// Aim at every function with an unsafe block or modifier (default)
         #[arg(long = "all-unsafe")]
         all_unsafe: bool,
