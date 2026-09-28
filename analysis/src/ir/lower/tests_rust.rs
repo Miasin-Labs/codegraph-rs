@@ -148,6 +148,34 @@ fn let_else_and_for_patterns_bind() {
 }
 
 #[test]
+fn closures_and_async_blocks_are_lowered_in_place() {
+    let ir = lower(
+        "rust",
+        "async fn f(items: Vec<String>, cmd: String) {\n\
+         let n = items.iter().map(|x| { if x.is_empty() { return 0; } x.len() }).sum();\n\
+         tokio::spawn(async move { run(cmd); });\n\
+         after(n);\n}",
+    );
+    // The closure's parameter takes the receiver of the call it is passed to.
+    let x = sources_of(&ir, "x");
+    assert_eq!(x.len(), 1);
+    assert!(matches!(&x[0], Operand::Var(t) if t.as_str().starts_with("__t")));
+    // The async block's call is the function's, reading the captured `cmd`.
+    let run = calls(&ir)
+        .into_iter()
+        .find(|(callee, _, _)| callee == "run")
+        .expect("run is lowered in place");
+    assert_eq!(run.2, vec![Operand::var("cmd")]);
+    // `return` inside the closure ends the closure, not the function.
+    assert!(calls(&ir).iter().any(|(callee, _, _)| callee == "after"));
+    assert!(
+        returns(&ir).iter().all(|value| value.is_none()),
+        "{:?}",
+        returns(&ir)
+    );
+}
+
+#[test]
 fn placeholders_skip_escapes_and_positions() {
     use super::values::format_placeholders;
     assert_eq!(

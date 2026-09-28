@@ -87,6 +87,14 @@ fn each_web_source_reaches_a_command() {
             Code(
                 "async fn h(Path(id): Path<String>) { tokio::process::Command::new(\"x\").args([\"-n\", &id]).spawn(); }",
             ),
+            // Captured by an `async move` block, run later.
+            Code(
+                "async fn h(Query(q): Query<P>) {\n    tokio::spawn(async move {\n        Command::new(&q.cmd).spawn();\n    });\n}",
+            ),
+            // An element of a request list, through a closure.
+            Code(
+                "async fn h(Json(req): Json<Req>) {\n    req.hosts.iter().for_each(|host| {\n        Command::new(\"ping\").arg(host).spawn();\n    });\n}",
+            ),
         ],
         &[
             // A `String` parameter of a plain function is not a request body.

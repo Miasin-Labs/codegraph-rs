@@ -43,6 +43,9 @@ impl Lowerer<'_, '_> {
         if rules.interpolating_strings.contains(&kind) {
             return self.interpolation(node);
         }
+        if let Some(scope) = self.inline_scope(kind) {
+            return self.inline_value(node, scope);
+        }
         if rules.ignored.contains(&kind) || self.cfg.is_nested_scope(kind) {
             return Value::constant(format!("<{kind}>"));
         }
@@ -423,6 +426,9 @@ impl Lowerer<'_, '_> {
 
         let mut args = Vec::new();
         let mut places = Vec::new();
+        // A closure argument's parameters take the receiver's data.
+        self.call_receivers
+            .push(receiver.as_ref().map(|r| r.operand.clone()));
         match arguments {
             Some(list) => {
                 // Every argument keeps its position (a lambda is a constant).
@@ -447,6 +453,7 @@ impl Lowerer<'_, '_> {
             }
             None => {}
         }
+        self.call_receivers.pop();
         let dst = self.fresh_temp();
         let receiver_place = receiver.as_ref().and_then(|r| r.place.clone());
         self.func.push(IrOp::Call {

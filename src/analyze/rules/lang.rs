@@ -54,7 +54,8 @@ const CPP: LangRules = LangRules {
 const RUST: LangRules = LangRules {
     calls: &["call_expression", "macro_invocation"],
     argument_fields: &["arguments"],
-    functions: &["function_item", "closure_expression"],
+    // Closures and async blocks are lowered in place, as their function's code.
+    functions: &["function_item"],
     test_markers: &["attribute_item"],
     test_modules: &["mod_item"],
     ir: Some("rust"),

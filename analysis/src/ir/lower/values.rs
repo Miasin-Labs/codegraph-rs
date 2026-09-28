@@ -21,7 +21,7 @@ use tree_sitter::Node;
 use super::{Lowerer, Value};
 use crate::cfg_rules::Construct;
 use crate::ir::model::{IrOp, Operand, Span, Var};
-use crate::ir_rules::{BindingShape, MacroShape, StructShape};
+use crate::ir_rules::{BindingShape, InlineScope, MacroShape, StructShape};
 
 /// Most nodes of one macro's token tree read (a `json!`/`html!` body can
 /// be the size of a file): past it, the rest reads nothing.
@@ -182,9 +182,61 @@ impl Lowerer<'_, '_> {
         });
         self.func.push(IrOp::Jump { target: on });
         self.func.push(IrOp::Label(early));
-        self.func.push(IrOp::Return { value: None });
+        match self.inline_exits.last().cloned() {
+            Some((exit, _)) => self.func.push(IrOp::Jump { target: exit }),
+            None => self.func.push(IrOp::Return { value: None }),
+        }
         self.func.push(IrOp::Label(on));
         value
+    }
+
+    /// The inlined scope of node kind `kind`, if the language inlines it.
+    pub(super) fn inline_scope(&self, kind: &str) -> Option<InlineScope> {
+        self.rules
+            .expression?
+            .inline_scopes
+            .iter()
+            .find(|scope| scope.kind == kind)
+            .copied()
+    }
+
+    /// A closure or `async` block, lowered in place: its parameters bound
+    /// from the receiver of the call it is an argument of, its body run
+    /// once, its value the body's (or what a `return` inside hands back).
+    pub(super) fn inline_value(&mut self, node: Node<'_>, scope: InlineScope) -> Value {
+        let result = self.fresh_temp();
+        let exit = self.fresh_label();
+        let receiver = self.call_receivers.last().cloned().flatten();
+        if let Some(params) = scope.parameters.and_then(|f| node.child_by_field_name(f)) {
+            let input = receiver.unwrap_or_else(|| Operand::Const("<closure-arg>".into()));
+            for param in self.named_children(params) {
+                // `|x: T|`: the pattern, not the type.
+                let pattern = param.child_by_field_name("pattern").unwrap_or(param);
+                self.bind(pattern, &input);
+            }
+        }
+        let body = scope
+            .body
+            .and_then(|f| node.child_by_field_name(f))
+            .or_else(|| self.named_children(node).into_iter().last());
+        // Calls inside see no receiver of an outer call.
+        let outer_receivers = std::mem::take(&mut self.call_receivers);
+        self.inline_exits.push((exit, result.clone()));
+        let value = match body {
+            Some(body) if self.cfg.classify(body.kind()) == Construct::Block => {
+                self.block_value(body)
+            }
+            Some(body) => Some(self.expr(body)),
+            None => None,
+        };
+        self.inline_exits.pop();
+        self.call_receivers = outer_receivers;
+        self.func.push(IrOp::Assign {
+            dst: result.clone(),
+            src: value.map_or(Operand::Const("()".into()), |v| v.operand),
+        });
+        self.func.push(IrOp::Label(exit));
+        Value::of(Operand::Var(result))
     }
 
     /// `S { a: x, b, ..base }`: a fresh named value (`__struct<n>`, a

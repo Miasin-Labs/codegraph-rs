@@ -205,6 +205,23 @@ pub struct ExpressionRules {
     pub try_kind: &'static str,
     /// Struct literals, built field by field.
     pub structs: StructShape,
+    /// Nested scopes lowered in place, as the enclosing function's code
+    /// (closures, `async` blocks): their captures are the function's
+    /// variables and a sink inside is the function's. A closure's
+    /// parameters take the receiver of the method call it is passed to
+    /// (`items.map(|x| …)`: `x` is an element of `items`); a `return`
+    /// inside ends only the inlined body.
+    pub inline_scopes: &'static [InlineScope],
+}
+
+/// A nested scope lowered in place.
+#[derive(Debug, Clone, Copy)]
+pub struct InlineScope {
+    pub kind: &'static str,
+    /// Field holding its parameters (a closure's), if any.
+    pub parameters: Option<&'static str>,
+    /// Field holding its body (else its last named child).
+    pub body: Option<&'static str>,
 }
 
 /// `S { a: x, b, ..base }`: a value whose field `a` holds `x`, `b` holds
@@ -951,6 +968,18 @@ static RUST_EXPRESSIONS: ExpressionRules = ExpressionRules {
     pattern_skip_fields: &["type", "condition"],
     statements: &["expression_statement", "let_declaration", "empty_statement"],
     try_kind: "try_expression",
+    inline_scopes: &[
+        InlineScope {
+            kind: "closure_expression",
+            parameters: Some("parameters"),
+            body: Some("body"),
+        },
+        InlineScope {
+            kind: "async_block",
+            parameters: None,
+            body: None,
+        },
+    ],
     structs: StructShape {
         kind: "struct_expression",
         body: "body",

@@ -55,6 +55,8 @@ pub fn lower_with_macros(
         breaks: Vec::new(),
         continues: Vec::new(),
         macros,
+        inline_exits: Vec::new(),
+        call_receivers: Vec::new(),
     };
     lowerer.params(node);
     let exit = lowerer.fresh_label();
@@ -226,6 +228,12 @@ struct Lowerer<'r, 's> {
     continues: Vec<Label>,
     /// Object-like macros read as what they stand for.
     macros: &'r HashMap<String, String>,
+    /// Inlined scopes being lowered (innermost last): where a `return`
+    /// inside one goes, and the variable holding its value.
+    inline_exits: Vec<(Label, Var)>,
+    /// The receiver of the method call whose arguments are being lowered
+    /// (a closure argument's parameters take it).
+    call_receivers: Vec<Option<Operand>>,
 }
 
 impl<'s> Lowerer<'_, 's> {
