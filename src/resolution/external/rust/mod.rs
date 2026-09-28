@@ -198,10 +198,12 @@ fn typed_method(
         return Attempt::NotOurs;
     };
     let through_dependency = declarations.answers() > before;
-    let found = declarations.cache().get(&ty.krate).and_then(|graph| {
-        let node = lookup_method(declarations.cache(), &graph, &ty.path, method)?;
-        Some((graph, node))
-    });
+    // The graph the method is found in (another crate's, when the type is
+    // a re-export, an alias or derefs there).
+    let found = declarations
+        .cache()
+        .get(&ty.krate)
+        .and_then(|graph| lookup_method(declarations.cache(), &graph, &ty.path, method));
     let Some((graph, node)) = found else {
         return Attempt::Missed(format!("{}::{}::{method}", ty.krate, ty.path.join("::")));
     };
