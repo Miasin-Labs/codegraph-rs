@@ -557,11 +557,30 @@ fn a_name_alone_matches_only_libraries_the_file_reaches() {
     // rusqlite's `Statement::query_map` binds parameters: not mysql's.
     let s = Snippet::new(Language::Rust, &format!("use rusqlite::Db;\n{call}"));
     assert_eq!(s.matched(&models, "query_map", library()), None);
+    // Nor, with the library imported, by the name alone: a Rust crate puts
+    // one method name on several types, and only a typed receiver says
+    // which (the models may name just one of them).
     let s = Snippet::new(Language::Rust, &format!("use mysql::prelude::*;\n{call}"));
-    assert_eq!(
-        s.matched(&models, "query_map", library()).map(|m| m.0),
-        Some(Tier::Name)
+    assert_eq!(s.matched(&models, "query_map", library()), None);
+}
+
+/// rms: an untyped `stmt` from `db.prepare(…).map_err(…)?` must not take
+/// `Connection::query_row`'s SQL-text sink — `Statement::query_row`'s first
+/// argument is the bound parameters.
+#[test]
+fn a_rust_method_is_never_matched_by_its_name_alone() {
+    let models = LanguageModels::new(vec![model(
+        Role::Sink,
+        "rusqlite",
+        "Connection",
+        "query_row",
+        Pos::arg(0),
+    )]);
+    let s = Snippet::new(
+        Language::Rust,
+        "use rusqlite::params;\nfn f(db: &Db, id: &str) {\n    let mut stmt = db.prepare(\"SELECT 1 WHERE id=?1\").map_err(e)?;\n    stmt.query_row(params![id], |r| r.get(0));\n}\n",
     );
+    assert_eq!(s.matched(&models, "query_row", library()), None);
 }
 
 #[test]

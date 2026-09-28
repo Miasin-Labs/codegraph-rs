@@ -199,9 +199,16 @@ impl<'a, 'f> FileContext<'a, 'f> {
         if shape.constructor || facts.defined_here {
             return;
         }
-        // The name alone, when nothing typed the receiver.
+        // The name alone, when nothing typed the receiver. Never for a Rust
+        // method: a crate puts one name on many types with different
+        // parameters (rusqlite's `Connection::query_row(sql, …)` and
+        // `Statement::query_row(params, …)`), and the models name only some
+        // of them, so "one modelled owner" says nothing of the call — an
+        // untyped `stmt.query_row(params![id], …)` took Connection's SQL
+        // sink (rms: 4 false SQL injections on bound parameters).
+        let rust_method = self.model_language == ModelLanguage::Rust && shape.receiver.is_some();
         let typed = keys.iter().any(|(key, _)| matches!(key, Key::Typed { .. }));
-        if !typed && self.unambiguous(&shape.name) {
+        if !typed && !rust_method && self.unambiguous(&shape.name) {
             keys.push((Key::Name, Tier::Name));
         }
     }
