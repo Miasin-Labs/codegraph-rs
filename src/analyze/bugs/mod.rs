@@ -30,7 +30,7 @@ mod project;
 mod review;
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 pub use project::{CallSite, FnSpan, Project};
@@ -234,10 +234,18 @@ pub(crate) fn detect(project: &mut Project, options: &BugsOptions) -> Vec<Findin
 /// Keep the findings `options` selects: in `only_files`, outside test code
 /// unless `include_tests`.
 pub(crate) fn retain_selected(
-    project: &Project,
+    project: &mut Project,
     findings: &mut Vec<Finding>,
     options: &BugsOptions,
 ) {
+    if !options.include_tests {
+        // Test items the syntax marks are read from the parsed file.
+        let files: HashSet<String> = findings.iter().map(|f| f.file.clone()).collect();
+        for file in files {
+            project.parsed(&file);
+        }
+    }
+    let project = &*project;
     findings.retain(|finding| {
         options
             .only_files

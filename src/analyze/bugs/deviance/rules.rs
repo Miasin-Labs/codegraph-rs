@@ -8,7 +8,7 @@ use crate::types::Language;
 
 /// How an arm of a match yields its value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ArmValue {
+pub(in crate::analyze::bugs) enum ArmValue {
     /// The arm's `value` field is an expression (Rust `pat => expr`).
     Expression,
     /// The arm holds statements; its value is what its last statement
@@ -17,7 +17,7 @@ pub(super) enum ArmValue {
 }
 
 /// The node kinds and names one language's templates read.
-pub(super) struct Rules {
+pub(in crate::analyze::bugs) struct Rules {
     /// Function-like nodes whose `body` yields the function's result.
     pub functions: &'static [&'static str],
     /// A `match` must be the function's value (Rust), not just any `switch`
@@ -319,7 +319,7 @@ static PYTHON: Rules = Rules {
 };
 
 /// The rules for `language`, if the syntactic templates support it.
-pub(super) fn for_language(language: Language) -> Option<&'static Rules> {
+pub(in crate::analyze::bugs) fn for_language(language: Language) -> Option<&'static Rules> {
     match language {
         Language::Rust => Some(&RUST),
         Language::Typescript | Language::Tsx | Language::Javascript | Language::Jsx => {

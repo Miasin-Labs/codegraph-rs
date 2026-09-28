@@ -66,6 +66,9 @@ pub struct ParsedFile {
     pub language: Language,
     pub source: String,
     pub tree: Tree,
+    /// Line ranges of test items the syntax marks (`#[cfg(test)] mod …`,
+    /// `#[test] fn …`), outermost only, by start line.
+    pub test_regions: Vec<(u32, u32)>,
 }
 
 /// The indexed project, as the detectors see it.
@@ -287,10 +290,12 @@ impl Project {
             return None;
         };
         let tree = parser.parse(&source, None)?;
+        let test_regions = test_regions(language, &source, &tree);
         Some(ParsedFile {
             language,
             source,
             tree,
+            test_regions,
         })
     }
 
@@ -311,11 +316,82 @@ impl Project {
         *self.skipped.entry(reason.to_string()).or_default() += 1;
     }
 
-    /// The finding sits in test code (a test file, or a test function).
+    /// The finding sits in test code: a test file, a function the index
+    /// names as a test, or an item the syntax marks as one (`#[cfg(test)]
+    /// mod …`, which the index does not see). The syntax is read only for a
+    /// file already [parsed](Self::parsed).
     pub fn is_test_location(&self, finding: &Finding) -> bool {
         is_test_source_file(&finding.file)
             || self
                 .enclosing_function(&finding.file, finding.line)
                 .is_some_and(|span| span.is_test)
+            || self.parsed_cached(&finding.file).is_some_and(|parsed| {
+                parsed
+                    .test_regions
+                    .iter()
+                    .any(|&(start, end)| start <= finding.line && finding.line <= end)
+            })
+    }
+}
+
+/// Outermost line ranges of the items `language`'s test attributes mark
+/// (`#[cfg(test)]`, `#[test]`, `#[tokio::test]`…), from the deviance rules
+/// table. One walk over the tree; a marked item's insides are not walked.
+fn test_regions(language: Language, source: &str, tree: &Tree) -> Vec<(u32, u32)> {
+    let Some(rules) = super::deviance::rules::for_language(language) else {
+        return Vec::new();
+    };
+    if rules.test_markers.is_empty() {
+        return Vec::new();
+    }
+    let mut regions = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        let mut marked = false;
+        for child in node.named_children(&mut cursor) {
+            let kind = child.kind();
+            if rules.attributes.contains(&kind) {
+                let text = child.utf8_text(source.as_bytes()).unwrap_or("");
+                marked |= rules.test_markers.iter().any(|m| text.contains(m));
+            } else if rules.comments.contains(&kind) {
+                // Doc comments may sit between an attribute and its item.
+            } else if marked {
+                marked = false;
+                regions.push((
+                    child.start_position().row as u32 + 1,
+                    child.end_position().row as u32 + 1,
+                ));
+            } else {
+                stack.push(child);
+            }
+        }
+    }
+    regions.sort_unstable();
+    regions
+}
+
+#[cfg(test)]
+mod test_region_tests {
+    use super::*;
+
+    #[test]
+    fn cfg_test_modules_and_test_fns_are_test_regions() {
+        let source = "fn live() {}\n\
+                      #[cfg(test)]\n\
+                      mod checks {\n    struct Mock;\n    fn helper() {}\n}\n\
+                      /// doc\n\
+                      #[tokio::test]\n\
+                      async fn smoke() {\n    live();\n}\n\
+                      #[derive(Debug)]\n\
+                      struct Real;\n";
+        let mut parser = create_parser(Language::Rust).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        // The module (lines 3–6) and the attributed fn (lines 9–11); a
+        // non-test attribute marks nothing.
+        assert_eq!(
+            test_regions(Language::Rust, source, &tree),
+            vec![(3, 6), (9, 11)]
+        );
     }
 }

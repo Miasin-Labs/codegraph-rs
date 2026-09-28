@@ -21,7 +21,7 @@ mod arms;
 mod companions;
 mod results;
 mod returns;
-mod rules;
+pub(super) mod rules;
 mod syntax;
 #[cfg(test)]
 mod tests;
