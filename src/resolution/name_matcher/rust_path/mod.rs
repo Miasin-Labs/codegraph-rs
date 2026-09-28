@@ -17,12 +17,15 @@
 //! referencing method.
 
 mod bare;
+mod cfg;
 mod layout;
 mod module_tree;
 mod use_tree;
 
 pub(in crate::resolution::name_matcher) use bare::{BareBinding, bare_binding};
+pub(in crate::resolution::name_matcher) use cfg::{BuildCfg, keep_active, keep_built, node_active};
 use layout::{ModuleLocation, declared_module, inline_modules, item_location, module_location};
+pub(in crate::resolution::name_matcher) use module_tree::is_local_module_of_file;
 use module_tree::{
     Namespace,
     Resolution,
@@ -30,6 +33,7 @@ use module_tree::{
     names_rust_type,
     resolve_in_module,
     use_source,
+    walk_modules,
 };
 pub use use_tree::{
     LocalUse,
@@ -214,7 +218,7 @@ fn resolve_module_path(
         caller.clone()
     };
     // The module the path names — or, for `Type::item`, the type's "module".
-    let target = start.walk(module_path)?;
+    let target = walk_modules(context, &start, module_path)?;
     let path = ModulePath {
         caller,
         target,
@@ -251,7 +255,7 @@ fn resolve_scoped_path(
     }
     let caller = caller_module(reference, context);
     let base = module_in_scope(reference, head, &caller, context)?;
-    let target = base.walk(inner)?;
+    let target = walk_modules(context, &base, inner)?;
     let path = ModulePath {
         caller,
         target,
@@ -645,7 +649,7 @@ fn resolve_crate_path(
     };
     let path = ModulePath {
         caller: caller_module(reference, context),
-        target: root.walk(module_path)?,
+        target: walk_modules(context, &root, module_path)?,
         owner: owner_segment(module_path),
         item,
         guess: Guess::SameCrate,
