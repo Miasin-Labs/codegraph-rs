@@ -879,6 +879,9 @@ fn cmd_gc(policy: &GcPolicy, json: bool) -> CmdResult {
             ))
         );
     }
+    for legacy in &report.legacy_removed {
+        println!("  {verb} {legacy} {}", dim("(old beliefs toolchain store)"));
+    }
     println!(
         "{} {verb} {} shards ({}), {} build leftovers; {} kept",
         dim("·"),

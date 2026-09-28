@@ -7,6 +7,10 @@
 //!    used shards.
 //! 4. Remove shard directories the registry doesn't know, and build
 //!    leftovers (`.tmp-`/`.old-`) older than an hour.
+//! 5. Remove the toolchain shards the ecosystem beliefs build kept apart
+//!    before the toolchain became a dependency shard
+//!    (`deps/beliefs/toolchain/crates/{std,core,alloc}-<version>/`): nothing
+//!    reads them any more.
 //!
 //! A shard whose build lock is held is never touched, and nothing but shard
 //! directories (those with a `meta.json`) and the builder's own leftovers is
@@ -79,6 +83,8 @@ pub struct GcReport {
     pub projects_forgotten: Vec<String>,
     pub removed: Vec<RemovedShard>,
     pub leftovers_removed: usize,
+    /// Directories of the old beliefs toolchain store removed (step 5).
+    pub legacy_removed: Vec<String>,
     pub bytes_freed: u64,
     pub bytes_kept: u64,
     pub versions_forgotten: usize,
@@ -173,6 +179,7 @@ pub fn gc(
     report.bytes_kept = kept.iter().map(|(_, b)| *b).sum();
 
     sweep_disk(home, registry, &known, policy, now, &mut report)?;
+    sweep_legacy_toolchain(home, policy, &mut report)?;
     if !policy.dry_run {
         report.versions_forgotten = registry.delete_unused_packages()?;
     }
@@ -285,6 +292,59 @@ fn sweep_disk(
                 bytes: meta.db_bytes,
                 reason: GcReason::Orphan,
             });
+        }
+    }
+    Ok(())
+}
+
+/// The old beliefs toolchain store, `deps/beliefs/toolchain/`: a shard
+/// directory per crate under `crates/` (`std-`, `core-`, `alloc-<rustc
+/// version>`, each with a `meta.json`), their locks under `.locks/crates/`,
+/// and build leftovers. Only those are removed — never another file — and
+/// nothing while a beliefs build (possibly an older binary still writing
+/// there) holds its lock. Directories left empty go too.
+fn sweep_legacy_toolchain(
+    home: &DepsHome,
+    policy: &GcPolicy,
+    report: &mut GcReport,
+) -> DepsResult<()> {
+    let beliefs = home.root().join("beliefs");
+    let root = beliefs.join("toolchain");
+    let crates = root.join("crates");
+    let Ok(entries) = fs::read_dir(&crates) else {
+        return Ok(());
+    };
+    if StoreLock::is_held(&beliefs.join("build.lock")) {
+        return Ok(());
+    }
+    let locks = root.join(".locks").join("crates");
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let leftover = name.starts_with(TMP_PREFIX) || name.starts_with(OLD_PREFIX);
+        let shard = ["std-", "core-", "alloc-"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+            && entry.path().join(META_FILE).is_file();
+        if !(leftover || shard) {
+            continue;
+        }
+        let bytes = ShardMeta::read(&entry.path()).map_or(0, |meta| meta.db_bytes);
+        if !policy.dry_run {
+            fs::remove_dir_all(entry.path())?;
+            let _ = fs::remove_file(locks.join(format!("{name}.lock")));
+        }
+        report.bytes_freed += bytes;
+        report
+            .legacy_removed
+            .push(format!("beliefs/toolchain/crates/{name}"));
+    }
+    if !policy.dry_run {
+        // Only empty directories: anything else there stays.
+        for dir in [&locks, &root.join(".locks"), &crates, &root] {
+            let _ = fs::remove_dir(dir);
         }
     }
     Ok(())
