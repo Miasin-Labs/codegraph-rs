@@ -6,10 +6,9 @@
 //! The index keeps no generics, so each file's items that declare them
 //! (`fn f<T>`, `impl<R: Read>`, `struct S<W>`, `trait Tr<A>`, `enum`,
 //! `union`, `type`) are read from its text once, with the lines each item
-//! spans, and kept per file (with the source it was read from) on each
-//! resolving thread.
+//! spans, and kept per file by the resolution context
+//! ([`ResolutionContext::get_rust_file_derived`]).
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -39,32 +38,17 @@ pub(super) fn is_generic_param(
     reference: &UnresolvedRef,
     context: &dyn ResolutionContext,
 ) -> bool {
-    thread_local! {
-        /// Per file, with the source it was read from: references of every
-        /// file of a project interleave, more than a few-file memo holds.
-        static SCOPES: RefCell<HashMap<String, (Arc<str>, Arc<GenericScopes>)>> =
-            RefCell::new(HashMap::new());
-    }
-    let Some(source) = context.read_file_arc(&reference.file_path) else {
-        return false;
-    };
-    let cached = SCOPES.with(|memo| {
-        memo.borrow()
-            .get(&reference.file_path)
-            .filter(|(seen, _)| Arc::ptr_eq(seen, &source))
-            .map(|(_, scopes)| Arc::clone(scopes))
+    let file = reference.file_path.as_str();
+    let scopes = context.get_rust_file_derived(file, "rust-generic-scopes", &mut || {
+        let scopes = context
+            .read_file_arc(file)
+            .map(|source| scan(&source))
+            .unwrap_or_default();
+        Arc::new(scopes)
     });
-    let scopes = cached.unwrap_or_else(|| {
-        let scopes = Arc::new(scan(&source));
-        SCOPES.with(|memo| {
-            memo.borrow_mut().insert(
-                reference.file_path.clone(),
-                (Arc::clone(&source), Arc::clone(&scopes)),
-            )
-        });
-        scopes
-    });
-    scopes.contains(name, reference.line)
+    scopes
+        .downcast_ref::<GenericScopes>()
+        .is_some_and(|scopes| scopes.contains(name, reference.line))
 }
 
 /// Items that can declare generic parameters.

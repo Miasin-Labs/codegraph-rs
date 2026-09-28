@@ -9,7 +9,6 @@
 //! only the chain the queried name needs, guarded like rustc's
 //! `cycle_detection` against re-export cycles.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -296,32 +295,14 @@ impl ModuleTree<'_> {
 /// The `use` declarations a file writes at its top level inside a macro
 /// call (`cfg_rt! { mod builder; pub use self::builder::Builder; }`),
 /// which the index keeps no Import node for: its indented `use` lines no
-/// fn, type or inline `mod` encloses. Read once per file.
+/// fn, type or inline `mod` encloses. Derived once per file.
 pub(super) fn macro_level_uses(context: &dyn ResolutionContext, file: &str) -> Arc<Vec<UseLeaf>> {
-    thread_local! {
-        /// Per file, with the source it was read from: a lookup visits the
-        /// files of every module on its path, more than a few-file memo
-        /// holds, and the scope test per `use` must run once per file.
-        static USES: RefCell<HashMap<String, (Arc<str>, Arc<Vec<UseLeaf>>)>> =
-            RefCell::new(HashMap::new());
-    }
     let locals = context.get_rust_fn_local_uses(file);
     if locals.is_empty() {
         return Arc::default();
     }
-    let Some(source) = context.read_file_arc(file) else {
-        return Arc::default();
-    };
-    if let Some(uses) = USES.with(|memo| {
-        memo.borrow()
-            .get(file)
-            .filter(|(seen, _)| Arc::ptr_eq(seen, &source))
-            .map(|(_, uses)| Arc::clone(uses))
-    }) {
-        return uses;
-    }
-    let uses: Arc<Vec<UseLeaf>> = Arc::new(
-        locals
+    let derived = context.get_rust_file_derived(file, "rust-macro-level-uses", &mut || {
+        let uses: Vec<UseLeaf> = locals
             .iter()
             .filter(|local| {
                 !context
@@ -330,13 +311,10 @@ pub(super) fn macro_level_uses(context: &dyn ResolutionContext, file: &str) -> A
                     .any(|scope| scope.language == Language::Rust)
             })
             .map(|local| local.leaf.clone())
-            .collect(),
-    );
-    USES.with(|memo| {
-        memo.borrow_mut()
-            .insert(file.to_string(), (source, Arc::clone(&uses)))
+            .collect();
+        Arc::new(uses)
     });
-    uses
+    derived.downcast::<Vec<UseLeaf>>().unwrap_or_default()
 }
 
 /// The module a `use` path's leading segments (`path`, written in `module`)

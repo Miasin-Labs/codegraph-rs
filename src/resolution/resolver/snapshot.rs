@@ -2,6 +2,7 @@ mod context;
 mod policy;
 mod scopes;
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -91,6 +92,7 @@ pub(super) struct SnapshotContext {
     re_export_cache: Mutex<HashMap<ImportCacheKey, Vec<ReExport>>>,
     rust_use_cache: Mutex<HashMap<String, Arc<[RustUse]>>>,
     rust_fn_use_cache: Mutex<HashMap<String, Arc<[LocalUse]>>>,
+    rust_derived_cache: Mutex<HashMap<(String, &'static str), Arc<dyn Any + Send + Sync>>>,
 }
 
 impl ResolverSnapshot {
@@ -180,6 +182,7 @@ impl SnapshotContext {
             re_export_cache: Mutex::new(HashMap::new()),
             rust_use_cache: Mutex::new(HashMap::new()),
             rust_fn_use_cache: Mutex::new(HashMap::new()),
+            rust_derived_cache: Mutex::new(HashMap::new()),
         })
     }
 
