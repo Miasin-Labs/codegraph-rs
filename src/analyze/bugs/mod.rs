@@ -96,6 +96,10 @@ pub struct BugsOptions {
     /// Time the taint rules' pass may take (a default when `None`); spent,
     /// it reports what it found and says the rest was not followed.
     pub taint_budget: Option<std::time::Duration>,
+    /// Taint follows calls into dependency shards through their summaries
+    /// (`None`: library models only). The CLI may build a missing
+    /// summary; MCP only reads.
+    pub dependency_summaries: Option<crate::deps::summaries::compose::Access>,
 }
 
 /// Result of [`bugs_report`].

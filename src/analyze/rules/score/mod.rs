@@ -552,6 +552,7 @@ fn run_unit(
             only_files: None,
             include_tests: true,
             taint_budget: None,
+            dependency_summaries: None,
         };
         let findings = super::detect(&cg, &mut project, rules, &options)?;
         let findings = findings

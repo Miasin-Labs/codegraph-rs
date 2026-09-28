@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use codegraph_analysis::ir::{IrFunction, IrOp, Operand, Var, shared};
 use codegraph_analysis::taint_flow::program::{CallTargets, Function};
-use codegraph_analysis::taint_flow::{Budget, FuncId};
+use codegraph_analysis::taint_flow::{Budget, FuncId, Summary};
 use tree_sitter::Node;
 
 use super::super::engine::FileInput;
@@ -62,6 +62,8 @@ struct Pending {
     guessed: bool,
     /// Candidates.
     targets: Vec<usize>,
+    /// A dependency function's summary, for a call into another graph.
+    external: Option<Arc<Summary>>,
 }
 
 /// Every function node of `files`, and the program built from the ones
@@ -319,6 +321,7 @@ impl<'a> Table<'a> {
                             // code: nothing is assumed of the call.
                             targets: if complete { targets } else { Vec::new() },
                             guessed: call.guessed,
+                            external: call.external,
                         },
                     )
                 })
@@ -479,8 +482,14 @@ impl<'a> Table<'a> {
                 in_project: resolution.in_project,
                 guessed: false,
                 targets: Vec::new(),
+                external: None,
             };
             let callees = semantics.callee_functions(file, span.line, span.col, callee);
+            if callees.is_empty() {
+                // A dependency's function: its summary, when its shard
+                // has one, instead of the library models.
+                pending.external = semantics.external_summary(file, span.line, span.col, callee);
+            }
             if rules.index_resolves_calls && semantics.has_index() {
                 // A call resolving only to a tuple struct or enum variant
                 // builds a value from its arguments: no function runs.
@@ -519,7 +528,7 @@ impl<'a> Table<'a> {
             }
             if rules.index_resolves_calls && semantics.has_index() {
                 // What the index left unresolved is library code.
-                if pending.in_project || !pending.names.is_empty() {
+                if pending.in_project || !pending.names.is_empty() || pending.external.is_some() {
                     out.push((op, pending));
                 }
                 continue;
@@ -546,7 +555,7 @@ impl<'a> Table<'a> {
             let bare = receiver.is_none() && !callee.contains("::");
             pending.in_project |= !pending.targets.is_empty()
                 || ((bare || !rules.index_resolves_calls) && file.defines(rules, &name));
-            if pending.in_project || !pending.names.is_empty() {
+            if pending.in_project || !pending.names.is_empty() || pending.external.is_some() {
                 out.push((op, pending));
             }
         }

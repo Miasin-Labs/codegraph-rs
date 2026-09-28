@@ -73,6 +73,26 @@ pub(super) trait Semantics {
     fn has_index(&self) -> bool {
         true
     }
+    /// The summary of the dependency function the call resolves to (a
+    /// call the external pass resolved into a dependency shard with
+    /// summaries); `None` for anything else.
+    fn external_summary(
+        &self,
+        _file: &FileInput,
+        _line: u32,
+        _col: u32,
+        _callee: &str,
+    ) -> Option<std::sync::Arc<codegraph_analysis::taint_flow::Summary>> {
+        None
+    }
+    /// A dependency function a summary's path steps through (program ids
+    /// from [`crate::deps::summaries::compose::EXTERNAL_FUNC_BASE`]).
+    fn external_function(
+        &self,
+        _id: codegraph_analysis::taint_flow::FuncId,
+    ) -> Option<crate::deps::summaries::compose::ExternalFunction> {
+        None
+    }
 }
 
 /// Calls as written, for rule examples.
@@ -176,6 +196,8 @@ struct Target {
     in_project: bool,
     /// Where it is, for a project function.
     callee: Option<CalleeRef>,
+    /// A dependency shard's function: (graph key, node id).
+    external: Option<(String, String)>,
 }
 
 /// Calls and functions from the index.
@@ -188,6 +210,8 @@ pub(crate) struct IndexSemantics<'p> {
     /// Per file: line → 1 + index into `project.functions_in(file)` of the
     /// innermost function spanning it (0: none). Built on first use.
     line_functions: RefCell<HashMap<String, Vec<u32>>>,
+    /// Dependency functions' summaries, when the run follows them.
+    deps: Option<RefCell<crate::deps::summaries::compose::DependencySummaries>>,
 }
 
 impl<'p> IndexSemantics<'p> {
@@ -219,6 +243,7 @@ impl<'p> IndexSemantics<'p> {
                         qualified_name: site.callee_qualified.clone(),
                         kind: site.callee_kind.clone(),
                     }),
+                    external: None,
                 });
         }
         for external in external {
@@ -236,7 +261,17 @@ impl<'p> IndexSemantics<'p> {
             calls_at,
             calls_by_caller,
             line_functions: RefCell::new(HashMap::new()),
+            deps: None,
         }
+    }
+
+    /// Follow calls into dependency shards through `deps`' summaries.
+    pub(crate) fn with_dependencies(
+        mut self,
+        deps: Option<crate::deps::summaries::compose::DependencySummaries>,
+    ) -> Self {
+        self.deps = deps.map(RefCell::new);
+        self
     }
 
     /// For tests: the project's call sites only.
@@ -353,6 +388,39 @@ impl Semantics for IndexSemantics<'_> {
             .collect()
     }
 
+    fn external_summary(
+        &self,
+        file: &FileInput,
+        line: u32,
+        col: u32,
+        callee: &str,
+    ) -> Option<std::sync::Arc<codegraph_analysis::taint_flow::Summary>> {
+        let deps = self.deps.as_ref()?;
+        let chosen = self.chosen(file.path, line, col, callee);
+        if chosen.iter().any(|target| target.in_project) {
+            return None;
+        }
+        let mut found: Vec<std::sync::Arc<codegraph_analysis::taint_flow::Summary>> = Vec::new();
+        for target in chosen {
+            let (key, node) = target.external.as_ref()?;
+            found.push(deps.borrow_mut().summary(key, node)?);
+        }
+        match found.len() {
+            0 => None,
+            1 => found.pop(),
+            _ => Some(std::sync::Arc::new(
+                codegraph_analysis::taint_flow::Summary::union(found.iter().map(|s| s.as_ref())),
+            )),
+        }
+    }
+
+    fn external_function(
+        &self,
+        id: codegraph_analysis::taint_flow::FuncId,
+    ) -> Option<crate::deps::summaries::compose::ExternalFunction> {
+        self.deps.as_ref()?.borrow().function(id).cloned()
+    }
+
     fn function(&self, file: &FileInput, rules: &LangRules, function: Node) -> FunctionFacts {
         // Resolved calls by their targets; unresolved ones (library calls
         // the index has no node for) as written.
@@ -403,7 +471,8 @@ fn load_external_calls(cg: &CodeGraph) -> Result<Vec<ExternalCall>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT x.source, n.file_path, x.line, IFNULL(x.col, 0), x.target_name, \
-                    x.target_qualified_name, x.target_graph_key \
+                    x.target_qualified_name, x.target_graph_key, x.target_graph_kind, \
+                    x.target_node_id \
              FROM external_edges x JOIN nodes n ON n.id = x.source \
              WHERE x.kind = 'calls' AND x.line IS NOT NULL",
         )
@@ -412,6 +481,9 @@ fn load_external_calls(cg: &CodeGraph) -> Result<Vec<ExternalCall>, String> {
         .query_map([], |row| {
             let qualified: String = row.get(5)?;
             let key: String = row.get(6)?;
+            let graph_kind: String = row.get(7)?;
+            let node_id: String = row.get(8)?;
+            let external = (graph_kind == "dependency").then(|| (key.clone(), node_id));
             let mut names = vec![qualified.clone()];
             if let Some(package) = package_of(&key) {
                 let prefixed = format!("{package}::{qualified}");
@@ -429,6 +501,7 @@ fn load_external_calls(cg: &CodeGraph) -> Result<Vec<ExternalCall>, String> {
                     names,
                     in_project: false,
                     callee: None,
+                    external,
                 },
             })
         })

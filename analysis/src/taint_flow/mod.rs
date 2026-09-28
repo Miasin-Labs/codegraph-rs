@@ -100,6 +100,14 @@ pub struct TaintSpec {
     pub sinks: Vec<Mark>,
     pub propagators: Vec<Propagator>,
     pub guards: Vec<GuardMark>,
+    /// Call arguments that are sinks, by op instead of syntax: `(call op,
+    /// argument index)`. Their sink index follows [`Self::sinks`]'
+    /// (`sinks.len() + i`). What a summary's inputs reach through them is
+    /// "this parameter reaches that callee's argument".
+    pub call_args: Vec<(usize, usize)>,
+    /// Call results that are sources, by op; source index `sources.len() +
+    /// i`.
+    pub source_calls: Vec<usize>,
 }
 
 impl TaintSpec {
@@ -110,6 +118,8 @@ impl TaintSpec {
             && self.sinks.is_empty()
             && self.propagators.is_empty()
             && self.guards.is_empty()
+            && self.call_args.is_empty()
+            && self.source_calls.is_empty()
     }
 }
 

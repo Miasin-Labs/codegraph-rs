@@ -653,6 +653,20 @@ impl<'f> Engine<'f> {
                     .push((index, value.operand.clone(), value.at, value.span));
             }
         }
+        for (k, &(op, arg)) in spec.call_args.iter().enumerate() {
+            if let Some(IrOp::Call { args, .. }) = self.func.body.get(op) {
+                if let Some(operand) = args.get(arg) {
+                    let span = self.func.span(op);
+                    self.sinks
+                        .push((spec.sinks.len() + k, operand.clone(), op, span));
+                }
+            }
+        }
+        for (k, &op) in spec.source_calls.iter().enumerate() {
+            if matches!(self.func.body.get(op), Some(IrOp::Call { .. })) {
+                self.source_ops.insert(op, spec.sources.len() + k);
+            }
+        }
     }
 
     fn rd(&self) -> &ReachingDefs {
@@ -1154,7 +1168,8 @@ impl<'f> Engine<'f> {
                 .map(|(index, value)| (Read::Operand(value.clone()), *index))
                 .collect();
             let found = self.search(&start, budget);
-            let end = self.op_step(returns[0].0);
+            // The tail return (a function's usual exit), not an early one.
+            let end = self.op_step(returns[returns.len() - 1].0);
             summary.returns = self.output_of(&found, end);
             // A returned struct's fields, where one carries less than the
             // whole (`Self { a: x, b: y }`).

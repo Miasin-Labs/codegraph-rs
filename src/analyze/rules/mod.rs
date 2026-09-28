@@ -254,7 +254,15 @@ fn run(
         return Ok((Vec::new(), 0));
     }
     let scan = {
-        let semantics = IndexSemantics::new(cg, project)?;
+        let deadline = Instant::now() + options.taint_budget.unwrap_or(DEFAULT_TAINT_BUDGET);
+        let deps = options.dependency_summaries.map(|access| {
+            crate::deps::summaries::compose::DependencySummaries::new(
+                crate::deps::DepsHome::from_env(),
+                access,
+                Some(deadline),
+            )
+        });
+        let semantics = IndexSemantics::new(cg, project)?.with_dependencies(deps);
         scan(project, &semantics, rules, options)
     };
     for reason in scan.skipped {

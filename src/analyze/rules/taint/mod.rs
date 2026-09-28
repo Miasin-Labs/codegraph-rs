@@ -257,7 +257,7 @@ pub(super) fn run_files(
             reached.insert(sink_index);
             let sink = &rule_marks.sinks[sink_index];
             let source = &rule_marks.sources[source_index];
-            let hit = flow_hit(sink, source, flow, guessed, &table, files);
+            let hit = flow_hit(sink, source, flow, guessed, &table, files, semantics);
             results[index][sink.file].hits.push(hit);
         }
         if trace {
@@ -509,9 +509,8 @@ fn flow_hit(
     guessed: bool,
     table: &program::Table,
     files: &[&FileInput],
+    semantics: &dyn Semantics,
 ) -> Hit {
-    let file_of =
-        |func: FuncId| -> usize { table.candidates[table.candidate_of[func as usize]].file };
     let source_file = files[source.file];
     let sink_file = files[sink.file];
     let source_line = position(source_file.tree, source.range.start).0;
@@ -520,10 +519,29 @@ fn flow_hit(
     let mut seen: HashSet<(usize, u32)> = HashSet::new();
     seen.insert((source.file, source_line));
     seen.insert((sink.file, sink_line));
+    let mut external = DependencyLines::default();
     for step in &flow.path {
-        let file = file_of(step.func);
         let line = step.span.line;
-        if line == 0 || !seen.insert((file, line)) {
+        if line == 0 {
+            continue;
+        }
+        let Some(&candidate) = table.candidate_of.get(step.func as usize) else {
+            // A dependency's function (its summary's path): its own file,
+            // absolute, and line.
+            if let Some(function) = semantics.external_function(step.func) {
+                let file = function.file.to_string_lossy().into_owned();
+                if hops
+                    .last()
+                    .is_none_or(|h| (h.file.as_str(), h.line) != (file.as_str(), line))
+                {
+                    let code = external.line(&function.file, line);
+                    hops.push(TraceStep { file, line, code });
+                }
+            }
+            continue;
+        };
+        let file = table.candidates[candidate].file;
+        if !seen.insert((file, line)) {
             continue;
         }
         hops.push(TraceStep {
@@ -543,6 +561,26 @@ fn flow_hit(
         guessed,
     });
     hit
+}
+
+/// Lines of dependency files a trace steps through, each file read once.
+#[derive(Default)]
+struct DependencyLines {
+    files: HashMap<std::path::PathBuf, Vec<String>>,
+}
+
+impl DependencyLines {
+    fn line(&mut self, file: &std::path::Path, line: u32) -> String {
+        let lines = self.files.entry(file.to_path_buf()).or_insert_with(|| {
+            std::fs::read_to_string(file)
+                .map(|text| text.lines().map(str::to_string).collect())
+                .unwrap_or_default()
+        });
+        lines
+            .get(line.saturating_sub(1) as usize)
+            .map(|text| one_line(text, 80))
+            .unwrap_or_default()
+    }
 }
 
 /// Why each sink no source reached was not reported (`--check` traces).
