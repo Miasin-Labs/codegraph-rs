@@ -224,15 +224,22 @@ annotate the graph before the query runs (see `analyze coverage`).")]
 function's result, which calls go together, what the arms of a match do) and reports the \
 sites that depart from them, with the agreeing sites as evidence. Lint reads bug shapes \
 from the syntax. `--base <rev>` reports only files changed since then; confirm a finding \
-with `codegraph analyze review`."
+with `codegraph analyze review`. `--detector compiler` (opt-in: it builds the project) runs \
+`cargo clippy --offline` with a curated set of bug-finding rustc/clippy lints and ranks them \
+by whether a route handler reaches them; the build runs detached, waits at most \
+--compiler-wait seconds, and the next call picks up a build still going."
     )]
     Bugs {
         /// Report only files changed since this git revision
         #[arg(long, value_name = "rev")]
         base: Option<String>,
-        /// Run only this detector family (deviance, lint); repeatable
+        /// Run only this detector family (deviance, lint, compiler); repeatable.
+        /// `compiler` runs only when named
         #[arg(long = "detector", value_name = "name")]
         detectors: Vec<String>,
+        /// Seconds to wait for the compiler detector's cargo run (default 300)
+        #[arg(long = "compiler-wait", value_name = "secs")]
+        compiler_wait: Option<String>,
         /// Include findings in test code
         #[arg(long)]
         tests: bool,
@@ -263,9 +270,13 @@ confirm or dismiss each finding: `codegraph analyze review --at src/sync.rs:1922
         /// Report only files changed since this git revision
         #[arg(long, value_name = "rev")]
         base: Option<String>,
-        /// Run only this detector family (deviance, lint, rule); repeatable
+        /// Run only this detector family (deviance, lint, rule, compiler);
+        /// repeatable. `compiler` runs only when named
         #[arg(long = "detector", value_name = "name")]
         detectors: Vec<String>,
+        /// Seconds to wait for the compiler detector's cargo run (default 300)
+        #[arg(long = "compiler-wait", value_name = "secs")]
+        compiler_wait: Option<String>,
         /// Also review the findings of these YAML rules (file or directory;
         /// repeatable)
         #[arg(long = "rules", value_name = "file|dir")]

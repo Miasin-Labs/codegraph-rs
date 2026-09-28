@@ -61,6 +61,18 @@ pub struct CallSite {
     pub in_test: bool,
 }
 
+/// A function a framework route dispatches to (`route` node → `references`
+/// edge → function): the index's axum/actix/rocket/express/… routes.
+#[derive(Debug, Clone)]
+pub struct RouteHandler {
+    pub handler_id: String,
+    /// The route as the index names it (`GET /upload`).
+    pub route: String,
+    /// Where the route is registered.
+    pub file: String,
+    pub line: u32,
+}
+
 /// A source file parsed for the syntactic checks.
 pub struct ParsedFile {
     pub language: Language,
@@ -82,6 +94,9 @@ pub struct Project {
     skipped: BTreeMap<String, usize>,
     /// Every symbol name the index holds (generated files included).
     symbol_names: HashSet<String>,
+    routes: Vec<RouteHandler>,
+    /// Ids of the functions and methods the index records as public.
+    public_fns: HashSet<String>,
 }
 
 impl Project {
@@ -182,6 +197,41 @@ impl Project {
             rows.collect::<Result<_, _>>().map_err(err)?
         };
 
+        let routes: Vec<RouteHandler> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT e.target, r.name, r.file_path, r.start_line \
+                     FROM nodes r \
+                     JOIN edges e ON e.source = r.id AND e.kind = 'references' \
+                     JOIN nodes t ON t.id = e.target \
+                     WHERE r.kind = 'route' AND t.kind IN ('function', 'method') \
+                     ORDER BY r.file_path, r.start_line",
+                )
+                .map_err(err)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(RouteHandler {
+                        handler_id: row.get(0)?,
+                        route: row.get(1)?,
+                        file: row.get(2)?,
+                        line: row.get(3)?,
+                    })
+                })
+                .map_err(err)?;
+            rows.collect::<Result<_, _>>().map_err(err)?
+        };
+
+        let public_fns: HashSet<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id FROM nodes WHERE kind IN ('function', 'method') \
+                     AND (visibility = 'public' OR IFNULL(is_exported, 0) = 1)",
+                )
+                .map_err(err)?;
+            let rows = stmt.query_map([], |row| row.get(0)).map_err(err)?;
+            rows.collect::<Result<_, _>>().map_err(err)?
+        };
+
         Ok(Self {
             root: root.to_path_buf(),
             files,
@@ -191,7 +241,27 @@ impl Project {
             parsed: HashMap::new(),
             skipped: BTreeMap::new(),
             symbol_names,
+            routes,
+            public_fns,
         })
+    }
+
+    /// Route registrations and the functions they dispatch to.
+    pub fn routes(&self) -> &[RouteHandler] {
+        &self.routes
+    }
+
+    /// Whether the index records function `id` as public.
+    pub fn is_public(&self, id: &str) -> bool {
+        self.public_fns.contains(id)
+    }
+
+    /// Set routes and public functions, for unit tests of [`Self::from_parts`].
+    #[cfg(test)]
+    pub(crate) fn with_entries(mut self, routes: Vec<RouteHandler>, public: &[&str]) -> Self {
+        self.routes = routes;
+        self.public_fns = public.iter().map(|id| id.to_string()).collect();
+        self
     }
 
     /// A project from parts, for detector unit tests: sources under `root`,
@@ -220,6 +290,8 @@ impl Project {
             parsed: HashMap::new(),
             skipped: BTreeMap::new(),
             symbol_names: HashSet::new(),
+            routes: Vec::new(),
+            public_fns: HashSet::new(),
         }
     }
 

@@ -17,6 +17,10 @@
 //!   tree-sitter queries with semantic predicates — run by
 //!   `codegraph analyze rules`; their findings share this type so ranking
 //!   and review packets work the same.
+//! - **Compiler** ([`compiler`]): rustc's and clippy's type-aware lints
+//!   (a curated, bug-oriented set) from `cargo clippy`, ranked by whether a
+//!   request handler reaches them. Opt-in (`--detector compiler`): it builds
+//!   the project.
 //!
 //! Both build on what is precise: resolved call edges from the index (a
 //! caller, a callee, and the line and column of each call site — every
@@ -24,6 +28,7 @@
 //! The analysis crate's IR carries no lines, `match` or `break`, so it is not
 //! used here.
 
+pub mod compiler;
 mod deviance;
 mod lint;
 mod project;
@@ -33,7 +38,8 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
-pub use project::{CallSite, FnSpan, Project};
+pub use compiler::{CompilerState, CompilerStatus};
+pub use project::{CallSite, FnSpan, Project, RouteHandler};
 pub use review::{ReviewPacket, review_packets};
 use serde::Serialize;
 
@@ -48,6 +54,8 @@ pub enum Detector {
     Lint,
     /// A YAML rule (`codegraph analyze rules`).
     Rule,
+    /// A rustc or clippy lint (`--detector compiler`; opt-in).
+    Compiler,
 }
 
 /// A place that supports (or contradicts) a finding: another call site that
@@ -96,6 +104,10 @@ pub struct BugsOptions {
     /// Time the taint rules' pass may take (a default when `None`); spent,
     /// it reports what it found and says the rest was not followed.
     pub taint_budget: Option<std::time::Duration>,
+    /// How long the compiler detector waits for `cargo clippy`
+    /// ([`compiler::DEFAULT_WAIT`] when `None`); a run still going is picked
+    /// up by the next call.
+    pub compiler_wait: Option<std::time::Duration>,
 }
 
 /// Result of [`bugs_report`].
@@ -114,6 +126,10 @@ pub struct BugsReport {
     /// Files not analysed, by reason (unsupported language, unreadable…).
     pub skipped: BTreeMap<String, usize>,
     pub note: String,
+    /// The compiler run behind the compiler findings, when that detector
+    /// ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compiler: Option<CompilerStatus>,
 }
 
 impl BugsReport {
@@ -132,15 +148,26 @@ pub fn bugs_report(
     options: &BugsOptions,
 ) -> Result<BugsReport, String> {
     let mut project = Project::load(cg, project_root)?;
-    let findings = detect(&mut project, options);
-    Ok(report(
+    let (findings, compiler) = detect_all(&mut project, options);
+    let mut report = report(
         &project,
         project.files_parsed(),
         findings,
         "Deviance findings are departures from what the rest of the code does, with the \
          agreeing sites as evidence; lint findings are syntactic bug shapes. Both are leads to \
          confirm by reading the code (`codegraph analyze review`), not proofs.",
-    ))
+    );
+    if let Some(compiler) = compiler {
+        report.note.push_str(
+            " Compiler findings are rustc/clippy lints; the ones that are bugs only on \
+             untrusted input rank by how close a request handler (or a library's public API) \
+             is, with the call path as evidence. ",
+        );
+        report.note.push_str(&compiler.summary());
+        report.note.push('.');
+        report.compiler = Some(compiler);
+    }
+    Ok(report)
 }
 
 /// A report of `findings` (already filtered and ranked) over `project`.
@@ -163,6 +190,7 @@ pub(crate) fn report(
         by_rule,
         skipped: project.skipped().clone(),
         note: note.to_string(),
+        compiler: None,
     }
 }
 
@@ -208,17 +236,29 @@ pub fn bugs_review(
     });
     findings.truncate(selection.top.max(1));
     Ok(review_packets(&mut project, &findings, &|finding| {
-        rules
-            .map(|rules| crate::analyze::rules::review_questions(rules, finding))
-            .unwrap_or_default()
+        let mut questions = compiler::review_questions(finding);
+        if let Some(rules) = rules {
+            questions.extend(crate::analyze::rules::review_questions(rules, finding));
+        }
+        questions
     }))
 }
 
 /// The selected detectors' findings, filtered by `options`, most confident
 /// first.
 pub(crate) fn detect(project: &mut Project, options: &BugsOptions) -> Vec<Finding> {
+    detect_all(project, options).0
+}
+
+/// [`detect`], plus where the compiler run stands when that family was
+/// asked for.
+pub(crate) fn detect_all(
+    project: &mut Project,
+    options: &BugsOptions,
+) -> (Vec<Finding>, Option<CompilerStatus>) {
     // `Rule` findings come from the rules engine: asking for only those
-    // runs neither family here.
+    // runs neither family here. The compiler family builds the project, so
+    // it runs only when named.
     let wants = |detector| options.detectors.is_empty() || options.detectors.contains(&detector);
     let mut findings = Vec::new();
     if wants(Detector::Deviance) {
@@ -227,9 +267,15 @@ pub(crate) fn detect(project: &mut Project, options: &BugsOptions) -> Vec<Findin
     if wants(Detector::Lint) {
         findings.extend(lint::detect(project));
     }
+    let mut status = None;
+    if options.detectors.contains(&Detector::Compiler) {
+        let (found, compiler) = compiler::detect(project, options);
+        findings.extend(found);
+        status = Some(compiler);
+    }
     retain_selected(project, &mut findings, options);
     rank(&mut findings);
-    findings
+    (findings, status)
 }
 
 /// Keep the findings `options` selects: in `only_files`, outside test code
@@ -291,8 +337,9 @@ fn suppressed_at(source: &str, starts: &LineStarts, line: u32, rule: &str) -> bo
                     .split(|c: char| c == ',' || c.is_whitespace())
                     .filter(|word| !word.is_empty())
                     .take_while(|word| {
+                        // `clippy::indexing_slicing` is one id.
                         word.chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':'))
                     })
                     .any(|word| word == rule)
             })
@@ -328,5 +375,17 @@ mod suppression_tests {
         assert!(!at(5, "rule-a"), "only the next line is covered");
         assert!(!at(3, "rule"), "ids match whole");
         assert!(!at(99, "rule-a"), "past the end");
+
+        let source = "fn b(v: &[u8]) -> u8 {\n\
+                      // codegraph: ignore clippy::indexing_slicing — checked by the caller\n\
+                      v[3]\n}\n";
+        let starts = LineStarts::new(source);
+        assert!(suppressed_at(
+            source,
+            &starts,
+            3,
+            "clippy::indexing_slicing"
+        ));
+        assert!(!suppressed_at(source, &starts, 3, "clippy::unwrap_used"));
     }
 }

@@ -32,6 +32,7 @@ include!("analyze_cli_test/shared_contract.rs");
 include!("analyze_cli_test/co_change.rs");
 include!("analyze_cli_test/risk.rs");
 include!("analyze_cli_test/bugs.rs");
+include!("analyze_cli_test/compiler.rs");
 include!("analyze_cli_test/fuzz.rs");
 include!("analyze_cli_test/rules.rs");
 include!("analyze_cli_test/rules_taint.rs");

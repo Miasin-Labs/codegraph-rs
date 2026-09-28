@@ -158,6 +158,7 @@ pub(crate) fn cmd_analyze(command: AnalyzeCommands) {
             rule,
             base,
             detectors,
+            compiler_wait,
             rules,
             rule_text,
             builtin,
@@ -170,6 +171,7 @@ pub(crate) fn cmd_analyze(command: AnalyzeCommands) {
             rule,
             base.as_deref(),
             &detectors,
+            compiler_wait.as_deref(),
             &RuleSources {
                 paths: rules,
                 texts: rule_text,
@@ -228,6 +230,7 @@ pub(crate) fn cmd_analyze(command: AnalyzeCommands) {
         AnalyzeCommands::Bugs {
             base,
             detectors,
+            compiler_wait,
             tests,
             top,
             path,
@@ -235,6 +238,7 @@ pub(crate) fn cmd_analyze(command: AnalyzeCommands) {
         } => cmd_analyze_bugs(
             base.as_deref(),
             &detectors,
+            compiler_wait.as_deref(),
             tests,
             top.as_deref(),
             path.as_deref(),

@@ -843,6 +843,7 @@ fn a_spent_taint_budget_reports_what_it_found_and_says_so() {
     let semantics = IndexSemantics::for_tests(&project);
     let spent = BugsOptions {
         taint_budget: Some(std::time::Duration::ZERO),
+        compiler_wait: None,
         ..BugsOptions::default()
     };
     let scan_result = scan(&project, &semantics, &rules, &spent);

@@ -1,9 +1,12 @@
 use std::io::Read;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use codegraph::analyze::bugs::{
     BugsOptions,
     BugsReport,
+    CompilerState,
+    CompilerStatus,
     Detector,
     ReviewPacket,
     ReviewSelection,
@@ -42,10 +45,11 @@ use super::{
     yellow,
 };
 
-/// codegraph analyze bugs [--base REV] [--detector deviance|lint] [--tests]
+/// codegraph analyze bugs [--base REV] [--detector deviance|lint|compiler] [--tests]
 pub(crate) fn cmd_analyze_bugs(
     base: Option<&str>,
     detectors: &[String],
+    compiler_wait: Option<&str>,
     include_tests: bool,
     top_arg: Option<&str>,
     path_arg: Option<&str>,
@@ -60,7 +64,14 @@ pub(crate) fn cmd_analyze_bugs(
                 project_path.display()
             ));
         }
-        let options = bugs_options(&project_path, base, detectors, include_tests, false)?;
+        let options = bugs_options(
+            &project_path,
+            base,
+            detectors,
+            compiler_wait,
+            include_tests,
+            false,
+        )?;
         let top = findings_limit(top_arg, json);
 
         let cg =
@@ -75,6 +86,7 @@ pub(crate) fn cmd_analyze_bugs(
         if json {
             return print_report_json("bugs", &report);
         }
+        print_compiler_status(report.compiler.as_ref());
         print_findings(&report, base, "Suspected bugs");
         Ok(())
     };
@@ -100,6 +112,7 @@ fn bugs_options(
     project_path: &std::path::Path,
     base: Option<&str>,
     detectors: &[String],
+    compiler_wait: Option<&str>,
     include_tests: bool,
     allow_rule: bool,
 ) -> Result<BugsOptions, String> {
@@ -108,13 +121,14 @@ fn bugs_options(
         .map(|name| match name.as_str() {
             "deviance" => Ok(Detector::Deviance),
             "lint" => Ok(Detector::Lint),
+            "compiler" => Ok(Detector::Compiler),
             "rule" if allow_rule => Ok(Detector::Rule),
             "rule" => Err(
                 "rule findings come from `codegraph analyze rules` (or `analyze review --rules`)"
                     .to_string(),
             ),
             other => Err(format!(
-                "unknown detector \"{other}\" — known: deviance, lint{}",
+                "unknown detector \"{other}\" — known: deviance, lint, compiler{}",
                 if allow_rule { ", rule" } else { "" }
             )),
         })
@@ -122,12 +136,32 @@ fn bugs_options(
     let only_files = base
         .map(|base| analysis_reports::changed_files(project_path, base))
         .transpose()?;
+    let compiler_wait = positive(compiler_wait, "--compiler-wait")?.map(Duration::from_secs);
     Ok(BugsOptions {
         detectors,
         only_files,
         include_tests,
         taint_budget: None,
+        compiler_wait,
     })
+}
+
+/// The compiler run's state, on stderr, when that detector ran.
+fn print_compiler_status(status: Option<&CompilerStatus>) {
+    let Some(status) = status else {
+        return;
+    };
+    match status.state {
+        CompilerState::Complete if status.built() && !status.stale => {
+            info(&status.summary());
+        }
+        _ => eprintln!("{}", yellow(&status.summary())),
+    }
+    if let Some(failure) = status.failure.as_deref().filter(|_| !status.built()) {
+        for line in failure.lines().take(8) {
+            eprintln!("  {}", dim(line));
+        }
+    }
 }
 
 /// `FILE` or `FILE:LINE`.
@@ -145,6 +179,7 @@ pub(crate) fn cmd_analyze_review(
     rule: Option<String>,
     base: Option<&str>,
     detectors: &[String],
+    compiler_wait: Option<&str>,
     sources: &RuleSources,
     include_tests: bool,
     top_arg: &str,
@@ -160,7 +195,14 @@ pub(crate) fn cmd_analyze_review(
                 project_path.display()
             ));
         }
-        let options = bugs_options(&project_path, base, detectors, include_tests, true)?;
+        let options = bugs_options(
+            &project_path,
+            base,
+            detectors,
+            compiler_wait,
+            include_tests,
+            true,
+        )?;
         let rules = if sources.is_empty() {
             None
         } else {
@@ -401,6 +443,7 @@ pub(crate) fn cmd_analyze_rules(
             only_files,
             include_tests,
             taint_budget: None,
+            compiler_wait: None,
         };
         let top = findings_limit(top_arg, json);
         let cg =

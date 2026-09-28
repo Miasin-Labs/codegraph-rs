@@ -487,6 +487,7 @@ fn detector_findings(
         only_files: Some(vec![file.to_string()]),
         include_tests: true,
         taint_budget: None,
+        compiler_wait: None,
     };
     let report = bugs::bugs_report(cg, root, &options)?;
     Ok(report
