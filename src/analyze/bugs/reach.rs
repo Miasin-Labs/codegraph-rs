@@ -11,7 +11,7 @@
 //!   FastAPI, Django, express…);
 //! - **extractor**: functions whose parameters are request types (Rust
 //!   `Json<T>`, `Query<T>`, `Multipart`, `HttpRequest`…; Go `*http.Request`,
-//!   `gin.Context`…; Python `HttpRequest`; TS `NextRequest`, `req: Request`),
+//!   `gin.Context`…; Python `HttpRequest`; Java `HttpServletRequest`; TS `NextRequest`, `req: Request`),
 //!   handlers registered in ways the route scan misses;
 //! - **listener**: functions that accept connections, i.e. call `accept()`
 //!   (no arguments), `incoming()` or Go's `Accept()` on something the index
@@ -205,10 +205,12 @@ static EXTRACTOR_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Parameter types that carry a request in other languages: Go net/http,
-/// gin, echo, fiber; Django, Starlette/FastAPI; Next, fastify, express.
+/// gin, echo, fiber; Django, Starlette/FastAPI; Next, fastify, express;
+/// Java servlets (javax/jakarta `HttpServletRequest`, whose `doGet`/
+/// `doPost` a container dispatches to).
 static OTHER_REQUEST_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"\*http\.Request\b|\b(?:gin\.Context|echo\.Context|fiber\.Ctx|HttpRequest|WSGIRequest|ASGIRequest|NextRequest|FastifyRequest)\b|\breq(?:uest)?\s*:\s*(?:express\.)?Request\b",
+        r"\*http\.Request\b|\b(?:gin\.Context|echo\.Context|fiber\.Ctx|HttpRequest|HttpServletRequest|WSGIRequest|ASGIRequest|NextRequest|FastifyRequest)\b|\breq(?:uest)?\s*:\s*(?:express\.)?Request\b",
     )
     .expect("valid request regex")
 });
@@ -742,6 +744,28 @@ pub(crate) mod tests {
             reach.entries[0].label,
             "public API taking bytes, text or a reader"
         );
+    }
+
+    #[test]
+    fn servlet_request_handlers_are_server_entries() {
+        let functions = vec![
+            span(
+                "do_post",
+                "src/T.java",
+                1,
+                20,
+                "void (HttpServletRequest request, HttpServletResponse response)",
+            ),
+            span("helper", "src/T.java", 22, 30, "String (String v)"),
+        ];
+        let calls = vec![call("do_post", "helper", "src/T.java", 5)];
+        let project =
+            Project::from_parts(Path::new("/p"), vec!["src/T.java".into()], functions, calls)
+                .with_entries(vec![], &[]);
+        let reach = Reach::compute(&project);
+        let helper = reach.reached_from("helper", &EntryKind::SERVER).unwrap();
+        assert_eq!(helper.entry.kind, EntryKind::Extractor);
+        assert_eq!(helper.entry.label, "takes HttpServletRequest");
     }
 
     #[test]

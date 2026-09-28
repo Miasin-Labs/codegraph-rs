@@ -215,6 +215,52 @@ pub fn review_questions(rules: &RuleSet, finding: &Finding) -> Vec<String> {
     questions
 }
 
+/// Each rule's descriptor for SARIF out and for merging with another
+/// engine's findings of the same class (its CWE tags): its description
+/// (else message) and tags.
+pub fn rule_docs(
+    rules: &RuleSet,
+) -> std::collections::BTreeMap<String, crate::analyze::sarif::write::RuleDoc> {
+    rules
+        .rules
+        .iter()
+        .map(|rule| {
+            let full = rule
+                .description
+                .clone()
+                .or_else(|| rule.message.clone())
+                .map(|text| text.trim().to_string());
+            let short = full
+                .as_deref()
+                .map(|text| one_line(text, 160))
+                .unwrap_or_else(|| rule.id.clone());
+            let security_severity = match rule.severity.as_str() {
+                "critical" => Some(9.0),
+                "high" => Some(7.5),
+                "medium" => Some(5.0),
+                "low" => Some(3.0),
+                _ => None,
+            }
+            .filter(|_| {
+                !crate::analyze::sarif::cwes_of_tags(rule.tags.iter().map(String::as_str))
+                    .is_empty()
+            });
+            (
+                rule.id.clone(),
+                crate::analyze::sarif::write::RuleDoc {
+                    id: rule.id.clone(),
+                    short,
+                    full,
+                    help_uri: None,
+                    tags: rule.tags.clone(),
+                    precision: None,
+                    security_severity,
+                },
+            )
+        })
+        .collect()
+}
+
 /// Run `rules` over the project indexed at `project_root`.
 pub fn rules_report(
     cg: &CodeGraph,

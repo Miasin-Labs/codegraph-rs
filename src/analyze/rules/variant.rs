@@ -489,6 +489,7 @@ fn detector_findings(
         taint_budget: None,
         compiler_wait: None,
         dependency_summaries: None,
+        codeql: None,
     };
     let report = bugs::bugs_report(cg, root, &options)?;
     Ok(report
