@@ -51,7 +51,9 @@ pub(super) fn restored_reference_names(
     let mut seen = HashSet::new();
     let mut names = Vec::new();
     for edge in &incoming {
-        if reference_kind_for_removed_target(edge.kind).is_none() {
+        if reference_kind_for_removed_target(edge.kind).is_none()
+            || crate::compiler::is_compiler_only(edge.metadata.as_ref())
+        {
             continue;
         }
         let from_elsewhere = source_by_id
@@ -75,7 +77,14 @@ pub(super) fn restored_reference_names(
 /// Restoring without it can leave a reference unresolvable the second time.
 fn reference_metadata(edge: &crate::types::Edge) -> Option<crate::types::Metadata> {
     let mut metadata = edge.metadata.clone()?;
-    for key in ["confidence", "resolvedBy", "referenceName"] {
+    for key in [
+        "confidence",
+        "resolvedBy",
+        "referenceName",
+        crate::compiler::COMPILER_KEY,
+        "treeSitterTarget",
+        "treeSitterResolvedBy",
+    ] {
         metadata.remove(key);
     }
     (!metadata.is_empty()).then_some(metadata)
@@ -109,6 +118,11 @@ pub(super) fn restore_unresolved_refs_for_removed_targets(
         let Some(reference_kind) = reference_kind_for_removed_target(edge.kind) else {
             continue;
         };
+        // An edge only the compiler knew has no reference to restore: the
+        // next compiler pass adds it again if it still holds.
+        if crate::compiler::is_compiler_only(edge.metadata.as_ref()) {
+            continue;
+        }
         let Some(source) = source_by_id.get(&edge.source) else {
             continue;
         };

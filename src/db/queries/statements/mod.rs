@@ -13,6 +13,7 @@
 //! here too (see the "Inline helpers" section near the bottom).
 
 mod cache;
+mod compiler;
 mod edges;
 mod external_edges;
 mod files;
@@ -28,6 +29,7 @@ mod unresolved;
 use std::cell::RefCell;
 
 use cache::NodeLru;
+pub use compiler::{CompilerChanges, EdgeRow, EdgeUpdate, ExternalEdgeRow, UnresolvedRow};
 pub use external_edges::{ExternalEdge, ExternalEdgeCount, ExternalGraphKind, ExternalTarget};
 pub use links::CrossFileLink;
 pub use models::*;

@@ -70,8 +70,14 @@ pub(crate) async fn cmd_init(path_arg: Option<&str>, force: bool, verbose: bool)
     lifecycle::cmd_init(path_arg, force, verbose).await;
 }
 
-pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, verbose: bool) {
+pub(crate) async fn cmd_index(
+    path_arg: Option<&str>,
+    force: bool,
+    quiet: bool,
+    verbose: bool,
+    compiler: bool,
+) {
     #[cfg(unix)]
     let _supervision = codegraph::mcp::proxy::start_command_supervision("index");
-    lifecycle::cmd_index(path_arg, force, quiet, verbose).await;
+    lifecycle::cmd_index(path_arg, force, quiet, verbose, compiler).await;
 }

@@ -36,10 +36,14 @@ pub use migrations::{
     run_migrations,
 };
 pub use queries::{
+    CompilerChanges,
     CrossFileLink,
     DominantFile,
+    EdgeRow,
+    EdgeUpdate,
     ExternalEdge,
     ExternalEdgeCount,
+    ExternalEdgeRow,
     ExternalGraphKind,
     ExternalTarget,
     NodeEdgeCount,
@@ -49,4 +53,5 @@ pub use queries::{
     RoutingManifestEntry,
     TopRouteFile,
     UnresolvedBatch,
+    UnresolvedRow,
 };

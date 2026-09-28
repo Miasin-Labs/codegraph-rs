@@ -105,6 +105,7 @@ use codegraph_analysis::nodes::NodeId as ANodeId;
 
 mod analyze;
 mod cli;
+mod compiler;
 mod context;
 mod deps;
 mod files;
@@ -194,6 +195,7 @@ fn record_command_telemetry(command: &Commands) {
         Commands::Uninit { .. } => "uninit",
         Commands::Index { .. } => "index",
         Commands::Sync { .. } => "sync",
+        Commands::CompilerSync { .. } => "compiler-sync",
         Commands::Status { .. } => "status",
         Commands::Query { .. } => "query",
         Commands::Explore { .. } => "explore",
@@ -221,7 +223,10 @@ fn record_command_telemetry(command: &Commands) {
     };
     let telemetry = Telemetry::default();
     telemetry.record_usage("cli_command", name, true);
-    if matches!(name, "init" | "uninit" | "index" | "sync" | "upgrade") {
+    if matches!(
+        name,
+        "init" | "uninit" | "index" | "sync" | "compiler-sync" | "upgrade"
+    ) {
         telemetry.flush();
     }
 }
@@ -276,7 +281,30 @@ pub(crate) async fn main() {
             force,
             quiet,
             verbose,
-        } => cmd_index(path.as_deref(), force, quiet, verbose).await,
+            compiler,
+        } => cmd_index(path.as_deref(), force, quiet, verbose, compiler).await,
+        Commands::CompilerSync {
+            path,
+            quiet,
+            verbose,
+            json,
+            force,
+            cached,
+            background,
+            dump,
+        } => {
+            compiler::cmd_compiler_sync(compiler::CompilerSyncArgs {
+                path,
+                quiet,
+                verbose,
+                json,
+                force,
+                cached,
+                background,
+                dump,
+            })
+            .await
+        }
         Commands::Sync { path, quiet } => cmd_sync(path.as_deref(), quiet).await,
         Commands::Status { path, json } => cmd_status(path.as_deref(), json),
         Commands::Query {

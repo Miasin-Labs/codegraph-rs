@@ -210,6 +210,20 @@ CREATE INDEX IF NOT EXISTS idx_external_edges_source ON external_edges(source, k
 CREATE INDEX IF NOT EXISTS idx_external_edges_target
   ON external_edges(target_graph_key, target_node_id);
 
+-- Compiler layer (schema v11): the SCIP symbol rust-analyzer gives each node
+-- it maps, and which nodes it created for items a macro invocation generates
+-- (`generated = 1`; tree-sitter never sees those). Written only by
+-- `codegraph compiler-sync` / `index --compiler`; see src/compiler/.
+CREATE TABLE IF NOT EXISTS compiler_symbols (
+    node_id TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    generated INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_compiler_symbols_symbol ON compiler_symbols(symbol);
+CREATE INDEX IF NOT EXISTS idx_compiler_symbols_generated
+  ON compiler_symbols(node_id) WHERE generated = 1;
+
 -- Project metadata for version/provenance tracking
 CREATE TABLE IF NOT EXISTS project_metadata (
     key TEXT PRIMARY KEY,

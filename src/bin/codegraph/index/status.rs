@@ -111,9 +111,7 @@ pub(crate) fn cmd_status(path_arg: Option<&str>, json: bool) {
                 .collect();
             languages.sort();
 
-            println!(
-                "{}",
-                serde_json::json!({
+            let mut status = serde_json::json!({
                     "initialized": true,
                     "version": env!("CARGO_PKG_VERSION"),
                     "projectPath": project_path.to_string_lossy(),
@@ -133,8 +131,17 @@ pub(crate) fn cmd_status(path_arg: Option<&str>, json: bool) {
                         "worktreeRoot": m.worktree_root.to_string_lossy(),
                         "indexRoot": m.index_root.to_string_lossy(),
                     })),
-                })
-            );
+            });
+            // Only projects with the compiler layer on carry the key.
+            if let (Some(summary), Some(object)) =
+                (cg.compiler_layer_summary(), status.as_object_mut())
+            {
+                object.insert(
+                    "compilerLayer".to_string(),
+                    serde_json::to_value(summary).unwrap_or_default(),
+                );
+            }
+            println!("{status}");
             cg.close();
             return Ok(());
         }
@@ -187,6 +194,20 @@ pub(crate) fn cmd_status(path_arg: Option<&str>, json: bool) {
             ))
         };
         println!("  Journal:   {journal_label}");
+        if let Some(summary) = cg.compiler_layer_summary() {
+            println!(
+                "  Compiler:  rust-analyzer {} {} {} confirmed, {} corrected, {} refuted, {} resolved, {} added, {} generated ({})",
+                summary.tool_version,
+                get_glyphs().dash,
+                format_number(summary.confirmed as u64),
+                format_number(summary.corrected as u64),
+                format_number(summary.refuted as u64),
+                format_number(summary.resolved as u64),
+                format_number(summary.added as u64),
+                format_number(summary.generated as u64),
+                iso_from_epoch_ms(summary.applied_at_ms),
+            );
+        }
         println!();
 
         // Node breakdown (count desc; key asc tie-break for determinism)
