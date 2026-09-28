@@ -531,6 +531,46 @@ cargo test --workspace
   a failing input), and maps the panic site / first project ASan frame to
   the indexed function; it refuses a harness still holding `todo!()` (its
   own panic would read as a crash). Tests never run cargo-fuzz.
+- **Miri as the UB oracle** (`src/analyze/miri/`, `codegraph analyze miri
+  [--finding F:L… | --function Q… | --all-unsafe] [--dry-run] [--log F]`):
+  runs the real Miri — `rustc_private`, pinned to one nightly, so never a
+  library dependency — as a bounded subprocess, CLI only (never MCP/hook).
+  Built on fuzz's pieces (`Analysis`, `CallGraph`, `RustCallable` +
+  `push_call`, `run_bounded_capped`). `select.rs`: `#[test]`s read from the
+  syntax (attributes the index drops), matched to indexed fns, libtest path
+  for `--exact`; tests reaching an aimed fn (reverse call reach ≤10) nearest
+  first, each aimed fn covered before the rest, `--max-tests`. No test →
+  `harness.rs`: the fn or the nearest public fn reaching it (not unsafe or
+  async fns — their contract is the caller's) on fixed inputs, one `#[test]`
+  per input (bytes: empty, 0x00, 0xff, 32 bytes one past an 8-aligned
+  address, a pattern; text likewise; scalar/collection edge values), in
+  `.codegraph/miri/harness/<package>/` with the project's `Cargo.lock`.
+  `run.rs`: `cargo +nightly miri test --offline`, each binary `--no-run`
+  built once, each test alone (UB aborts the interpreted binary), both
+  killed at wall-clock deadlines, logs capped in `.codegraph/miri/logs/`;
+  MIRIFLAGS strict provenance by default, `--borrows stacked|tree|none`,
+  isolation unless `--disable-isolation`. cargo-miri compiles the crate
+  under test only when the runner starts, so a compile error at run time
+  is `build-failed`, not a verdict. `diagnostic.rs`: header prefix →
+  category, message/help → `UbKind` (rule `miri::<kind>`), primary span,
+  backtrace, labelled history (allocated/freed/retagged); `LL:CC` places
+  (Miri's UI tests) read as line 0. UB/leaks → `Finding`s
+  (`Detector::Miri`, confidence 1.0, project frames as evidence);
+  unsupported (FFI, inline asm, isolated syscalls), build failures and
+  timeouts are inconclusive and unreached fns `uncovered` — never clean.
+  Static findings (detectors + built-in rules) in a fn Miri proved UB in are
+  `confirmed`; the findings are saved to `.codegraph/miri/report.json`, and
+  `analyze review` ranks them first and lists them in every packet of that
+  function (`confirmedBy`; `--detector miri`). Exit 4 when UB is proven.
+  Samples in `miri/samples/` (real output + Miri UI stderr); the CLI test
+  runs Miri only when `cargo +nightly miri` exists. Measured (2026-09,
+  offline): on Miri's 550 `tests/fail` programs the Rust rules fire in 41
+  and within 3 lines of the UB in 11 (they target library-API misuse, not
+  the UB shapes); RustSec memory-corruption/unsound pairs: 248, 112 not
+  buildable offline, Miri ran tests on both sides of 20, UB on vuln in 6,
+  2 confirmed by differential (UB on vuln, same test clean on fixed —
+  elf_rs by a generated harness, stackvector by its tests); Rudra PoCs: 145,
+  59 built, 10 UB (rules fire at Rudra's location in 7 of those).
 - **Concurrency lint** (`analysis/src/concurrency.rs`, per-language rules in
   `concurrency_rules.rs`): flags lossy best-effort sends. Library-only since
   the vuln engine (its sole CLI surface) was deleted.
