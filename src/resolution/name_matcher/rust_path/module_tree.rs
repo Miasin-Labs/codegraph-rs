@@ -413,6 +413,14 @@ fn has_module(context: &dyn ResolutionContext, location: &ModuleLocation, name: 
 
 /// The project module `module` re-exports as `name` (a `use` or glob
 /// binding it in the module namespace), bounded per thread.
+///
+/// A full-budget answer (asked at depth 0) is kept for the resolution
+/// pass (the context's per-pass cache): each lookup builds a fresh
+/// [`ModuleTree`] whose `use` paths walk segments of their own, so without
+/// it the same re-export chains were re-walked for every reference, nested
+/// up to [`MAX_REEXPORT_DEPTH`] deep — ers-rs's resolution never finished
+/// (2026-09). An answer cut short by the depth bound is not cached: it is
+/// not the module's answer, only that walk's.
 fn reexported_module(
     context: &dyn ResolutionContext,
     module: &ModuleLocation,
@@ -422,6 +430,25 @@ fn reexported_module(
     if depth >= MAX_REEXPORT_DEPTH {
         return None;
     }
+    if depth == 0 {
+        let key = format!("{}\0{}\0{name}", module.crate_key, module.module.join("::"));
+        let cached = context.get_rust_file_derived(&key, "rust-reexported-module", &mut || {
+            Arc::new(reexported_module_uncached(context, module, name, depth))
+        });
+        return cached
+            .downcast_ref::<Option<ModuleLocation>>()
+            .cloned()
+            .flatten();
+    }
+    reexported_module_uncached(context, module, name, depth)
+}
+
+fn reexported_module_uncached(
+    context: &dyn ResolutionContext,
+    module: &ModuleLocation,
+    name: &str,
+    depth: usize,
+) -> Option<ModuleLocation> {
     REEXPORT_DEPTH.with(|cell| cell.set(depth + 1));
     let found = crate::ensure_sufficient_stack(|| {
         resolve_in_module(context, module, name, Namespace::Module)
