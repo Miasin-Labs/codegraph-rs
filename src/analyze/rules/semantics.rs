@@ -11,6 +11,10 @@
 //! - [`SyntaxSemantics`]: no index (`--check` examples). A call resolves to
 //!   its callee as written (`client.send`, `send`), plus what the example's
 //!   `resolves` map says; a function's calls are the calls in its body.
+//!
+//! `reached-from` reads the project's entry points and what they reach
+//! ([`crate::analyze::bugs::reach`], computed once per project); an example
+//! states it with `reached` instead.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -20,7 +24,8 @@ use tree_sitter::Node;
 
 use super::engine::FileInput;
 use super::lang::{self, LangRules};
-use crate::analyze::bugs::{FnSpan, Project};
+use crate::analyze::bugs::reach::EntryKind;
+use crate::analyze::bugs::{Evidence, FnSpan, Project};
 use crate::codegraph::CodeGraph;
 
 /// A project function a call resolves to, as the index records it.
@@ -45,7 +50,28 @@ pub(super) struct FunctionFacts {
     pub calls: Vec<String>,
 }
 
+/// How the function a match is in is reached from an entry point.
+#[derive(Debug, Clone)]
+pub(super) struct ReachProof {
+    /// `reached from route `GET /x` (`api::h`), 2 calls away`.
+    pub note: String,
+    /// The entry and each call from it, where they are.
+    pub path: Vec<Evidence>,
+}
+
 pub(super) trait Semantics {
+    /// How the function around 1-based `line` of `file` is reached from an
+    /// entry point of one of `kinds`; `None` when it is not, or nothing
+    /// says (unknown counts as not reached).
+    /// With `via_type`, a method also counts when another method of its
+    /// type is reached.
+    fn reached_from(
+        &self,
+        file: &FileInput,
+        line: u32,
+        kinds: &[EntryKind],
+        via_type: bool,
+    ) -> Option<ReachProof>;
     /// Names the call node `call` resolves to (empty when unresolved).
     fn call_targets(&self, file: &FileInput, rules: &LangRules, call: Node) -> Vec<String>;
     /// Whether some graph resolves the call node `call` (an example: its
@@ -98,6 +124,8 @@ pub(super) trait Semantics {
 /// Calls as written, for rule examples.
 pub(super) struct SyntaxSemantics<'a> {
     pub resolves: &'a BTreeMap<String, String>,
+    /// The entry kinds the example says its code is reached from.
+    pub reached: &'a [EntryKind],
 }
 
 impl SyntaxSemantics<'_> {
@@ -121,6 +149,23 @@ impl SyntaxSemantics<'_> {
 }
 
 impl Semantics for SyntaxSemantics<'_> {
+    fn reached_from(
+        &self,
+        _: &FileInput,
+        _: u32,
+        kinds: &[EntryKind],
+        _: bool,
+    ) -> Option<ReachProof> {
+        let kind = kinds.iter().find(|kind| self.reached.contains(kind))?;
+        Some(ReachProof {
+            note: format!(
+                "reached from a {} entry point (the example's `reached`)",
+                kind.as_str()
+            ),
+            path: Vec::new(),
+        })
+    }
+
     fn call_targets(&self, file: &FileInput, rules: &LangRules, call: Node) -> Vec<String> {
         let (text, name) = lang::callee(rules, call, file.source);
         self.targets(text, name)
@@ -366,6 +411,49 @@ impl IndexSemantics<'_> {
 }
 
 impl Semantics for IndexSemantics<'_> {
+    fn reached_from(
+        &self,
+        file: &FileInput,
+        line: u32,
+        kinds: &[EntryKind],
+        via_type: bool,
+    ) -> Option<ReachProof> {
+        let span = self.function_at(file.path, line)?;
+        let reach = self.project.reach();
+        let (reached, through) = match reach.reached_from(&span.id, kinds) {
+            Some(reached) => (reached, None),
+            None if via_type => {
+                let (reached, method) = reach.reached_via_type(span, kinds)?;
+                (reached, Some(method))
+            }
+            None => return None,
+        };
+        let entry = reached.entry;
+        let mut path = vec![Evidence {
+            file: entry.file.clone(),
+            line: entry.line,
+            note: format!("entry point: {}", reached.entry_text()),
+        }];
+        path.extend(reached.path.iter().map(|step| Evidence {
+            file: step.file.clone(),
+            line: step.line,
+            note: format!("`{}` calls `{}`", step.caller, step.callee),
+        }));
+        let note = match through {
+            None => format!(
+                "reached from {}{}",
+                reached.entry_text(),
+                reached.distance_text()
+            ),
+            Some(method) => format!(
+                "reached through its type: `{method}` is reached from {}{}",
+                reached.entry_text(),
+                reached.distance_text()
+            ),
+        };
+        Some(ReachProof { note, path })
+    }
+
     fn call_targets(&self, file: &FileInput, rules: &LangRules, call: Node) -> Vec<String> {
         let start = call.start_position();
         let (text, _) = lang::callee(rules, call, file.source);

@@ -40,9 +40,11 @@ pub(in crate::mcp::tools::registry) fn push_rules_tool(out: &mut Vec<ToolDefinit
             "Rule YAML (one rule, a list, or `---` documents): id, severity, language, \
              check-patterns (a tree-sitter `query`, or a weggli `pattern` for C/C++, with `where` \
              predicates resolves-to / not-resolves-to / regex / not-regex / inside / not-inside \
-             / enclosing-function {calls, calls-not, name-regex, is-test}), ignore-patterns, \
-             message ({capture}, {function}) and examples {bad, good}; an example may map \
-             `resolves: {callee-as-written: qualified-name}`. Or `taint` instead of \
+             / enclosing-function {calls, calls-not, name-regex, is-test} / reached-from \
+             [route, extractor, listener, message, public-api | server] (+ via-type, \
+             unreached-confidence)), ignore-patterns, message ({capture}, {function}) and \
+             examples {bad, good}; an example may map `resolves: {callee-as-written: \
+             qualified-name}` and state `reached: true|false|<kinds>`. Or `taint` instead of \
              check-patterns: sources/sanitizers (`value` capture), sinks (`argument`), \
              propagators (`from`, `to`), guards (`value`, `check`, `safe`) — flows are followed \
              across calls and files, every step as evidence.",

@@ -17,6 +17,7 @@ use super::spec::{
     OneOrMany,
     PatternSpec,
     PredicateSpec,
+    ReachedSpec,
     RuleSpec,
     Severity,
     TaintPatternSpec,
@@ -24,6 +25,7 @@ use super::spec::{
 };
 use super::weggli::query::QueryTree;
 use super::weggli::{self, RegexMap};
+use crate::analyze::bugs::reach::EntryKind;
 use crate::extraction::grammar_language;
 use crate::types::Language;
 
@@ -107,6 +109,7 @@ impl Rule {
                             calls_not: Some(_),
                             ..
                         }
+                        | PredicateKind::Reached { .. }
                 )
             })
         })
@@ -225,6 +228,15 @@ pub enum PredicateKind {
         negative: bool,
         queries: Vec<(Language, Query)>,
     },
+    /// The function the match is in is reached from an entry point of one
+    /// of `kinds`; else the match is dropped, or kept at
+    /// `unreached_confidence`.
+    Reached {
+        kinds: Vec<EntryKind>,
+        /// A method also counts when another method of its type is reached.
+        via_type: bool,
+        unreached_confidence: Option<f64>,
+    },
 }
 
 /// A `bad` or `good` example of a rule.
@@ -235,6 +247,9 @@ pub struct Example {
     pub language: Language,
     pub file: String,
     pub resolves: BTreeMap<String, String>,
+    /// The entry kinds the example's code counts as reached from (its
+    /// `reached`; empty: none).
+    pub reached: Vec<EntryKind>,
     pub line: Option<usize>,
 }
 
@@ -825,6 +840,13 @@ fn compile_example(
             language.as_str()
         ));
     }
+    let reached = match example.reached {
+        None | Some(ReachedSpec::Flag(false)) => Vec::new(),
+        Some(ReachedSpec::Flag(true)) => EntryKind::ALL.to_vec(),
+        Some(ReachedSpec::Kinds(names)) => {
+            entry_kinds(&names.0).map_err(|e| format!("{label}: `reached`: {e}"))?
+        }
+    };
     Ok(Example {
         bad,
         index,
@@ -832,6 +854,7 @@ fn compile_example(
         language,
         file: example.file.unwrap_or_else(|| example_file(language)),
         resolves: example.resolves,
+        reached,
         line,
     })
 }
@@ -1053,7 +1076,7 @@ fn compile_pattern(
     for (j, predicate) in spec.where_.into_iter().enumerate() {
         let line = where_items.get(j).map(|(line, _)| *line);
         predicates.push(
-            compile_predicate(predicate, j, &captures, &languages)
+            compile_predicate(predicate, j, section, &captures, &languages)
                 .map_err(|message| err(line.or(key_line(&["where"])), message))?,
         );
     }
@@ -1228,9 +1251,33 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// The entry kinds `names` stand for (`server`: every kind of server
+/// entry), in strength order.
+fn entry_kinds(names: &[String]) -> Result<Vec<EntryKind>, String> {
+    let mut kinds = BTreeSet::new();
+    for name in names {
+        if name == "server" {
+            kinds.extend(EntryKind::SERVER);
+            continue;
+        }
+        let kind = EntryKind::parse(name).ok_or_else(|| {
+            format!(
+                "unknown entry kind `{name}` (one of: server, {})",
+                EntryKind::ALL.map(EntryKind::as_str).join(", ")
+            )
+        })?;
+        kinds.insert(kind);
+    }
+    if kinds.is_empty() {
+        return Err("names no entry kind".to_string());
+    }
+    Ok(kinds.into_iter().collect())
+}
+
 fn compile_predicate(
     spec: PredicateSpec,
     index: usize,
+    section: &str,
     captures: &BTreeSet<String>,
     languages: &[Language],
 ) -> Result<Predicate, String> {
@@ -1266,12 +1313,69 @@ fn compile_predicate(
         .collect();
     let forms = usize::from(!given.is_empty())
         + usize::from(spec.enclosing_function.is_some())
-        + usize::from(!inside_given.is_empty());
+        + usize::from(!inside_given.is_empty())
+        + usize::from(spec.reached_from.is_some());
     let usage = "each `where` entry is one of: `{capture: X, regex|not-regex|resolves-to|\
                  not-resolves-to: RE}`, `{enclosing-function: {calls|calls-not|name-regex: RE, \
-                 is-test: BOOL}}`, `{inside|not-inside: QUERY, capture: X (optional)}`";
+                 is-test: BOOL}}`, `{inside|not-inside: QUERY, capture: X (optional)}`, \
+                 `{reached-from: [KIND…], via-type: BOOL, unreached-confidence: 0..1 (both \
+                 optional)}`";
+    if spec.unreached_confidence.is_some() && spec.reached_from.is_none() {
+        return Err(format!(
+            "{prefix}: `unreached-confidence` goes with `reached-from` (the confidence of a \
+             match it does not reach)"
+        ));
+    }
+    if spec.via_type.is_some() && spec.reached_from.is_none() {
+        return Err(format!(
+            "{prefix}: `via-type` goes with `reached-from` (a method counts as reached when \
+             its type is)"
+        ));
+    }
     if forms != 1 || given.len() > 1 || inside_given.len() > 1 {
         return Err(format!("{prefix}: {usage}"));
+    }
+
+    if let Some(names) = spec.reached_from {
+        if spec.capture.is_some() {
+            return Err(format!(
+                "{prefix}: `reached-from` takes no `capture` (it tests the function the match \
+                 is in)"
+            ));
+        }
+        let kinds = entry_kinds(&names.0).map_err(|e| format!("{prefix}: `reached-from` {e}"))?;
+        if let Some(confidence) = spec.unreached_confidence {
+            if !(0.0..=1.0).contains(&confidence) {
+                return Err(format!(
+                    "{prefix}: `unreached-confidence` must be between 0 and 1, not {confidence}"
+                ));
+            }
+            if section != "check-patterns" && section != "taint.sinks" {
+                return Err(format!(
+                    "{prefix}: `unreached-confidence` ranks a finding, so it belongs on a \
+                     check-pattern or a taint sink, not in {section} (there, leave it out to \
+                     require the reach)"
+                ));
+            }
+        }
+        let names: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
+        let via_type = spec.via_type.unwrap_or(false);
+        let mut label = format!("{prefix} (reached-from: [{}]", names.join(", "));
+        if via_type {
+            label.push_str(", via-type: true");
+        }
+        if let Some(confidence) = spec.unreached_confidence {
+            label.push_str(&format!(", unreached-confidence: {confidence}"));
+        }
+        label.push(')');
+        return Ok(Predicate {
+            label,
+            kind: PredicateKind::Reached {
+                kinds,
+                via_type,
+                unreached_confidence: spec.unreached_confidence,
+            },
+        });
     }
 
     if let Some(enclosing) = spec.enclosing_function {

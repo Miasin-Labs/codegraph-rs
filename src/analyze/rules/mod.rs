@@ -17,8 +17,10 @@
 //! ([`semantics`]): `resolves-to` (the call at a capture resolves, in the
 //! index, to a callee whose qualified name matches), `enclosing-function`
 //! (`calls`/`calls-not` a resolved callee, `name-regex`, `is-test`),
-//! `inside`/`not-inside` (a structural ancestor), and capture
-//! `regex`/`not-regex`.
+//! `inside`/`not-inside` (a structural ancestor), `reached-from` (an entry
+//! point of the given kinds — route, request extractor, listener, message
+//! handler, public API — reaches the match's function through resolved
+//! calls; [`crate::analyze::bugs::reach`]), and capture `regex`/`not-regex`.
 //!
 //! A rule may instead be a **taint** rule (`taint:` with `sources`,
 //! `sinks`, `sanitizers`, `propagators` and `guards`, each a list of such
@@ -45,6 +47,8 @@ mod spec;
 mod taint;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_reached;
 #[cfg(test)]
 mod tests_rust_taint;
 mod variant;
@@ -433,6 +437,10 @@ fn finding(
         message.push_str(&format!(" [{}]", pattern.name));
     }
 
+    // A predicate may rank the match lower than the rule does.
+    let confidence = hit
+        .confidence
+        .map_or(rule.confidence, |c| c.min(rule.confidence));
     let mut evidence: Vec<Evidence> = hit
         .notes
         .iter()
@@ -476,6 +484,7 @@ fn finding(
             line,
             note: format!("sink: `{}`", one_line(file.line_text(line), 80)),
         });
+        evidence.extend(hit.path.iter().cloned());
         return Finding {
             detector: Detector::Rule,
             rule: rule.id.clone().into(),
@@ -485,9 +494,9 @@ fn finding(
             function: function.map(|f| f.qualified_name.clone()),
             message,
             confidence: if flow.guessed {
-                rule.confidence * GUESSED_CONFIDENCE
+                confidence * GUESSED_CONFIDENCE
             } else {
-                rule.confidence
+                confidence
             },
             evidence,
         };
@@ -506,6 +515,7 @@ fn finding(
             note: format!("`{name}` = {}", one_line(&file.source[range.clone()], 80)),
         });
     }
+    evidence.extend(hit.path.iter().cloned());
 
     Finding {
         detector: Detector::Rule,
@@ -515,7 +525,7 @@ fn finding(
         col,
         function: function.map(|f| f.qualified_name.clone()),
         message,
-        confidence: rule.confidence,
+        confidence,
         evidence,
     }
 }

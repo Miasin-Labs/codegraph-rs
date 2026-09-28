@@ -146,6 +146,12 @@ pub(super) struct Hit {
     /// Facts the predicates established (what a call resolved to…), as
     /// evidence notes.
     pub notes: Vec<String>,
+    /// Evidence elsewhere the predicates established (the calls from an
+    /// entry point, for `reached-from`).
+    pub path: Vec<crate::analyze::bugs::Evidence>,
+    /// The confidence a predicate ranked this match at, below the rule's
+    /// (`unreached-confidence`).
+    pub confidence: Option<f64>,
     /// For a taint rule: the flow that reaches this sink.
     pub flow: Option<super::taint::Trace>,
 }
@@ -256,7 +262,12 @@ pub(super) fn pattern_hits(
     let mut result = FileResult::default();
     for hit in raw_hits(pattern, index, file, rules) {
         match check_predicates(pattern, &hit, file, rules, semantics) {
-            Ok(notes) => result.hits.push(Hit { notes, ..hit }),
+            Ok(accepted) => result.hits.push(Hit {
+                notes: accepted.notes,
+                path: accepted.path,
+                confidence: accepted.confidence,
+                ..hit
+            }),
             Err(reason) if trace => result.rejected.push(Rejection {
                 pattern: pattern.label.clone(),
                 line: position(file.tree, hit.at.start).0,
@@ -347,6 +358,8 @@ fn raw_hits(pattern: &Pattern, index: usize, file: &FileInput, rules: &LangRules
                         span,
                         at,
                         notes: Vec::new(),
+                        path: Vec::new(),
+                        confidence: None,
                         flow: None,
                     })
                 })
@@ -399,6 +412,8 @@ fn raw_hits(pattern: &Pattern, index: usize, file: &FileInput, rules: &LangRules
                     span: start..end,
                     at,
                     notes: Vec::new(),
+                    path: Vec::new(),
+                    confidence: None,
                     flow: None,
                 });
             }
@@ -442,15 +457,25 @@ pub(super) fn node_at<'t>(root: Node<'t>, range: &Range<usize>) -> Option<Node<'
     root.descendant_for_byte_range(range.start, range.end)
 }
 
-/// `Ok(notes)` when every predicate holds, else why one did not.
+/// What the predicates of an accepted match established.
+#[derive(Default)]
+struct Accepted {
+    notes: Vec<String>,
+    path: Vec<crate::analyze::bugs::Evidence>,
+    confidence: Option<f64>,
+}
+
+/// What they established when every predicate holds, else why one did
+/// not.
 fn check_predicates(
     pattern: &Pattern,
     hit: &Hit,
     file: &FileInput,
     rules: &LangRules,
     semantics: &dyn Semantics,
-) -> Result<Vec<String>, String> {
-    let mut notes = Vec::new();
+) -> Result<Accepted, String> {
+    let mut accepted = Accepted::default();
+    let notes = &mut accepted.notes;
     let root = file.tree.root_node();
     let mut function_facts: Option<Option<FunctionFacts>> = None;
     for predicate in &pattern.predicates {
@@ -576,9 +601,41 @@ fn check_predicates(
                     (None, false) => return fail("no enclosing node matches".to_string()),
                 }
             }
+            PredicateKind::Reached {
+                kinds,
+                via_type,
+                unreached_confidence,
+            } => {
+                let line = position(file.tree, hit.at.start).0;
+                match semantics.reached_from(file, line, kinds, *via_type) {
+                    Some(proof) => {
+                        notes.push(proof.note);
+                        accepted.path.extend(proof.path);
+                    }
+                    None => {
+                        let names: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
+                        let why = format!(
+                            "no {} entry point reaches the function (within {} resolved calls)",
+                            names.join("/"),
+                            crate::analyze::bugs::reach::MAX_DEPTH
+                        );
+                        match unreached_confidence {
+                            Some(confidence) => {
+                                notes.push(format!("ranked lower: {why}"));
+                                accepted.confidence = Some(
+                                    accepted
+                                        .confidence
+                                        .map_or(*confidence, |c: f64| c.min(*confidence)),
+                                );
+                            }
+                            None => return fail(why),
+                        }
+                    }
+                }
+            }
         }
     }
-    Ok(notes)
+    Ok(accepted)
 }
 
 /// The nearest strict ancestor of `node` a pattern of `query` matches

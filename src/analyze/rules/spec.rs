@@ -226,11 +226,27 @@ impl TaintPatternSpec {
 
 /// One `where` entry. Exactly one test per entry: a capture test
 /// (`capture` + one of `regex`, `not-regex`, `resolves-to`,
-/// `not-resolves-to`), `enclosing-function`, or `inside`/`not-inside`
-/// (optionally with `capture`).
+/// `not-resolves-to`), `enclosing-function`, `inside`/`not-inside`
+/// (optionally with `capture`), or `reached-from` (optionally with
+/// `unreached-confidence`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct PredicateSpec {
+    /// The function the match is in is reached, through the index's
+    /// resolved calls, from an entry point of one of these kinds: `route`,
+    /// `extractor`, `listener`, `message`, `public-api`, or `server` (the
+    /// first four).
+    #[serde(default)]
+    pub reached_from: Option<OneOrMany<String>>,
+    /// With `reached-from`: a method (or associated fn) also counts as
+    /// reached when another method of its type is (a constructor whose
+    /// object serves requests).
+    #[serde(default)]
+    pub via_type: Option<bool>,
+    /// With `reached-from`: keep a match it does not reach, ranked at this
+    /// confidence (0..=1), instead of dropping it.
+    #[serde(default)]
+    pub unreached_confidence: Option<f64>,
     #[serde(default)]
     pub capture: Option<String>,
     #[serde(default)]
@@ -289,6 +305,18 @@ pub struct ExampleSpec {
     /// What calls resolve to, for `resolves-to`/`calls` without an index:
     /// callee as written (`client.send`, `send`) → qualified name.
     pub resolves: BTreeMap<String, String>,
+    /// How the example's code is reached, for `reached-from` without an
+    /// index: `true` (from every kind of entry point), `false` (the
+    /// default: from none), or the kinds (`route`, `[listener, message]`).
+    pub reached: Option<ReachedSpec>,
+}
+
+/// An example's `reached`: a flag or the entry kinds.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum ReachedSpec {
+    Flag(bool),
+    Kinds(OneOrMany<String>),
 }
 
 #[derive(Deserialize)]
@@ -301,6 +329,8 @@ struct ExampleFields {
     file: Option<String>,
     #[serde(default)]
     resolves: BTreeMap<String, String>,
+    #[serde(default)]
+    reached: Option<ReachedSpec>,
 }
 
 impl<'de> Deserialize<'de> for ExampleSpec {
@@ -309,7 +339,7 @@ impl<'de> Deserialize<'de> for ExampleSpec {
         impl<'de> Visitor<'de> for ExampleVisitor {
             type Value = ExampleSpec;
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("an example: a code string, or a mapping with `code` and optional `language`, `file`, `resolves`")
+                f.write_str("an example: a code string, or a mapping with `code` and optional `language`, `file`, `resolves`, `reached`")
             }
             fn visit_str<E: de::Error>(self, v: &str) -> Result<ExampleSpec, E> {
                 Ok(ExampleSpec {
@@ -317,6 +347,7 @@ impl<'de> Deserialize<'de> for ExampleSpec {
                     language: None,
                     file: None,
                     resolves: BTreeMap::new(),
+                    reached: None,
                 })
             }
             fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<ExampleSpec, A::Error> {
@@ -326,6 +357,7 @@ impl<'de> Deserialize<'de> for ExampleSpec {
                     language: fields.language,
                     file: fields.file,
                     resolves: fields.resolves,
+                    reached: fields.reached,
                 })
             }
         }

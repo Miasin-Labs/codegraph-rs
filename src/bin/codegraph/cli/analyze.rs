@@ -310,8 +310,9 @@ confirm or dismiss each finding: `codegraph analyze review --at src/sync.rs:1922
 `severity`, `tags`, `language`, `check-patterns` (each a weggli `pattern` for C/C++ or a \
 tree-sitter `query`, with `regex` constraints and `where` predicates: resolves-to, \
 not-resolves-to, regex, not-regex, enclosing-function {calls, calls-not, name-regex, \
-is-test}, inside, not-inside), `ignore-patterns`, `message` ({capture} interpolates) and \
-`examples` {bad, good}. `--check` runs every rule's examples without an index and exits \
+is-test}, inside, not-inside, reached-from [route|extractor|listener|message|public-api|server] \
+with via-type and unreached-confidence), `ignore-patterns`, `message` ({capture} interpolates) \
+and `examples` {bad, good} (an example states `resolves:` and `reached:` without an index). `--check` runs every rule's examples without an index and exits \
 nonzero when a bad example does not match or a good one does, saying why: \
 `codegraph analyze rules --check my-rules/`, or `--rule-text -` to read YAML from stdin. \
 The project's saved rules (`.codegraph/rules/*.yaml`, written by the MCP `rules` tool's \

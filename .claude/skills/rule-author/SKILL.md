@@ -105,8 +105,19 @@ pairs).
   qualified callee; dependency calls also as `<crate>::<qname>`),
   `inside`/`not-inside` (a query matched *at* some ancestor),
   `enclosing-function {calls, calls-not, name-regex, is-test}`, capture
-  `regex`/`not-regex`. In examples, calls resolve as written unless the
-  example's `resolves: {self.send: Client::send}` maps them.
+  `regex`/`not-regex`, and `reached-from: [route, extractor, listener,
+  message, public-api]` (`server` = the first four): the match's function
+  is reached, within 8 resolved calls, from such an entry point (evidence:
+  the path); `via-type: true` also counts a method whose type's other
+  methods are (a constructor), `unreached-confidence: 0.3` keeps unreached
+  matches ranked lower instead of dropping them. Unresolved means not
+  reached. In examples, calls resolve as written unless the example's
+  `resolves: {self.send: Client::send}` maps them, and code is reached
+  only if it says `reached: true` (or the kinds: `reached: [listener]`).
+- Gate a rule on `reached-from: server` when its bug needs untrusted input
+  a server takes (redirects, waits with no deadline); measure first which
+  of its findings the gate drops, and prefer `unreached-confidence` when
+  some outside a server are real.
 - A `call_expression` is a call in C/Rust/JS/Go; Java `method_invocation`,
   Python `call`, PHP `function_call_expression`/`member_call_expression`.
 - Report where the reader should look: `at: <capture>`.

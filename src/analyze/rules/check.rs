@@ -180,6 +180,7 @@ pub(super) fn check_example(rule: &Rule, example: &Example) -> ExampleCheck {
     let input = FileInput::new(&example.file, example.language, &example.code, &tree);
     let semantics = SyntaxSemantics {
         resolves: &example.resolves,
+        reached: &example.reached,
     };
     let result = engine::run_rule(rule, &input, &semantics, true);
     check.matches = result
