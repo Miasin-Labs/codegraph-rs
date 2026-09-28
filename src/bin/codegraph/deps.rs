@@ -120,6 +120,21 @@ pub(crate) async fn cmd_deps(command: DepsCommands) {
             symbol,
             json,
         } => cmd_show(&spec, ecosystem.as_deref(), symbol.as_deref(), json),
+        DepsCommands::Flow {
+            package,
+            function,
+            from,
+            project,
+            budget_ms,
+            json,
+        } => cmd_flow(
+            &package,
+            &function,
+            &from,
+            project.as_deref(),
+            budget_ms,
+            json,
+        ),
     };
     if let Err(message) = result {
         error_msg(&message);
@@ -568,12 +583,160 @@ async fn cmd_build(args: BuildRequestArgs) -> CmdResult {
             );
         }
     }
+    if codegraph::deps::summaries::summaries_enabled() {
+        let left = args
+            .options
+            .budget
+            .map(|b| b.saturating_sub(started.elapsed()));
+        let keys = summary_targets(
+            &registry,
+            canonical.as_deref(),
+            &built,
+            args.options.direct_only,
+        );
+        summarize(&home, &keys, left, quiet);
+    }
     if args.json {
         return print_json(&report);
     }
     if !quiet {
         print_build_totals(&report);
     }
+    Ok(())
+}
+
+/// Shards whose taint summaries a build computes: the Rust shards it just
+/// built and, for one project, every Rust shard it depends on (direct
+/// ones only with `--direct-only`).
+fn summary_targets(
+    registry: &Registry,
+    root: Option<&str>,
+    built: &[DepKey],
+    direct_only: bool,
+) -> Vec<DepKey> {
+    // std's calls stay library calls (see `deps::summaries`): no summaries.
+    let rust = |key: &DepKey| key.ecosystem == Ecosystem::Crates;
+    let mut keys: Vec<DepKey> = built.iter().filter(|k| rust(k)).cloned().collect();
+    if let Some(root) = root {
+        for dep in registry.dependencies_of(root).unwrap_or_default() {
+            if rust(&dep.key)
+                && !matches!(dep.source, DepSource::Path { .. })
+                && (!direct_only || dep.direct == Some(true))
+                && !keys.contains(&dep.key)
+            {
+                keys.push(dep.key);
+            }
+        }
+    }
+    keys
+}
+
+/// Compute missing taint summaries of `keys`, within `budget` in all.
+fn summarize(home: &DepsHome, keys: &[DepKey], budget: Option<Duration>, quiet: bool) {
+    use codegraph::deps::summaries::{BuildLimits, EnsureOutcome, ensure};
+    let started = std::time::Instant::now();
+    for key in keys {
+        let mut limits = BuildLimits::default();
+        if let Some(budget) = budget {
+            let left = budget.saturating_sub(started.elapsed());
+            if left.is_zero() {
+                break;
+            }
+            limits.time = limits.time.min(left);
+        }
+        let outcome = ensure(home, key, &limits);
+        if quiet {
+            continue;
+        }
+        match outcome {
+            EnsureOutcome::Built {
+                summaries,
+                complete,
+                elapsed_ms,
+            } => println!(
+                "  {} {} {}  summaries: {} functions in {}{}",
+                dim("·"),
+                key.name,
+                key.version,
+                format_number(summaries as u64),
+                format_duration(elapsed_ms as i64),
+                if complete { "" } else { " (partial: budget)" }
+            ),
+            EnsureOutcome::Failed(error) => {
+                println!(
+                    "  {} {} {}  summaries failed: {error}",
+                    red("✗"),
+                    key.name,
+                    key.version
+                )
+            }
+            EnsureOutcome::UpToDate | EnsureOutcome::NoShard | EnsureOutcome::Locked => {}
+        }
+    }
+}
+
+/// `codegraph deps flow`: a path query inside the project's dependencies.
+fn cmd_flow(
+    package: &str,
+    function: &str,
+    from: &str,
+    project: Option<&str>,
+    budget_ms: Option<u64>,
+    json: bool,
+) -> CmdResult {
+    use codegraph::deps::summaries::flow::{FlowFrom, FlowLimits, flow};
+    let home = DepsHome::from_env();
+    let root = canonical_root(&project_root(project));
+    let from = if from == "env" {
+        FlowFrom::Environment
+    } else {
+        FlowFrom::Param(from.to_string())
+    };
+    let mut limits = FlowLimits::default();
+    if let Some(ms) = budget_ms {
+        limits.time = Duration::from_millis(ms);
+    }
+    let report = flow(&home, Path::new(&root), package, function, &from, &limits)?;
+    if json {
+        return print_json(&report);
+    }
+    for matched in &report.matched {
+        println!(
+            "{} {} {}  {}:{}",
+            bold(&report.package),
+            matched.function,
+            dim(&format!("from {}", report.from)),
+            matched.file,
+            matched.line
+        );
+    }
+    if report.flows.is_empty() {
+        println!("  {} no flow found", dim("·"));
+    }
+    for path in &report.flows {
+        println!("  {} {} → {}", green("●"), path.from, bold(&path.to));
+        for step in &path.steps {
+            println!(
+                "      {} {}:{}  {}",
+                dim(&step.package),
+                step.file,
+                step.line,
+                step.code
+            );
+        }
+    }
+    println!(
+        "{} {} functions across {} shards in {}{}",
+        dim("·"),
+        format_number(report.functions as u64),
+        report.packages.len(),
+        format_duration(report.elapsed_ms as i64),
+        if report.partial {
+            yellow(" (partial: a bound was reached — an absent flow is no proof)")
+        } else {
+            String::new()
+        }
+    );
     Ok(())
 }
 

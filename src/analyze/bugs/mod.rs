@@ -112,6 +112,10 @@ pub struct BugsOptions {
     /// ([`compiler::DEFAULT_WAIT`] when `None`); a run still going is picked
     /// up by the next call.
     pub compiler_wait: Option<std::time::Duration>,
+    /// Taint follows calls into dependency shards through their summaries
+    /// (`None`: library models only). The CLI may build a missing
+    /// summary; MCP only reads.
+    pub dependency_summaries: Option<crate::deps::summaries::compose::Access>,
 }
 
 /// Result of [`bugs_report`].

@@ -24,6 +24,11 @@ pub(super) struct LangRules {
     /// The language id the analysis crate lowers it to IR as (taint
     /// rules run where there is one).
     pub ir: Option<&'static str>,
+    /// The index resolves calls precisely (Rust): a call it leaves
+    /// unresolved runs library code — never a project function guessed by
+    /// name — and one resolving to a tuple struct or enum variant builds a
+    /// value from its arguments.
+    pub index_resolves_calls: bool,
 }
 
 const C: LangRules = LangRules {
@@ -33,6 +38,7 @@ const C: LangRules = LangRules {
     test_markers: &[],
     test_modules: &[],
     ir: Some("c"),
+    index_resolves_calls: false,
 };
 
 const CPP: LangRules = LangRules {
@@ -42,15 +48,18 @@ const CPP: LangRules = LangRules {
     test_markers: &[],
     test_modules: &[],
     ir: Some("cpp"),
+    index_resolves_calls: false,
 };
 
 const RUST: LangRules = LangRules {
     calls: &["call_expression", "macro_invocation"],
     argument_fields: &["arguments"],
-    functions: &["function_item", "closure_expression"],
+    // Closures and async blocks are lowered in place, as their function's code.
+    functions: &["function_item"],
     test_markers: &["attribute_item"],
     test_modules: &["mod_item"],
-    ir: None,
+    ir: Some("rust"),
+    index_resolves_calls: true,
 };
 
 const GO: LangRules = LangRules {
@@ -60,6 +69,7 @@ const GO: LangRules = LangRules {
     test_markers: &[],
     test_modules: &[],
     ir: None,
+    index_resolves_calls: false,
 };
 
 const PYTHON: LangRules = LangRules {
@@ -69,6 +79,7 @@ const PYTHON: LangRules = LangRules {
     test_markers: &["decorator"],
     test_modules: &[],
     ir: Some("python"),
+    index_resolves_calls: false,
 };
 
 const JS: LangRules = LangRules {
@@ -86,6 +97,7 @@ const JS: LangRules = LangRules {
     test_markers: &[],
     test_modules: &[],
     ir: Some("javascript"),
+    index_resolves_calls: false,
 };
 
 const JAVA: LangRules = LangRules {
@@ -99,6 +111,7 @@ const JAVA: LangRules = LangRules {
     test_markers: &["modifiers"],
     test_modules: &[],
     ir: Some("java"),
+    index_resolves_calls: false,
 };
 
 const CSHARP: LangRules = LangRules {
@@ -113,6 +126,7 @@ const CSHARP: LangRules = LangRules {
     test_markers: &["attribute_list"],
     test_modules: &[],
     ir: None,
+    index_resolves_calls: false,
 };
 
 const PHP: LangRules = LangRules {
@@ -132,6 +146,7 @@ const PHP: LangRules = LangRules {
     test_markers: &[],
     test_modules: &[],
     ir: Some("php"),
+    index_resolves_calls: false,
 };
 
 const RUBY: LangRules = LangRules {
@@ -141,6 +156,7 @@ const RUBY: LangRules = LangRules {
     test_markers: &[],
     test_modules: &[],
     ir: None,
+    index_resolves_calls: false,
 };
 
 /// Any other language with a grammar: the common names.
@@ -162,6 +178,7 @@ const GENERIC: LangRules = LangRules {
     test_markers: &[],
     test_modules: &[],
     ir: None,
+    index_resolves_calls: false,
 };
 
 pub(super) fn for_language(language: Language) -> &'static LangRules {

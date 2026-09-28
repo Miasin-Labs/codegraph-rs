@@ -45,6 +45,8 @@ mod spec;
 mod taint;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_rust_taint;
 mod variant;
 pub mod weggli;
 
@@ -252,8 +254,22 @@ fn run(
         return Ok((Vec::new(), 0));
     }
     let scan = {
-        let semantics = IndexSemantics::new(cg, project)?;
-        scan(project, &semantics, rules, options)
+        let deadline = Instant::now() + options.taint_budget.unwrap_or(DEFAULT_TAINT_BUDGET);
+        let deps = options.dependency_summaries.map(|access| {
+            crate::deps::summaries::compose::DependencySummaries::new(
+                crate::deps::DepsHome::from_env(),
+                access,
+                Some(deadline),
+            )
+        });
+        let semantics = IndexSemantics::new(cg, project)?.with_dependencies(deps);
+        let scan = scan(project, &semantics, rules, options);
+        if std::env::var_os("CODEGRAPH_TAINT_TRACE").is_some() {
+            if let Some(stats) = semantics.dependency_stats() {
+                eprintln!("taint: dependency summaries {stats:?}");
+            }
+        }
+        scan
     };
     for reason in scan.skipped {
         project.skip(&reason);

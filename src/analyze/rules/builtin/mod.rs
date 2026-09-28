@@ -22,4 +22,5 @@ pub const BUILTIN_RULES: &[(&str, &str)] = &[
     ("rust.yaml", include_str!("rust.yaml")),
     ("rust-server.yaml", include_str!("rust-server.yaml")),
     ("rust-rfc.yaml", include_str!("rust-rfc.yaml")),
+    ("rust-taint.yaml", include_str!("rust-taint.yaml")),
 ];

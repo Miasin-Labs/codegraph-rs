@@ -110,19 +110,19 @@ impl Output {
         self.inputs.is_empty() && self.sources.is_empty()
     }
 
-    fn add_input(&mut self, access: Access, path: Path) {
+    pub(super) fn add_input(&mut self, access: Access, path: Path) {
         if !self.inputs.iter().any(|(a, _)| *a == access) {
             self.inputs.push((access, path));
         }
     }
 
-    fn add_source(&mut self, fact: SourceFact) {
+    pub(super) fn add_source(&mut self, fact: SourceFact) {
         if !self.sources.iter().any(|f| f.source == fact.source) {
             self.sources.push(fact);
         }
     }
 
-    fn merge(&mut self, other: &Output) {
+    pub(super) fn merge(&mut self, other: &Output) {
         for (access, path) in &other.inputs {
             self.add_input(access.clone(), path.clone());
         }
@@ -137,6 +137,9 @@ impl Output {
 pub struct Summary {
     /// What its return value carries.
     pub returns: Output,
+    /// What each field of a returned struct carries, where that is less
+    /// than the whole value (`Self { a: x, b: y }`: `.a` carries only `x`).
+    pub returns_fields: Vec<(String, Output)>,
     /// Storage its callers see that it writes: the receiver or a
     /// parameter's object (its fields, elements, what it points to), and
     /// shared storage.
@@ -155,6 +158,25 @@ impl Summary {
     /// Whether the function moves no data its callers could see.
     pub fn is_empty(&self) -> bool {
         self.returns.is_empty() && self.writes.is_empty() && self.sinks.is_empty()
+    }
+
+    /// What reading `field` of the return value (`None`: all of it) gets.
+    pub fn returned(&self, field: Option<&str>) -> &Output {
+        field
+            .and_then(|field| {
+                self.returns_fields
+                    .iter()
+                    .find(|(f, _)| f == field)
+                    .map(|(_, output)| output)
+            })
+            .unwrap_or(&self.returns)
+    }
+
+    pub(super) fn set_return_field(&mut self, field: String, output: Output) {
+        match self.returns_fields.iter_mut().find(|(f, _)| *f == field) {
+            Some((_, existing)) => existing.merge(&output),
+            None => self.returns_fields.push((field, output)),
+        }
     }
 
     pub(super) fn add_write(&mut self, target: Access, output: Output) {
@@ -178,17 +200,27 @@ impl Summary {
         }
     }
 
-    pub(super) fn add_return_input(&mut self, access: Access, path: Path) {
-        self.returns.add_input(access, path);
-    }
-
-    pub(super) fn add_return_source(&mut self, fact: SourceFact) {
-        self.returns.add_source(fact);
-    }
-
     /// The union of several targets' summaries (a dynamic dispatch).
     pub fn union<'a>(summaries: impl IntoIterator<Item = &'a Summary>) -> Summary {
+        let summaries: Vec<&Summary> = summaries.into_iter().collect();
         let mut out = Summary::default();
+        // A field is narrower only where every target says so.
+        let mut fields: Vec<String> = summaries
+            .first()
+            .map(|s| s.returns_fields.iter().map(|(f, _)| f.clone()).collect())
+            .unwrap_or_default();
+        fields.retain(|field| {
+            summaries
+                .iter()
+                .all(|s| s.returns_fields.iter().any(|(f, _)| f == field))
+        });
+        for field in fields {
+            let mut output = Output::default();
+            for summary in &summaries {
+                output.merge(summary.returned(Some(&field)));
+            }
+            out.returns_fields.push((field, output));
+        }
         for summary in summaries {
             out.returns.merge(&summary.returns);
             for (target, output) in &summary.writes {
@@ -234,6 +266,21 @@ impl Summary {
             })
             .collect();
         writes.sort();
+        for (field, output) in &self.returns_fields {
+            returns.extend(
+                output
+                    .inputs
+                    .iter()
+                    .map(|(a, _)| format!(".{field}<-{a:?}"))
+                    .chain(
+                        output
+                            .sources
+                            .iter()
+                            .map(|f| format!(".{field}<-{:?}", f.source)),
+                    ),
+            );
+        }
+        returns.sort();
         let mut sinks: Vec<String> = self
             .sinks
             .iter()

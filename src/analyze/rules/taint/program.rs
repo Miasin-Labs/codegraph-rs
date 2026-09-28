@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use codegraph_analysis::ir::{IrFunction, IrOp, Operand, Var, shared};
 use codegraph_analysis::taint_flow::program::{CallTargets, Function};
-use codegraph_analysis::taint_flow::{Budget, FuncId};
+use codegraph_analysis::taint_flow::{Budget, FuncId, Summary};
 use tree_sitter::Node;
 
 use super::super::engine::FileInput;
@@ -62,6 +62,8 @@ struct Pending {
     guessed: bool,
     /// Candidates.
     targets: Vec<usize>,
+    /// A dependency function's summary, for a call into another graph.
+    external: Option<Arc<Summary>>,
 }
 
 /// Every function node of `files`, and the program built from the ones
@@ -110,10 +112,15 @@ fn namespace_of(node: Node, source: &str) -> Option<String> {
     Some(names.join("::"))
 }
 
-/// The class-like ancestor's simple name.
+/// The class-like ancestor's simple name (a Rust `impl`'s type).
 fn owner_of(node: Node, source: &str) -> Option<String> {
     let mut current = node.parent();
     while let Some(n) = current {
+        if n.kind() == "impl_item" {
+            return n
+                .child_by_field_name("type")
+                .map(|ty| simple_type(source.get(ty.byte_range()).unwrap_or_default()));
+        }
         if matches!(
             n.kind(),
             "class_declaration"
@@ -314,6 +321,7 @@ impl<'a> Table<'a> {
                             // code: nothing is assumed of the call.
                             targets: if complete { targets } else { Vec::new() },
                             guessed: call.guessed,
+                            external: call.external,
                         },
                     )
                 })
@@ -474,10 +482,30 @@ impl<'a> Table<'a> {
                 in_project: resolution.in_project,
                 guessed: false,
                 targets: Vec::new(),
+                external: None,
             };
+            let callees = semantics.callee_functions(file, span.line, span.col, callee);
+            if callees.is_empty() {
+                // A dependency's function: its summary, when its shard
+                // has one, instead of the library models.
+                pending.external = semantics.external_summary(file, span.line, span.col, callee);
+            }
+            if rules.index_resolves_calls && semantics.has_index() {
+                // A call resolving only to a tuple struct or enum variant
+                // builds a value from its arguments: no function runs.
+                let constructs =
+                    !callees.is_empty() && callees.iter().all(|c| !is_callable_kind(&c.kind));
+                if constructs {
+                    pending.in_project = false;
+                    if !pending.names.is_empty() {
+                        out.push((op, pending));
+                    }
+                    continue;
+                }
+            }
             // The index, with interfaces opened to their implementations.
             let mut bodyless_owner: Option<String> = None;
-            for callee_ref in semantics.callee_functions(file, span.line, span.col, callee) {
+            for callee_ref in callees {
                 match self.find(&callee_ref.file, &callee_ref.name, callee_ref.line) {
                     Some(found) if self.has_body(found) => {
                         if !pending.targets.contains(&found) {
@@ -498,6 +526,13 @@ impl<'a> Table<'a> {
             if receiver.is_none() && !callee.contains("::") {
                 self.scope_c_call(&mut pending, candidate, &name, args.len());
             }
+            if rules.index_resolves_calls && semantics.has_index() {
+                // What the index left unresolved is library code.
+                if pending.in_project || !pending.names.is_empty() || pending.external.is_some() {
+                    out.push((op, pending));
+                }
+                continue;
+            }
             if pending.targets.is_empty() {
                 self.fallback(
                     &mut pending,
@@ -515,9 +550,12 @@ impl<'a> Table<'a> {
                     &pointers,
                 );
             }
-            // A name the file defines is project code even unresolved.
-            pending.in_project |= !pending.targets.is_empty() || file.defines(rules, &name);
-            if pending.in_project || !pending.names.is_empty() {
+            // A name the file defines is project code even unresolved (in
+            // a language whose paths name their type, only a bare name).
+            let bare = receiver.is_none() && !callee.contains("::");
+            pending.in_project |= !pending.targets.is_empty()
+                || ((bare || !rules.index_resolves_calls) && file.defines(rules, &name));
+            if pending.in_project || !pending.names.is_empty() || pending.external.is_some() {
                 out.push((op, pending));
             }
         }
@@ -588,6 +626,22 @@ impl<'a> Table<'a> {
             pending.targets = found;
             pending.guessed = true;
             return;
+        } else if let Some(class) = call
+            .callee
+            .rsplit_once("::")
+            .filter(|_| call.receiver.is_none())
+            .map(|(path, _)| path.rsplit("::").next().unwrap_or(path))
+        {
+            // `Type::m(…)`, `Self::m(…)`: `m` of that type.
+            let class = if class == "Self" {
+                match call.owner {
+                    Some(owner) => owner.to_string(),
+                    None => return,
+                }
+            } else {
+                simple_type(class)
+            };
+            (self.method_in_lineage(&class, call.name, call.file), false)
         } else if call.receiver.is_none() && !call.callee.contains(['.', ':']) {
             let pointed: Vec<usize> = pointers
                 .get(call.callee)
@@ -642,6 +696,12 @@ impl<'a> Table<'a> {
             pending.guessed = guessed;
         }
     }
+}
+
+/// Whether an index node kind runs code when called (else a tuple struct
+/// or enum variant constructed with call syntax).
+fn is_callable_kind(kind: &str) -> bool {
+    matches!(kind, "function" | "method" | "constructor")
 }
 
 /// A call as the fallback reads it.

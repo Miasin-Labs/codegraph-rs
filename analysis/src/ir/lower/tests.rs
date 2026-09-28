@@ -11,6 +11,7 @@ pub(crate) fn grammar(lang: &str) -> Language {
         "php" => tree_sitter_php::LANGUAGE_PHP.into(),
         "python" => tree_sitter_python::LANGUAGE.into(),
         "javascript" | "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        "rust" => tree_sitter_rust::LANGUAGE.into(),
         other => panic!("no grammar for {other}"),
     }
 }

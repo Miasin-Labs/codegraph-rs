@@ -150,6 +150,7 @@ fn bugs_options(
         include_tests,
         taint_budget: None,
         compiler_wait,
+        dependency_summaries: cli_dependency_summaries(),
     })
 }
 
@@ -475,6 +476,7 @@ pub(crate) fn cmd_analyze_rules(
             include_tests,
             taint_budget: None,
             compiler_wait: None,
+            dependency_summaries: cli_dependency_summaries(),
         };
         let top = findings_limit(top_arg, json);
         let cg =
@@ -739,4 +741,19 @@ fn print_findings(report: &BugsReport, base: Option<&str>, title: &str) {
     }
     println!();
     info(&report.note);
+}
+
+/// The CLI's taint follows calls into dependency shards through their
+/// summaries, building a missing one on first need within
+/// `CODEGRAPH_DEP_SUMMARIES_BUILD_MS` (default 60 s) in all.
+fn cli_dependency_summaries() -> Option<codegraph::deps::summaries::compose::Access> {
+    let budget = std::env::var("CODEGRAPH_DEP_SUMMARIES_BUILD_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(60_000);
+    codegraph::deps::summaries::summaries_enabled().then_some(
+        codegraph::deps::summaries::compose::Access::BuildMissing(
+            std::time::Duration::from_millis(budget),
+        ),
+    )
 }

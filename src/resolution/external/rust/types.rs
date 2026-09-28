@@ -115,8 +115,8 @@ fn type_name(written: &str) -> Option<&str> {
 /// What the type path `path`, written in `file` of the crate code calls
 /// `krate`, names: the crate that defines it and the type's path inside
 /// that crate (`use` declarations followed; a bare name is its file's
-/// module's). `None` for std types and for a crate that defines no such
-/// type.
+/// module's). `None` for std types without a toolchain graph and for a
+/// crate that defines no such type.
 pub(crate) fn type_path(
     cache: &GraphCache<'_>,
     krate: &str,
@@ -149,7 +149,8 @@ pub(crate) fn type_path(
     }
     let name = segments.last()?.clone();
     let root = segments.first()?.as_str();
-    if segments.len() > 1 && matches!(root, "std" | "core" | "alloc") {
+    // std's types are the toolchain graph's when one is reachable.
+    if segments.len() > 1 && matches!(root, "std" | "core" | "alloc") && !cache.knows(root) {
         return None;
     }
     let here = module_path(file);

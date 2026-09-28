@@ -32,8 +32,25 @@ impl Lowerer<'_, '_> {
 
     fn stmt_inner(&mut self, node: Node<'_>) {
         let kind = node.kind();
-        if node.is_extra() || self.rules.ignored.contains(&kind) || self.cfg.is_nested_scope(kind) {
+        if node.is_extra() || self.rules.ignored.contains(&kind) {
             return;
+        }
+        if self.inline_scope(kind).is_some() {
+            drop(self.expr(node));
+            return;
+        }
+        if self.cfg.is_nested_scope(kind) {
+            return;
+        }
+        if let Some(expression) = self.rules.expression {
+            if let Some(shape) = expression.binding(kind) {
+                self.binding(node, *shape);
+                return;
+            }
+            if self.cfg.classify(kind) == Construct::Switch {
+                drop(self.match_value(node));
+                return;
+            }
         }
         match self.cfg.classify(kind) {
             Construct::Block => {
@@ -59,6 +76,17 @@ impl Lowerer<'_, '_> {
                     .into_iter()
                     .next()
                     .map(|child| self.expr(child).operand);
+                // Inside an inlined closure: its value, and on after it.
+                if let Some((exit, result)) = self.inline_exits.last().cloned() {
+                    if let Some(value) = value {
+                        self.func.push(IrOp::Assign {
+                            dst: result,
+                            src: value,
+                        });
+                    }
+                    self.func.push(IrOp::Jump { target: exit });
+                    return;
+                }
                 self.func.push(IrOp::Return { value });
             }
             Construct::Throw => {
@@ -236,8 +264,12 @@ impl Lowerer<'_, '_> {
                 });
                 self.record_call(iterable.place, Vec::new());
                 if let Some(binding) = self.slot(node, shape.binding) {
-                    self.declare_all(binding);
-                    self.write(binding, Operand::Var(element));
+                    if self.rules.expression.is_some() {
+                        self.bind(binding, &Operand::Var(element));
+                    } else {
+                        self.declare_all(binding);
+                        self.write(binding, Operand::Var(element));
+                    }
                 }
                 Operand::Const("<has-next>".into())
             }

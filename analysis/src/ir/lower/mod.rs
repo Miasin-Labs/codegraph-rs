@@ -11,6 +11,7 @@
 
 mod expr;
 mod stmt;
+mod values;
 
 use std::collections::HashMap;
 
@@ -54,6 +55,8 @@ pub fn lower_with_macros(
         breaks: Vec::new(),
         continues: Vec::new(),
         macros,
+        inline_exits: Vec::new(),
+        call_receivers: Vec::new(),
     };
     lowerer.params(node);
     let exit = lowerer.fresh_label();
@@ -63,7 +66,17 @@ pub fn lower_with_macros(
             lowerer.stmt(child);
         }
     } else if cfg.classify(body.kind()) == crate::cfg_rules::Construct::Block {
-        lowerer.stmt(body);
+        if rules.expression.is_some() {
+            // A block's last expression is the function's value.
+            let value = lowerer.block_value(body);
+            if let Some(value) = value {
+                lowerer.func.push(IrOp::Return {
+                    value: Some(value.operand),
+                });
+            }
+        } else {
+            lowerer.stmt(body);
+        }
     } else {
         // An expression body (`x => x + 1`).
         let value = lowerer.expr(body);
@@ -215,6 +228,12 @@ struct Lowerer<'r, 's> {
     continues: Vec<Label>,
     /// Object-like macros read as what they stand for.
     macros: &'r HashMap<String, String>,
+    /// Inlined scopes being lowered (innermost last): where a `return`
+    /// inside one goes, and the variable holding its value.
+    inline_exits: Vec<(Label, Var)>,
+    /// The receiver of the method call whose arguments are being lowered
+    /// (a closure argument's parameters take it).
+    call_receivers: Vec<Option<Operand>>,
 }
 
 impl<'s> Lowerer<'_, 's> {
@@ -268,7 +287,14 @@ impl<'s> Lowerer<'_, 's> {
             {
                 Some(next) => current = next,
                 None => {
-                    let children = self.named_children(current);
+                    // A type names nothing declared (`Path(id): Path<T>`
+                    // declares `id`, not the variant `Path`).
+                    let type_node = current.child_by_field_name("type");
+                    let children: Vec<Node<'t>> = self
+                        .named_children(current)
+                        .into_iter()
+                        .filter(|child| Some(*child) != type_node)
+                        .collect();
                     if let Some(name) = children.iter().find(|child| self.is_identifier(**child)) {
                         return Some(*name);
                     }
@@ -312,6 +338,9 @@ impl<'s> Lowerer<'_, 's> {
             };
             for param in params {
                 if self.rules.receiver_parameters.contains(&param.kind()) {
+                    if let Some(expression) = self.rules.expression {
+                        self.func.receiver = Some(Var::new(expression.receiver_var));
+                    }
                     continue;
                 }
                 if let Some(name) = self.declared_name(param, self.rules.parameter_name) {
@@ -320,6 +349,25 @@ impl<'s> Lowerer<'_, 's> {
                     }
                     self.func.params.push(Var::new(self.text(name)));
                     self.func.param_spans.push(Span::of(name));
+                } else if self.rules.expression.is_some() {
+                    // `_: T` still takes its position.
+                    let index = self.func.params.len();
+                    self.func.params.push(Var::new(format!("__param{index}")));
+                    self.func.param_spans.push(Span::of(param));
+                }
+                // `Json(Req { a, b }): Json<Req>`: every name the pattern
+                // binds holds the parameter's data.
+                if self.rules.expression.is_some() {
+                    let pattern = self
+                        .rules
+                        .parameter_name
+                        .iter()
+                        .find_map(|field| param.child_by_field_name(field))
+                        .filter(|pattern| !self.is_identifier(*pattern));
+                    if let (Some(pattern), Some(var)) = (pattern, self.func.params.last()) {
+                        let var = Operand::Var(var.clone());
+                        self.bind(pattern, &var);
+                    }
                 }
             }
         }
@@ -458,3 +506,5 @@ impl<'s> Lowerer<'_, 's> {
 
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod tests_rust;

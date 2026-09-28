@@ -92,6 +92,30 @@ pub(crate) enum DepsCommands {
         #[arg(short = 'j', long)]
         json: bool,
     },
+    /// Follow data inside a project's Rust dependencies, across crates: where
+    /// the environment (`env::var`) reaches a dependency function's outputs,
+    /// or which calls' arguments one of its parameters reaches — every step
+    /// with its file and line (read-only; needs the shards `deps build` made)
+    Flow {
+        /// The dependency (`reqwest`, `hyper-util`, `std`)
+        #[arg(value_name = "package")]
+        package: String,
+        /// The function: its qualified name or its end (`ClientBuilder::build`)
+        #[arg(value_name = "function")]
+        function: String,
+        /// `env`, or a parameter's name or position
+        #[arg(long, value_name = "env|param", default_value = "env")]
+        from: String,
+        /// Project directory (default: the current checkout)
+        #[arg(short = 'p', long, value_name = "dir")]
+        project: Option<String>,
+        /// Time budget in ms
+        #[arg(long = "budget-ms", value_name = "ms")]
+        budget_ms: Option<u64>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
     /// Show one dependency (`name` or `name@version`): versions, shard
     /// metadata, the projects using it, and optionally a symbol lookup
     Show {

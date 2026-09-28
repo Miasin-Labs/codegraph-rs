@@ -66,7 +66,18 @@ pub fn record_project(
     let canonical = canonical_root(root);
     let root_path = PathBuf::from(&canonical);
     let lockfiles = lockfile::discover(&root_path);
-    let fingerprint = lockfile::fingerprint(&lockfiles);
+    // A Rust project also depends on its toolchain's library; a new
+    // toolchain is a new dependency even with the lockfile unchanged.
+    let toolchain = lockfiles
+        .iter()
+        .any(|l| l.kind.ecosystem() == Ecosystem::Crates)
+        .then(|| roots.toolchain.resolve(&root_path))
+        .flatten();
+    let mut fingerprint = lockfile::fingerprint(&lockfiles);
+    if let Some(toolchain) = &toolchain {
+        fingerprint.push_str("+std:");
+        fingerprint.push_str(&toolchain.version);
+    }
     let previous = registry.project_fingerprint(&canonical)?;
     let mut report = RecordReport {
         root: canonical.clone(),
@@ -83,7 +94,7 @@ pub fn record_project(
 
     let manifest = lockfile::read_project(&root_path);
     report.errors = manifest.errors;
-    let located: Vec<LocatedDep> = manifest
+    let mut located: Vec<LocatedDep> = manifest
         .deps
         .into_iter()
         .map(|dep| {
@@ -91,6 +102,12 @@ pub fn record_project(
             LocatedDep { dep, source_dir }
         })
         .collect();
+    if let Some(toolchain) = toolchain {
+        located.push(LocatedDep {
+            dep: toolchain.as_dependency(),
+            source_dir: Some(toolchain.library),
+        });
+    }
     for l in &located {
         let counts = report.by_ecosystem.entry(l.dep.key.ecosystem).or_default();
         counts.dependencies += 1;

@@ -37,6 +37,8 @@ pub mod registry;
 pub mod scope;
 pub mod shard;
 pub mod store;
+pub mod summaries;
+pub mod toolchain;
 pub mod trigger;
 
 use std::path::Path;

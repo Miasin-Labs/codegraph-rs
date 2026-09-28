@@ -547,6 +547,7 @@ fn run(machine: &Machine, cwd: &Path, args: &[&str]) -> std::process::Output {
         .env("CODEGRAPH_TELEMETRY", "0")
         .env("DO_NOT_TRACK", "1")
         .env_remove("CODEGRAPH_DEPS")
+        .env("CODEGRAPH_STD", "0")
         .stdin(Stdio::null())
         .output()
         .expect("spawn codegraph")
@@ -666,4 +667,88 @@ fn cli_index_records_dependencies_and_deps_commands_build_show_and_gc() {
         .unwrap()
         .clone();
     assert_eq!(alpha_row["state"], "ready");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rust_project_depends_on_its_toolchains_std_shard() {
+    use codegraph::deps::toolchain::{Toolchain, ToolchainSource};
+
+    let machine = Machine::new();
+    let project = machine.rust_project("app");
+    // A toolchain's `library`: std/core/alloc sources, plus what a shard
+    // leaves out (their tests, other library crates).
+    let library = machine.root.join("sysroot/lib/rustlib/src/rust/library");
+    write(
+        &library.join("std/src/lib.rs"),
+        "pub mod process;\npub mod env;\n",
+    );
+    write(
+        &library.join("std/src/process.rs"),
+        "pub struct Command;\nimpl Command {\n    pub fn new(program: &str) -> Command { Command }\n}\n",
+    );
+    write(
+        &library.join("std/src/env.rs"),
+        "pub fn var(key: &str) -> String { String::new() }\n",
+    );
+    write(&library.join("std/src/process/tests.rs"), "fn t() {}\n");
+    write(&library.join("std/tests/it.rs"), "fn t() {}\n");
+    write(&library.join("core/src/lib.rs"), "pub mod option;\n");
+    write(
+        &library.join("core/src/option.rs"),
+        "pub enum Option<T> { None, Some(T) }\n",
+    );
+    write(&library.join("alloc/src/lib.rs"), "pub mod string;\n");
+    write(&library.join("alloc/src/string.rs"), "pub struct String;\n");
+    write(
+        &library.join("stdarch/crates/core_arch/src/lib.rs"),
+        "fn x() {}\n",
+    );
+    let toolchain = Toolchain {
+        version: "1.99.0-nightly+abc".into(),
+        library: library.clone(),
+    };
+    let mut roots = machine.roots();
+    roots.toolchain = ToolchainSource::Fixed(toolchain.clone());
+
+    let mut registry = open_registry(&machine);
+    let report = record_project(&mut registry, &project, &roots, false, now_ms()).unwrap();
+    let std_counts = report.by_ecosystem[&Ecosystem::Rust];
+    assert_eq!((std_counts.dependencies, std_counts.located), (1, 1));
+
+    let results = build_project(&machine, &registry, &project, &BuildOptions::default()).await;
+    let std_meta = results
+        .iter()
+        .find_map(|r| match r {
+            ShardResult::Built { meta } if meta.key() == toolchain.key() => Some(meta),
+            _ => None,
+        })
+        .expect("the std shard is built");
+    assert_eq!(
+        std_meta.counts.selected_files, 7,
+        "std/core/alloc src only, no tests"
+    );
+    let home = machine.home();
+    assert!(
+        home.shard_dir(&toolchain.key())
+            .ends_with("rust/std-1.99.0-nightly+abc")
+    );
+    let handle = ShardHandle::open(&home, &toolchain.key()).expect("std shard opens");
+    let new = handle.lookup("Command::new").unwrap();
+    assert_eq!(new.len(), 1);
+    assert_eq!(new[0].file_path, "std/src/process.rs");
+
+    // The registry lists it as the project's dependency; gc keeps it.
+    let deps = dependencies_of_in(&home, &project).unwrap();
+    assert!(deps.iter().any(|d| d.key == toolchain.key()));
+    let report = gc(&home, &registry, &GcPolicy::default(), SystemTime::now()).unwrap();
+    assert!(report.removed.is_empty(), "{report:?}");
+    assert!(home.shard_dir(&toolchain.key()).join("meta.json").is_file());
+
+    // Without a toolchain nothing is recorded for it.
+    let machine = Machine::new();
+    let project = machine.rust_project("plain");
+    let mut registry = open_registry(&machine);
+    let report =
+        record_project(&mut registry, &project, &machine.roots(), false, now_ms()).unwrap();
+    assert!(!report.by_ecosystem.contains_key(&Ecosystem::Rust));
 }

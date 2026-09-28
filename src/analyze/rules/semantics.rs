@@ -31,6 +31,8 @@ pub(super) struct CalleeRef {
     pub line: u32,
     pub name: String,
     pub qualified_name: String,
+    /// The index's node kind (`function`, `method`, `struct`, `enum_member`…).
+    pub kind: String,
 }
 
 /// The function a match sits in.
@@ -46,6 +48,9 @@ pub(super) struct FunctionFacts {
 pub(super) trait Semantics {
     /// Names the call node `call` resolves to (empty when unresolved).
     fn call_targets(&self, file: &FileInput, rules: &LangRules, call: Node) -> Vec<String>;
+    /// Whether some graph resolves the call node `call` (an example: its
+    /// `resolves` map names it).
+    fn is_resolved(&self, file: &FileInput, rules: &LangRules, call: Node) -> bool;
     /// What the call starting at `line` (1-based) and `col` whose callee
     /// is written `callee` resolves to: the join of an IR call op (which
     /// carries its call's start and callee text) with the index. Chained
@@ -64,6 +69,30 @@ pub(super) trait Semantics {
     }
     /// Facts about the function node `function`.
     fn function(&self, file: &FileInput, rules: &LangRules, function: Node) -> FunctionFacts;
+    /// Calls resolve through an index (else as written, `--check`).
+    fn has_index(&self) -> bool {
+        true
+    }
+    /// The summary of the dependency function the call resolves to (a
+    /// call the external pass resolved into a dependency shard with
+    /// summaries); `None` for anything else.
+    fn external_summary(
+        &self,
+        _file: &FileInput,
+        _line: u32,
+        _col: u32,
+        _callee: &str,
+    ) -> Option<std::sync::Arc<codegraph_analysis::taint_flow::Summary>> {
+        None
+    }
+    /// A dependency function a summary's path steps through (program ids
+    /// from [`crate::deps::summaries::compose::EXTERNAL_FUNC_BASE`]).
+    fn external_function(
+        &self,
+        _id: codegraph_analysis::taint_flow::FuncId,
+    ) -> Option<crate::deps::summaries::compose::ExternalFunction> {
+        None
+    }
 }
 
 /// Calls as written, for rule examples.
@@ -97,6 +126,11 @@ impl Semantics for SyntaxSemantics<'_> {
         self.targets(text, name)
     }
 
+    fn is_resolved(&self, file: &FileInput, rules: &LangRules, call: Node) -> bool {
+        let (text, name) = lang::callee(rules, call, file.source);
+        self.resolves.contains_key(&text) || self.resolves.contains_key(&name)
+    }
+
     /// As written; an example's `resolves` map stands for the index (a
     /// callee it names is project code).
     fn call_at(&self, _: &FileInput, _: u32, _: u32, callee: &str) -> CallResolution {
@@ -116,6 +150,10 @@ impl Semantics for SyntaxSemantics<'_> {
         syntax_facts(file, rules, function, |call| {
             self.call_targets(file, rules, call)
         })
+    }
+
+    fn has_index(&self) -> bool {
+        false
     }
 }
 
@@ -158,6 +196,8 @@ struct Target {
     in_project: bool,
     /// Where it is, for a project function.
     callee: Option<CalleeRef>,
+    /// A dependency shard's function: (graph key, node id).
+    external: Option<(String, String)>,
 }
 
 /// Calls and functions from the index.
@@ -170,6 +210,8 @@ pub(crate) struct IndexSemantics<'p> {
     /// Per file: line → 1 + index into `project.functions_in(file)` of the
     /// innermost function spanning it (0: none). Built on first use.
     line_functions: RefCell<HashMap<String, Vec<u32>>>,
+    /// Dependency functions' summaries, when the run follows them.
+    deps: Option<RefCell<crate::deps::summaries::compose::DependencySummaries>>,
 }
 
 impl<'p> IndexSemantics<'p> {
@@ -199,7 +241,9 @@ impl<'p> IndexSemantics<'p> {
                         line: site.callee_line,
                         name: site.callee_name.clone(),
                         qualified_name: site.callee_qualified.clone(),
+                        kind: site.callee_kind.clone(),
                     }),
+                    external: None,
                 });
         }
         for external in external {
@@ -217,7 +261,22 @@ impl<'p> IndexSemantics<'p> {
             calls_at,
             calls_by_caller,
             line_functions: RefCell::new(HashMap::new()),
+            deps: None,
         }
+    }
+
+    /// What the run's dependency summaries did (`None`: not followed).
+    pub(crate) fn dependency_stats(&self) -> Option<crate::deps::summaries::compose::ComposeStats> {
+        self.deps.as_ref().map(|deps| deps.borrow().stats)
+    }
+
+    /// Follow calls into dependency shards through `deps`' summaries.
+    pub(crate) fn with_dependencies(
+        mut self,
+        deps: Option<crate::deps::summaries::compose::DependencySummaries>,
+    ) -> Self {
+        self.deps = deps.map(RefCell::new);
+        self
     }
 
     /// For tests: the project's call sites only.
@@ -313,6 +372,10 @@ impl Semantics for IndexSemantics<'_> {
         self.targets_at(file.path, start.row as u32 + 1, start.column as u32, &text)
     }
 
+    fn is_resolved(&self, file: &FileInput, rules: &LangRules, call: Node) -> bool {
+        !self.call_targets(file, rules, call).is_empty()
+    }
+
     fn call_at(&self, file: &FileInput, line: u32, col: u32, callee: &str) -> CallResolution {
         self.resolve_at(file.path, line, col, callee)
     }
@@ -328,6 +391,39 @@ impl Semantics for IndexSemantics<'_> {
             .into_iter()
             .filter_map(|target| target.callee.clone())
             .collect()
+    }
+
+    fn external_summary(
+        &self,
+        file: &FileInput,
+        line: u32,
+        col: u32,
+        callee: &str,
+    ) -> Option<std::sync::Arc<codegraph_analysis::taint_flow::Summary>> {
+        let deps = self.deps.as_ref()?;
+        let chosen = self.chosen(file.path, line, col, callee);
+        if chosen.iter().any(|target| target.in_project) {
+            return None;
+        }
+        let mut found: Vec<std::sync::Arc<codegraph_analysis::taint_flow::Summary>> = Vec::new();
+        for target in chosen {
+            let (key, node) = target.external.as_ref()?;
+            found.push(deps.borrow_mut().summary(key, node)?);
+        }
+        match found.len() {
+            0 => None,
+            1 => found.pop(),
+            _ => Some(std::sync::Arc::new(
+                codegraph_analysis::taint_flow::Summary::union(found.iter().map(|s| s.as_ref())),
+            )),
+        }
+    }
+
+    fn external_function(
+        &self,
+        id: codegraph_analysis::taint_flow::FuncId,
+    ) -> Option<crate::deps::summaries::compose::ExternalFunction> {
+        self.deps.as_ref()?.borrow().function(id).cloned()
     }
 
     fn function(&self, file: &FileInput, rules: &LangRules, function: Node) -> FunctionFacts {
@@ -380,7 +476,8 @@ fn load_external_calls(cg: &CodeGraph) -> Result<Vec<ExternalCall>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT x.source, n.file_path, x.line, IFNULL(x.col, 0), x.target_name, \
-                    x.target_qualified_name, x.target_graph_key \
+                    x.target_qualified_name, x.target_graph_key, x.target_graph_kind, \
+                    x.target_node_id \
              FROM external_edges x JOIN nodes n ON n.id = x.source \
              WHERE x.kind = 'calls' AND x.line IS NOT NULL",
         )
@@ -389,6 +486,9 @@ fn load_external_calls(cg: &CodeGraph) -> Result<Vec<ExternalCall>, String> {
         .query_map([], |row| {
             let qualified: String = row.get(5)?;
             let key: String = row.get(6)?;
+            let graph_kind: String = row.get(7)?;
+            let node_id: String = row.get(8)?;
+            let external = (graph_kind == "dependency").then(|| (key.clone(), node_id));
             let mut names = vec![qualified.clone()];
             if let Some(package) = package_of(&key) {
                 let prefixed = format!("{package}::{qualified}");
@@ -406,6 +506,7 @@ fn load_external_calls(cg: &CodeGraph) -> Result<Vec<ExternalCall>, String> {
                     names,
                     in_project: false,
                     callee: None,
+                    external,
                 },
             })
         })
@@ -413,21 +514,21 @@ fn load_external_calls(cg: &CodeGraph) -> Result<Vec<ExternalCall>, String> {
     rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
 }
 
-/// `crates/reqwest-0.12.4` → `reqwest`; a linked project's root → its
-/// directory name.
+/// `crates/reqwest-0.12.4` → `reqwest`, `rust/std-1.9.0-nightly+ab` →
+/// `std`; a linked project's root → its directory name. The version is
+/// what follows the first `-` that starts `<digits>.` (a name may hold
+/// digits, `x509-parser`; a version may hold `-`, `1.0.0-alpha`).
 fn package_of(graph_key: &str) -> Option<String> {
     let last = graph_key.trim_end_matches('/').rsplit('/').next()?;
-    let name = match last.rfind('-') {
-        Some(dash)
-            if last[dash + 1..]
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_digit()) =>
-        {
-            &last[..dash]
-        }
-        _ => last,
+    let starts_version = |rest: &str| {
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        digits > 0 && rest.as_bytes().get(digits) == Some(&b'.')
     };
+    let name = last
+        .match_indices('-')
+        .map(|(dash, _)| dash)
+        .find(|&dash| starts_version(&last[dash + 1..]))
+        .map_or(last, |dash| &last[..dash]);
     (!name.is_empty()).then(|| name.replace('-', "_"))
 }
 
@@ -450,5 +551,14 @@ mod tests {
             Some("tokio_util")
         );
         assert_eq!(package_of("/home/u/linked").as_deref(), Some("linked"));
+        assert_eq!(
+            package_of("rust/std-1.101.0-nightly+d080e7dff1b0").as_deref(),
+            Some("std")
+        );
+        assert_eq!(
+            package_of("crates/x509-parser-0.16.0-alpha.1").as_deref(),
+            Some("x509_parser")
+        );
+        assert_eq!(package_of("crates/foo-2d-0.1.0").as_deref(), Some("foo_2d"));
     }
 }

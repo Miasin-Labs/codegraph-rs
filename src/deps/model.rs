@@ -17,10 +17,18 @@ pub enum Ecosystem {
     Npm,
     /// Go modules (go.mod; `$GOMODCACHE`).
     Go,
+    /// The Rust toolchain's own library (`std`/`core`/`alloc` from
+    /// `rust-src`), one per toolchain ([`super::toolchain`]).
+    Rust,
 }
 
 impl Ecosystem {
-    pub const ALL: [Ecosystem; 3] = [Ecosystem::Crates, Ecosystem::Npm, Ecosystem::Go];
+    pub const ALL: [Ecosystem; 4] = [
+        Ecosystem::Crates,
+        Ecosystem::Npm,
+        Ecosystem::Go,
+        Ecosystem::Rust,
+    ];
 
     /// Stable id: the registry column value and the shard subdirectory.
     pub fn as_str(self) -> &'static str {
@@ -28,6 +36,7 @@ impl Ecosystem {
             Self::Crates => "crates",
             Self::Npm => "npm",
             Self::Go => "go",
+            Self::Rust => "rust",
         }
     }
 }
@@ -43,11 +52,12 @@ impl FromStr for Ecosystem {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "crates" | "crate" | "cargo" | "rust" => Ok(Self::Crates),
+            "crates" | "crate" | "cargo" => Ok(Self::Crates),
             "npm" | "node" | "js" | "javascript" | "typescript" => Ok(Self::Npm),
             "go" | "golang" => Ok(Self::Go),
+            "rust" | "std" | "toolchain" => Ok(Self::Rust),
             other => Err(format!(
-                "unknown ecosystem `{other}` (expected crates, npm, go)"
+                "unknown ecosystem `{other}` (expected crates, npm, go, rust)"
             )),
         }
     }
@@ -156,11 +166,11 @@ impl DepKey {
     pub fn dir_name(&self) -> String {
         let name = match self.ecosystem {
             Ecosystem::Go => super::locate::go::escape_module_path(&self.name),
-            Ecosystem::Crates | Ecosystem::Npm => self.name.clone(),
+            Ecosystem::Crates | Ecosystem::Npm | Ecosystem::Rust => self.name.clone(),
         };
         let version = match self.ecosystem {
             Ecosystem::Go => super::locate::go::escape_module_path(&self.version),
-            Ecosystem::Crates | Ecosystem::Npm => self.version.clone(),
+            Ecosystem::Crates | Ecosystem::Npm | Ecosystem::Rust => self.version.clone(),
         };
         sanitize_segment(&format!("{name}-{version}"))
     }

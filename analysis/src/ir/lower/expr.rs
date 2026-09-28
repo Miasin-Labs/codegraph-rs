@@ -43,8 +43,30 @@ impl Lowerer<'_, '_> {
         if rules.interpolating_strings.contains(&kind) {
             return self.interpolation(node);
         }
+        if let Some(scope) = self.inline_scope(kind) {
+            return self.inline_value(node, scope);
+        }
         if rules.ignored.contains(&kind) || self.cfg.is_nested_scope(kind) {
             return Value::constant(format!("<{kind}>"));
+        }
+        if let Some(expression) = rules.expression {
+            if let Some(shape) = expression.macro_call(kind) {
+                return self.macro_call(node, *shape);
+            }
+            if let Some(shape) = expression.binding(kind) {
+                // `if let p = v`: binds, and tests whether it matched.
+                self.binding(node, *shape);
+                return Value::constant("<let>");
+            }
+            if kind == expression.try_kind {
+                return self.try_value(node);
+            }
+            if kind == expression.structs.kind {
+                return self.struct_value(node, expression.structs);
+            }
+            if kind == expression.tuples.0 {
+                return self.tuple_value(node);
+            }
         }
         if rules.call(kind).is_some() {
             return self.call(node);
@@ -125,6 +147,9 @@ impl Lowerer<'_, '_> {
             return self.synthetic("<collection>", args);
         }
         if self.is_statement_like(node) {
+            if rules.expression.is_some() {
+                return self.construct_value(node);
+            }
             self.stmt(node);
             return Value::constant("");
         }
@@ -141,7 +166,7 @@ impl Lowerer<'_, '_> {
     }
 
     /// `dst = <name>(args…)`: a value built from `args`.
-    fn synthetic(&mut self, name: &str, args: Vec<Operand>) -> Value {
+    pub(super) fn synthetic(&mut self, name: &str, args: Vec<Operand>) -> Value {
         let dst = self.fresh_temp();
         let places = vec![None; args.len()];
         self.func.push(IrOp::Call {
@@ -352,6 +377,21 @@ impl Lowerer<'_, '_> {
         let Some(shape) = self.rules.call(node.kind()).copied() else {
             return Value::constant("");
         };
+        // `Ok(x)` / `Err(x)`: the variant's field holds `x`.
+        if let Some(expression) = self.rules.expression {
+            let function = shape.function.and_then(|f| node.child_by_field_name(f));
+            let arguments = shape.arguments.and_then(|f| node.child_by_field_name(f));
+            if let (Some(function), Some(arguments)) = (function, arguments) {
+                let name = self.text(function);
+                let args = self.named_children(arguments);
+                if let (Some(variant), [arg]) = (
+                    expression.variant_fields.iter().find(|v| **v == name),
+                    args.as_slice(),
+                ) {
+                    return self.variant_value(variant, *arg);
+                }
+            }
+        }
         let arguments = shape
             .arguments
             .and_then(|field| node.child_by_field_name(field))
@@ -363,7 +403,21 @@ impl Lowerer<'_, '_> {
         let callee_end = arguments.map_or(node.end_byte(), |a| a.start_byte());
         let mut receiver: Option<Value> = None;
         let callee = if let Some(field) = shape.function {
-            let function = node.child_by_field_name(field);
+            let mut function = node.child_by_field_name(field);
+            // `x.parse::<T>()` calls `x.parse`.
+            if let Some(expression) = self.rules.expression {
+                for _ in 0..4 {
+                    let inner = function.and_then(|f| {
+                        expression
+                            .callee_wrapper(f.kind())
+                            .and_then(|field| f.child_by_field_name(field))
+                    });
+                    match inner {
+                        Some(inner) => function = Some(inner),
+                        None => break,
+                    }
+                }
+            }
             if let Some(member) = function.and_then(|f| self.rules.member(f.kind()).copied()) {
                 let function = function.expect("member access");
                 receiver = self.slot(function, member.object).map(|n| self.expr(n));
@@ -390,6 +444,9 @@ impl Lowerer<'_, '_> {
 
         let mut args = Vec::new();
         let mut places = Vec::new();
+        // A closure argument's parameters take the receiver's data.
+        self.call_receivers
+            .push(receiver.as_ref().map(|r| r.operand.clone()));
         match arguments {
             Some(list) => {
                 // Every argument keeps its position (a lambda is a constant).
@@ -414,6 +471,7 @@ impl Lowerer<'_, '_> {
             }
             None => {}
         }
+        self.call_receivers.pop();
         let dst = self.fresh_temp();
         let receiver_place = receiver.as_ref().and_then(|r| r.place.clone());
         self.func.push(IrOp::Call {

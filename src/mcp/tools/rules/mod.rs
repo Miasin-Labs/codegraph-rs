@@ -201,6 +201,9 @@ impl ToolHandler {
             // A request must answer: the taint pass stops here and says so.
             taint_budget: Some(RUN_TAINT_BUDGET),
             compiler_wait: None,
+            // Summaries only ever read here: building one is the CLI's.
+            dependency_summaries: crate::deps::summaries::summaries_enabled()
+                .then_some(crate::deps::summaries::compose::Access::ReadOnly),
         };
         let report = rules_report(&cg, &root, &rules, &options)
             .map_err(crate::error::CodeGraphError::other)?;

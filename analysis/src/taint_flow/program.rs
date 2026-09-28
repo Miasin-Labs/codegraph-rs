@@ -33,6 +33,10 @@ pub struct CallTargets {
     /// The targets are a guess (no call edge in the index): findings
     /// through them are less certain.
     pub guessed: bool,
+    /// What the call does when it runs code outside the program whose
+    /// summary is known (a dependency's function): applied like a
+    /// target's, in place of the library models.
+    pub external: Option<Arc<Summary>>,
 }
 
 /// A function of the program.
@@ -96,6 +100,33 @@ impl<'p> Solver<'p> {
     /// Run one rule, whose marks in each function are `specs` (functions
     /// absent mark nothing).
     pub fn run(&mut self, specs: &HashMap<FuncId, TaintSpec>, budget: &mut Budget) -> Solution {
+        self.solve(specs, budget).0
+    }
+
+    /// [`Self::run`], and every function's summary under the rule: the
+    /// rule's where it touches the function, the pure one elsewhere
+    /// (`None`: not analyzed — too large, or the budget ran out).
+    pub fn run_with_summaries(
+        &mut self,
+        specs: &HashMap<FuncId, TaintSpec>,
+        budget: &mut Budget,
+    ) -> (Solution, Vec<Option<Arc<Summary>>>) {
+        let (solution, mut summaries, touched) = self.solve(specs, budget);
+        for id in 0..self.functions.len() {
+            if !touched[id] && !budget.is_exhausted() {
+                summaries[id] = self.pure(id as FuncId, budget);
+            }
+        }
+        (solution, summaries)
+    }
+
+    /// Solve one rule: its flows, the summaries of the functions it
+    /// touches, and which those are.
+    fn solve(
+        &mut self,
+        specs: &HashMap<FuncId, TaintSpec>,
+        budget: &mut Budget,
+    ) -> (Solution, Vec<Option<Arc<Summary>>>, Vec<bool>) {
         let mut solution = Solution::default();
         // Touched: marked, or calling a touched function.
         let mut touched = vec![false; self.functions.len()];
@@ -157,7 +188,7 @@ impl<'p> Solver<'p> {
         }
         self.entry_flows(&summaries, &mut solution);
         solution.partial |= budget.is_exhausted();
-        solution
+        (solution, summaries, touched)
     }
 
     /// Shared storage one function writes a source into reaches the sinks
@@ -234,6 +265,14 @@ impl<'p> Solver<'p> {
                 in_project: call.in_project || !call.targets.is_empty(),
                 summary: None,
             };
+            if call.targets.is_empty() {
+                if let Some(external) = &call.external {
+                    resolution.in_project = true;
+                    resolution.summary = Some(Arc::clone(external));
+                    resolved.insert(op, resolution);
+                    continue;
+                }
+            }
             let mut parts: Vec<Arc<Summary>> = Vec::new();
             let mut complete = !call.targets.is_empty();
             for &target in &call.targets {

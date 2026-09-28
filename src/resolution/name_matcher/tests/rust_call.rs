@@ -346,6 +346,37 @@ fn caller() -> Anchor {
 }
 
 #[test]
+fn a_name_imported_from_another_crate_is_not_a_project_fn() {
+    // `use axum::routing::get; get(handler)` is axum's `get`, not the
+    // project's handler fn named `get` in some other module.
+    let source = "\
+fn router() {
+    get(handler); // axum
+    probe(); // project
+}
+";
+    let imported = use_decl(FILE, "use axum::routing::{get, post};", 1);
+    let project_get = rust_node(NodeKind::Function, "get", "src/passcode.rs", 3);
+    let fixture = project_with(source, vec![imported, project_get]);
+    assert_eq!(
+        target(&fixture, &call(&fixture, source, "// axum", "get")),
+        None
+    );
+    assert_eq!(
+        target(&fixture, &call(&fixture, source, "// project", "probe")),
+        Some(id(NodeKind::Function, "probe", "src/probe.rs"))
+    );
+    // A `use` of the project's own item still resolves to it.
+    let own = use_decl(FILE, "use crate::passcode::get;", 1);
+    let project_get = rust_node(NodeKind::Function, "get", "src/passcode.rs", 3);
+    let fixture = project_with(source, vec![own, project_get]);
+    assert_eq!(
+        target(&fixture, &call(&fixture, source, "// axum", "get")),
+        Some(id(NodeKind::Function, "get", "src/passcode.rs"))
+    );
+}
+
+#[test]
 fn tuple_variants_need_a_use() {
     let without = "fn caller() {\n    Leaf(1);\n}\n";
     let fixture_without = project_with(without, Vec::new());

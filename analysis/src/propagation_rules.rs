@@ -30,6 +30,14 @@ pub struct PropagationRules {
     /// Calls whose result carries none of their inputs' data: lengths,
     /// comparisons, predicates.
     pub clean_results: &'static [&'static str],
+    /// Calls whose result is their receiver (or first argument) itself,
+    /// wrapped, borrowed or copied (`Arc::new(s)`, `x.clone()`,
+    /// `m.lock()`): a field read of the result reads that field of it.
+    pub projections: &'static [&'static str],
+    /// Methods whose result carries their receiver's data alone: an error
+    /// mapper's argument builds the error, never the value
+    /// (`x.ok_or_else(|| NotFound(id))?` is `x`'s data).
+    pub receiver_results: &'static [&'static str],
     /// Position-aware lists: a local list built by `new <type>()` and only
     /// appended to, removed from and read at constant positions in one
     /// straight run of code keeps its elements apart (`add(a); add(b);
@@ -85,6 +93,7 @@ impl PropagationRules {
             "python" => &PYTHON,
             "javascript" | "typescript" | "tsx" | "jsx" => &JS,
             "php" => &PHP,
+            "rust" => &RUST,
             _ => &NONE,
         }
     }
@@ -117,6 +126,14 @@ impl PropagationRules {
     pub fn is_clean_result(&self, name: &str) -> bool {
         self.clean_results.contains(&name)
     }
+
+    pub fn is_projection(&self, name: &str) -> bool {
+        self.projections.contains(&name)
+    }
+
+    pub fn is_receiver_result(&self, name: &str) -> bool {
+        self.receiver_results.contains(&name)
+    }
 }
 
 static NONE: PropagationRules = PropagationRules {
@@ -125,6 +142,8 @@ static NONE: PropagationRules = PropagationRules {
     keyed_reads: &[],
     argument_writes: &[],
     clean_results: &[],
+    projections: &[],
+    receiver_results: &[],
     lists: &NO_LISTS,
 };
 
@@ -176,6 +195,8 @@ static JAVA: PropagationRules = PropagationRules {
         "getClass",
         "countTokens",
     ],
+    projections: &[],
+    receiver_results: &[],
     lists: &JAVA_LISTS,
 };
 
@@ -225,6 +246,8 @@ static C: PropagationRules = PropagationRules {
         "length",
         "empty",
     ],
+    projections: &[],
+    receiver_results: &[],
     lists: &NO_LISTS,
 };
 
@@ -246,6 +269,8 @@ static PYTHON: PropagationRules = PropagationRules {
         "isfile",
         "isdir",
     ],
+    projections: &[],
+    receiver_results: &[],
     lists: &NO_LISTS,
 };
 
@@ -266,6 +291,8 @@ static JS: PropagationRules = PropagationRules {
         "isNaN",
         "existsSync",
     ],
+    projections: &[],
+    receiver_results: &[],
     lists: &NO_LISTS,
 };
 
@@ -290,6 +317,88 @@ static PHP: PropagationRules = PropagationRules {
         "is_file",
         "strcmp",
         "preg_match",
+    ],
+    projections: &[],
+    receiver_results: &[],
+    lists: &NO_LISTS,
+};
+
+/// Rust: `String`/`Vec` building, map and header lookups, predicates.
+/// Methods by last name (macros too: `matches!` is `matches`).
+static RUST: PropagationRules = PropagationRules {
+    receiver_from_args: &[
+        "push_str",
+        "push",
+        "extend",
+        "extend_from_slice",
+        "append",
+        "insert_str",
+        "write_all",
+        "write_str",
+        "push_back",
+        "push_front",
+    ],
+    keyed_writes: &[("insert", 0, 1), ("append_pair", 0, 1)],
+    keyed_reads: &[("get", 0), ("get_mut", 0), ("get_all", 0), ("remove", 0)],
+    argument_writes: &[],
+    clean_results: &[
+        "len",
+        "is_empty",
+        "contains",
+        "contains_key",
+        "starts_with",
+        "ends_with",
+        "eq",
+        "ne",
+        "cmp",
+        "partial_cmp",
+        "is_some",
+        "is_none",
+        "is_ok",
+        "is_err",
+        "exists",
+        "try_exists",
+        "is_file",
+        "is_dir",
+        "is_absolute",
+        "is_relative",
+        "is_match",
+        "matches",
+        "any",
+        "all",
+        "count",
+        "capacity",
+        "is_ascii",
+    ],
+    projections: &[
+        "new",
+        "clone",
+        "to_owned",
+        "as_ref",
+        "as_mut",
+        "borrow",
+        "borrow_mut",
+        "deref",
+        "lock",
+        "unwrap",
+        "expect",
+        "unwrap_or_default",
+        "into_inner",
+        "get_ref",
+        "Some",
+        "Ok",
+    ],
+    receiver_results: &[
+        "ok_or",
+        "ok_or_else",
+        "map_err",
+        "context",
+        "with_context",
+        "wrap_err",
+        "wrap_err_with",
+        "inspect_err",
+        "expect",
+        "expect_err",
     ],
     lists: &NO_LISTS,
 };

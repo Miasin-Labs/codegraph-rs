@@ -143,6 +143,128 @@ pub struct IrRules {
     /// body is a single name or literal is lowered as what it stands for
     /// (`#define ARG data` makes `ARG` read `data`).
     pub macro_definitions: &'static [&'static str],
+    /// An expression-oriented language (Rust): blocks, `if` and `match`
+    /// have values, patterns bind names, macros take token trees.
+    pub expression: Option<&'static ExpressionRules>,
+}
+
+/// A binding of a pattern to a value: `let p = v;`, `if let p = v`.
+#[derive(Debug, Clone, Copy)]
+pub struct BindingShape {
+    pub kind: &'static str,
+    pub pattern: &'static str,
+    pub value: &'static str,
+    /// Field of the block run when the pattern does not match
+    /// (`let … else { … }`).
+    pub otherwise: Option<&'static str>,
+}
+
+/// A match arm: its pattern (binding names from the scrutinee), the guard
+/// inside the pattern node, and the arm's value.
+#[derive(Debug, Clone, Copy)]
+pub struct ArmShape {
+    pub kind: &'static str,
+    pub pattern: &'static str,
+    /// Field of the pattern node holding the guard (`p if cond`).
+    pub guard: &'static str,
+    pub value: &'static str,
+}
+
+/// A macro call written with a token tree (`format!("{}", x)`): the
+/// callee is the macro's name plus `!`; the arguments are the tree's
+/// comma-separated groups.
+#[derive(Debug, Clone, Copy)]
+pub struct MacroShape {
+    pub kind: &'static str,
+    /// Field holding the macro's name.
+    pub name: &'static str,
+    /// Kind of the token tree child.
+    pub tokens: &'static str,
+    /// Kinds of string literals whose `{name}` placeholders read variables.
+    pub format_strings: &'static [&'static str],
+}
+
+/// What an expression-oriented language adds to [`IrRules`].
+#[derive(Debug)]
+pub struct ExpressionRules {
+    pub bindings: &'static [BindingShape],
+    pub arm: ArmShape,
+    pub macros: &'static [MacroShape],
+    /// Callee wrappers and the field holding the callee they wrap
+    /// (`x.parse::<T>` is `x.parse`).
+    pub callee_wrappers: &'static [(&'static str, &'static str)],
+    /// The receiver parameter's variable (`self`).
+    pub receiver_var: &'static str,
+    /// Fields of a pattern that bind nothing (a variant's path, a guard).
+    pub pattern_skip_fields: &'static [&'static str],
+    /// Statement kinds that are never a block's value (`let`, `x;`).
+    pub statements: &'static [&'static str],
+    /// `e?`: `e`'s value, or an early return when it is an error — a
+    /// branch on `e` itself, so a validator whose result is `?`-checked
+    /// guards what follows.
+    pub try_kind: &'static str,
+    /// Struct literals, built field by field.
+    pub structs: StructShape,
+    /// Variant constructors that wrap their one argument in a field of
+    /// that name (`Ok(x)` is a value whose `Ok` holds `x`), so `e?` —
+    /// which reads [`Self::try_field`] — never takes an `Err`'s payload.
+    pub variant_fields: &'static [&'static str],
+    /// The field `e?` yields.
+    pub try_field: &'static str,
+    /// Tuples, element by element: an expression kind whose `i`-th element
+    /// is field `i`, and a pattern kind whose `i`-th name binds field `i`.
+    pub tuples: (&'static str, &'static str),
+    /// Nested scopes lowered in place, as the enclosing function's code
+    /// (closures, `async` blocks): their captures are the function's
+    /// variables and a sink inside is the function's. A closure's
+    /// parameters take the receiver of the method call it is passed to
+    /// (`items.map(|x| …)`: `x` is an element of `items`); a `return`
+    /// inside ends only the inlined body.
+    pub inline_scopes: &'static [InlineScope],
+}
+
+/// A nested scope lowered in place.
+#[derive(Debug, Clone, Copy)]
+pub struct InlineScope {
+    pub kind: &'static str,
+    /// Field holding its parameters (a closure's), if any.
+    pub parameters: Option<&'static str>,
+    /// Field holding its body (else its last named child).
+    pub body: Option<&'static str>,
+}
+
+/// `S { a: x, b, ..base }`: a value whose field `a` holds `x`, `b` holds
+/// `b`, and whose other fields come from `base`.
+#[derive(Debug, Clone, Copy)]
+pub struct StructShape {
+    pub kind: &'static str,
+    /// Field of the literal holding its initializer list.
+    pub body: &'static str,
+    /// `a: x`: the initializer kind, its name and value fields.
+    pub initializer: &'static str,
+    pub name: &'static str,
+    pub value: &'static str,
+    /// `b` (a name standing for `b: b`).
+    pub shorthand: &'static str,
+    /// `..base`.
+    pub base: &'static str,
+}
+
+impl ExpressionRules {
+    pub fn binding(&self, kind: &str) -> Option<&BindingShape> {
+        self.bindings.iter().find(|shape| shape.kind == kind)
+    }
+
+    pub fn macro_call(&self, kind: &str) -> Option<&MacroShape> {
+        self.macros.iter().find(|shape| shape.kind == kind)
+    }
+
+    pub fn callee_wrapper(&self, kind: &str) -> Option<&'static str> {
+        self.callee_wrappers
+            .iter()
+            .find(|(wrapper, _)| *wrapper == kind)
+            .map(|(_, field)| *field)
+    }
 }
 
 impl IrRules {
@@ -155,6 +277,7 @@ impl IrRules {
             "php" => Some(&PHP),
             "python" => Some(&PYTHON),
             "javascript" | "typescript" | "tsx" | "jsx" => Some(&JS),
+            "rust" => Some(&RUST),
             _ => None,
         }
     }
@@ -290,6 +413,7 @@ static JAVA: IrRules = IrRules {
         "assert_statement",
     ],
     macro_definitions: &[],
+    expression: None,
 };
 
 // ─── C / C++ ─────────────────────────────────────────────────────────────────
@@ -383,6 +507,7 @@ static C: IrRules = IrRules {
         "gnu_asm_expression",
     ],
     macro_definitions: &["preproc_def"],
+    expression: None,
 };
 
 static CPP: IrRules = IrRules {
@@ -451,6 +576,7 @@ static CPP: IrRules = IrRules {
         "alias_declaration",
     ],
     macro_definitions: &["preproc_def"],
+    expression: None,
 };
 
 // ─── PHP ─────────────────────────────────────────────────────────────────────
@@ -615,6 +741,7 @@ static PHP: IrRules = IrRules {
         "global_declaration",
     ],
     macro_definitions: &[],
+    expression: None,
 };
 
 // ─── Python ──────────────────────────────────────────────────────────────────
@@ -701,6 +828,7 @@ static PYTHON: IrRules = IrRules {
         "nonlocal_statement",
     ],
     macro_definitions: &[],
+    expression: None,
 };
 
 // ─── JavaScript / TypeScript ─────────────────────────────────────────────────
@@ -812,6 +940,156 @@ static JS: IrRules = IrRules {
         "interface_declaration",
     ],
     macro_definitions: &[],
+    expression: None,
+};
+
+// ─── Rust ────────────────────────────────────────────────────────────────────
+
+static RUST_EXPRESSIONS: ExpressionRules = ExpressionRules {
+    bindings: &[
+        BindingShape {
+            kind: "let_declaration",
+            pattern: "pattern",
+            value: "value",
+            otherwise: Some("alternative"),
+        },
+        BindingShape {
+            kind: "let_condition",
+            pattern: "pattern",
+            value: "value",
+            otherwise: None,
+        },
+    ],
+    arm: ArmShape {
+        kind: "match_arm",
+        pattern: "pattern",
+        guard: "condition",
+        value: "value",
+    },
+    macros: &[MacroShape {
+        kind: "macro_invocation",
+        name: "macro",
+        tokens: "token_tree",
+        format_strings: &["string_literal", "raw_string_literal"],
+    }],
+    callee_wrappers: &[("generic_function", "function")],
+    receiver_var: "self",
+    pattern_skip_fields: &["type", "condition"],
+    statements: &["expression_statement", "let_declaration", "empty_statement"],
+    try_kind: "try_expression",
+    variant_fields: &["Ok", "Err"],
+    try_field: "Ok",
+    tuples: ("tuple_expression", "tuple_pattern"),
+    inline_scopes: &[
+        InlineScope {
+            kind: "closure_expression",
+            parameters: Some("parameters"),
+            body: Some("body"),
+        },
+        InlineScope {
+            kind: "async_block",
+            parameters: None,
+            body: None,
+        },
+    ],
+    structs: StructShape {
+        kind: "struct_expression",
+        body: "body",
+        initializer: "field_initializer",
+        name: "field",
+        value: "value",
+        shorthand: "shorthand_field_initializer",
+        base: "base_field_initializer",
+    },
+};
+
+static RUST: IrRules = IrRules {
+    parameter_lists: &["parameters"],
+    parameter_name: &["pattern"],
+    receiver_parameters: &["self_parameter"],
+    identifiers: &["identifier", "self", "shorthand_field_identifier"],
+    literals: &[
+        "string_literal",
+        "raw_string_literal",
+        "char_literal",
+        "integer_literal",
+        "float_literal",
+        "boolean_literal",
+        "unit_expression",
+        "scoped_identifier",
+        "negative_literal",
+    ],
+    interpolating_strings: &[],
+    string_fragments: &[],
+    declarations: &[],
+    assignments: &["assignment_expression", "compound_assignment_expr"],
+    updates: &[],
+    binaries: &["binary_expression"],
+    unaries: &["unary_expression"],
+    address_ops: &[],
+    calls: &[CallShape {
+        kind: "call_expression",
+        function: Some("function"),
+        object: None,
+        name: None,
+        arguments: Some("arguments"),
+        constructor: false,
+    }],
+    argument_lists: &["arguments"],
+    argument_wrappers: &[],
+    members: &[MemberShape {
+        kind: "field_expression",
+        object: Slot::Field("value"),
+        property: Slot::Field("field"),
+    }],
+    subscripts: &[SubscriptShape {
+        kind: "index_expression",
+        object: Slot::Child(0),
+        index: Slot::Child(1),
+    }],
+    ternaries: &[],
+    passthrough: &[
+        "parenthesized_expression",
+        "await_expression",
+        "reference_expression",
+        "type_cast_expression",
+    ],
+    collections: &["array_expression"],
+    foreach: &[ForEachShape {
+        kind: "for_expression",
+        binding: Slot::Field("pattern"),
+        iterable: Slot::Field("value"),
+    }],
+    do_loops: &[],
+    case_labels: &[],
+    ignored: &[
+        "line_comment",
+        "block_comment",
+        "attribute_item",
+        "inner_attribute_item",
+        "use_declaration",
+        "function_item",
+        "function_signature_item",
+        "struct_item",
+        "enum_item",
+        "union_item",
+        "impl_item",
+        "trait_item",
+        "mod_item",
+        "const_item",
+        "static_item",
+        "type_item",
+        "macro_definition",
+        "extern_crate_declaration",
+        "foreign_mod_item",
+        "empty_statement",
+        "label",
+        "lifetime",
+        "type_arguments",
+        "mutable_specifier",
+    ],
+    macro_definitions: &[],
+    expression: Some(&RUST_EXPRESSIONS),
 };
 
 #[cfg(test)]
@@ -830,6 +1108,7 @@ mod tests {
             "python",
             "javascript",
             "typescript",
+            "rust",
         ] {
             assert!(IrRules::for_language(lang).is_some(), "{lang}");
             assert!(
@@ -841,7 +1120,7 @@ mod tests {
 
     #[test]
     fn comments_are_ignored_everywhere() {
-        for lang in ["java", "c", "cpp", "php", "python", "javascript"] {
+        for lang in ["java", "c", "cpp", "php", "python", "javascript", "rust"] {
             let rules = IrRules::for_language(lang).unwrap();
             assert!(
                 COMMENTS.iter().any(|c| rules.ignored.contains(c)),

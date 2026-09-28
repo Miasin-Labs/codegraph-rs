@@ -63,7 +63,7 @@ fn rules_builtin_examples_pass() {
             rule.id
         );
     }
-    assert_eq!(BUILTIN_RULES.len(), 15);
+    assert_eq!(BUILTIN_RULES.len(), 16);
 }
 
 #[test]
@@ -743,7 +743,7 @@ fn taint_rule_errors_are_located() {
     assert_eq!(e.line, Some(9));
     // A language the IR does not lower.
     let e = error(
-        "id: a\nlanguage: rust\ntaint:\n  sources:\n    - query: \"(identifier) @v\"\n      value: v\n  sinks:\n    - query: \"(identifier) @v\"\n      argument: v\nexamples:\n  bad: [\"fn f() {}\"]\n",
+        "id: a\nlanguage: go\ntaint:\n  sources:\n    - query: \"(identifier) @v\"\n      value: v\n  sinks:\n    - query: \"(identifier) @v\"\n      argument: v\nexamples:\n  bad: [\"func f() {}\"]\n",
     );
     assert!(
         e.message

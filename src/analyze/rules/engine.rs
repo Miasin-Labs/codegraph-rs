@@ -20,6 +20,11 @@ use super::lang::{self, LangRules};
 use super::semantics::{FunctionFacts, Semantics};
 use crate::types::Language;
 
+/// What `resolves-to` sees for a call no graph resolves (and, in `--check`
+/// examples, one the `resolves` map does not name): `^(<unresolved>|std::…)$`
+/// means the library function, never a project function of that name.
+pub(super) const UNRESOLVED: &str = "<unresolved>";
+
 /// A file as the engine reads it.
 pub(super) struct FileInput<'a> {
     pub path: &'a str,
@@ -472,9 +477,15 @@ fn check_predicates(
                     .capture(capture)
                     .and_then(|range| node_at(root, range))
                     .and_then(|node| lang::enclosing_call(rules, node));
-                let targets = call
+                let mut targets = call
                     .map(|call| semantics.call_targets(file, rules, call))
                     .unwrap_or_default();
+                // A call no graph resolves is `<unresolved>`: a library
+                // call written the library's way still means that library
+                // when nothing in the project answers it.
+                if call.is_some_and(|call| !semantics.is_resolved(file, rules, call)) {
+                    targets.push(UNRESOLVED.to_string());
+                }
                 let matched = targets.iter().find(|target| regex.is_match(target));
                 match (matched, negative) {
                     (Some(target), false) => {
