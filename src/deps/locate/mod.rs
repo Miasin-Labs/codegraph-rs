@@ -24,6 +24,9 @@ pub struct SourceRoots {
     pub go_mod_cache: Option<PathBuf>,
     /// `$CARGO_HOME/registry/src/*`, listed once.
     cargo_registry_dirs: Vec<PathBuf>,
+    /// Where the Rust toolchain's library comes from (recorded for a
+    /// project with a `Cargo.lock`).
+    pub toolchain: super::toolchain::ToolchainSource,
 }
 
 impl SourceRoots {
@@ -37,6 +40,7 @@ impl SourceRoots {
             cargo_home,
             go_mod_cache,
             cargo_registry_dirs,
+            toolchain: super::toolchain::ToolchainSource::None,
         }
     }
 
@@ -56,7 +60,9 @@ impl SourceRoots {
                 .or_else(|| home.as_ref().map(|h| h.join("go")))?;
             Some(gopath.join("pkg").join("mod"))
         });
-        Self::new(cargo_home, go_mod_cache)
+        let mut roots = Self::new(cargo_home, go_mod_cache);
+        roots.toolchain = super::toolchain::ToolchainSource::Detect;
+        roots
     }
 
     /// Where `dep` (from the project at `project_root`) has its source here.
@@ -73,6 +79,12 @@ impl SourceRoots {
             ),
             Ecosystem::Npm => npm::locate(dep, project_root),
             Ecosystem::Go => go::locate(dep, project_root, self.go_mod_cache.as_deref()),
+            // Recorded with its library directory ([`Self::toolchain`]).
+            Ecosystem::Rust => self
+                .toolchain
+                .resolve(project_root)
+                .filter(|toolchain| toolchain.key() == dep.key)
+                .map(|toolchain| toolchain.library),
         }?;
         // pnpm links and hoisted symlinks resolve to the real directory, so
         // every project sharing the store names the same source.

@@ -168,7 +168,15 @@ fn dependency_shards(
     };
     let mut by_name: BTreeMap<String, Vec<Candidate>> = BTreeMap::new();
     let mut seen = std::collections::HashSet::new();
+    let mut toolchain: Vec<ReachableGraph> = Vec::new();
     for dependency in dependencies {
+        if dependency.key.ecosystem == Ecosystem::Rust {
+            // The toolchain's library: one shard, a graph per crate in it.
+            if toolchain.is_empty() {
+                toolchain = toolchain_graphs(home, &dependency.key, skipped);
+            }
+            continue;
+        }
         // Rust first; npm and Go shards join here with their resolvers.
         if dependency.key.ecosystem != Ecosystem::Crates
             || matches!(dependency.source, DepSource::Path { .. })
@@ -218,7 +226,48 @@ fn dependency_shards(
             _ => skipped.ambiguous += 1,
         }
     }
+    // A crate named like a std crate is the crate; std stays std.
+    for std in toolchain {
+        if !graphs.iter().any(|graph| graph.krate == std.krate) {
+            graphs.push(std);
+        }
+    }
     graphs
+}
+
+/// The toolchain shard `key` as the graphs of `std`, `core` and `alloc`
+/// (one database, each crate from its own library root).
+fn toolchain_graphs(
+    home: &FederationHome,
+    key: &crate::deps::DepKey,
+    skipped: &mut Skipped,
+) -> Vec<ReachableGraph> {
+    let dir = home.deps.shard_dir(key);
+    let meta = ShardMeta::read(&dir)
+        .filter(|meta| meta.is_readable() && meta.state.has_shard())
+        .filter(|meta| meta.key() == *key);
+    let Some(meta) = meta else {
+        skipped.no_shard += 1;
+        return Vec::new();
+    };
+    let source_dir = PathBuf::from(&meta.source_dir);
+    crate::deps::toolchain::STD_CRATES
+        .iter()
+        .map(|krate| ReachableGraph {
+            kind: ExternalGraphKind::Dependency,
+            key: format!("{}/{}", key.ecosystem.as_str(), key.dir_name()),
+            krate: (*krate).to_string(),
+            lib_root: format!("{krate}/src/lib.rs"),
+            fingerprint: format!(
+                "{}:{}:{}",
+                meta.built_at_ms, meta.extractor_version, meta.source_fingerprint
+            ),
+            location: GraphLocation::Shard {
+                dir: dir.clone(),
+                source_dir: source_dir.clone(),
+            },
+        })
+        .collect()
 }
 
 /// Crates of other registered projects this project depends on by path.

@@ -436,21 +436,21 @@ fn load_external_calls(cg: &CodeGraph) -> Result<Vec<ExternalCall>, String> {
     rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
 }
 
-/// `crates/reqwest-0.12.4` → `reqwest`; a linked project's root → its
-/// directory name.
+/// `crates/reqwest-0.12.4` → `reqwest`, `rust/std-1.9.0-nightly+ab` →
+/// `std`; a linked project's root → its directory name. The version is
+/// what follows the first `-` that starts `<digits>.` (a name may hold
+/// digits, `x509-parser`; a version may hold `-`, `1.0.0-alpha`).
 fn package_of(graph_key: &str) -> Option<String> {
     let last = graph_key.trim_end_matches('/').rsplit('/').next()?;
-    let name = match last.rfind('-') {
-        Some(dash)
-            if last[dash + 1..]
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_digit()) =>
-        {
-            &last[..dash]
-        }
-        _ => last,
+    let starts_version = |rest: &str| {
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        digits > 0 && rest.as_bytes().get(digits) == Some(&b'.')
     };
+    let name = last
+        .match_indices('-')
+        .map(|(dash, _)| dash)
+        .find(|&dash| starts_version(&last[dash + 1..]))
+        .map_or(last, |dash| &last[..dash]);
     (!name.is_empty()).then(|| name.replace('-', "_"))
 }
 
@@ -473,5 +473,14 @@ mod tests {
             Some("tokio_util")
         );
         assert_eq!(package_of("/home/u/linked").as_deref(), Some("linked"));
+        assert_eq!(
+            package_of("rust/std-1.101.0-nightly+d080e7dff1b0").as_deref(),
+            Some("std")
+        );
+        assert_eq!(
+            package_of("crates/x509-parser-0.16.0-alpha.1").as_deref(),
+            Some("x509_parser")
+        );
+        assert_eq!(package_of("crates/foo-2d-0.1.0").as_deref(), Some("foo_2d"));
     }
 }

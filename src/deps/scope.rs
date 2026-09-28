@@ -192,6 +192,8 @@ fn note(reasons: &mut Vec<PartialReason>, reason: PartialReason) {
 /// Per-ecosystem pruning and file rules.
 enum Rules {
     Crates,
+    /// The toolchain's `library`: `std`, `core` and `alloc` sources only.
+    Toolchain,
     Npm {
         entry_dir: Option<String>,
     },
@@ -234,6 +236,7 @@ impl Rules {
     fn for_package(ecosystem: Ecosystem, root: &Path) -> Self {
         match ecosystem {
             Ecosystem::Crates => Self::Crates,
+            Ecosystem::Rust => Self::Toolchain,
             Ecosystem::Npm => Self::Npm {
                 entry_dir: npm_entry_dir(root),
             },
@@ -254,6 +257,11 @@ impl Rules {
                 !(name == "target"
                     || (entry.depth() == 1 && CRATE_NON_LIBRARY_DIRS.contains(&name.as_ref())))
             }
+            Self::Toolchain => match entry.depth() {
+                1 => super::toolchain::STD_CRATES.contains(&name.as_ref()),
+                2 => name == "src",
+                _ => !matches!(name.as_ref(), "tests" | "benches"),
+            },
             Self::Npm { .. } => !NPM_NON_LIBRARY_DIRS.contains(&name.as_ref()),
             Self::Go { .. } => {
                 !(name.starts_with('_')
@@ -268,6 +276,7 @@ impl Rules {
         let file = rel.rsplit('/').next().unwrap_or(rel);
         match self {
             Self::Crates => file.ends_with(".rs") && !(depth == 1 && file == "build.rs"),
+            Self::Toolchain => depth > 2 && file.ends_with(".rs") && file != "tests.rs",
             Self::Npm { .. } => {
                 let js_or_ts = [".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"]
                     .iter()
