@@ -423,7 +423,8 @@ cargo test --workspace
   windows, `from_utf8_unchecked` on caller bytes, bytes of a generic `T`),
   and Rust network-server hardening (`rust-server.yaml`: timing-unsafe
   secret compares, redirect-following reqwest clients, `accept()?` and
-  uncapped accept loops, subprocesses and peer reads with no deadline;
+  uncapped accept loops, subprocesses and peer reads with no deadline, a
+  guarded `dns_resolver` that proxies bypass (no `.no_proxy()`);
   written from rms's audit, each caught its bug before the fix and not
   after). Any detector's finding is dropped by `codegraph: ignore
   <rule-id>[, …]` (and the reason) on its line or the line above

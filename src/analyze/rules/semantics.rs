@@ -266,28 +266,34 @@ fn push_unique(list: &mut Vec<String>, names: &[String]) {
 impl IndexSemantics<'_> {
     /// The targets of the call at `file:line:col` named `name` (the ones
     /// named like it when chained calls share the start).
-    fn chosen(&self, file: &str, line: u32, col: u32, name: &str) -> Vec<&Target> {
+    /// The resolved targets of the call at `file:line:col` whose callee is
+    /// written `callee`. Chained calls (`a.b().c()`) share a start, so the
+    /// target named like the call wins. A plain call named otherwise (`baz()`
+    /// for `use m::bar as baz`) takes what resolved there; a member call never
+    /// does — in `client_builder().no_proxy()` the unresolved library call
+    /// `no_proxy` is not a call to `client_builder`.
+    fn chosen(&self, file: &str, line: u32, col: u32, callee: &str) -> Vec<&Target> {
         let Some(targets) = self.calls_at.get(&(file.to_string(), line, col)) else {
             return Vec::new();
         };
+        let name = lang::last_name(callee);
         let named: Vec<&Target> = targets.iter().filter(|t| t.name == name).collect();
-        if named.is_empty() {
+        let member = callee.contains('.') || callee.contains("->");
+        if named.is_empty() && !member {
             targets.iter().collect()
         } else {
             named
         }
     }
 
-    /// The resolved callees of the call at `file:line:col` named `name`.
-    fn targets_at(&self, file: &str, line: u32, col: u32, name: &str) -> Vec<String> {
-        self.resolve_at(file, line, col, name).names
+    /// The resolved callees of the call at `file:line:col` written `callee`.
+    fn targets_at(&self, file: &str, line: u32, col: u32, callee: &str) -> Vec<String> {
+        self.resolve_at(file, line, col, callee).names
     }
 
     /// [`Self::targets_at`], and whether a target is project code.
-    fn resolve_at(&self, file: &str, line: u32, col: u32, name: &str) -> CallResolution {
-        // Chained calls (`a.b().c()`) share a start; keep the callee named
-        // like this call when one is.
-        let chosen = self.chosen(file, line, col, name);
+    fn resolve_at(&self, file: &str, line: u32, col: u32, callee: &str) -> CallResolution {
+        let chosen = self.chosen(file, line, col, callee);
         let mut names = Vec::new();
         for target in &chosen {
             push_unique(&mut names, &target.names);
@@ -303,12 +309,12 @@ impl IndexSemantics<'_> {
 impl Semantics for IndexSemantics<'_> {
     fn call_targets(&self, file: &FileInput, rules: &LangRules, call: Node) -> Vec<String> {
         let start = call.start_position();
-        let (_, name) = lang::callee(rules, call, file.source);
-        self.targets_at(file.path, start.row as u32 + 1, start.column as u32, &name)
+        let (text, _) = lang::callee(rules, call, file.source);
+        self.targets_at(file.path, start.row as u32 + 1, start.column as u32, &text)
     }
 
     fn call_at(&self, file: &FileInput, line: u32, col: u32, callee: &str) -> CallResolution {
-        self.resolve_at(file.path, line, col, lang::last_name(callee))
+        self.resolve_at(file.path, line, col, callee)
     }
 
     fn callee_functions(
@@ -318,7 +324,7 @@ impl Semantics for IndexSemantics<'_> {
         col: u32,
         callee: &str,
     ) -> Vec<CalleeRef> {
-        self.chosen(file.path, line, col, lang::last_name(callee))
+        self.chosen(file.path, line, col, callee)
             .into_iter()
             .filter_map(|target| target.callee.clone())
             .collect()

@@ -237,3 +237,40 @@ examples:
   good:
     - |
       async fn run(l: TcpListener, sem: Arc<Semaphore>) { loop { if let Ok((s, _)) = l.accept().await { let Ok(p) = sem.clone().try_acquire_owned() else { continue }; tokio::spawn(serve(s, p)); } } }
+---
+id: rust-guarded-resolver-behind-proxy
+description: >-
+  A reqwest client guards where it connects with a custom `dns_resolver`
+  (dropping internal addresses) but still honours the environment's proxies.
+  Through an `HTTP(S)_PROXY`/`ALL_PROXY`, reqwest resolves only the proxy's
+  name: the proxy connects to the target, which the resolver never sees, so
+  the guard is bypassed — and `NO_PROXY` can send a trusted proxy host a
+  direct connection (CWE-918, SSRF). Found by review of a fix this rule set's
+  own `rust-http-client-follows-redirects` had prompted.
+severity: medium
+tags: [CWE-918, ssrf]
+language: rust
+check-patterns:
+  - name: resolver-without-no-proxy
+    query: |
+      ((call_expression function: (field_expression field: (field_identifier) @m)) @call
+       (#eq? @m "dns_resolver"))
+    at: call
+    where:
+      - enclosing-function:
+          calls-not: "^no_proxy$"
+message: "a guarded `dns_resolver` that proxies bypass: add `.no_proxy()`"
+review:
+  - Is the resolver a guard (it filters addresses)? A proxy resolves the target itself.
+  - Does this client ever need a proxy? If so the proxy must enforce the same guard.
+examples:
+  bad:
+    - |
+      fn c(g: Arc<Guard>) -> reqwest::Client { reqwest::Client::builder().dns_resolver(g).build().unwrap() }
+    - |
+      fn c(g: Arc<Guard>) -> reqwest::Client { let mut b = reqwest::Client::builder(); b = b.dns_resolver(g); b.build().unwrap() }
+  good:
+    - |
+      fn c(g: Arc<Guard>) -> reqwest::Client { reqwest::Client::builder().no_proxy().dns_resolver(g).build().unwrap() }
+    - |
+      fn c(g: Arc<Guard>) -> reqwest::Client { let mut b = reqwest::Client::builder().no_proxy(); b = b.dns_resolver(g); b.build().unwrap() }

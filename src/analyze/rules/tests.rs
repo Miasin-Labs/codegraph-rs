@@ -875,3 +875,40 @@ fn a_yaml_syntax_error_is_reported_once() {
         set.errors
     );
 }
+
+/// A chain's calls share a start: an unresolved library method in it
+/// (`.no_proxy()`) keeps its own name, and never takes the resolved head's
+/// (`client_builder()`), or `calls-not` would miss it.
+#[test]
+fn a_chained_library_call_keeps_its_own_name() {
+    let source = "fn guarded(g: G) -> Client {\n    client_builder().no_proxy().dns_resolver(g).build()\n}\n\nfn open(g: G) -> Client {\n    client_builder().dns_resolver(g).build()\n}\n";
+    let guarded = span("f1", "guarded", "src/lib.rs", (1, 3));
+    let open = span("f2", "open", "src/lib.rs", (5, 7));
+    let calls = vec![
+        call(&guarded, 2, 4, "client_builder", "crate::client_builder"),
+        call(&open, 6, 4, "client_builder", "crate::client_builder"),
+    ];
+    let (_dir, project) = project(
+        &[("src/lib.rs", source)],
+        vec![guarded, open.clone()],
+        calls,
+    );
+    let rules = load(
+        r#"
+id: resolver-behind-proxy
+language: rust
+check-patterns:
+  - query: "((call_expression function: (field_expression field: (field_identifier) @m)) @call (#eq? @m \"dns_resolver\"))"
+    where:
+      - enclosing-function:
+          calls-not: "^no_proxy$"
+examples:
+  bad: ["fn f(g: G) { b().dns_resolver(g); }"]
+"#,
+    );
+    assert!(rules.errors.is_empty(), "{:?}", rules.errors);
+    let semantics = IndexSemantics::for_tests(&project);
+    let found = scan(&project, &semantics, &rules, &BugsOptions::default()).findings;
+    let places: Vec<_> = found.iter().map(|f| f.function.as_deref()).collect();
+    assert_eq!(places, [Some(open.qualified_name.as_str())], "{found:#?}");
+}
