@@ -502,3 +502,31 @@ async fn wrappers_tuples_and_dependency_chains_run_no_guessed_project_method() {
         "{edges:#?}"
     );
 }
+
+/// An axum route's namespaced handler (`get(api::list)`) names the fn of
+/// that module, not the first project fn called `list`.
+#[tokio::test(flavor = "current_thread")]
+async fn a_namespaced_route_handler_resolves_in_its_module() {
+    let (_dir, edges) = index_crate(&[
+        (
+            "src/lib.rs",
+            "pub mod api;\npub mod admin;\n\
+             pub fn router() { let _ = axum::Router::new().route(\"/items\", get(api::list)); }\n",
+        ),
+        ("src/admin.rs", "pub async fn list() {}\n"),
+        ("src/api.rs", "pub async fn list() {}\n"),
+    ])
+    .await;
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge.ends_with("-references-> list @src/api.rs")),
+        "{edges:#?}"
+    );
+    assert!(
+        !edges
+            .iter()
+            .any(|edge| edge.ends_with("-references-> list @src/admin.rs")),
+        "{edges:#?}"
+    );
+}
