@@ -62,6 +62,8 @@ pub struct RustUse {
     /// Inline `mod` blocks around the declaration (`mod tests { use … }`).
     pub inline_modules: Vec<String>,
     pub leaf: UseLeaf,
+    /// The 1-based line the declaration starts on (after its attributes).
+    pub line: u32,
 }
 
 /// A use leaf declared inside a fn body, with the line its declaration
@@ -136,9 +138,11 @@ pub fn rust_use_leaves<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Vec<Rus
                 .as_deref()
                 .map(parse_use_leaves)
                 .unwrap_or_default();
+            let line = node.start_line;
             leaves.into_iter().map(move |leaf| RustUse {
                 inline_modules: inline.clone(),
                 leaf,
+                line,
             })
         })
         .collect()

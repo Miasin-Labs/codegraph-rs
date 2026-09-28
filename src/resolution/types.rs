@@ -71,6 +71,11 @@ pub enum ResolvedBy {
     Fuzzy,
     InstanceMethod,
     FilePath,
+    /// A Rust method call on a trait object or a generic bounded by a
+    /// project trait (`r: &dyn Read`, `T: Read`): the trait's declaration,
+    /// the one static target; the implementations are reached through its
+    /// dispatch edges.
+    TraitDispatch,
 }
 
 /// Runtime-iterable list of all resolution methods.
@@ -90,7 +95,7 @@ pub const SCOPE_KINDS: [NodeKind; 11] = [
     NodeKind::Module,
 ];
 
-pub const RESOLVED_BY_METHODS: [ResolvedBy; 7] = [
+pub const RESOLVED_BY_METHODS: [ResolvedBy; 8] = [
     ResolvedBy::ExactMatch,
     ResolvedBy::Import,
     ResolvedBy::QualifiedName,
@@ -98,6 +103,7 @@ pub const RESOLVED_BY_METHODS: [ResolvedBy; 7] = [
     ResolvedBy::Fuzzy,
     ResolvedBy::InstanceMethod,
     ResolvedBy::FilePath,
+    ResolvedBy::TraitDispatch,
 ];
 
 impl ResolvedBy {
@@ -110,6 +116,7 @@ impl ResolvedBy {
             ResolvedBy::Fuzzy => "fuzzy",
             ResolvedBy::InstanceMethod => "instance-method",
             ResolvedBy::FilePath => "file-path",
+            ResolvedBy::TraitDispatch => "trait-dispatch",
         }
     }
 }

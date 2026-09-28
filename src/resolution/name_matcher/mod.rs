@@ -134,7 +134,13 @@ pub fn match_reference_full_hints(
         return Some(result);
     }
 
-    // 1. Qualified name match (highest confidence)
+    // 1. Qualified name match (highest confidence). A Rust `Type::m` whose
+    // `Type` is another crate's never names a same-named project type's.
+    if reference.language == crate::types::Language::Rust {
+        if let Some(decided) = rust_method::match_foreign_type_path(reference, context) {
+            return decided;
+        }
+    }
     if let Some(result) = qualified_name(reference, context) {
         return Some(result);
     }

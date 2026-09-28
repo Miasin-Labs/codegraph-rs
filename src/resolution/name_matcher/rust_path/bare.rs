@@ -18,6 +18,7 @@ use super::module_tree::{
     Resolution,
     is_external_root,
     macro_level_uses,
+    module_file,
     resolve_in_module,
     use_source,
 };
@@ -40,6 +41,10 @@ pub(in crate::resolution::name_matcher) enum BareBinding {
     Ambiguous(Vec<Node>),
     /// The one project item it binds; `imported` when a `use` brought it in.
     Item { node: Box<Node>, imported: bool },
+    /// A `use` binds it to an item of a project module the index has, but
+    /// holds no node for (`pub struct JoinHandle` written inside tokio's
+    /// `cfg_rt! { … }`): a project item, never a namesake elsewhere.
+    Unindexed,
 }
 
 /// What the bare name of `reference` binds where it is written. Only Rust
@@ -163,6 +168,7 @@ fn leaves_binding(
     namespace: Namespace,
 ) -> BareBinding {
     let mut found: Vec<Node> = Vec::new();
+    let mut reached_module = false;
     for leaf in leaves {
         if is_external_root(context, caller, &leaf.path) {
             return BareBinding::External;
@@ -173,6 +179,10 @@ fn leaves_binding(
         let Some(source) = use_source(context, caller, path) else {
             continue;
         };
+        // (Not a one-file crate's: the layout cannot see `#[path]`
+        // modules or `include!`d files of an integration test.)
+        reached_module |=
+            !source.crate_key.ends_with(".rs") && module_file(context, &source).is_some();
         match resolve_in_module(context, &source, original, namespace) {
             Resolution::Found(node) => {
                 let seen = found.iter().any(|known| {
@@ -191,7 +201,10 @@ fn leaves_binding(
         }
     }
     match found.len() {
-        0 => hidden_reexport(leaves, caller, context, namespace),
+        0 => match hidden_reexport(leaves, caller, context, namespace) {
+            BareBinding::Unbound if reached_module => BareBinding::Unindexed,
+            binding => binding,
+        },
         1 => BareBinding::Item {
             node: Box::new(found.remove(0)),
             imported: true,

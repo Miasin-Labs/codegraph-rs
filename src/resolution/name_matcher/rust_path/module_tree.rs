@@ -12,7 +12,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::layout::{ModuleLocation, inline_modules, module_files, module_location};
+use super::cfg::{BuildCfg, keep_built};
+use super::layout::{
+    ModuleLocation,
+    declared_module,
+    inline_modules,
+    item_location,
+    module_files,
+    module_location,
+};
 use super::use_tree::{UseBinding, UseLeaf, UseVisibility};
 use crate::resolution::name_matcher::receiver::project_crate_dir;
 use crate::resolution::types::ResolutionContext;
@@ -143,14 +151,17 @@ impl ModuleTree<'_> {
             |leaf: &UseLeaf| importer.is_none_or(|from| leaf_visible(&leaf.vis, module, from));
 
         let mut targets = Targets::default();
-        let mut external = false;
+        // Imports of another crate's item binding the name, with their `cfg`.
+        let mut external: Vec<BuildCfg> = Vec::new();
         for item in self.items(module, name) {
             if visible_item(&item) {
-                targets.add(item);
+                let build = BuildCfg::of_node(self.context, &item);
+                targets.add(item, build);
             }
         }
         let uses = self.uses(module, name);
-        for leaf in &uses {
+        for (leaf, build) in &uses {
+            let build = *build;
             let binds = leaf.bound_name() == Some(name)
                 && self.namespace.admits_binding(&leaf.binding)
                 && visible_leaf(leaf);
@@ -161,31 +172,37 @@ impl ModuleTree<'_> {
                 continue;
             };
             if is_external_root(self.context, module, &leaf.path) {
-                external = true;
+                if build.host != Some(false) {
+                    external.push(build);
+                }
                 continue;
             }
             let Some(source) = use_source(self.context, module, path) else {
                 continue;
             };
             match self.resolve(&source, original, None, depth + 1) {
-                Resolution::Found(node) => targets.add(*node),
+                Resolution::Found(node) => targets.add(*node, build),
                 Resolution::Ambiguous(nodes) if nodes.is_empty() => {
                     return Resolution::Ambiguous(nodes);
                 }
-                Resolution::Ambiguous(nodes) => targets.add_all(nodes),
-                Resolution::External => external = true,
+                Resolution::Ambiguous(nodes) => targets.add_all(nodes, build),
+                // `#[cfg(loom)] use loom::sync::Arc;` beside a project `Arc`:
+                // an import the host never compiles binds nothing.
+                Resolution::External if build.host == Some(false) => {}
+                Resolution::External => external.push(build),
                 Resolution::NotFound => {}
             }
         }
         if !targets.is_empty() {
-            return targets.finish();
+            return targets.finish(&external);
         }
-        if external {
+        if !external.is_empty() {
             return Resolution::External;
         }
 
         // Globs only fill in names nothing above binds.
-        for leaf in &uses {
+        for (leaf, build) in &uses {
+            let build = *build;
             if leaf.binding != UseBinding::Glob || !visible_leaf(leaf) {
                 continue;
             }
@@ -196,17 +213,18 @@ impl ModuleTree<'_> {
                 continue;
             };
             match self.resolve(&source, name, Some(module), depth + 1) {
-                Resolution::Found(node) => targets.add(*node),
+                Resolution::Found(node) => targets.add(*node, build),
                 Resolution::Ambiguous(nodes) if nodes.is_empty() => {
                     return Resolution::Ambiguous(nodes);
                 }
-                Resolution::Ambiguous(nodes) => targets.add_all(nodes),
-                Resolution::External => external = true,
+                Resolution::Ambiguous(nodes) => targets.add_all(nodes, build),
+                Resolution::External if build.host == Some(false) => {}
+                Resolution::External => external.push(build),
                 Resolution::NotFound => {}
             }
         }
-        match targets.finish() {
-            Resolution::NotFound if external => Resolution::External,
+        match targets.finish(&external) {
+            Resolution::NotFound if !external.is_empty() => Resolution::External,
             resolution => resolution,
         }
     }
@@ -260,7 +278,7 @@ impl ModuleTree<'_> {
     /// Only the leaves a lookup of `name` reads: those binding it, and
     /// globs (a module declares many `use`s; cloning them all per lookup
     /// made every lookup linear in them).
-    fn uses(&self, module: &ModuleLocation, name: &str) -> Vec<UseLeaf> {
+    fn uses(&self, module: &ModuleLocation, name: &str) -> Vec<(UseLeaf, BuildCfg)> {
         let wanted =
             |leaf: &UseLeaf| leaf.binding == UseBinding::Glob || leaf.bound_name() == Some(name);
         let mut leaves = Vec::new();
@@ -276,14 +294,17 @@ impl ModuleTree<'_> {
                     declared
                         .iter()
                         .filter(|entry| entry.inline_modules == inline && wanted(&entry.leaf))
-                        .map(|entry| entry.leaf.clone()),
+                        .map(|entry| {
+                            let build = BuildCfg::of_line(self.context, &file, entry.line);
+                            (entry.leaf.clone(), build)
+                        }),
                 );
                 if inline.is_empty() {
                     leaves.extend(
                         macro_level_uses(self.context, &file)
                             .iter()
                             .filter(|leaf| wanted(leaf))
-                            .cloned(),
+                            .map(|leaf| (leaf.clone(), BuildCfg::UNKNOWN)),
                     );
                 }
             }
@@ -319,7 +340,10 @@ pub(super) fn macro_level_uses(context: &dyn ResolutionContext, file: &str) -> A
 
 /// The module a `use` path's leading segments (`path`, written in `module`)
 /// name: a crate of the workspace by its name (`codegraph::types`), else
-/// as a 2018-edition path walks from `module`.
+/// as a 2018-edition path walks from `module` — a segment no child module
+/// of that name answers is looked up as a module re-export there
+/// (`crate::loom::sync`, where `loom` has `pub(crate) use self::std::*;`
+/// and `std` an inline `mod sync`).
 pub(super) fn use_source<S: AsRef<str>>(
     context: &dyn ResolutionContext,
     module: &ModuleLocation,
@@ -333,11 +357,80 @@ pub(super) fn use_source<S: AsRef<str>>(
                     crate_key: dir.trim_end_matches('/').to_string(),
                     module: Vec::new(),
                 };
-                return crate_root.walk(rest);
+                return walk_modules(context, &crate_root, rest);
             }
         }
     }
-    module.walk(path)
+    walk_modules(context, module, path)
+}
+
+thread_local! {
+    /// How many re-exported module segments are being looked up on this
+    /// thread: a lookup behind a segment walks `use` paths of its own.
+    static REEXPORT_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How deep re-exported module segments are followed.
+const MAX_REEXPORT_DEPTH: usize = 4;
+
+/// [`ModuleLocation::walk`], a child module of each name first, else the
+/// module a `use` or glob of the module re-exports under that name.
+pub(super) fn walk_modules<S: AsRef<str>>(
+    context: &dyn ResolutionContext,
+    from: &ModuleLocation,
+    path: &[S],
+) -> Option<ModuleLocation> {
+    let mut at = from.clone();
+    let mut at_head = true;
+    for (index, segment) in path.iter().enumerate() {
+        let segment = segment.as_ref();
+        let keyword = matches!(segment, "crate" | "$crate" | "self" | "super")
+            && (index == 0 || (segment == "super" && at_head));
+        if keyword {
+            at = at.walk(&[segment])?;
+            continue;
+        }
+        at_head = false;
+        let child = at.walk(&[segment])?;
+        if has_module(context, &child, segment) {
+            at = child;
+            continue;
+        }
+        at = reexported_module(context, &at, segment).unwrap_or(child);
+    }
+    Some(at)
+}
+
+/// A module the index knows at `location`: its file, or an inline `mod`
+/// (`name` declared in the parent's files).
+fn has_module(context: &dyn ResolutionContext, location: &ModuleLocation, name: &str) -> bool {
+    module_file(context, location).is_some()
+        || context
+            .get_nodes_by_name_and_kind(name, NodeKind::Module)
+            .iter()
+            .any(|node| node.language == Language::Rust && declared_module(node) == *location)
+}
+
+/// The project module `module` re-exports as `name` (a `use` or glob
+/// binding it in the module namespace), bounded per thread.
+fn reexported_module(
+    context: &dyn ResolutionContext,
+    module: &ModuleLocation,
+    name: &str,
+) -> Option<ModuleLocation> {
+    let depth = REEXPORT_DEPTH.with(std::cell::Cell::get);
+    if depth >= MAX_REEXPORT_DEPTH {
+        return None;
+    }
+    REEXPORT_DEPTH.with(|cell| cell.set(depth + 1));
+    let found = crate::ensure_sufficient_stack(|| {
+        resolve_in_module(context, module, name, Namespace::Module)
+    });
+    REEXPORT_DEPTH.with(|cell| cell.set(depth));
+    match found {
+        Resolution::Found(node) => Some(declared_module(&node)),
+        _ => None,
+    }
 }
 
 /// Whether the `use` path `path`, written in `module`, starts at a crate
@@ -383,22 +476,58 @@ fn is_path_keyword(segment: &str) -> bool {
     matches!(segment, "crate" | "$crate" | "self" | "super" | "Self")
 }
 
-/// `name` is a module of `module`'s crate: a `mod` the index has, or the
-/// indexed file of a child module.
+/// `name` is a module in scope in `module`, as a 2018-edition path's first
+/// segment reads it: a child `mod` the index has (inline or declared), the
+/// indexed file of a child module, or a `use` of `module` binding a module
+/// of the project by that name. A same-named module elsewhere in the crate
+/// is not in scope: tokio's `crate::loom::std` does not make `use
+/// std::task::Context` in `src/time/interval.rs` a path into it.
 fn is_local_module(context: &dyn ResolutionContext, module: &ModuleLocation, name: &str) -> bool {
     context
         .get_nodes_by_name_and_kind(name, NodeKind::Module)
         .iter()
-        .any(|node| {
-            node.language == Language::Rust
-                && module_location(&node.file_path).crate_key == module.crate_key
-        })
+        .any(|node| node.language == Language::Rust && item_location(node).0 == *module)
         || module.walk(&[name]).is_some_and(|child| {
             module_file(context, &child).is_some()
                 || module_files(&child)
                     .iter()
                     .any(|file| !context.get_rust_use_leaves(file).is_empty())
         })
+        || imports_project_module(context, module, name)
+}
+
+/// A `use` at the top of `module`'s file binds `name` to a path inside the
+/// project (`use crate::loom;`, `use super::sync;`, `use self::m as n;`).
+fn imports_project_module(
+    context: &dyn ResolutionContext,
+    module: &ModuleLocation,
+    name: &str,
+) -> bool {
+    module_files(module).iter().any(|file| {
+        context.get_rust_use_leaves(file).iter().any(|found| {
+            found.inline_modules.is_empty()
+                && matches!(&found.leaf.binding,
+                    UseBinding::Name(bound) | UseBinding::Module(bound) if bound == name)
+                && found.leaf.path.first().is_some_and(|root| {
+                    is_path_keyword(root) || project_crate_dir(root, context).is_some()
+                })
+        })
+    })
+}
+
+/// `name` is a module in scope at the top level of `file` (see
+/// [`is_local_module`]).
+pub(in crate::resolution::name_matcher) fn is_local_module_of_file(
+    context: &dyn ResolutionContext,
+    file: &str,
+    name: &str,
+) -> bool {
+    is_local_module(context, &module_location(file), name)
+        // An inline `mod` of the file, for references inside it.
+        || context
+            .get_nodes_by_name_and_kind(name, NodeKind::Module)
+            .iter()
+            .any(|node| node.language == Language::Rust && node.file_path == file)
 }
 
 /// The File node of an indexed file holding `module`'s items (`m.rs` or
@@ -427,24 +556,32 @@ fn leaf_visible(vis: &UseVisibility, owner: &ModuleLocation, from: &ModuleLocati
     }
 }
 
-/// Distinct targets found so far. Definitions that differ only by `cfg`
+/// Distinct targets found so far, each with whether the default build has
+/// it (see [`super::cfg`]). Definitions that differ only by `cfg`
 /// (same file, same qualified name) count once, as in `unique`.
 #[derive(Default)]
-struct Targets(Vec<Node>);
+struct Targets(Vec<(Node, BuildCfg)>);
 
 impl Targets {
-    fn add(&mut self, node: Node) {
-        let seen = self.0.iter().any(|known| {
+    /// A target, with whether the build has it: an item by its own `cfg`
+    /// and its module's, an import's target by the `use` reaching it (the
+    /// lookup behind the `use` already kept only what the build has).
+    fn add(&mut self, node: Node, build: BuildCfg) {
+        if let Some(known) = self.0.iter_mut().find(|(known, _)| {
             known.file_path == node.file_path && known.qualified_name == node.qualified_name
-        });
-        if !seen {
-            self.0.push(node);
+        }) {
+            // `cfg` twins are one item: it is built if either twin is.
+            if known.1.host == Some(false) && build.host != Some(false) {
+                *known = (node, build);
+            }
+            return;
         }
+        self.0.push((node, build));
     }
 
-    fn add_all(&mut self, nodes: Vec<Node>) {
+    fn add_all(&mut self, nodes: Vec<Node>, build: BuildCfg) {
         for node in nodes {
-            self.add(node);
+            self.add(node, build);
         }
     }
 
@@ -452,11 +589,27 @@ impl Targets {
         self.0.is_empty()
     }
 
-    fn finish(mut self) -> Resolution {
-        match self.0.len() {
+    /// One target, or several the default build cannot tell apart. Imports
+    /// of another crate's item binding the same name (`external`) compete
+    /// with them: when the build compiles only those (`#[cfg(not(feature =
+    /// "parking_lot"))] pub(crate) use std::sync::MutexGuard;` beside the
+    /// `parking_lot` one), the name is the other crate's.
+    fn finish(self, external: &[BuildCfg]) -> Resolution {
+        let mut alternatives: Vec<(Option<Node>, BuildCfg)> = self
+            .0
+            .into_iter()
+            .map(|(node, build)| (Some(node), build))
+            .collect();
+        alternatives.extend(external.iter().map(|build| (None, *build)));
+        let kept = keep_built(alternatives, |(_, build)| *build);
+        if !external.is_empty() && kept.iter().all(|(node, _)| node.is_none()) {
+            return Resolution::External;
+        }
+        let mut kept: Vec<Node> = kept.into_iter().filter_map(|(node, _)| node).collect();
+        match kept.len() {
             0 => Resolution::NotFound,
-            1 => Resolution::Found(Box::new(self.0.remove(0))),
-            _ => Resolution::Ambiguous(self.0),
+            1 => Resolution::Found(Box::new(kept.remove(0))),
+            _ => Resolution::Ambiguous(kept),
         }
     }
 }

@@ -9,13 +9,21 @@ use super::bindings::assignment;
 use super::crates::project_crate_dir;
 use super::types::{Named, named_type, signature_return};
 use crate::resolution::line_index::Lines;
-use crate::resolution::name_matcher::rust_path::{crate_key, fn_definition, type_definition};
+use crate::resolution::name_matcher::rust_generics::{generic_bounds, supertraits};
+use crate::resolution::name_matcher::rust_path::{
+    crate_key,
+    fn_definition,
+    is_local_module_of_file,
+    type_definition,
+};
 use crate::resolution::name_matcher::{LocalUse, UseBinding, UseLeaf};
 use crate::resolution::types::{ResolutionContext, UnresolvedRef};
 use crate::types::{Language, Node, NodeKind, Visibility};
 
 /// How many `use`/alias hops a type path is followed through.
 const MAX_HOPS: u8 = 6;
+/// How many supertrait levels a trait method is looked up through.
+const MAX_SUPERTRAIT_DEPTH: u8 = 4;
 
 /// A type a Rust file names, pinned down as far as the file allows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +31,27 @@ pub(in crate::resolution::name_matcher) struct RustType {
     /// The type's own name (`CodeGraph`).
     pub(in crate::resolution::name_matcher) name: String,
     home: Home,
+    /// A trait object or a generic's bound: the method runs whichever
+    /// implementation the value has.
+    dispatch: Option<Dispatch>,
+}
+
+/// How a call on a trait-typed value picks its implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::resolution::name_matcher) enum Dispatch {
+    /// `dyn Trait` (behind `&`, `Box`, `Arc`, …): a vtable, at run time.
+    Dynamic,
+    /// A generic `T: Trait` or `impl Trait`: monomorphized per caller.
+    Generic,
+}
+
+impl Dispatch {
+    pub(in crate::resolution::name_matcher) fn as_str(self) -> &'static str {
+        match self {
+            Dispatch::Dynamic => "dynamic",
+            Dispatch::Generic => "generic",
+        }
+    }
 }
 
 /// Where a type is defined.
@@ -47,6 +76,9 @@ enum Home {
         krate: Option<String>,
         path: Vec<String>,
     },
+    /// A generic parameter (`T` of `impl<T: Read + Unpin>`): only what its
+    /// bounds declare runs on it — the project traits among them.
+    Bounded { traits: Vec<RustType> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +137,7 @@ impl RustType {
         RustType {
             name: name.to_string(),
             home: Home::Anywhere { globs: Vec::new() },
+            dispatch: None,
         }
     }
 
@@ -115,6 +148,52 @@ impl RustType {
                 krate: None,
                 path: Vec::new(),
             },
+            dispatch: None,
+        }
+    }
+
+    /// The generic parameter `param`, bounded by the project traits
+    /// `traits` (other bounds run no project method).
+    pub(super) fn bounded(param: &str, traits: Vec<RustType>) -> Self {
+        RustType {
+            name: param.to_string(),
+            home: Home::Bounded { traits },
+            dispatch: Some(Dispatch::Generic),
+        }
+    }
+
+    /// This type reached through `dyn`/`impl` (`dispatch`), when it is a
+    /// project trait; any other type is returned as it is.
+    pub(super) fn dispatched(
+        mut self,
+        dispatch: Dispatch,
+        context: &dyn ResolutionContext,
+    ) -> Self {
+        if self.is_project_trait(context) {
+            self.dispatch = Some(dispatch);
+        }
+        self
+    }
+
+    /// How a call on this type picks its implementation, when it is a
+    /// trait object or a generic.
+    pub(in crate::resolution::name_matcher) fn dispatch(&self) -> Option<Dispatch> {
+        self.dispatch
+    }
+
+    /// The module tree placed this type on a project trait.
+    pub(super) fn is_project_trait(&self, context: &dyn ResolutionContext) -> bool {
+        self.trait_node(context).is_some()
+    }
+
+    /// The project trait the module tree placed this type on.
+    fn trait_node(&self, context: &dyn ResolutionContext) -> Option<Node> {
+        match &self.home {
+            Home::Defined { file, qualified } => context
+                .get_nodes_by_name_and_kind(&self.name, NodeKind::Trait)
+                .into_iter()
+                .find(|node| node.file_path == *file && node.qualified_name == *qualified),
+            _ => None,
         }
     }
 
@@ -127,6 +206,7 @@ impl RustType {
                 krate: Some(krate.to_string()),
                 path,
             },
+            dispatch: None,
         })
     }
 
@@ -165,7 +245,7 @@ impl RustType {
         let unplaced = match &self.home {
             Home::Anywhere { .. } => true,
             Home::External { krate, .. } => krate.is_none(),
-            Home::Project { .. } | Home::Defined { .. } => false,
+            Home::Project { .. } | Home::Defined { .. } | Home::Bounded { .. } => false,
         };
         if !unplaced {
             return None;
@@ -179,7 +259,10 @@ impl RustType {
         &self,
         context: &dyn ResolutionContext,
     ) -> bool {
-        !self.is_external() && is_rust_project_type(&self.name, context)
+        match &self.home {
+            Home::Bounded { traits } => !traits.is_empty(),
+            _ => !self.is_external() && is_rust_project_type(&self.name, context),
+        }
     }
 
     /// The methods `Self::method` the project defines that match the type's
@@ -194,10 +277,52 @@ impl RustType {
         reference: &UnresolvedRef,
         context: &dyn ResolutionContext,
     ) -> Vec<&'a Node> {
-        if self.is_external() && is_rust_project_type(&self.name, context) {
+        if let Home::Bounded { traits } = &self.home {
+            // What the bounds declare: `T: Read + Seek` runs `Read::read`.
+            let mut declared: Vec<&'a Node> = Vec::new();
+            for bound in traits {
+                for node in bound.methods(method, nodes, reference, context) {
+                    if !declared.iter().any(|known| known.id == node.id) {
+                        declared.push(node);
+                    }
+                }
+            }
+            return declared;
+        }
+        if let Some(declared) = self.trait_node(context) {
+            return self.trait_methods(&declared, method, nodes, reference, context, 0);
+        }
+        let placed = self.external_crate();
+        if self.is_external() && placed.is_none() && is_rust_project_type(&self.name, context) {
             return Vec::new();
         }
         let mut methods = methods_of(self, nodes, method, reference);
+        if self.is_external() {
+            // Only a trait impl can add a method to another crate's type,
+            // and a trait impl's method is never `pub`: a `pub` one is an
+            // inherent method of a project namesake the index holds no
+            // declaration of (tokio's `UnixDatagram` is declared inside a
+            // `cfg_net_unix!` call, `mio::net::UnixDatagram::bind` is mio's).
+            methods.retain(|node| {
+                node.visibility
+                    .is_none_or(|visibility| visibility == Visibility::Private)
+            });
+        }
+        if let Some(krate) = placed {
+            // The impl must name this same foreign type where it is
+            // written (`use std::net::SocketAddr; impl Tr for SocketAddr`),
+            // not a project namesake (tokio's unix `SocketAddr`).
+            methods.retain(|candidate| {
+                let owner = resolve_type(&self.name, &candidate.file_path, reference, context);
+                match &owner.home {
+                    Home::External {
+                        krate: Some(other), ..
+                    } => same_crate_family(krate, other),
+                    Home::Anywhere { .. } => !is_rust_project_type(&self.name, context),
+                    _ => false,
+                }
+            });
+        }
         if let Home::Defined { file, qualified } = &self.home {
             // `Sender::send` of `broadcast.rs` is another `Sender`'s: keep
             // the methods whose impl names this type where it is written.
@@ -228,6 +353,45 @@ impl RustType {
             }
         }
         self.nearest(methods, reference)
+    }
+
+    /// The methods named `method` the trait `declared` (this type's node)
+    /// declares in its body — `impl Semaphore for bounded::Semaphore { fn
+    /// close }` beside it is also a `Semaphore::close`, an implementation —
+    /// else those its project supertraits declare (`trait IntoUrl:
+    /// IntoUrlSealed`), nearest first.
+    fn trait_methods<'a>(
+        &self,
+        declared: &Node,
+        method: &str,
+        nodes: &'a [Node],
+        reference: &UnresolvedRef,
+        context: &dyn ResolutionContext,
+        depth: u8,
+    ) -> Vec<&'a Node> {
+        let mut methods = methods_of(self, nodes, method, reference);
+        methods.retain(|node| {
+            node.file_path == declared.file_path
+                && declared.start_line <= node.start_line
+                && node.start_line <= declared.end_line
+        });
+        if !methods.is_empty() || depth >= MAX_SUPERTRAIT_DEPTH {
+            return methods;
+        }
+        for bound in supertraits(&self.name, &declared.file_path, context) {
+            let supertrait = resolve_type(&bound, &declared.file_path, reference, context);
+            let Some(node) = supertrait.trait_node(context) else {
+                continue;
+            };
+            for found in
+                supertrait.trait_methods(&node, method, nodes, reference, context, depth + 1)
+            {
+                if !methods.iter().any(|known| known.id == found.id) {
+                    methods.push(found);
+                }
+            }
+        }
+        methods
     }
 
     /// The one method [`Self::methods`] finds, `None` when none or several.
@@ -315,7 +479,7 @@ impl RustType {
                 path == defined,
                 false,
             ),
-            Home::External { .. } => (true, false, false),
+            Home::External { .. } | Home::Bounded { .. } => (true, false, false),
         };
         let shared = path
             .split('/')
@@ -345,6 +509,13 @@ impl RustType {
         nodes.retain(|node| self.rank(node, &reference.file_path, &here) == best);
         nodes
     }
+}
+
+/// Two crate names a path may place one type in: equal, or both of the
+/// toolchain (`std::net::SocketAddr` is `core::net::SocketAddr`).
+fn same_crate_family(a: &str, b: &str) -> bool {
+    const TOOLCHAIN: &[&str] = &["std", "core", "alloc"];
+    a == b || (TOOLCHAIN.contains(&a) && TOOLCHAIN.contains(&b))
 }
 
 fn is_type_kind(kind: NodeKind) -> bool {
@@ -381,8 +552,33 @@ pub(super) fn resolve_named(
     match named {
         Named::SelfType => self_ty.cloned(),
         Named::Structural(name) => Some(RustType::external(name)),
-        Named::Path(path) => Some(resolve_type(path, file, reference, context)),
+        Named::Path(path) => Some(
+            generic_param(path, file, reference, context)
+                .unwrap_or_else(|| resolve_type(path, file, reference, context)),
+        ),
     }
+}
+
+/// `path` written in the reference's own file is a generic parameter of an
+/// item around the reference (`R` in `impl<R: AsyncRead> … { self.inner:
+/// R }`): the type its project-trait bounds make it. A generic shadows any
+/// project type of its name.
+pub(in crate::resolution::name_matcher) fn generic_param(
+    path: &str,
+    file: &str,
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+) -> Option<RustType> {
+    if path.contains("::") || file != reference.file_path {
+        return None;
+    }
+    let bounds = generic_bounds(path, reference, context)?;
+    let traits = bounds
+        .iter()
+        .map(|bound| resolve_type(bound, file, reference, context))
+        .filter(|bound| bound.is_project_trait(context))
+        .collect();
+    Some(RustType::bounded(path, traits))
 }
 
 /// What the type path `path`, written in `file`, names: `use` declarations
@@ -443,6 +639,7 @@ fn resolve_path(path: &str, file: &str, context: &dyn ResolutionContext) -> Reso
         return Resolved::Type(RustType {
             name: name.to_string(),
             home,
+            dispatch: None,
         });
     }
     let module = (segments.len() >= 3).then(|| segments[segments.len() - 2].to_string());
@@ -481,6 +678,7 @@ fn resolve_path(path: &str, file: &str, context: &dyn ResolutionContext) -> Reso
     Resolved::Type(RustType {
         name: name.to_string(),
         home,
+        dispatch: None,
     })
 }
 
@@ -568,13 +766,11 @@ pub(in crate::resolution::name_matcher) fn fn_local_uses(
     context.get_rust_fn_local_uses(file)
 }
 
-/// `root` is a module of `file`'s crate (a 2018-edition relative path).
+/// `root` is a module in scope in `file` (a 2018-edition relative path):
+/// a same-named module elsewhere in the crate is not (tokio's
+/// `crate::loom::std` leaves `std::sync::Arc` std's).
 fn is_local_module(root: &str, file: &str, context: &dyn ResolutionContext) -> bool {
-    let here = crate_key(file);
-    context
-        .get_nodes_by_name_and_kind(root, NodeKind::Module)
-        .iter()
-        .any(|node| node.language == Language::Rust && crate_key(&node.file_path) == here)
+    is_local_module_of_file(context, file, root)
 }
 
 /// When the definition `ty` names is a type alias: the aliased type as

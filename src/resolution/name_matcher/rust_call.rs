@@ -40,7 +40,7 @@ use super::receiver::{
 };
 use super::rust_generics::is_generic_param;
 use super::rust_method::match_typed_call;
-use super::rust_path::{BareBinding, bare_binding};
+use super::rust_path::{BareBinding, BuildCfg, bare_binding, keep_active, keep_built, node_active};
 use super::std_methods::{is_receiverless_dependency_method_call, is_receiverless_std_method_call};
 use super::{UseBinding, UseLeaf};
 use crate::resolution::line_index::Lines;
@@ -116,9 +116,7 @@ pub(super) fn match_rust_call(
             return Some(decided);
         }
     }
-    if is_receiverless_std_method_call(reference)
-        || imports_from_another_crate(syntax, reference, context)
-    {
+    if is_receiverless_std_method_call(reference) {
         return Some(None);
     }
     let mut scope = FileScope::new(reference, context);
@@ -142,9 +140,14 @@ pub(super) fn match_rust_call(
                     .collect();
                 return Some(pick_alternative(reference, &admitted, context));
             }
-            BareBinding::External => return Some(None),
+            BareBinding::External | BareBinding::Unindexed => return Some(None),
             BareBinding::Unbound => {}
         }
+    }
+    // (After the module's own binding: an inline `mod tests`' `fn ptr`
+    // shadows the file's `use core::ptr`.)
+    if imports_from_another_crate(syntax, reference, context) {
+        return Some(None);
     }
     // A dependency's method name reaches only types the file names.
     let file = is_receiverless_dependency_method_call(reference, context)
@@ -163,6 +166,7 @@ pub(super) fn match_rust_call(
     if candidates.is_empty() || syntax.names_local(reference, context) {
         return Some(None);
     }
+    let candidates = built_alternatives(reference, context, candidates, false);
     Some(pick_exact(reference, &candidates, context, None))
 }
 
@@ -177,7 +181,6 @@ pub(crate) fn rust_call_admits(
         return true;
     };
     !is_receiverless_std_method_call(reference)
-        && !imports_from_another_crate(syntax, reference, context)
         && (syntax != Syntax::Bare || binding_admits(reference, context, target))
         && (!is_receiverless_dependency_method_call(reference, context)
             || FileText::read(reference, context).names_owner_of(target))
@@ -292,7 +295,7 @@ pub(super) fn match_rust_reference(
                 .collect();
             return Some(pick_alternative(reference, &admitted, context));
         }
-        BareBinding::External => return Some(None),
+        BareBinding::External | BareBinding::Unindexed => return Some(None),
         BareBinding::Unbound => {}
     }
     let (admitted, ruled_out): (Vec<Node>, Vec<Node>) = context
@@ -305,6 +308,7 @@ pub(super) fn match_rust_reference(
     if admitted.is_empty() {
         return Some(None);
     }
+    let admitted = built_alternatives(reference, context, admitted, false);
     Some(pick_exact(reference, &admitted, context, None))
 }
 
@@ -373,8 +377,10 @@ fn binding_admits(
                 || (node.file_path == target.file_path
                     && node.qualified_name == target.qualified_name)
         }),
-        BareBinding::External => false,
-        BareBinding::Unbound => true,
+        BareBinding::External | BareBinding::Unindexed => false,
+        // Nothing the module tree reads binds it: a `use` of another
+        // crate's item still rules the project out.
+        BareBinding::Unbound => !imports_from_another_crate(Syntax::Bare, reference, context),
     }
 }
 
@@ -385,10 +391,40 @@ fn pick_alternative(
     alternatives: &[Node],
     context: &dyn ResolutionContext,
 ) -> Option<ResolvedRef> {
-    pick_exact(reference, alternatives, context, None).map(|picked| ResolvedRef {
+    // The one the default build has, when a `cfg` rules the others out.
+    let alternatives = built_alternatives(reference, context, alternatives.to_vec(), true);
+    pick_exact(reference, &alternatives, context, None).map(|picked| ResolvedRef {
         resolved_by: ResolvedBy::Import,
         ..picked
     })
+}
+
+/// Of several `alternatives`, those the host build compiles (see
+/// `rust_path::cfg`); with `by_features`, of those still tied, the ones
+/// the crate's default features compile (distinct items a `use` could
+/// mean — not `cfg` twins of one item, either of which stands for it). All
+/// of them when the reference is itself in code the build leaves out (a
+/// `#[cfg(loom)]` test calls the loom-only helper).
+fn built_alternatives(
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+    alternatives: Vec<Node>,
+    by_features: bool,
+) -> Vec<Node> {
+    if alternatives.len() < 2 {
+        return alternatives;
+    }
+    let caller_built = context
+        .get_node_by_id(&reference.from_node_id)
+        .is_none_or(|caller| node_active(context, &caller) != Some(false));
+    if !caller_built {
+        return alternatives;
+    }
+    if by_features {
+        keep_built(alternatives, |node| BuildCfg::of_node(context, node))
+    } else {
+        keep_active(alternatives, |node| node_active(context, node))
+    }
 }
 
 /// The reference resolved to the item its module binds the name to.
@@ -405,6 +441,7 @@ fn bound_to(
         .into_iter()
         .filter(|twin| twin.qualified_name == node.qualified_name && twin.kind == node.kind)
         .collect();
+    let twins = built_alternatives(reference, context, twins, false);
     let target = (twins.len() > 1)
         .then(|| pick_exact(reference, &twins, context, None))
         .flatten()

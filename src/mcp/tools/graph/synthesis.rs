@@ -9,11 +9,33 @@ use crate::types::{Edge, Provenance};
 impl ToolHandler {
     pub(in crate::mcp::tools) fn synth_edge_note(&self, edge: Option<&Edge>) -> Option<SynthNote> {
         let edge = edge?;
+        let empty = Map::new();
+        let m = edge.metadata.as_ref().unwrap_or(&empty);
+        // A resolved call on a trait object / bounded generic: its target is
+        // the trait's declaration, whose dispatch edges reach the impls.
+        match m.get("dispatch").and_then(|v| v.as_str()) {
+            Some("dynamic") => {
+                return Some(SynthNote {
+                    label:
+                        "trait-object call — `dyn Trait` runs any implementation (dynamic dispatch)"
+                            .to_string(),
+                    compact: "dynamic: dyn Trait call".to_string(),
+                    registered_at: None,
+                });
+            }
+            Some("generic") => {
+                return Some(SynthNote {
+                    label: "generic call — `T: Trait` runs each caller's implementation (static dispatch per instantiation)"
+                        .to_string(),
+                    compact: "generic: T: Trait call".to_string(),
+                    registered_at: None,
+                });
+            }
+            _ => {}
+        }
         if edge.provenance != Some(Provenance::Heuristic) {
             return None;
         }
-        let empty = Map::new();
-        let m = edge.metadata.as_ref().unwrap_or(&empty);
         let registered_at = m
             .get("registeredAt")
             .and_then(|v| v.as_str())
@@ -51,7 +73,8 @@ impl ToolHandler {
                 })
             }
             "react-render" => Some(SynthNote {
-                label: "React re-render — `setState` re-runs render() (dynamic dispatch)".to_string(),
+                label: "React re-render — `setState` re-runs render() (dynamic dispatch)"
+                    .to_string(),
                 compact: format!("dynamic: React re-render via setState{at}"),
                 registered_at,
             }),
@@ -75,18 +98,30 @@ impl ToolHandler {
                     registered_at,
                 })
             }
-            "interface-impl" => Some(SynthNote {
-                label: "interface/abstract dispatch — runs the implementation override (dynamic dispatch)"
-                    .to_string(),
-                compact: format!("dynamic: interface → impl{at}"),
-                registered_at,
-            }),
+            "interface-impl" => {
+                // A Rust trait method's dispatch edges are capped; the kept
+                // ones say how many implementations there are.
+                let capped = m
+                    .get("implementations")
+                    .and_then(|v| v.as_u64())
+                    .map(|total| format!(" (one of {total} implementations, list capped)"))
+                    .unwrap_or_default();
+                Some(SynthNote {
+                    label: format!(
+                        "interface/abstract dispatch — runs the implementation override (dynamic dispatch){capped}"
+                    ),
+                    compact: format!("dynamic: interface → impl{at}{capped}"),
+                    registered_at,
+                })
+            }
             "closure-collection" => {
                 let field = truthy_meta_string(m.get("field"))
                     .map(|f| format!("`{f}`"))
                     .unwrap_or_else(|| "a collection".to_string());
                 Some(SynthNote {
-                    label: format!("closure collection — runs handlers appended to {field} (dynamic dispatch)"),
+                    label: format!(
+                        "closure collection — runs handlers appended to {field} (dynamic dispatch)"
+                    ),
                     compact: format!("dynamic: runs {field} handlers{at}"),
                     registered_at,
                 })

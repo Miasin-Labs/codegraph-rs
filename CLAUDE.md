@@ -209,7 +209,33 @@ cargo test --workspace
   names an impl's associated item. `main.rs` does not see `lib.rs`'s `use`s
   (the layout gives both one module path). The frameworks' PascalCase rule
   (first same-named struct, `/types/` preferred) is retired: the compiler
-  agreed with 28–34% of its edges.
+  agreed with 28–34% of its edges. A path's first segment is a module only
+  where it is in scope — a child `mod` of that module, its file, or a `use`
+  of a project path (`is_local_module`): tokio's `crate::loom::std` does
+  not make `use std::task::Context` elsewhere a project path (it did, and
+  put ~500 std references on project namesakes). `use` path segments that
+  are no child module are looked up as re-exports (`crate::loom::sync`
+  through `pub(crate) use self::std::*;` — `walk_modules`). A `use` that
+  reaches a real project module (not a one-file crate's) lacking the item —
+  declared inside a macro call, like tokio's `cfg_rt! { pub struct
+  JoinHandle }` — names nothing (`BareBinding::Unindexed`), never a
+  namesake elsewhere. An inline `mod`'s own item shadows a file-level `use`
+  of that name (`fn ptr` in `mod tests` beside `use core::ptr`).
+- **`cfg` alternatives are decided as a build decides them**
+  (`rust_path/cfg.rs`): each item's `#[cfg(…)]` attributes are read once per
+  file; among alternatives (several `use`s or twins binding one name), those
+  the host build never compiles drop out — unconfigured cfgs (`loom`,
+  `miri`, `docsrs`, `tokio_unstable`) are off, target predicates answer for
+  64-bit linux, and a `mod` declaration's cfg covers its files; `test` never
+  decides (rust-analyzer analyses with `cfg(test)` on). Still tied, a `use`
+  alternative the crate's *default features* do not compile drops out
+  (tokio's `parking_lot` `Mutex`/`MutexGuard` vs the std ones); `cfg` twins
+  of one item are never decided by features (a default-feature pick
+  disagreed with the compiler on `memchr_inner`). An import of another
+  crate's item competes the same way (`#[cfg(not(feature = …))] pub use
+  std::sync::MutexGuard`). A name bound once keeps its binding whatever
+  guards it, and a reference in code the build leaves out keeps every
+  alternative.
 - **Rust call syntax decides what a call can run** (`name_matcher/rust_call.rs`):
   a bare `f()` targets a function, tuple struct, const/static or enum variant,
   never a method or field; a name bound locally (param, `let`, closure, match
@@ -269,7 +295,32 @@ cargo test --workspace
   .with_state(s)` runs no project method; extension-trait methods on it
   still resolve), and a tuple receiver runs none.
   The first unknown or external link ends the chain — never guess the
-  rest — and a generic parameter (`T`, `Self::Item`) is unknown, not a type.
+  rest — and a generic parameter (`T`, `Self::Item`) is unknown, not a
+  type, unless its bounds name project traits (below). A binding inside a block that closed before the call is out of
+  scope (`let l = { let l = std_thing(); W::from_std(l) };` types `l` by
+  the block's tail); a closed block's binding is used only when the one in
+  scope spells no type. A `Type::m` whose `Type` a `use`/path puts in
+  another crate runs no project namesake's method (`AtomicUsize::new` after
+  `use std::sync::atomic::AtomicUsize`), and an external type runs only
+  non-`pub` (trait-impl) project methods whose impl names that same foreign
+  type where it is written.
+- **Trait objects and bounded generics dispatch** (`receiver/rust/`,
+  `rust_generics.rs`): a receiver typed `dyn Trait` (behind `&`, `Box`,
+  `Arc`, `Pin`…), `impl Trait`, or a generic `T` whose bounds (inline or
+  `where`, innermost item first, read once per file) name project traits
+  resolves to the one trait *declaration* of that method in the trait's
+  body (else a supertrait's, `trait IntoUrl: IntoUrlSealed`), as rustc
+  does — `resolvedBy: "trait-dispatch"`, metadata `dispatch: "dynamic" |
+  "generic"`; `T::m(..)` too. Two bounds declaring it, or a bound of
+  another crate, is no target; an implementation is never picked. The
+  implementations hang off the declaration as the existing `interface-impl`
+  dispatch edges (the synthesizer's, now also for Rust `enum`s; the
+  compiler layer confirms/adds/removes the same edges — there is no third
+  representation), capped at `MAX_RUST_IMPLEMENTATIONS` (64) per trait
+  method, same file first, the kept ones carrying `implementations` +
+  `capped`. Callers/impact follow both hops; MCP callers/callees rows carry
+  `dispatch: dynamic|generic|implementation` and the node/flow notes say
+  so.
   (Only the external pass continues past a dependency type, below; an
   external type carries the crate its path named: `Home::External { krate }`.)
   Inference runs per reference, so anything it reads per file must be
@@ -987,9 +1038,21 @@ compiler_layer`); never MCP, the watcher or the prompt hook.
   1.53.1): codegraph-rs 93.7% -> 99.9%, rms 93.0% -> 99.8%, serde_json 83.1%
   -> 96.6%, reqwest 81.7% -> 94.0%, tokio 78.7% -> 92.2%; 4 confirmed edges
   of ~84k became nothing or another guess (overloads, a recursion through
-  `downcast_ref`, an extension trait on `http::response::Builder`). Left:
-  tokio's loom/std twins and trait-object dispatch, `#[path]` test modules
-  (`tests/x/fixture.rs` is not a module of `tests/x.rs` in the layout).
+  `downcast_ref`, an extension trait on `http::response::Builder`). After
+  in-scope module roots, trait dispatch and `cfg` alternatives (same
+  method, a fresh rust-analyzer run: master's baseline codegraph-rs 99.88%,
+  rms 99.77%, reqwest 93.83%, tokio 90.91%): codegraph-rs 99.89%, rms
+  99.77%, reqwest 93.85%, tokio 96.12% (refuted 707 -> 173, corrected 376
+  -> 273), no confirmed edge lost. `trait-dispatch` edges: 1,181 / 24 / 16
+  / 90 (cg / rms / reqwest / tokio), every judged one confirmed; tokio's 44
+  replaced a wrong implementation, cg's are its `Box<dyn …>` calls
+  relabelled. Left: `#[path]` test modules (`tests/x/fixture.rs` is not a
+  module of `tests/x.rs` in the layout); receivers typed through pin
+  projections or structs declared inside macro calls (tokio's `try_io`/
+  `async_io`); dependency methods on dropped receivers (`tokio_test`
+  `Spawn::enter`, `bytes::BufMut`); an inherent method of a foreign type
+  beside a project trait impl of the same name (reqwest `Url::as_str`); in
+  `cfg(loom)` files the module tree still reads the default build.
 
 ## Cross-graph resolution (federation phase 2)
 

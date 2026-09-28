@@ -12,6 +12,13 @@ use crate::types::{Edge, EdgeKind, Language, Node, NodeKind};
 
 const MAX_CALLBACKS_PER_CHANNEL: usize = 40;
 
+/// How many implementations one Rust trait method's dispatch edges reach.
+/// A call on `dyn Trait` or a `T: Trait` lands on the trait's declaration
+/// (resolution's `trait-dispatch`); callers and impact follow these edges
+/// on to the implementations, so a trait implemented everywhere (`Future`
+/// for every state machine of a crate) must not fan every such call out.
+pub(crate) const MAX_RUST_IMPLEMENTATIONS: usize = 64;
+
 /// Phase 4c: C++ virtual override. A call through a base/interface pointer
 /// (`db->Get(...)`, `iter->Next()`) dispatches at runtime to a subclass override,
 /// but that hop is a vtable indirection — no static call edge — so a flow stops at
@@ -119,10 +126,19 @@ pub(super) fn interface_override_edges(queries: &QueryBuilder) -> Result<Vec<Edg
     let mut seen: HashSet<String> = HashSet::new();
     // Concrete-side kinds vary by language: `class` covers Java / Kotlin /
     // C# / TS / Swift-classes / Scala-classes; `struct` covers Swift value
-    // types that conform to protocols. Iterate both.
-    let concrete_kinds = [NodeKind::Class, NodeKind::Struct, NodeKind::Union];
+    // types that conform to protocols; a Rust `enum` implements traits like
+    // a struct does.
+    let concrete_kinds = [
+        NodeKind::Class,
+        NodeKind::Struct,
+        NodeKind::Union,
+        NodeKind::Enum,
+    ];
     for kind in concrete_kinds {
         for cls in queries.get_nodes_by_kind(kind)? {
+            if kind == NodeKind::Enum && cls.language != Language::Rust {
+                continue;
+            }
             let impl_methods: Vec<Node> = methods_of(queries, &cls.id)?
                 .into_iter()
                 .filter(|n| is_iface_override_lang(n.language))
@@ -187,7 +203,72 @@ pub(super) fn interface_override_edges(queries: &QueryBuilder) -> Result<Vec<Edg
             }
         }
     }
+    cap_rust_dispatch(queries, &mut edges)?;
     Ok(edges)
+}
+
+/// Keep at most [`MAX_RUST_IMPLEMENTATIONS`] dispatch edges per Rust trait
+/// method, the implementations nearest the declaration first (same file,
+/// then by path), and say so on the edges kept: `implementations` (how
+/// many there are) and `capped`.
+fn cap_rust_dispatch(queries: &QueryBuilder, edges: &mut Vec<Edge>) -> Result<()> {
+    let mut per_source: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, edge) in edges.iter().enumerate() {
+        per_source
+            .entry(edge.source.clone())
+            .or_default()
+            .push(index);
+    }
+    let mut dropped: HashSet<usize> = HashSet::new();
+    for (source, indexes) in per_source {
+        if indexes.len() <= MAX_RUST_IMPLEMENTATIONS {
+            continue;
+        }
+        let Some(declaration) = queries.get_node_by_id(&source)? else {
+            continue;
+        };
+        if declaration.language != Language::Rust {
+            continue;
+        }
+        let place = |index: usize| {
+            edges[index]
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("registeredAt"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let mut ranked: Vec<(bool, String, usize)> = indexes
+            .iter()
+            .map(|&index| {
+                let at = place(index);
+                let other_file = !at.starts_with(&format!("{}:", declaration.file_path));
+                (other_file, at, index)
+            })
+            .collect();
+        ranked.sort();
+        let total = ranked.len();
+        for (rank, (_, _, index)) in ranked.into_iter().enumerate() {
+            if rank >= MAX_RUST_IMPLEMENTATIONS {
+                dropped.insert(index);
+                continue;
+            }
+            if let Some(metadata) = edges[index].metadata.as_mut() {
+                metadata.insert("implementations".to_string(), Value::from(total));
+                metadata.insert("capped".to_string(), Value::Bool(true));
+            }
+        }
+    }
+    if !dropped.is_empty() {
+        let mut index = 0;
+        edges.retain(|_| {
+            let keep = !dropped.contains(&index);
+            index += 1;
+            keep
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -247,11 +328,75 @@ mod tests {
             .iter()
             .find(|edge| edge.source == "trait-method" && edge.target == "union-method")
             .expect("trait dispatch edge");
+        assert!(
+            edge.metadata.as_ref().unwrap().get("capped").is_none(),
+            "one implementation is no cap"
+        );
         assert_eq!(edge.kind, EdgeKind::Calls);
         assert_eq!(edge.provenance, Some(crate::types::Provenance::Heuristic));
         assert_eq!(
             edge.metadata.as_ref().unwrap()["synthesizedBy"],
             "interface-impl"
         );
+    }
+
+    /// A Rust trait method implemented everywhere keeps at most
+    /// `MAX_RUST_IMPLEMENTATIONS` dispatch edges, the ones in its own file
+    /// first, each saying how many there are; an enum implementor counts.
+    #[test]
+    fn caps_a_rust_trait_methods_dispatch_edges_and_says_so() {
+        let directory = tempdir().unwrap();
+        let connection =
+            DatabaseConnection::initialize(directory.path().join("codegraph.db")).unwrap();
+        let queries = QueryBuilder::new(connection.get_db().unwrap());
+        let total = MAX_RUST_IMPLEMENTATIONS + 6;
+        let mut nodes = vec![
+            node("tr", NodeKind::Trait, "Poll", "Poll"),
+            node("tr-poll", NodeKind::Method, "poll", "Poll::poll"),
+        ];
+        let mut edges = vec![Edge::new("tr", "tr-poll", EdgeKind::Contains)];
+        for i in 0..total {
+            let kind = if i == 0 {
+                NodeKind::Enum
+            } else {
+                NodeKind::Struct
+            };
+            let mut owner = node(&format!("t{i}"), kind, &format!("T{i}"), &format!("T{i}"));
+            let mut method = node(
+                &format!("m{i}"),
+                NodeKind::Method,
+                "poll",
+                &format!("T{i}::poll"),
+            );
+            // The last implementor lives beside the trait; the rest elsewhere.
+            if i + 1 != total {
+                owner.file_path = format!("src/t{i:03}.rs");
+                method.file_path = owner.file_path.clone();
+            }
+            nodes.push(owner);
+            nodes.push(method);
+            edges.push(Edge::new(format!("t{i}"), "tr", EdgeKind::Implements));
+            edges.push(Edge::new(
+                format!("t{i}"),
+                format!("m{i}"),
+                EdgeKind::Contains,
+            ));
+        }
+        queries.insert_nodes(&nodes).unwrap();
+        queries.insert_edges(&edges).unwrap();
+
+        let dispatch = interface_override_edges(&queries).unwrap();
+        assert_eq!(dispatch.len(), MAX_RUST_IMPLEMENTATIONS);
+        for edge in &dispatch {
+            let metadata = edge.metadata.as_ref().unwrap();
+            assert_eq!(metadata["implementations"], total);
+            assert_eq!(metadata["capped"], true);
+        }
+        let targets: Vec<&str> = dispatch.iter().map(|edge| edge.target.as_str()).collect();
+        assert!(
+            targets.contains(&format!("m{}", total - 1).as_str()),
+            "same file first"
+        );
+        assert!(targets.contains(&"m0"), "the enum implementor");
     }
 }

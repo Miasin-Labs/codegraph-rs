@@ -530,3 +530,213 @@ async fn a_namespaced_route_handler_resolves_in_its_module() {
         "{edges:#?}"
     );
 }
+
+/// A module called `std` somewhere in the crate (tokio's
+/// `crate::loom::std`) is not in scope elsewhere: `use std::task::Context`
+/// and `use std::sync::atomic::AtomicUsize` stay std's, whatever project
+/// types share the names, and `AtomicUsize::new` is not the project's.
+#[tokio::test(flavor = "current_thread")]
+async fn a_std_path_is_std_even_beside_a_module_named_std() {
+    let (_dir, edges) = index_crate(&[
+        ("src/lib.rs", "mod loom;\npub mod task;\npub mod time;\n"),
+        (
+            "src/loom/mod.rs",
+            "mod std;\npub(crate) use self::std::*;\n",
+        ),
+        (
+            "src/loom/std/mod.rs",
+            "pub(crate) struct AtomicUsize(usize);\n\
+             impl AtomicUsize {\n\
+             \x20   pub(crate) fn new(v: usize) -> AtomicUsize { AtomicUsize(v) }\n\
+             }\n",
+        ),
+        ("src/task.rs", "pub struct Context;\n"),
+        (
+            "src/time.rs",
+            "use std::sync::atomic::AtomicUsize;\n\
+             use std::task::Context;\n\
+             pub fn poll_tick(cx: &mut Context<'_>) { let _ = cx; }\n\
+             pub fn counter() -> AtomicUsize { AtomicUsize::new(0) }\n",
+        ),
+    ])
+    .await;
+    assert!(
+        none_to(&edges, "poll_tick", "references", "Context"),
+        "{edges:#?}"
+    );
+    assert!(
+        none_to(&edges, "counter", "calls", "AtomicUsize::new"),
+        "{edges:#?}"
+    );
+    assert!(
+        none_to(&edges, "counter", "references", "AtomicUsize"),
+        "{edges:#?}"
+    );
+}
+
+/// tokio's loom facade: `crate::loom::sync::Mutex` is a re-export through
+/// `pub(crate) use self::std::*;` of an inline `mod sync`, whose `cfg`
+/// alternatives are the std-backed `Mutex` and (with a feature) the
+/// `parking_lot` one; `cfg(loom)` mocks are never compiled. The default
+/// build's `Mutex::lock` is the target, not `crate::sync::Mutex`'s, and
+/// the default build's `MutexGuard` is std's.
+#[tokio::test(flavor = "current_thread")]
+async fn loom_facade_types_resolve_to_the_default_build() {
+    let mutex = "pub(crate) struct Mutex<T>(T);\n\
+                 impl<T> Mutex<T> {\n\
+                 \x20   pub(crate) fn new(t: T) -> Mutex<T> { Mutex(t) }\n\
+                 \x20   pub(crate) fn lock(&self) -> &T { &self.0 }\n\
+                 }\n";
+    let parking_lot = format!("{mutex}pub(crate) struct MutexGuard;\n");
+    let mocked = format!("pub(crate) mod sync {{\n{mutex}}}\n");
+    let (_dir, edges) = index_crate(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [features]\ndefault = []\nparking_lot = []\n",
+        ),
+        ("src/lib.rs", "mod loom;\npub mod sync;\nmod util;\n"),
+        (
+            "src/loom/mod.rs",
+            "#[cfg(not(all(test, loom)))]\nmod std;\n\
+             #[cfg(not(all(test, loom)))]\npub(crate) use self::std::*;\n\
+             #[cfg(all(test, loom))]\nmod mocked;\n\
+             #[cfg(all(test, loom))]\npub(crate) use self::mocked::*;\n",
+        ),
+        (
+            "src/loom/std/mod.rs",
+            "mod mutex;\n\
+             #[cfg(feature = \"parking_lot\")]\nmod parking_lot;\n\
+             pub(crate) mod sync {\n\
+             \x20   #[cfg(feature = \"parking_lot\")]\n\
+             \x20   pub(crate) use crate::loom::std::parking_lot::{Mutex, MutexGuard};\n\
+             \x20   #[cfg(not(feature = \"parking_lot\"))]\n\
+             \x20   pub(crate) use crate::loom::std::mutex::Mutex;\n\
+             \x20   #[cfg(not(feature = \"parking_lot\"))]\n\
+             \x20   pub(crate) use std::sync::MutexGuard;\n\
+             }\n",
+        ),
+        ("src/loom/std/mutex.rs", mutex),
+        ("src/loom/std/parking_lot.rs", &parking_lot),
+        ("src/loom/mocked.rs", &mocked),
+        ("src/sync/mod.rs", "mod mutex;\npub use mutex::Mutex;\n"),
+        (
+            "src/sync/mutex.rs",
+            "pub struct Mutex<T>(T);\n\
+             impl<T> Mutex<T> {\n\
+             \x20   pub fn new(t: T) -> Mutex<T> { Mutex(t) }\n\
+             \x20   pub async fn lock(&self) -> &T { &self.0 }\n\
+             }\n",
+        ),
+        (
+            "src/util.rs",
+            "use crate::loom::sync::{Mutex, MutexGuard};\n\
+             pub(crate) struct Domain { map: Mutex<u8> }\n\
+             impl Domain {\n\
+             \x20   pub(crate) fn new() -> Domain { Domain { map: Mutex::new(0) } }\n\
+             \x20   pub(crate) fn get(&self) -> u8 { *self.map.lock() }\n\
+             \x20   pub(crate) fn guard(g: MutexGuard<'_, u8>) { let _ = g; }\n\
+             }\n",
+        ),
+    ])
+    .await;
+    assert!(
+        has(
+            &edges,
+            "Domain::get -calls-> Mutex::lock @src/loom/std/mutex.rs"
+        ),
+        "{edges:#?}"
+    );
+    assert!(
+        has(
+            &edges,
+            "Domain::new -calls-> Mutex::new @src/loom/std/mutex.rs"
+        ),
+        "{edges:#?}"
+    );
+    for wrong in [
+        "src/loom/mocked.rs",
+        "src/sync/mutex.rs",
+        "src/loom/std/parking_lot.rs",
+    ] {
+        assert!(
+            !edges
+                .iter()
+                .any(|edge| edge.starts_with("Domain::") && edge.ends_with(&format!("@{wrong}"))),
+            "{wrong}: {edges:#?}"
+        );
+    }
+}
+
+/// A binding inside a block that closed before the call is out of scope:
+/// `let l = { let l = std_thing(); Wrapper::from_std(l) };` types `l` by
+/// the block's tail.
+#[tokio::test(flavor = "current_thread")]
+async fn a_block_scoped_binding_does_not_type_a_later_call() {
+    let (_dir, edges) = index_crate(&[(
+        "src/lib.rs",
+        "pub struct Listener;\n\
+         impl Listener {\n\
+         \x20   pub fn from_std(l: std::net::TcpListener) -> Listener { let _ = l; Listener }\n\
+         \x20   pub fn accept(&self) {}\n\
+         }\n\
+         pub fn serve() {\n\
+         \x20   let listener = {\n\
+         \x20       let listener = std::net::TcpListener::bind(\"127.0.0.1:0\").unwrap();\n\
+         \x20       Listener::from_std(listener)\n\
+         \x20   };\n\
+         \x20   listener.accept();\n\
+         }\n",
+    )])
+    .await;
+    assert!(
+        has(&edges, "serve -calls-> Listener::accept @src/lib.rs"),
+        "{edges:#?}"
+    );
+}
+
+/// A `use` naming an item of a project module the index holds no node for
+/// (declared inside a macro call, like tokio's `cfg_rt! { pub struct
+/// JoinHandle … }`) names nothing: never a namesake elsewhere, such as a
+/// test mock's. An inline module's own fn shadows the file's `use` of a
+/// same-named module.
+#[tokio::test(flavor = "current_thread")]
+async fn a_use_of_an_unindexed_item_names_no_namesake() {
+    let (_dir, edges) = index_crate(&[
+        (
+            "src/lib.rs",
+            "pub mod join;\npub mod mocks;\npub mod set;\n",
+        ),
+        (
+            "src/join.rs",
+            "macro_rules! cfg_rt { ($($i:item)*) => { $($i)* } }\n\
+             cfg_rt! {\n\
+             \x20   pub struct JoinHandle;\n\
+             }\n",
+        ),
+        ("src/mocks.rs", "pub struct JoinHandle;\n"),
+        (
+            "src/set.rs",
+            "use crate::join::JoinHandle;\n\
+             use core::ptr::{self, NonNull};\n\
+             pub fn insert(h: JoinHandle) { let _ = h; }\n\
+             pub fn raw(p: NonNull<u8>) -> NonNull<u8> { p }\n\
+             #[cfg(test)]\n\
+             mod tests {\n\
+             \x20   use super::*;\n\
+             \x20   fn ptr(v: &u8) -> u8 { *v }\n\
+             \x20   #[test]\n\
+             \x20   fn reads() { let a = 1; assert_eq!(ptr(&a), 1); }\n\
+             }\n",
+        ),
+    ])
+    .await;
+    assert!(
+        none_to(&edges, "insert", "references", "JoinHandle"),
+        "{edges:#?}"
+    );
+    assert!(
+        has(&edges, "tests::reads -calls-> tests::ptr @src/set.rs"),
+        "{edges:#?}"
+    );
+}

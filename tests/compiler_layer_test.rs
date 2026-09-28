@@ -161,10 +161,11 @@ fn assert_fixture_verdicts(root: &Path, report: &CompilerReport) {
         "uses_macro -calls-> helper [scip] {confirmed}",
         "call_sq -calls-> Sq::area [scip] {confirmed}",
         "Sq -implements-> Shape [scip] {confirmed}",
-        // References tree-sitter left unresolved: a macro-generated fn,
-        // and trait methods on generic receivers.
+        // A reference tree-sitter left unresolved: a macro-generated fn.
         "uses_macro -calls-> generated_one [scip] {resolved}",
-        "generic -calls-> Shape::area [scip] {resolved}",
+        // A trait method on a generic receiver: the trait's declaration,
+        // which tree-sitter's trait dispatch now names itself.
+        "generic -calls-> Shape::area [scip] {confirmed}",
         // A trait method on a bounded generic, which tree-sitter resolved.
         "bounded -calls-> Shape::area [scip]",
         // What tree-sitter never recorded.
