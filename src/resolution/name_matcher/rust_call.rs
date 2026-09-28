@@ -30,6 +30,7 @@ use super::dependency_names::FileText;
 use super::exact::pick_exact;
 use super::receiver::{
     RustType,
+    external_path,
     file_is_module,
     fn_local_uses,
     infer_rust_chain_type,
@@ -97,7 +98,9 @@ pub(super) fn match_rust_call(
             return Some(decided);
         }
     }
-    if is_receiverless_std_method_call(reference) {
+    if is_receiverless_std_method_call(reference)
+        || imports_from_another_crate(syntax, reference, context)
+    {
         return Some(None);
     }
     // A dependency's method name reaches only types the file names.
@@ -129,10 +132,24 @@ pub(crate) fn rust_call_admits(
         return true;
     };
     !is_receiverless_std_method_call(reference)
+        && !imports_from_another_crate(syntax, reference, context)
         && (!is_receiverless_dependency_method_call(reference, context)
             || FileText::read(reference, context).names_owner_of(target))
         && syntax.admits(target, &mut FileScope::new(reference, context))
         && !syntax.names_local(reference, context)
+}
+
+/// A bare `f(..)` whose name a `use` brings in from another crate (`use
+/// axum::routing::get; get(handler)`) runs that crate's item, never a
+/// project fn that happens to share the name.
+fn imports_from_another_crate(
+    syntax: Syntax,
+    reference: &UnresolvedRef,
+    context: &dyn ResolutionContext,
+) -> bool {
+    syntax == Syntax::Bare
+        && !reference.reference_name.contains("::")
+        && external_path(&reference.reference_name, &reference.file_path, context).is_some()
 }
 
 /// How a Rust call spells its callee, for the external resolution pass.
