@@ -262,9 +262,16 @@ fn member(cache: &GraphCache<'_>, owner: &ApiRef, rest: &[String]) -> Option<Can
     if let Some(one) = one(inherent) {
         return one;
     }
+    // `Waker::from(arc)` is alloc's `impl From<Arc<W>> for Waker`, which
+    // no index lists (an impl of a foreign trait for a foreign type is in
+    // neither crate's JSON); the blanket `From<T> for T` would be the only
+    // candidate left, and is not what a path names.
     let traits: Vec<Candidate> = impls
         .iter()
-        .filter(|found| found.imp().trait_path.is_some() && !found.imp().negative)
+        .filter(|found| {
+            let imp = found.imp();
+            imp.trait_path.is_some() && !imp.negative && !imp.blanket
+        })
         .filter_map(|found| found.member_or_provided(cache, name))
         .map(Candidate::Api)
         .collect();
@@ -538,15 +545,24 @@ fn owner_of(
             key.ends_with(&suffix) && api.items[ty.item as usize].kind != ApiKind::Primitive
         })
         .map(|(_, ty)| ty.item);
-    let first = named.next()?;
-    if named.next().is_some() {
-        return None;
+    match (named.next(), named.next()) {
+        (Some(first), None) => of_item(ApiRef {
+            graph: Rc::clone(graph),
+            api: Arc::clone(api),
+            item: first,
+        }),
+        (Some(_), Some(_)) => None,
+        // None of the crate's own: a prelude type written bare
+        // (`Result<String, VarError>` in `std/src/env.rs`).
+        (None, _) => PRELUDES.iter().find_map(|module| {
+            let mut path = segments(module);
+            path.push(name.clone());
+            match resolve(cache, "std", &path, 0, false) {
+                Resolved::Item(item, _) => of_item(item),
+                _ => None,
+            }
+        }),
     }
-    of_item(ApiRef {
-        graph: Rc::clone(graph),
-        api: Arc::clone(api),
-        item: first,
-    })
 }
 
 /// How a method lookup's caller sees traits: its file's scope and the
@@ -918,6 +934,14 @@ fn other_traits_define(cache: &GraphCache<'_>, caller: &Caller<'_>, method: &str
         // A glob of a project module: any project trait.
         defines = project_defines(None, false);
     }
+    if defines && tracing() {
+        eprintln!(
+            "  unseen traits may define .{method} in {}: imports {:?} opaque {}",
+            caller.file,
+            caller.scope.opaque_imports(),
+            caller.scope.is_opaque()
+        );
+    }
     cache.memo.api_unseen.borrow_mut().insert(key, defines);
     defines
 }
@@ -1002,6 +1026,10 @@ pub(crate) fn module_traits(
     krate: &str,
     path: &[String],
 ) -> Option<Vec<String>> {
+    // `use Component::*`: an enum's variants, no traits.
+    if !path.is_empty() && matches!(resolve(cache, krate, path, 0, false), Resolved::Item(..)) {
+        return Some(Vec::new());
+    }
     let mut entries: Vec<(String, Vec<String>)> = Vec::new();
     let known = visit_module(cache, krate, path, &mut |krate, module, name| {
         let mut full = module.to_vec();
@@ -1038,6 +1066,12 @@ pub(crate) fn module_exports(
     path: &[String],
     name: &str,
 ) -> Option<bool> {
+    // `use Ordering::*`: the enum's variants.
+    if !path.is_empty() {
+        if let Resolved::Item(item, _) = resolve(cache, krate, path, 0, false) {
+            return Some(member(cache, &item, &[name.to_string()]).is_some());
+        }
+    }
     let (home, module) = module_home(cache, krate, path, 0)?;
     let mut full = module;
     full.push(name.to_string());

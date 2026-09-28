@@ -242,7 +242,10 @@ fn typed_method(
     let before = declarations.answers();
     let inferred = infer();
     if api::tracing() {
-        eprintln!("typed .{method}: receiver {inferred:?}");
+        eprintln!(
+            "{:?} typed .{method}: receiver {inferred:?}",
+            std::thread::current().id()
+        );
     }
     let Some(ty) = inferred.filter(|ty| declarations.cache().knows(&ty.krate)) else {
         return Attempt::NotOurs;

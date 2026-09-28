@@ -256,22 +256,64 @@ impl ForeignTypes for Declarations<'_> {
         let graph = self.cache.get(krate)?;
         // The method may live in another crate (a re-exported type, an
         // alias, a `Deref` target): its return type is written there.
-        let (found_in, node) =
-            self.with_caller(|caller| lookup_method(self.cache, &graph, owner, method, caller))?;
+        let found = self
+            .with_caller(|caller| lookup_method(self.cache, &graph, owner, method, caller))
+            .or_else(|| {
+                // A chain's head `Type::assoc(..)` (`File::open`,
+                // `Cell::new`): an associated fn, which a method probe (for
+                // `recv.m()`, `self` required) does not answer.
+                graph.api.as_ref()?;
+                let mut path = owner.to_vec();
+                path.push(method.to_string());
+                let found = lookup_path(self.cache, krate, &path, EdgeKind::Calls)?;
+                Some((found.graph, found.node))
+            });
+        if super::rust::api::tracing() {
+            eprintln!(
+                "{:?} method_return {krate}::{owner:?}.{method} → {:?}",
+                std::thread::current().id(),
+                found.as_ref().map(|(graph, node)| (
+                    graph.krate.clone(),
+                    node.qualified_name.clone(),
+                    node.signature.clone()
+                ))
+            );
+        }
+        let (found_in, node) = found?;
         let text = signature_return(node.signature.as_deref()?)?.to_string();
-        // A toolchain method's return written with its generic parameters
-        // ends a chain — inference substitutes none — where its own table of
-        // std wrappers and containers carries on (`Option::as_mut` of
-        // `Option<Heap>` is `Option<&mut Heap>`, `Vec<String>::iter()` yields
-        // `String`s): leave those to it, and a bare `T` to nobody.
-        // `NonNull::cast`'s `NonNull<U>` is still a `NonNull`.
+        // A toolchain method's return is written with its generic parameters
+        // (`Option<&mut T>`, `Enumerate<Self>`), which inference does not
+        // substitute; its own table of std wrappers, containers and
+        // iterators does (`Option::as_mut` of `Option<Heap>` is
+        // `Option<&mut Heap>`, `enumerate()` of `Vec<String>::iter()` yields
+        // `(usize, String)`): leave the methods it knows to it, and a bare
+        // `T` to nobody. `NonNull::cast`'s `NonNull<U>` is still a `NonNull`.
+        // A map's or set's iterators are written by that table as a slice
+        // iterator stand-in; their own types (`Values`, `hash_set::Iter`)
+        // run the right methods.
+        let map_iterator = owner.last().is_some_and(|owner| {
+            matches!(
+                owner.as_str(),
+                "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet"
+            )
+        }) && matches!(
+            method,
+            "iter"
+                | "iter_mut"
+                | "into_iter"
+                | "values"
+                | "values_mut"
+                | "into_values"
+                | "keys"
+                | "into_keys"
+                | "drain"
+        );
         let adapted = owner
             .last()
             .is_some_and(|owner| ADAPTED.contains(&owner.as_str()))
-            && ADAPTED_METHODS.contains(&method);
-        if !found_in.crate_dir.is_empty()
-            && (bare_generic(&text) || (adapted && mentions_generic(&text)))
-        {
+            && ADAPTED_METHODS.contains(&method)
+            && !map_iterator;
+        if !found_in.crate_dir.is_empty() && (bare_generic(&text) || adapted) {
             return None;
         }
         self.answered(ForeignText {
@@ -310,7 +352,14 @@ impl ForeignTypes for Declarations<'_> {
     }
 
     fn resolve_type(&self, krate: &str, file: &str, path: &str) -> Option<(String, Vec<String>)> {
-        type_path(self.cache, krate, file, path)
+        let found = type_path(self.cache, krate, file, path);
+        if super::rust::api::tracing() {
+            eprintln!(
+                "{:?} resolve_type {krate} {file} {path} -> {found:?}",
+                std::thread::current().id()
+            );
+        }
+        found
     }
 }
 

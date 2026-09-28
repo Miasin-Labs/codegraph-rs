@@ -89,6 +89,15 @@ pub(super) fn resolve_refs(
         }
         outcome.examined += 1;
         declarations.enter(&reference.file_path, reference.line);
+        if rust::api::tracing() {
+            eprintln!(
+                "{:?} ref {}:{} {}",
+                std::thread::current().id(),
+                reference.file_path,
+                reference.line,
+                reference.reference_name
+            );
+        }
         match rust::resolve(reference, &context, names) {
             Attempt::Resolved(resolved) => {
                 outcome.resolved.push(Resolution::of(reference, *resolved));

@@ -227,9 +227,9 @@ async fn api_indexes_resolve_what_the_heuristics_cannot_and_fall_back_when_unrea
         "widgets::Gear::new -> widgets-0.1.0::Gear::new (src/parts/gear.rs:8, qualified-name)",
         // The type's inherent method, the trait's provided method (in the
         // crate defining the trait), and the blanket impl's method.
-        "gear.teeth -> widgets-0.1.0::Gear::teeth (src/parts/gear.rs:12, instance-method)",
-        "gear.greeting -> widgets_core-0.1.0::Named::greeting (src/lib.rs:17, instance-method)",
-        "gear.shout -> widgets_core-0.1.0::T::shout (src/lib.rs:27, instance-method)",
+        "gear.teeth -> widgets-0.1.0::Gear::teeth (src/parts/gear.rs:12, dependency-chain)",
+        "gear.greeting -> widgets_core-0.1.0::Named::greeting (src/lib.rs:17, dependency-chain)",
+        "gear.shout -> widgets_core-0.1.0::T::shout (src/lib.rs:27, dependency-chain)",
         // A renamed re-export (`pub use crate::Gear as Cog`).
         "Cog::new -> widgets-0.1.0::Gear::new (src/parts/gear.rs:8, qualified-name)",
         // `pub mod task { pub use widgets_core::task::*; }`, and a method
