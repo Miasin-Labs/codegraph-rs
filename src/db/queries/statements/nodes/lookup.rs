@@ -181,9 +181,16 @@ impl QueryBuilder {
         Ok(())
     }
 
-    /// Get all nodes in the database.
+    /// Every code node: what reference resolution and the analysis bridge
+    /// (its only callers) may land on. Nodes of Markdown documents —
+    /// sections, RFCs, doc examples — are left out, so a heading or an
+    /// RFC's example `fn push` never becomes a call target; documents link
+    /// through `extraction::markdown::links` instead.
     pub fn get_all_nodes(&self) -> Result<Vec<Node>> {
-        let mut stmt = self.db.conn().prepare_cached("SELECT * FROM nodes")?;
+        let mut stmt = self
+            .db
+            .conn()
+            .prepare_cached("SELECT * FROM nodes WHERE language != 'markdown'")?;
         let rows = stmt.query_map([], node_from_row)?;
         rows.map(|r| r.map_err(Into::into)).collect()
     }

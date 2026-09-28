@@ -319,12 +319,12 @@ fn extraction_strategy(language: Language) -> ExtractionStrategy {
         | Language::Html
         | Language::Visualforce
         | Language::Aura
-        | Language::Xml => ExtractionStrategy::Custom,
+        | Language::Xml
+        | Language::Markdown => ExtractionStrategy::Custom,
         Language::Yaml
         | Language::Twig
         | Language::Properties
         | Language::Toml
-        | Language::Markdown
         | Language::Gitignore
         | Language::Zsh
         | Language::Fish => ExtractionStrategy::FileLevelOnly,
@@ -726,7 +726,7 @@ mod tests {
         assert!(is_file_level_only_language(Language::Twig));
         assert!(is_file_level_only_language(Language::Properties));
         assert!(is_file_level_only_language(Language::Toml));
-        assert!(is_file_level_only_language(Language::Markdown));
+        assert!(!is_file_level_only_language(Language::Markdown));
         assert!(is_file_level_only_language(Language::Gitignore));
         assert!(is_file_level_only_language(Language::Zsh));
         assert!(is_file_level_only_language(Language::Fish));

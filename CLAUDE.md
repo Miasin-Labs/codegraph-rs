@@ -327,9 +327,49 @@ cargo test --workspace
    bump, not an extractor branch. Macro **expansion** is also out of scope —
    tree-sitter parses tokens, so symbols *generated* by a `macro_rules!`
    invocation are never extracted (only the macro def + the call site are).
-   `NodeKind` now has **25** variants (added `Macro` for `macro_rules!` defs);
-   `map_node_kind` (analysis bridge) maps it to `None` — macros aren't callable
-   analysis nodes.
+   `NodeKind` now has **27** variants (`Macro` for `macro_rules!` defs,
+   `Section` for Markdown headings); `map_node_kind` (analysis bridge) maps
+   both to `None` — neither is callable analysis code.
+
+## Markdown documents
+
+`src/extraction/markdown/` makes Markdown files first-class. The pieces:
+- **Sections.** Each heading is a `Section` node, nested by level and
+  spanning up to the next heading of its level or higher. Its `docstring`
+  is its first paragraph, which is what search reads. A file named
+  `NNNN-slug.md` (rust-lang/rfcs) is also a `Module` named `RFC NNNN`, and
+  each `Feature Name:` in its header becomes a `Constant` named `x`,
+  qualified `…::feature(x)`.
+- **Doc examples.** A fenced block with a language tag (or rustdoc's bare
+  ```` ```ignore ````) runs through that language's extractor. An untagged
+  block counts as Rust only if it contains Rust keywords AND parses with no
+  error. That matches rustdoc/mdBook, and the parse check keeps grammar
+  sketches and shell sessions out. Doc-example nodes live inside their
+  section with document lines/bytes, and every node from a `.md` file is
+  `language: markdown`.
+- **Kept out of code.** `QueryBuilder::get_all_nodes` (used by resolution
+  and the analysis bridge) skips markdown nodes, and a block's own
+  references are dropped. So a README's `fn spawn` is never a call target,
+  and search ranks doc examples 30 below code (`node_bonus`).
+- **Citations.** References are named `rfc:N` (`RFC 2585`, `RFC #2585`,
+  `rust-lang/rfcs#N`, RFC URLs), `doc:path[#anchor]` (relative `.md` links,
+  with dots written `%2E`) and `feature:x` (`feature(x)`, "feature gate
+  `x`", and Rust `#![feature(x)]` via `languages/rust.rs`).
+  `markdown::links::resolve_document_links` binds them before general
+  resolution, which never sees them. `#L12` in a link resolves to the
+  innermost section holding line 12, `#slug` to the heading with that
+  slug. Edges carry `referenceName`, so re-indexing a target restores and
+  relinks them. The scope is everything when a document changed, otherwise
+  just the changed files.
+- **Bounds.** Per file: 2,000 headings, 256 blocks / 64 KiB each / 1 MiB
+  total, 4,000 example nodes, 4,000 references (first mention per section).
+  Each pass is linear; a reference finds its section by binary search. The
+  link pass reads at most 500k refs per prefix, with a 20 s deadline.
+- **Measured (2026-09).** rust-lang/rfcs went from 7 nodes / 14 edges to
+  21k / 21k. With all 2,301 PRs materialized as documents (a review
+  location per path+line, linked to the section it discusses), it reached
+  93k / 102k. Explore seeds `RFC N` queries with that RFC's best-matching
+  sections (`explore/seed.rs`).
 
 ## Notable subsystems
 
@@ -447,7 +487,11 @@ cargo test --workspace
   uncapped accept loops, subprocesses and peer reads with no deadline, a
   guarded `dns_resolver` that proxies bypass (no `.no_proxy()`);
   written from rms's audit, each caught its bug before the fix and not
-  after). Any detector's finding is dropped by `codegraph: ignore
+  after), and RFC-sourced soundness rules (`rust-rfc.yaml`). Each of those
+  cites its RFC/Reference section; they cover `Pin::new_unchecked` on a
+  `&mut self` field, unaligned reads through byte-pointer casts, and
+  `Vec::from_raw_parts` with another element type. The file header lists
+  the candidates that were measured and dropped. Any detector's finding is dropped by `codegraph: ignore
   <rule-id>[, …]` (and the reason) on its line or the line above
   (`bugs::suppressed_at`, via the line index). Rules are kept only if they discriminate on RustSec vuln/fixed pairs
   (fire near the fix, not in fixed/); a generic shape that also fires all

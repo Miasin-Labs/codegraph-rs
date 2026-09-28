@@ -63,7 +63,7 @@ fn rules_builtin_examples_pass() {
             rule.id
         );
     }
-    assert_eq!(BUILTIN_RULES.len(), 14);
+    assert_eq!(BUILTIN_RULES.len(), 15);
 }
 
 #[test]

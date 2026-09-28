@@ -157,11 +157,72 @@ impl ToolHandler {
             }
         }
 
+        for section in document_seeds(cg, query)? {
+            named_seed_ids.insert(section.id.clone());
+            if !nodes.contains(&section.id) {
+                nodes.insert(section);
+            }
+        }
+
         Ok(ExploreSeeds {
             glue_node_ids,
             named_seed_ids,
         })
     }
+}
+
+/// Most RFCs one query seeds, and sections per RFC.
+const RFC_SEED_LIMIT: usize = 3;
+const SECTIONS_PER_RFC: usize = 2;
+
+static RFC_MENTION: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"\bRFC[ \t]*[-#]?[ \t]*(\d{1,5})\b").expect("valid regex")
+});
+
+/// "What does RFC 1857 say about drop order": the RFC's sections the rest
+/// of the query is about (heading and summary words), else its first one.
+/// Document sections are not symbols, so name tokens never seed them.
+fn document_seeds(cg: &CodeGraph, query: &str) -> Result<Vec<Node>> {
+    let words: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| w.len() > 2 && w != "rfc" && !STOP_WORDS.contains(w.as_str()))
+        .filter(|w| !w.bytes().all(|b| b.is_ascii_digit()))
+        .collect();
+    let mut seeds = Vec::new();
+    for caps in RFC_MENTION.captures_iter(query).take(RFC_SEED_LIMIT) {
+        let Ok(number) = caps[1].parse::<u32>() else {
+            continue;
+        };
+        let documents = cg.get_nodes_by_name(&format!("RFC {number}"))?;
+        for document in documents.iter().filter(|n| {
+            n.kind == crate::types::NodeKind::Module
+                && n.language == crate::types::Language::Markdown
+        }) {
+            let mut sections: Vec<(usize, Node)> = cg
+                .get_nodes_in_file(&document.file_path)?
+                .into_iter()
+                .filter(|n| n.kind == crate::types::NodeKind::Section)
+                .map(|n| {
+                    let text = format!(
+                        "{} {}",
+                        n.name.to_lowercase(),
+                        n.docstring.as_deref().unwrap_or("").to_lowercase()
+                    );
+                    let hits = words.iter().filter(|w| text.contains(w.as_str())).count();
+                    (hits, n)
+                })
+                .collect();
+            sections.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.start_line.cmp(&b.1.start_line)));
+            let best = sections.first().map_or(0, |(hits, _)| *hits);
+            let picks = sections
+                .into_iter()
+                .filter(|(hits, _)| *hits == best || *hits > 0)
+                .take(if best == 0 { 1 } else { SECTIONS_PER_RFC });
+            seeds.extend(picks.map(|(_, node)| node));
+        }
+    }
+    Ok(seeds)
 }
 
 #[cfg(test)]

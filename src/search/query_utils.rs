@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::types::NodeKind;
+use crate::types::{Language, NodeKind};
 
 /// Common stop words to filter from search queries.
 /// Includes generic English + code-specific noise words.
@@ -533,9 +533,31 @@ pub fn name_match_bonus(node_name: &str, query: &str) -> i32 {
     // Full query as a single token (for compound identifiers like "CacheBuilder")
     let query_lower = WS_RE.replace_all(query, "").to_lowercase();
 
-    // Exact match: query exactly equals the node name
-    if name_lower == query_lower {
+    // Exact match: query exactly equals the node name (spacing aside, so a
+    // document heading "Drop check" is an exact match for `drop check`)
+    if name_lower == query_lower
+        || (name_lower.contains(char::is_whitespace)
+            && WS_RE.replace_all(&name_lower, "") == query_lower)
+    {
         return 80;
+    }
+
+    // The whole multi-word query as a phrase in a multi-word name: the
+    // query "drop check" and the heading "The Drop-Check Rule". Beats a
+    // name that is only one of the words ("Drop").
+    if query_tokens.len() > 1 && name_lower.contains(char::is_whitespace) {
+        let words = |text: &str| -> String {
+            text.split(|c: char| !c.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let phrase = words(&query.to_lowercase());
+        if phrase.contains(' ')
+            && format!(" {} ", words(&name_lower)).contains(&format!(" {phrase} "))
+        {
+            return 70;
+        }
     }
 
     // Exact match on a query token: "CacheBuilder build" and node name is "build"
@@ -561,6 +583,21 @@ pub fn name_match_bonus(node_name: &str, query: &str) -> i32 {
     }
 
     0
+}
+
+/// Kind- and language-based bonus for a node: [`kind_bonus`], except that a
+/// doc example (a symbol a Markdown code block declares) ranks below any
+/// project symbol and below the document's own sections: `spawn` finds the
+/// project's `spawn` before a README's.
+pub fn node_bonus(kind: NodeKind, language: Language) -> i32 {
+    let is_document_part = matches!(
+        kind,
+        NodeKind::File | NodeKind::Section | NodeKind::Module | NodeKind::Constant
+    );
+    if language == Language::Markdown && !is_document_part {
+        return kind_bonus(kind) - 30;
+    }
+    kind_bonus(kind)
 }
 
 /// Kind-based bonus for search ranking
@@ -596,6 +633,9 @@ pub fn kind_bonus(kind: NodeKind) -> i32 {
         // Macro definitions are searchable symbols; rank near traits/types
         // since `macro_rules!` often defines core API surface.
         NodeKind::Macro => 6,
+        // Document sections: prose, found by what they are about, ranked
+        // below code so a code query never lands on a heading first.
+        NodeKind::Section => 2,
     }
 }
 

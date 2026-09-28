@@ -1,0 +1,242 @@
+# Rust soundness rules mined from the Rust RFCs (rust-lang/rfcs text/NNNN-*.md)
+# and the Reference's list of undefined behavior
+# (reference/src/behavior-considered-undefined.md), checked against std's
+# `# Safety` sections, Miri's tests/fail programs and rust-lang/rust
+# I-unsound issues. Each description names its source RFC/section so a
+# finding's review packet points at the requirement it breaks. Kept only when
+# the rule fired on a RustSec advisory's vulnerable code (and, where the fix
+# removed the shape, not on the fixed code) with no findings on codegraph-rs
+# or remarkable-server. Dropped after measuring (2026-09): panics in
+# `extern "C"` fns (RFC 2945) and in `Drop` (rfcs#3288) — true hazards but
+# hundreds of hits across real crates; `unsafe impl Sync` over Cell fields,
+# FFI slices from unchecked pointers, same-length slice reinterpretation —
+# fired only on correct or unlabeled code; `Pin::new_unchecked` on a renamed
+# local, safe fns wrapping `RawFd` (RFC 3128), `#[may_dangle]` without
+# `PhantomData` (RFC 1327), `&mut (*uninit.as_mut_ptr()).f` (RFC 2582),
+# volatile-as-synchronization — no finding on any corpus. `static mut`
+# refs, `unsafe_op_in_unsafe_fn`, `must_use`, `mem::zeroed` of references
+# are rustc lints already.
+id: rust-pin-field-of-unpinned-self
+description: >-
+  `Pin::new_unchecked(&mut self.field)` in a method that takes `&mut self`
+  (not `self: Pin<&mut Self>`): the method only borrows `self`, and once it
+  returns the caller may move `self` — and the "pinned" field with it —
+  anywhere. RFC 2349 (text/2349-pin.md, "Unsafe APIs"): "it is always
+  unsafe to construct a `Pin` from a reference you did not create, because
+  you don't know what will happen once the lifetime of that reference
+  ends". A future or coroutine polled this way and then moved dangles its
+  self-references (Miri tests/fail/coroutine-pinned-moved.rs;
+  rust-lang/rust#63818; RUSTSEC-2020-0048 and RUSTSEC-2020-0049, actix
+  `BodyStream`/`Framed` use-after-free, fixed by taking `Pin<&mut Self>`).
+  Take `self: Pin<&mut Self>` and project, or require `Field: Unpin` and
+  use `Pin::new`.
+severity: high
+tags: [CWE-416, pin, unsound, RFC-2349]
+language: rust
+check-patterns:
+  - name: pin-field-through-mut-self
+    query: |
+      ((call_expression
+         function: (scoped_identifier path: (identifier) @ty name: (identifier) @fn)
+         arguments: (arguments . (reference_expression (mutable_specifier) value: (field_expression value: (self))) @arg .)) @call
+       (#eq? @ty "Pin")
+       (#eq? @fn "new_unchecked"))
+    where:
+      - inside: |
+          ((function_item parameters: (parameters . (self_parameter) @recv)) (#match? @recv "^&"))
+      # The obligation moves to the caller of an `unsafe fn`.
+      - not-inside: |
+          ((function_item (function_modifiers) @mods) (#match? @mods "unsafe"))
+message: "`{call}` pins a field of `self` that the caller can move after this `&mut self` method returns"
+review:
+  - Is the pinned field `!Unpin` (a future, a coroutine, an intrusive node)? Then after this method returns, the caller can move `self` and the field with it while the field holds self-references.
+  - Can the method take a `Pin<&mut Self>` receiver (projecting with pin-project), or the field be `Pin<Box<_>>`, or bounded `Unpin` and pinned with `Pin::new`?
+examples:
+  bad:
+    - |
+      impl<G: Coroutine<Return = ()>> Iterator for Adapter<G> {
+          type Item = G::Yield;
+          fn next(&mut self) -> Option<Self::Item> {
+              let me = unsafe { Pin::new_unchecked(&mut self.0) };
+              match me.resume(()) { CoroutineState::Yielded(x) => Some(x), _ => None }
+          }
+      }
+    - |
+      impl<F: Future> Task<F> {
+          fn poll_once(&mut self, cx: &mut Context<'_>) -> Poll<F::Output> {
+              unsafe { Pin::new_unchecked(&mut self.fut) }.poll(cx)
+          }
+      }
+    - |
+      impl<T: AsyncRead, U: Decoder> Framed<T, U> {
+          pub fn next_item(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<U::Item, U::Error>>> {
+              let cnt = match unsafe {
+                  Pin::new_unchecked(&mut self.io).poll_read_buf(cx, &mut self.read_buf)
+              } {
+                  Poll::Pending => return Poll::Pending,
+                  Poll::Ready(Ok(cnt)) => cnt,
+                  Poll::Ready(Err(e)) => return Poll::Ready(Some(Err(e.into()))),
+              };
+              self.decode(cnt)
+          }
+      }
+  good:
+    - |
+      impl<F: Future> Future for Map<F> {
+          type Output = F::Output;
+          fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+              unsafe { self.map_unchecked_mut(|s| &mut s.fut) }.poll(cx)
+          }
+      }
+    - |
+      impl<F: Future + Unpin> Task<F> {
+          fn poll_once(&mut self, cx: &mut Context<'_>) -> Poll<F::Output> { Pin::new(&mut self.fut).poll(cx) }
+      }
+    - |
+      impl<F: Future> Task<F> {
+          unsafe fn poll_pinned(&mut self, cx: &mut Context<'_>) -> Poll<F::Output> {
+              Pin::new_unchecked(&mut self.fut).poll(cx)
+          }
+      }
+---
+id: rust-unaligned-read-through-byte-cast
+description: >-
+  A byte pointer (`buf.as_ptr()`, `*const u8`, `&x[i] as *const _`) is cast
+  to a wider type and dereferenced or `ptr::read` directly. Nothing aligns a
+  byte buffer to the wider type, and "accessing (loading from or storing
+  to) a place that is ... based on a misaligned pointer" is undefined
+  behavior (reference/src/behavior-considered-undefined.md). Use
+  `ptr::read_unaligned` / `from_le_bytes`, or check the alignment first
+  (Miri tests/fail/unaligned_pointers/; RFC 2582
+  text/2582-raw-reference-mir-operator.md on places that must be aligned;
+  RUSTSEC-2019-0035 rand_core `*(&results[i] as *const u32 as *const u64)`,
+  still present behind `cfg!(x86)` in the "fixed" 0.4.2 — misalignment is
+  UB whatever the CPU tolerates).
+severity: medium
+tags: [CWE-704, alignment, unsound]
+language: rust
+check-patterns:
+  - name: deref-of-cast
+    query: |
+      ((unary_expression
+         (parenthesized_expression
+           (type_cast_expression value: (_) @src type: (pointer_type type: (_) @ty)))) @deref)
+    where:
+      - capture: deref
+        regex: "^\\*"
+      - capture: ty
+        regex: "^(u16|u32|u64|u128|i16|i32|i64|i128|f32|f64|usize|isize)$"
+      - capture: src
+        regex: "as_ptr\\(\\)|as_mut_ptr\\(\\)|\\*(const|mut)\\s+(u8|i8)\\b|^&\\w+\\["
+  - name: read-of-cast
+    query: |
+      ((call_expression
+         function: (scoped_identifier name: (identifier) @fn)
+         arguments: (arguments . (type_cast_expression value: (_) @src type: (pointer_type type: (_) @ty)) .)) @deref
+       (#eq? @fn "read"))
+    where:
+      - capture: deref
+        regex: "^(std::|core::)?ptr::read\\("
+      - capture: ty
+        regex: "^(u16|u32|u64|u128|i16|i32|i64|i128|f32|f64|usize|isize)$"
+      - capture: src
+        regex: "as_ptr\\(\\)|as_mut_ptr\\(\\)|\\*(const|mut)\\s+(u8|i8)\\b|^&\\w+\\["
+message: "`{deref}` accesses a `{ty}` through a narrower pointer that nothing aligned to `{ty}`"
+review:
+  - Is the source buffer guaranteed to be aligned for `{ty}` at this offset (allocated as `[{ty}]`, checked with `align_offset`/`is_aligned`)? If not, this is a misaligned access.
+  - Can it be `ptr::read_unaligned` or `{ty}::from_le_bytes(buf[i..i + N].try_into()?)`?
+examples:
+  bad:
+    - |
+      fn read_u32(buf: &[u8], off: usize) -> u32 {
+          unsafe { *(buf.as_ptr().add(off) as *const u32) }
+      }
+    - |
+      fn read_u64(buf: &[u8]) -> u64 { unsafe { ptr::read(buf.as_ptr() as *const u64) } }
+    - |
+      fn first(x: &[u16]) -> u32 { unsafe { *(&x[0] as *const _ as *const u32) } }
+    - |
+      fn serialize(&self, wire_buf: &mut [u8]) -> usize {
+          unsafe { *(wire_buf.as_mut_ptr() as *mut u16) = self.id(); }
+          2
+      }
+    - |
+      fn next_u64(&mut self, results: &[u32], index: usize) -> u64 {
+          unsafe { *(&results[index] as *const u32 as *const u64) }
+      }
+  good:
+    - |
+      fn read_u32(buf: &[u8], off: usize) -> u32 {
+          unsafe { ptr::read_unaligned(buf.as_ptr().add(off) as *const u32) }
+      }
+    - |
+      fn read_u32(buf: &[u8], off: usize) -> u32 { u32::from_le_bytes(buf[off..off + 4].try_into().unwrap()) }
+    - |
+      fn byte(p: *const u32) -> u8 { unsafe { *(p as *const u8) } }
+    - |
+      fn poke(x: &i32) { unsafe { *(x as *const i32 as *mut i32) = 7; } }
+---
+id: rust-vec-from-raw-parts-other-element-type
+description: >-
+  `Vec::from_raw_parts(v.as_mut_ptr() as *mut U, ..)` rebuilds a vector's
+  allocation as a `Vec` of another element type. std's `# Safety` for
+  `Vec::from_raw_parts` (rust/library/alloc/src/vec/mod.rs): "`T` needs to
+  have the same alignment as what `ptr` was allocated with" and "the size
+  of `T` times the `capacity` needs to be the same size as the pointer was
+  allocated with" — the new `Vec` frees the buffer with its own layout, and
+  deallocating with a different layout is undefined behavior
+  (RFC 1398 / 2116 allocator contract, text/2116-alloc-me-maybe.md;
+  RUSTSEC-2024-0435 fyrox `transmute_vec_as_bytes`). Convert through a
+  byte copy, `bytemuck::cast_vec` (checks both), or keep the original
+  element type.
+severity: high
+tags: [CWE-762, memory-corruption, unsound]
+language: rust
+check-patterns:
+  - name: vec-rebuilt-as-other-type
+    query: |
+      ((call_expression
+         function: (scoped_identifier path: (identifier) @vec name: (identifier) @fn)
+         arguments: (arguments .
+           (type_cast_expression
+             value: (call_expression function: (field_expression field: (field_identifier) @ptr))
+             type: (pointer_type type: (_) @ty)) @cast
+           . (_) . (_) .)) @call
+       (#match? @vec "^(Vec|String)$")
+       (#eq? @fn "from_raw_parts")
+       (#match? @ptr "^as_(mut_)?ptr$"))
+    where:
+      # a cast to an inferred or generic pointee is usually just `*const T` -> `*mut T`
+      - capture: ty
+        not-regex: "^(_|[A-Z]|Self)$"
+message: "`{call}` frees `{cast}`'s allocation as `Vec<{ty}>`: the layout must match the original element type's"
+review:
+  - Do the original element type and `{ty}` have the same size and alignment? If not, the rebuilt `Vec` deallocates with the wrong layout (and its length/capacity are counted in the wrong unit).
+  - Would `bytemuck::cast_vec`, a copy (`to_vec` of a byte view), or `Vec<{ty}>` built from the start avoid the reinterpretation?
+examples:
+  bad:
+    - |
+      pub fn transmute_vec_as_bytes<T: Copy>(vec: Vec<T>) -> Vec<u8> {
+          unsafe {
+              let mut vec = std::mem::ManuallyDrop::new(vec);
+              Vec::from_raw_parts(vec.as_mut_ptr() as *mut u8, vec.len() * size_of::<T>(), vec.capacity() * size_of::<T>())
+          }
+      }
+    - |
+      fn into_bytes(v: Vec<u32>) -> Vec<u8> {
+          let mut v = std::mem::ManuallyDrop::new(v);
+          unsafe { Vec::from_raw_parts(v.as_mut_ptr() as *mut u8, v.len(), v.capacity()) }
+      }
+  good:
+    - |
+      fn rebuild<T>(v: Vec<T>) -> Vec<T> {
+          let mut v = std::mem::ManuallyDrop::new(v);
+          unsafe { Vec::from_raw_parts(v.as_ptr() as *mut T, v.len(), v.capacity()) }
+      }
+    - |
+      fn rebuild(v: Vec<u32>) -> Vec<u32> {
+          let mut v = std::mem::ManuallyDrop::new(v);
+          unsafe { Vec::from_raw_parts(v.as_mut_ptr(), v.len(), v.capacity()) }
+      }
+    - |
+      fn into_bytes(v: Vec<u32>) -> Vec<u8> { bytemuck::cast_vec(v) }

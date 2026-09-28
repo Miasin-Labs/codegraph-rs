@@ -19,6 +19,7 @@ use crate::extraction::ida_c_extractor::{IdaCExtractor, is_ida_generated_c};
 use crate::extraction::languages;
 use crate::extraction::liquid_extractor::LiquidExtractor;
 use crate::extraction::lwc_template::LwcTemplateExtractor;
+use crate::extraction::markdown::MarkdownExtractor;
 use crate::extraction::mybatis_extractor::MyBatisExtractor;
 use crate::extraction::razor_extractor::RazorExtractor;
 use crate::extraction::salesforce_markup::SalesforceMarkupExtractor;
@@ -158,6 +159,9 @@ pub fn extract_from_source(
         // Salesforce markup: controller/extensions attributes and `{!...}`
         // bindings become Apex / client-controller references.
         SalesforceMarkupExtractor::new(file_path, source, detected_language).extract()
+    } else if detected_language == Language::Markdown {
+        // Documents: sections, doc examples, and what they cite.
+        MarkdownExtractor::new(file_path, source).extract()
     } else if is_file_level_only_language(detected_language) {
         // No symbol extraction at this stage — files are tracked at the file-record
         // level only. Framework extractors (Drupal routing yml, Spring `@Value`

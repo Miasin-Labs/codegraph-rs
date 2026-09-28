@@ -50,10 +50,14 @@ pub enum NodeKind {
     /// so the analysis bridge maps it to `None` (it is not callable code).
     Macro,
     Union,
+    /// A heading of a Markdown document and the text under it, nested by
+    /// level (`#` contains `##`). Documents, not code: the analysis bridge
+    /// maps it to `None` and resolution never sees it.
+    Section,
 }
 
 /// Runtime-iterable list of all node kinds (mirrors `NODE_KINDS` in TS).
-pub const NODE_KINDS: [NodeKind; 26] = [
+pub const NODE_KINDS: [NodeKind; 27] = [
     NodeKind::File,
     NodeKind::Module,
     NodeKind::Class,
@@ -80,6 +84,7 @@ pub const NODE_KINDS: [NodeKind; 26] = [
     NodeKind::StringLiteral,
     NodeKind::Macro,
     NodeKind::Union,
+    NodeKind::Section,
 ];
 
 impl NodeKind {
@@ -111,6 +116,7 @@ impl NodeKind {
             NodeKind::DataSymbol => "data_symbol",
             NodeKind::StringLiteral => "string_literal",
             NodeKind::Macro => "macro",
+            NodeKind::Section => "section",
         }
     }
 }

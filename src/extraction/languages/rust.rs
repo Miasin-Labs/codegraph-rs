@@ -41,6 +41,7 @@ mod receiver_text;
 pub(crate) use receiver_text::receiver_text;
 
 use super::named_children;
+use crate::extraction::markdown::refs::{FEATURE_PREFIX, rust_attribute_features};
 use crate::extraction::tree_sitter_helpers::{get_child_by_field, get_node_text};
 use crate::extraction::tree_sitter_types::{
     ExtractorContext,
@@ -255,6 +256,31 @@ impl LanguageExtractor for RustExtractor {
                 }
                 for call in macro_calls::macro_invocation_calls(node, ctx.source()) {
                     ctx.add_unresolved_reference(call.into_reference(parent_id.clone()));
+                }
+                false
+            }
+            // `#![feature(never_type)]` — the crate (or module) enables a
+            // feature gate: a `feature:` reference the document-link pass
+            // binds to the RFC that declares it.
+            "inner_attribute_item" => {
+                let Some(parent_id) = ctx.node_stack().last().cloned() else {
+                    return false;
+                };
+                let text = get_node_text(node, ctx.source());
+                if text.contains("feature") {
+                    for feature in rust_attribute_features(text) {
+                        ctx.add_unresolved_reference(UnresolvedReference {
+                            from_node_id: parent_id.clone(),
+                            reference_name: format!("{FEATURE_PREFIX}{feature}"),
+                            reference_kind: EdgeKind::References,
+                            line: node.start_position().row as u32 + 1,
+                            column: node.start_position().column as u32,
+                            file_path: None,
+                            language: None,
+                            candidates: None,
+                            metadata: None,
+                        });
+                    }
                 }
                 false
             }
