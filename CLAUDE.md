@@ -187,7 +187,8 @@ cargo test --workspace
 - **Rust call syntax decides what a call can run** (`name_matcher/rust_call.rs`):
   a bare `f()` targets a function, tuple struct, const/static or enum variant,
   never a method or field; a name bound locally (param, `let`, closure, match
-  arm) shadows project items; `Ok/Err/Some/None/drop/size_of…` stay std unless
+  arm) shadows project items, and one a `use` binds to another crate's path
+  (`use axum::routing::get; get(h)`) is that crate's, never a project fn; `Ok/Err/Some/None/drop/size_of…` stay std unless
   the file defines or imports a project item of that name. The same scope
   rules gate bare-named references (`match_rust_reference`): an `impl`/derive/
   supertrait target must be a trait, an enum variant needs a `use`, and the
@@ -277,14 +278,26 @@ cargo test --workspace
   target fits (`points_to/binding.rs`); ambiguity binds nothing. Every op
   has a source span (`IrFunction.spans`, parallel to `body` — the call
   node's start line/col, the index's call-edge key). Rust/Python/TS/Go keep
-  their bespoke lowerers; Java/C/C++/PHP (and taint for Python/JS) use the
-  rules-driven lowering (`ir/lower/`, tables `ir_rules.rs` + `cfg_rules.rs`),
+  their bespoke lowerers; Java/C/C++/PHP (and taint for Python/JS/Rust) use
+  the rules-driven lowering (`ir/lower/`, tables `ir_rules.rs` + `cfg_rules.rs`),
   which also records every expression's value (`values`) and each call's
   argument places (`call_places`, for out-parameters), declared `locals`
   and C++ `reference_params`. Unknown syntax becomes a synthetic
   `<kind>(children…)` call, never dropped. `ir::shared::canonicalize`
   renames every spelling of a field/global (`data`, `this.data`,
-  `Cls.data`) to one `@Cls.data` variable, one op for one op.
+  `Cls.data`) to one `@Cls.data` variable, one op for one op. Rust adds an
+  `ExpressionRules` table (`ir/lower/values.rs`): blocks/`if`/`match` have
+  values (a fn's tail is its return), patterns bind from what they match
+  (a variant's path and a guard bind nothing; tuples positionally),
+  `S { a: x }`/`Ok(x)`/`Err(x)`/`(a, b)` are named values written field by
+  field, `e?` is a branch on `e` (so `validate(&x)?` guards) that goes on
+  with `e.Ok`, macro token trees become arguments (a name, a format
+  string's `{name}`s, every name a group reads), and closures/`async`
+  blocks lower in place (a closure's params take the receiver of the call
+  it is passed to; a `return` inside ends only the inlined body). A field
+  read projects through copies, field reads, wrappers
+  (`PropagationRules::projections`) and call results; summaries record
+  returned struct fields (`returns_fields`) and per-field writes.
   `reaching_defs/` is flow-sensitive over IR blocks: access paths ≤3 deep,
   strong writes kill the place and below, constant branches prune
   (`consts.rs`). `taint_flow/` marks rule captures onto it and searches
@@ -333,7 +346,7 @@ cargo test --workspace
 
 ## Notable subsystems
 
-- **Dependency graphs** (`src/deps/`, `codegraph deps list|status|record|build|gc|show`):
+- **Dependency graphs** (`src/deps/`, `codegraph deps list|status|record|build|gc|show|flow`):
   one read-only codegraph *shard* per dependency **version**, shared by every
   project pinning it, under `codegraph_home()/deps/<crates|npm|go>/<name>-<version>/`
   (`codegraph.db` + `meta.json`; git sources key as `<ver>+git.<rev12>`, Go
@@ -365,7 +378,47 @@ cargo test --workspace
   (code calls its direct deps' APIs; `deps build --all` builds the rest).
   Never from MCP or the prompt hook.
   `CODEGRAPH_NO_BACKGROUND_SYNC=1` stops the spawn, `CODEGRAPH_DEPS=0`
-  the whole hook.
+  the whole hook. **The toolchain's library** (`deps/toolchain.rs`,
+  `Ecosystem::Rust`, dir `deps/rust/std-<release>+<commit12>/`): a
+  project with a `Cargo.lock` also records its rustc's std/core/alloc
+  (`rustc -vV`/`--print sysroot` in the project dir, 5 s deadline; needs
+  `rust-src`), built like a shard from `library/{std,core,alloc}/src`
+  (no tests/benches/stdarch; ~1k files, 33k nodes, 15 s). The external
+  pass reaches it as the graphs `std`/`core`/`alloc` (edges named
+  `std::<qname>` for `resolves-to`). `CODEGRAPH_STD=0` turns it off;
+  `CODEGRAPH_RUST_SRC` + `CODEGRAPH_RUST_VERSION` name one explicitly.
+- **Dependency taint summaries** (`src/deps/summaries/`): per Rust crate
+  shard, once per version, `taint-summaries.json` inside the shard dir
+  (versioned `SUMMARY_VERSION` — bump when the lowering, engine or stored
+  facts change — stamped with the shard's build, 0600, temp+rename, written
+  under the shard lock; gc removes it with the shard). Per fn: what its
+  return (and each returned field) carries, per-field writes, inputs
+  reaching args of calls the shard leaves unresolved, `env::var` reaching
+  outputs, each with its path; empty summaries are kept ("returns none of
+  its inputs"). The solver's pure summaries over the shard's fns lowered
+  from the read-only source, joined by the shard's call edges (+ `Self::m`/
+  `Type::m` the index missed); a call to a body-less declaration is a
+  library call, never opaque; test paths, macro args and >128 probes per
+  fn are skipped. Built by the CLI only (`deps build`; `analyze rules` on
+  first need within `CODEGRAPH_DEP_SUMMARIES_BUILD_MS`, 60 s), read by
+  MCP; `CODEGRAPH_DEP_SUMMARIES=0` off. **Composition**
+  (`summaries/compose.rs`, `Semantics::external_summary`): a project call
+  the external pass resolved into a crate shard applies its summary
+  instead of the library tables (tables stay for the rest); paths step
+  through the dependency's own file:line (ids from `EXTERNAL_FUNC_BASE`,
+  shown in evidence); ≤32 artifacts per run, none past the taint deadline.
+  **std stays a library call**: its bodies move data through raw pointers
+  and intrinsics the IR does not follow (`Box::new` → `write_via_move`),
+  so no std summaries; a crate fn's empty return is trusted only when no
+  `unsafe` is reachable from it (`StoredFunction.u`), else its result
+  carries its inputs. **`codegraph deps flow <pkg> <fn> [--from
+  env|<param>]`** (`summaries/flow.rs`): the path query across a
+  project's dependency crates — a path call's first segment through the
+  file's `use`s names the crate, whose shard opens on demand (≤32, 30 s)
+  — where `env::var` reaches a fn's outputs, or which call args a param
+  reaches. Tests: `tests/dep_summaries_test.rs` (fixture crate → shard →
+  summaries → external edges → a rule through it),
+  `tests/dep_flow_test.rs` (the reqwest proxy case in miniature).
 - **Bug detectors** (`src/analyze/bugs/`, `codegraph analyze bugs|review`):
   leads, not proofs, over the index's resolved call edges (which carry
   line/col) plus tree-sitter re-parsed per file (`Project`: bulk SQL load,
@@ -461,8 +514,32 @@ cargo test --workspace
   lowering and search (`BugsOptions::taint_budget`: 60 s, MCP `rules run`
   20 s); spent → partial results + a `skipped` note.
   `CODEGRAPH_TAINT_TRACE=1` prints the program and phase timings.
+  `resolves-to` sees a call no graph resolves as `<unresolved>` (in
+  `--check`: not in the `resolves` map), so `^(<unresolved>|std::.*
+  Command::new)$` means the library fn, never a project fn of that name.
+  Rust (`LangRules::index_resolves_calls`): with an index, an unresolved
+  call is library code (no syntax fallback), a call resolving to a tuple
+  struct/variant builds a value; without one (`--check`) `Type::m`/
+  `Self::m`/`self.m` resolve to the impl's fn. `rust-taint.yaml`:
+  axum/actix extractors (`Path(id)` etc.), `HeaderMap`/`HttpRequest`, a
+  `String`/`Bytes` body after an extractor, socket reads; env/stdin only in
+  `rust-command-from-environment` (0.4) and SQL. Sinks: Command::new/arg/
+  args, std/tokio fs + `OpenOptions::open`, SQL text (never a statement's
+  params, `params![..]`, or an HTTP builder's `.query`), reqwest/ureq/
+  hyper URLs, axum `Html`/text/html bodies, allocation sizes decoded from
+  bytes. Guards need no `if` (the engine follows `&&`/`!` from a branch):
+  `chars().all`, `is_valid*`/`is_allowed*`, `validate(&x)?`-style `?`
+  checks, `contains("..")`, `components()` checks, `starts_with` after
+  `canonicalize`, host allowlists. Error mappers (`ok_or_else`,
+  `map_err`, `context`…) carry their receiver only. Calls inside macro
+  arguments are tokens, not calls: a sanitizer written inside `format!()`
+  is not seen. rms (2026-09, hand-judged): 22 findings, 6 true flows (one
+  SSRF by design, four unvalidated `doc_id` path joins behind a DB lookup,
+  one env command by design), 16 FPs — DB lookups whose result carries
+  the key, numeric fields in format!, whole-`self` receivers; identical
+  with or without dependency summaries and the std graph.
   `*-taint.yaml` cover OWASP/Juliet injection classes (Java, C/C++,
-  Python/JS/PHP). Measured with `tools/bugbench/` (2026-09, phase 2 →
+  Python/JS/PHP) and Rust web input. Measured with `tools/bugbench/` (2026-09, phase 2 →
   before it): OWASP 89.2% P / 94.8% R (79.6/53.5; every injection
   category 100% R, no safe case flagged by a taint rule — the 195 FPs are
   `java-catch-generic-exception`); juliet-java 99.1/27.9 (98.6/18.1),
