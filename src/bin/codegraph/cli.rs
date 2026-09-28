@@ -55,6 +55,38 @@ pub(crate) enum Commands {
         /// Show detailed worker lifecycle and memory info
         #[arg(short = 'v', long)]
         verbose: bool,
+        /// Then verify and extend the Rust graph with rust-analyzer (turns
+        /// the compiler layer on; see `compiler-sync`)
+        #[arg(long)]
+        compiler: bool,
+    },
+    /// Verify, correct and extend the Rust graph with rust-analyzer's SCIP
+    /// index (compiler-resolved calls, trait impls, macro-generated items)
+    #[command(name = "compiler-sync")]
+    CompilerSync {
+        #[arg(value_name = "path")]
+        path: Option<String>,
+        /// Suppress output
+        #[arg(short = 'q', long)]
+        quiet: bool,
+        /// Show every verdict count and samples of each
+        #[arg(short = 'v', long)]
+        verbose: bool,
+        /// Output the outcome as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+        /// Run rust-analyzer even when the cached index is current
+        #[arg(long)]
+        force: bool,
+        /// Apply the cached index only (never run rust-analyzer)
+        #[arg(long)]
+        cached: bool,
+        /// Start the run detached and return
+        #[arg(long)]
+        background: bool,
+        /// Write every verdict to this file as JSON lines
+        #[arg(long, value_name = "file", hide = true)]
+        dump: Option<String>,
     },
     /// Sync changes since last index
     Sync {

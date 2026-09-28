@@ -164,7 +164,13 @@ pub(crate) fn cmd_uninit(path_arg: Option<&str>, force: bool) {
 }
 
 /// codegraph index [path]
-pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, verbose: bool) {
+pub(crate) async fn cmd_index(
+    path_arg: Option<&str>,
+    force: bool,
+    quiet: bool,
+    verbose: bool,
+    compiler: bool,
+) {
     // `index` builds an index at the location the caller named — when a path is
     // given explicitly it must NOT walk up to an initialized ancestor the way
     // query commands do. That fallback silently rebuilt some ancestor's index
@@ -223,6 +229,14 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
             let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
             super::external::resolve_external_after_write(&cg, index_scope(&result), true, false)
                 .await;
+            super::super::compiler::after_write(
+                &cg,
+                &project_path,
+                index_write(compiler, &result),
+                true,
+                false,
+            )
+            .await;
             cg.close();
             return Ok(());
         }
@@ -253,6 +267,14 @@ pub(crate) async fn cmd_index(path_arg: Option<&str>, force: bool, quiet: bool, 
         let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
         super::external::resolve_external_after_write(&cg, index_scope(&result), false, verbose)
             .await;
+        super::super::compiler::after_write(
+            &cg,
+            &project_path,
+            index_write(compiler, &result),
+            false,
+            verbose,
+        )
+        .await;
         cg.close();
         clack_outro("Done");
         Ok::<(), String>(())
@@ -298,6 +320,14 @@ pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
             let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
             super::external::resolve_external_after_write(&cg, sync_scope(&result), true, false)
                 .await;
+            super::super::compiler::after_write(
+                &cg,
+                &project_path,
+                sync_write(&result),
+                true,
+                false,
+            )
+            .await;
             cg.close();
             return Ok(());
         }
@@ -361,6 +391,8 @@ pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
         super::super::projects::register_after_write(&project_path, false);
         let _ = codegraph::deps::trigger::after_project_indexed(&project_path);
         super::external::resolve_external_after_write(&cg, sync_scope(&result), false, false).await;
+        super::super::compiler::after_write(&cg, &project_path, sync_write(&result), false, false)
+            .await;
         cg.close();
         clack_outro("Done");
         Ok::<(), String>(())
@@ -371,6 +403,25 @@ pub(crate) async fn cmd_sync(path_arg: Option<&str>, quiet: bool) {
             error_msg(&format!("Failed to sync: {msg}"));
         }
         process::exit(1);
+    }
+}
+
+/// The compiler layer's part after `index` (`--compiler` runs it).
+fn index_write(compiler: bool, result: &IndexResult) -> super::super::compiler::AfterWrite {
+    use super::super::compiler::AfterWrite;
+    if compiler {
+        AfterWrite::Explicit
+    } else {
+        AfterWrite::Index {
+            reindexed: result.files_indexed > 0,
+        }
+    }
+}
+
+/// The compiler layer's part after `sync`.
+fn sync_write(result: &SyncResult) -> super::super::compiler::AfterWrite {
+    super::super::compiler::AfterWrite::Sync {
+        changed: result.files_added + result.files_modified + result.files_removed > 0,
     }
 }
 
