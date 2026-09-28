@@ -1,6 +1,5 @@
 pub(crate) use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 pub(crate) use codegraph::db::{DatabaseConnection, QueryBuilder};
 pub(crate) use codegraph::extraction::{
@@ -103,7 +102,7 @@ pub(crate) fn open_graph(dir: &Path) -> (DatabaseConnection, QueryBuilder) {
 }
 
 pub(crate) fn git(cwd: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = codegraph_analysis::git_env::git()
         .args([
             "-c",
             "core.hooksPath=/dev/null",

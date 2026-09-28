@@ -1,5 +1,5 @@
 fn git(root: &Path, args: &[&str]) {
-    let status = std::process::Command::new("git")
+    let status = codegraph_analysis::git_env::git()
         .args(["-c", "user.email=t@example.com", "-c", "user.name=t"])
         .args(args)
         .current_dir(root)

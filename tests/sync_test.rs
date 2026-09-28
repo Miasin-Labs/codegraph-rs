@@ -882,14 +882,13 @@ fn real_watcher_does_not_descend_into_default_ignored_trees() {
 
 mod worktree {
     use std::path::PathBuf;
-    use std::process::Command;
 
     use codegraph::directory::find_nearest_codegraph_root;
 
     use super::*;
 
     fn git(cwd: &Path, args: &[&str]) {
-        let output = Command::new("git")
+        let output = codegraph_analysis::git_env::git()
             .args([
                 "-c",
                 "core.hooksPath=/dev/null",

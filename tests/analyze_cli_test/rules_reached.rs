@@ -30,7 +30,7 @@ fn extract_pdf_text(path: &str) -> String {
 }
 
 pub fn git_head() -> String {
-    let out = Command::new("git").arg("rev-parse").output().unwrap();
+    let out = codegraph_analysis::git_env::git().arg("rev-parse").output().unwrap();
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 

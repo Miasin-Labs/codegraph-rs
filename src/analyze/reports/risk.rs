@@ -12,7 +12,6 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::process::Command;
 
 use serde::Serialize;
 
@@ -196,7 +195,7 @@ pub fn changed_files(project_root: &Path, base: &str) -> Result<Vec<String>, Str
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = codegraph_analysis::git_env::git()
         .arg("-C")
         .arg(root)
         .args(args)

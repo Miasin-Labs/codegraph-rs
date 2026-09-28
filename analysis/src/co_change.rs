@@ -266,7 +266,7 @@ fn build_file_to_nodes_map(graph: &CodeGraph) -> HashMap<&str, Vec<NodeId>> {
 /// `workspace_root`: the directory from which to run `git log`.
 /// `max_commits`: cap on how many commits to fetch (performance guard).
 pub fn fetch_git_history(workspace_root: &Path, max_commits: usize) -> Vec<CommitInfo> {
-    let output = std::process::Command::new("git")
+    let output = crate::git_env::git()
         .args([
             "log",
             "--name-only",

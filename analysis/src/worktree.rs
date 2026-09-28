@@ -15,7 +15,6 @@
 //! warning surface, never an error.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Result of a mismatch check.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,7 +81,7 @@ pub fn detect_worktree_index_mismatch(
 /// `None` whenever git isn't installed, the path isn't in a repo, or
 /// the call times out.
 fn git_toplevel(at: &Path) -> Option<PathBuf> {
-    let output = Command::new("git")
+    let output = crate::git_env::git()
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(at)
         .output()
@@ -165,7 +164,7 @@ mod tests {
         fs::create_dir_all(&a).unwrap();
         fs::create_dir_all(&b).unwrap();
         for d in [&a, &b] {
-            let _ = Command::new("git").arg("init").current_dir(d).output();
+            let _ = crate::git_env::git().arg("init").current_dir(d).output();
         }
         // Either git is missing in this env (skip) or we should see a mismatch.
         if git_toplevel(&a).is_some() && git_toplevel(&b).is_some() {

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use super::ignore::{build_default_ignore, build_defaults_only_ignore, gitignore_ignores};
@@ -22,7 +22,7 @@ pub(super) struct GitOutput {
 /// options: piped stdio, timeout). Returns `None` on spawn failure or timeout
 /// (TS: throws → caught by callers).
 pub(super) fn run_git(cwd: &Path, args: &[&str], timeout: Duration) -> Option<GitOutput> {
-    let mut child = Command::new("git")
+    let mut child = codegraph_analysis::git_env::git()
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -334,7 +334,7 @@ mod tests {
     static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn git(root: &Path, args: &[&str]) {
-        let status = Command::new("git")
+        let status = codegraph_analysis::git_env::git()
             .args(args)
             .current_dir(root)
             .stdin(Stdio::null())

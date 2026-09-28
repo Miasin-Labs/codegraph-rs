@@ -502,12 +502,12 @@ fn collect_included_files(root_dir: &Path, config: &ProjectConfig) -> Vec<String
 
 #[cfg(test)]
 mod tests {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     use super::*;
 
     fn git(root: &Path, args: &[&str]) {
-        let status = Command::new("git")
+        let status = codegraph_analysis::git_env::git()
             .args(args)
             .current_dir(root)
             .stdin(Stdio::null())

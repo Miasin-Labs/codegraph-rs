@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -40,7 +40,7 @@ impl CoChangeProbe {
     /// `root`, listing changed paths relative to `root`. `None` when git
     /// cannot be started.
     pub(in crate::mcp::tools::explore) fn spawn(root: &Path) -> Option<Self> {
-        let mut child = Command::new("git")
+        let mut child = codegraph_analysis::git_env::git()
             .arg("-C")
             .arg(root)
             .args([

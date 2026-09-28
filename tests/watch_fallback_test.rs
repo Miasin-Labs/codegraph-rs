@@ -1,5 +1,4 @@
 use std::fs;
-use std::process::Command;
 
 use codegraph::installer::offer_watch_fallback;
 
@@ -8,7 +7,7 @@ fn disabled_watching_with_yes_installs_git_sync_hooks() {
     // Given: a Git project whose live watcher is explicitly disabled.
     let dir = tempfile::tempdir().unwrap();
     assert!(
-        Command::new("git")
+        codegraph_analysis::git_env::git()
             .args(["init", "--quiet"])
             .current_dir(dir.path())
             .status()
@@ -16,7 +15,7 @@ fn disabled_watching_with_yes_installs_git_sync_hooks() {
             .success()
     );
     assert!(
-        Command::new("git")
+        codegraph_analysis::git_env::git()
             .args(["config", "core.hooksPath", ".git/hooks"])
             .current_dir(dir.path())
             .status()

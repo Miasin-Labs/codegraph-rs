@@ -787,7 +787,7 @@ fn bare_index_from_subdirectory_still_resolves_initialized_ancestor() {
 // =============================================================================
 
 fn run_git(cwd: &Path, args: &[&str]) {
-    let out = Command::new("git")
+    let out = codegraph_analysis::git_env::git()
         .args([
             "-c",
             "core.hooksPath=/dev/null",

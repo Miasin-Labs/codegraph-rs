@@ -8,7 +8,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use codegraph::sync::git_hooks::{
     DEFAULT_SYNC_HOOKS,
@@ -20,7 +19,7 @@ use codegraph::sync::git_hooks::{
 use tempfile::TempDir;
 
 fn git(cwd: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = codegraph_analysis::git_env::git()
         .args(args)
         .current_dir(cwd)
         .stdin(std::process::Stdio::null())
@@ -32,7 +31,7 @@ fn git(cwd: &Path, args: &[&str]) {
 }
 
 fn git_stdout(cwd: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = codegraph_analysis::git_env::git()
         .args(args)
         .current_dir(cwd)
         .output()

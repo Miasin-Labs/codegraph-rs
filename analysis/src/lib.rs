@@ -43,6 +43,7 @@ pub mod fingerprint;
 pub mod formatting;
 pub mod framework_routes;
 pub mod frontier;
+pub mod git_env;
 #[cfg(feature = "gpu")]
 pub mod gpu_bfs;
 #[cfg(feature = "gpu")]

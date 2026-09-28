@@ -31,7 +31,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -243,7 +242,7 @@ pub fn diff_against_base(
     // point, not the tip of base_ref. Mirrors `git diff base...HEAD`
     // semantics without requiring the three-dot syntax (which
     // sometimes confuses older `git`).
-    let merge_base = Command::new("git")
+    let merge_base = crate::git_env::git()
         .args(["merge-base", base_ref, "HEAD"])
         .current_dir(workspace_root)
         .output()
@@ -266,7 +265,7 @@ pub fn diff_against_base(
     // List files changed since merge-base. Both committed and
     // working-tree-only changes count — the contributor wants the
     // graph to reflect *their* current state, not what's pushed.
-    let diff_output = Command::new("git")
+    let diff_output = crate::git_env::git()
         .args(["diff", "--name-only", &merge_base_sha])
         .current_dir(workspace_root)
         .output()

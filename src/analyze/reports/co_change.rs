@@ -61,7 +61,7 @@ pub struct CoChangeReport {
 /// mistakes the first file of every commit for the next commit's hash.
 /// Recorded in `notes/close-tier1-needs.md`; swap back once fixed.
 fn fetch_commit_history(workspace_root: &Path, max_commits: usize) -> Vec<CommitInfo> {
-    let output = std::process::Command::new("git")
+    let output = codegraph_analysis::git_env::git()
         .args([
             "log",
             "--name-only",

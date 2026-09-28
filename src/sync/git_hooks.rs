@@ -12,7 +12,7 @@
 //! is idempotent and removal preserves any user-authored hook content.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::{fmt, fs};
 
 use serde::{Deserialize, Serialize};
@@ -71,7 +71,7 @@ pub struct GitHookResult {
 /// failure (git missing, non-zero exit, unreadable cwd). Mirrors the TS
 /// `execFileSync(..., { stdio: ['ignore','pipe','ignore'], windowsHide: true })`.
 pub(crate) fn git_output(args: &[&str], cwd: &Path) -> Option<String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = codegraph_analysis::git_env::git();
     cmd.args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())

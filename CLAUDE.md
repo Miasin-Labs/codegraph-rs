@@ -150,6 +150,15 @@ cargo test --workspace
   (`repair_shared_schema_v9`) must stay cheap for the same reason, and
   `rebuild_name_segment_vocab` must stay one transaction that ends by marking
   the vocabulary complete.
+- **Every `git` subprocess goes through `codegraph_analysis::git_env::git()`**
+  (`crate::git_env::git()` in the analysis crate), never `Command::new("git")`
+  — production code and tests alike. Git exports `GIT_DIR`/`GIT_INDEX_FILE`/
+  `GIT_WORK_TREE`… to hooks, and a child `git` follows them instead of its
+  `current_dir`: codegraph runs from hooks (`sync --quiet`), and a test
+  suite run by a pre-push hook flipped the real repo's `core.bare` and
+  staged fixtures into the real index (2026-09). The helper drops git's own
+  `git rev-parse --local-env-vars` list; check with the suite run under
+  `GIT_DIR=<decoy>/.git GIT_INDEX_FILE=… GIT_WORK_TREE=…`.
 - **Recursive AST/graph walkers must call `ensure_sufficient_stack`** (crate
   root fn) at the recursion head — depth is bounded by input, not thread stack;
   a deep input otherwise aborts the process.

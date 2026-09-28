@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::support::{run_cli, stderr_str, write};
 
@@ -120,7 +120,7 @@ pub(crate) fn init_close_fixture(root: &Path) {
 
 /// Run `git` in the fixture with identity pinned (CI has no global config).
 pub(crate) fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
+    let out = codegraph_analysis::git_env::git()
         .args([
             "-c",
             "core.hooksPath=/dev/null",

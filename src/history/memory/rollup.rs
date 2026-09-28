@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -88,7 +88,7 @@ fn git_due(conn: &Connection, repo: i64, now: i64) -> rusqlite::Result<bool> {
 /// [`GIT_COMMITS`] non-merge commits. `None` when git is unavailable or
 /// too slow.
 pub(crate) fn git_pairs(root: &Path) -> Option<Vec<(String, String, i64)>> {
-    let mut child = Command::new("git")
+    let mut child = codegraph_analysis::git_env::git()
         .arg("-C")
         .arg(root)
         .args(["log", "--no-merges", "--name-only", "--format=%x1e"])

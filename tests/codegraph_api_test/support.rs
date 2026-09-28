@@ -1,6 +1,5 @@
 pub(crate) use std::fs;
 pub(crate) use std::path::Path;
-use std::process::Command;
 pub(crate) use std::time::{Duration, Instant};
 
 pub(crate) use codegraph::{
@@ -31,7 +30,7 @@ pub(crate) async fn setup_indexed(root: &Path) -> CodeGraph {
 }
 
 pub(crate) fn git(cwd: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = codegraph_analysis::git_env::git()
         .args([
             "-c",
             "core.hooksPath=/dev/null",
@@ -51,7 +50,7 @@ pub(crate) fn git(cwd: &Path, args: &[&str]) {
 }
 
 pub(crate) fn git_stdout(cwd: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = codegraph_analysis::git_env::git()
         .args(args)
         .current_dir(cwd)
         .output()
