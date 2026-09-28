@@ -447,9 +447,11 @@ cargo test --workspace
   that stopped it — recorded so a failing crate is not retried). Only
   `format_version`s in `SUPPORTED_FORMAT_VERSIONS` (61) are read; any
   other fails closed (no index, today's shard). Sources: the toolchain's
-  `rust-docs-json` component (`<sysroot>/share/doc/rust/json/`, the same
-  toolchain dir as `rust-src`; used only when its `crate_version` names
-  the shard's release+commit; `CODEGRAPH_RUSTDOC_JSON_DIR` overrides),
+  `rust-docs-json` component (`<sysroot>/share/doc/rust/json/` of the
+  shard's toolchain, else of any other rustup toolchain — a
+  `rustup-toolchain-install-master` build without the component takes a
+  same-commit sibling's; used only when its `crate_version` names the
+  shard's release+commit; `CODEGRAPH_RUSTDOC_JSON_DIR` overrides),
   pruned to items in the shard's crate dirs (plus every type/trait); a
   dependency's JSON from `cargo +nightly rustdoc --output-format json`
   only with `CODEGRAPH_DEPS_RUSTDOC=1` (CLI shard builds only: a probe

@@ -41,12 +41,66 @@ pub fn toolchain_json_dir(library: &Path) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// Where to look for the toolchain's JSON, in order: its own sysroot (or
+/// `CODEGRAPH_RUSTDOC_JSON_DIR`, which is then the only place), then every
+/// other rustup toolchain's `rust-docs-json` directory. The same compiler
+/// build can be installed twice — a `rustup-toolchain-install-master`
+/// toolchain without the component, and another of the same commit with it
+/// — and [`toolchain_json`] only accepts files of the shard's exact release
+/// and commit, so a sibling's JSON is used only when it describes this code.
+fn toolchain_json_dirs(library: &Path) -> Vec<PathBuf> {
+    if std::env::var_os("CODEGRAPH_RUSTDOC_JSON_DIR").is_some_and(|v| !v.is_empty()) {
+        return toolchain_json_dir(library).into_iter().collect();
+    }
+    let rustup_home = std::env::var_os("RUSTUP_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".rustup")));
+    json_dirs_with(toolchain_json_dir(library), rustup_home.as_deref())
+}
+
+/// `own` first, then every `<rustup_home>/toolchains/*/share/doc/rust/json`
+/// (sorted, without repeating `own`).
+fn json_dirs_with(own: Option<PathBuf>, rustup_home: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = own.into_iter().collect();
+    if let Some(Ok(entries)) = rustup_home.map(|home| std::fs::read_dir(home.join("toolchains"))) {
+        let mut others: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path().join("share/doc/rust/json"))
+            .filter(|dir| dir.is_dir() && !dirs.contains(dir))
+            .collect();
+        others.sort();
+        dirs.extend(others);
+    }
+    dirs
+}
+
 /// The toolchain JSON files (`std`, `core`, `alloc`) for the toolchain whose
 /// library is `library` and whose shard version is `version`
-/// (`1.100.0-nightly+1303417c416e`): all three present and of that release
-/// and commit, else why not.
+/// (`1.100.0-nightly+1303417c416e`): from the first place
+/// ([`toolchain_json_dirs`]) that has all three, of that release and commit;
+/// else why none did.
 pub fn toolchain_json(library: &Path, version: &str) -> Result<Vec<(String, PathBuf)>, String> {
-    let dir = toolchain_json_dir(library).ok_or("no rust-docs-json component")?;
+    first_matching(&toolchain_json_dirs(library), version)
+}
+
+/// The JSON of the first of `dirs` that describes `version`.
+fn first_matching(dirs: &[PathBuf], version: &str) -> Result<Vec<(String, PathBuf)>, String> {
+    if dirs.is_empty() {
+        return Err("no rust-docs-json component".to_string());
+    }
+    let mut reasons = Vec::new();
+    for dir in dirs {
+        match json_in(dir, version) {
+            Ok(files) => return Ok(files),
+            Err(reason) => reasons.push(reason),
+        }
+    }
+    Err(reasons.join("; "))
+}
+
+/// The three toolchain JSON files in `dir`, when all describe `version`.
+fn json_in(dir: &Path, version: &str) -> Result<Vec<(String, PathBuf)>, String> {
     let mut files = Vec::new();
     for krate in TOOLCHAIN_CRATES {
         let path = dir.join(format!("{krate}.json"));
@@ -333,5 +387,58 @@ mod tests {
             toolchain_span_file("library/std/src/../../backtrace/src/lib.rs").as_deref(),
             Some("backtrace/src/lib.rs")
         );
+    }
+}
+
+#[cfg(test)]
+mod toolchain_json_tests {
+    use super::*;
+
+    fn toolchain(home: &Path, name: &str, crate_version: Option<&str>) -> PathBuf {
+        let dir = home
+            .join("toolchains")
+            .join(name)
+            .join("share/doc/rust/json");
+        if let Some(version) = crate_version {
+            std::fs::create_dir_all(&dir).unwrap();
+            for krate in TOOLCHAIN_CRATES {
+                std::fs::write(
+                    dir.join(format!("{krate}.json")),
+                    format!("{{\"root\":0,\"crate_version\":\"{version}\",\"index\":{{}}}}"),
+                )
+                .unwrap();
+            }
+        }
+        dir
+    }
+
+    /// A `rustup-toolchain-install-master` toolchain without the component
+    /// takes the JSON of another toolchain of the same commit, never one of
+    /// another nightly.
+    #[test]
+    fn a_sibling_toolchain_of_the_same_commit_supplies_the_json() {
+        let home = tempfile::tempdir().unwrap();
+        let own = toolchain(home.path(), "rustc-master", None);
+        let other_nightly = toolchain(
+            home.path(),
+            "nightly-x86_64-unknown-linux-gnu",
+            Some("1.100.0-nightly\t(1303417c4\t2026-09-21)"),
+        );
+        let same_commit = toolchain(
+            home.path(),
+            "rustc-master-json",
+            Some("1.101.0-nightly\t(d080e7dff\t2026-09-27)"),
+        );
+        let dirs = json_dirs_with(None, Some(home.path()));
+        assert!(!dirs.contains(&own), "no component there: {dirs:?}");
+        assert_eq!(dirs, vec![other_nightly.clone(), same_commit.clone()]);
+
+        let files = first_matching(&dirs, "1.101.0-nightly+d080e7dff1b0").unwrap();
+        assert!(files.iter().all(|(_, path)| path.starts_with(&same_commit)));
+        let err = first_matching(&dirs, "1.101.0-nightly+aaaaaaaaaaaa").unwrap_err();
+        assert!(err.contains("describes"), "{err}");
+        // The toolchain's own directory, when it has the component, comes first.
+        let dirs = json_dirs_with(Some(same_commit.clone()), Some(home.path()));
+        assert_eq!(dirs, vec![same_commit, other_nightly]);
     }
 }
