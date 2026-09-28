@@ -20,6 +20,7 @@ fn node_kind_mapping_covers_all_kinds() {
         NodeKind::Route,
         NodeKind::Component,
         NodeKind::Macro,
+        NodeKind::Section,
     ];
     assert_eq!(mapped.len(), NODE_KINDS.len() - skipped.len());
     assert_eq!(map_node_kind(NodeKind::Method), Some(ANodeKind::Function));

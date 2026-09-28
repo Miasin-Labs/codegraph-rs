@@ -27,7 +27,8 @@ pub fn map_node_kind(kind: NodeKind) -> Option<ANodeKind> {
         | NodeKind::Export
         | NodeKind::Route
         | NodeKind::Component
-        | NodeKind::Macro => None,
+        | NodeKind::Macro
+        | NodeKind::Section => None,
     }
 }
 

@@ -74,6 +74,25 @@ impl QueryBuilder {
         rows.map(|r| r.map_err(Into::into)).collect()
     }
 
+    /// Unresolved references whose name starts with `prefix` (a range scan
+    /// on `idx_unresolved_name`), at most `limit`.
+    pub fn get_unresolved_references_with_prefix(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<UnresolvedReference>> {
+        // Every name starting with `prefix` sorts in [prefix, prefix + U+10FFFF).
+        let upper = format!("{prefix}\u{10FFFF}");
+        let mut stmt = self.db.conn().prepare_cached(
+            "SELECT * FROM unresolved_refs WHERE reference_name >= ?1 AND reference_name < ?2 LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![prefix, upper, limit as i64],
+            unresolved_from_row,
+        )?;
+        rows.map(|r| r.map_err(Into::into)).collect()
+    }
+
     /// Get all unresolved references.
     pub fn get_unresolved_references(&self) -> Result<Vec<UnresolvedReference>> {
         let mut stmt = self

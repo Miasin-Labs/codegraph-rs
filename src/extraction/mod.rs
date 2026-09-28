@@ -18,6 +18,7 @@ pub mod ida_manifest;
 pub mod languages;
 pub mod liquid_extractor;
 pub mod lwc_template;
+pub mod markdown;
 pub mod mybatis_extractor;
 pub mod orchestrator;
 pub mod razor_extractor;
@@ -51,6 +52,7 @@ pub use ida_manifest::{FuncManifest, parse_failed_addrs, synthesize_stub_nodes};
 pub use languages::extractor_for;
 pub use liquid_extractor::LiquidExtractor;
 pub use lwc_template::LwcTemplateExtractor;
+pub use markdown::MarkdownExtractor;
 pub use mybatis_extractor::MyBatisExtractor;
 pub use orchestrator::{
     ChangedFiles,

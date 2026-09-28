@@ -48,6 +48,7 @@ pub use crate::directory::{
 use crate::directory::{create_directory, remove_directory, validate_directory};
 use crate::error::{CodeGraphError, Result};
 pub use crate::error::{DefaultLogger, set_logger};
+use crate::extraction::markdown::links::{DocLinkScope, resolve_document_links};
 pub use crate::extraction::{
     ChangedFiles,
     EXTRACTION_VERSION,
@@ -857,6 +858,7 @@ impl CodeGraph {
 
         // Resolve references to create call/import/extends edges
         if touched {
+            self.link_documents(DocLinkScope::All);
             // Get count without loading all refs into memory
             let unresolved_count = self.queries.get_unresolved_references_count()? as usize;
 
@@ -937,6 +939,7 @@ impl CodeGraph {
                 }
             }
 
+            self.link_documents(DocLinkScope::for_changed(file_paths));
             let by_file = self
                 .queries
                 .get_unresolved_references_by_files(file_paths)?;
@@ -994,6 +997,10 @@ impl CodeGraph {
         // (regex over *.module.ts only).
         if touched {
             self.resolver.run_post_extract();
+            match &result.changed_file_paths {
+                Some(paths) => self.link_documents(DocLinkScope::for_changed(paths)),
+                None => self.link_documents(DocLinkScope::All),
+            }
         }
 
         // Resolve references if files were updated
@@ -1432,6 +1439,7 @@ impl CodeGraph {
         &self,
         on_progress: Option<&mut dyn FnMut(usize, usize)>,
     ) -> Result<ResolutionResult> {
+        self.link_documents(DocLinkScope::All);
         // Get all unresolved references from the database
         let unresolved_refs = self.queries.get_unresolved_references()?;
         self.resolver
@@ -1446,9 +1454,22 @@ impl CodeGraph {
         &self,
         on_progress: Option<&mut dyn FnMut(usize, usize)>,
     ) -> Result<ResolutionResult> {
+        self.link_documents(DocLinkScope::All);
         self.resolver
             .resolve_and_persist_batched(on_progress, None)
             .await
+    }
+
+    /// Link documents' references (RFC numbers, Markdown links, feature
+    /// gates) before general resolution runs. Best effort: a failure is
+    /// logged and leaves the references for the next pass.
+    fn link_documents(&self, scope: DocLinkScope<'_>) {
+        if let Err(error) = resolve_document_links(&self.queries, scope) {
+            crate::error::log_warn(
+                "Document link pass failed",
+                Some(&serde_json::json!({ "error": error.to_string() })),
+            );
+        }
     }
 
     /// Get detected frameworks in the project.
